@@ -3900,7 +3900,7 @@ export class AgentDaemon {
 					});
 				}
 				if (streamsSnapshot) {
-					const snapshotId = `${state.activeSessionId}-${state.eventGeneration}-${state.lastEventSequence}`;
+					const snapshotId = `${state.activeSessionId}-${result.snapshot.lastEventCursor?.generation ?? state.eventGeneration}-${result.snapshot.lastEventCursor?.sequence ?? state.lastEventSequence}`;
 					let transcript: SnapshotTranscriptChunkSource;
 					try {
 						transcript = createSnapshotTranscriptChunks({
@@ -5013,14 +5013,18 @@ export class AgentDaemon {
 							"sequence" in command.resumeCursor
 								? command.resumeCursor.sequence
 								: command.resumeCursor.eventSequence,
-						toSequence: state.lastEventSequence,
+						toSequence: snapshot.lastEventCursor.sequence,
 						toCursor: {
-							generation: state.eventGeneration,
-							sequence: state.lastEventSequence,
+							generation: snapshot.lastEventCursor.generation,
+							sequence: snapshot.lastEventCursor.sequence,
 						},
 						reason: "resume_cursor_session_mismatch",
 					}
-				: createDaemonReplayInfo(command.resumeCursor, state.lastEventSequence, state.eventGeneration);
+				: createDaemonReplayInfo(
+					command.resumeCursor,
+					snapshot.lastEventCursor.sequence,
+					snapshot.lastEventCursor.generation,
+				);
 		// Slim clients read summary/messages from the snapshot; duplicating them at
 		// the top level would serialize the full history twice more per attach.
 		const capabilities = daemonClientCapabilitiesForSession(client, state.activeSessionId);
@@ -5031,10 +5035,10 @@ export class AgentDaemon {
 			...(slim ? {} : { state: snapshot.summary, messages: snapshot.messages }),
 			snapshot,
 			replay,
-			lastEventSequence: state.lastEventSequence,
+			lastEventSequence: snapshot.lastEventCursor.sequence,
 			lastEventCursor: {
-				generation: state.eventGeneration,
-				sequence: state.lastEventSequence,
+				generation: snapshot.lastEventCursor.generation,
+				sequence: snapshot.lastEventCursor.sequence,
 			},
 			client: {
 				id: client.id,
@@ -5065,19 +5069,25 @@ export class AgentDaemon {
 			children = await this.buildRlmChildSnapshotsWithPassiveRlmSubagents(state);
 		}
 		session = state.runtime.session;
+		// Freeze the committed cut atomically: messages and the event cursor must be
+		// read together with no await in between, so a snapshot ID always maps to one
+		// byte-stable state and duplicate-transfer validation stays deterministic.
+		const frozenMessages = [...session.messages];
+		const frozenSequence = state.lastEventSequence;
+		const frozenGeneration = state.eventGeneration;
 		const connectionState = this.createConnectionState(state);
 		return {
 			activeSessionId: state.activeSessionId,
 			summary: summaryForActiveSession(state),
 			state: connectionState,
-			messages: session.messages,
+			messages: frozenMessages,
 			// Omit duplicate heavy payloads from attach. The client can derive render
 			// context from messages + state, and fetch the full session tree lazily
 			// when the tree/branch selector opens.
-			lastEventSequence: state.lastEventSequence,
+			lastEventSequence: frozenSequence,
 			lastEventCursor: {
-				generation: state.eventGeneration,
-				sequence: state.lastEventSequence,
+				generation: frozenGeneration,
+				sequence: frozenSequence,
 			},
 			...(parent ? { parent } : {}),
 			children,
@@ -6693,9 +6703,10 @@ export class AgentDaemon {
 			}
 			return;
 		}
+		const resolvedSnapshotId = `${state.activeSessionId}-${result.snapshot.lastEventCursor?.generation ?? state.eventGeneration}-${result.snapshot.lastEventCursor?.sequence ?? state.lastEventSequence}`;
 		const transcript = createSnapshotTranscriptChunks({
 			activeSessionId: state.activeSessionId,
-			snapshotId,
+			snapshotId: resolvedSnapshotId,
 			messages: result.snapshot.messages,
 			targetChunkBytes: SNAPSHOT_TARGET_CHUNK_BYTES,
 			signal: snapshotSignal,
@@ -6708,7 +6719,7 @@ export class AgentDaemon {
 				messages: result.messages ? [] : undefined,
 				snapshot: { ...result.snapshot, messages: [] },
 				snapshotStream: {
-					id: snapshotId,
+					id: resolvedSnapshotId,
 					messageCount: result.snapshot.messages.length,
 					targetChunkBytes: SNAPSHOT_TARGET_CHUNK_BYTES,
 				},

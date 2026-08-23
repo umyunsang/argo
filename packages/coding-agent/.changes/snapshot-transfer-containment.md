@@ -1,0 +1,2 @@
+- Fixed duplicate-snapshot byte mismatches terminally failing healthy session workers: a same-ID snapshot conflict now invalidates only that transfer instead of closing the worker control channel ([#1662](https://github.com/PrimeIntellect-ai/prime-agent/discussions/1662)).
+- Fixed snapshot transfer identity racing its content: snapshots now freeze messages and the event cursor atomically and derive their ID from the frozen cut, so re-encoded transfers of one cursor stay byte-identical.
