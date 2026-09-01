@@ -22,14 +22,14 @@ Every architecture, method, experiment, and result claim carries one contributio
 | Daemon, worker, detach/reattach, recovery | `INHERITED` | Base architecture and lifecycle tests |
 | Recursive RLM subagents and agent messaging | `INHERITED` | RLM paper, Prime Agent paper, base tests |
 | Continual Harness prompts/memories/skills/subagent specs | `INHERITED` | Continual Harness and Prime Agent papers, base source |
-| ARGO research-object taxonomy and evidence graph | `ORIGINAL_ARGO` candidate | Literature comparison, native implementation, adversarial graph tests |
+| ARGO research-object taxonomy and evidence graph | `RE_DERIVED` / `MODIFIED` candidate | Compare EviGraph and artifact-centered claim-aware observability; isolate immutable answered-run, exact-contrast, and authority semantics; implement and test |
 | Exact protocol fingerprint and comparability gate | `ORIGINAL_ARGO` candidate | Formal contract, cross-language fixtures, unmatched-comparison tests |
 | OpenResearch receipt boundary | `MODIFIED` / integration | OpenResearch contract, capability boundary, identity tests |
-| Research-refine versus engine-refine separation | `ORIGINAL_ARGO` candidate | Held-out dual-refine protocol, noninterference tests, rollback evidence |
-| Paper claim/citation/run lineage | `ORIGINAL_ARGO` candidate | Corpus contract, claim audit, generated manuscript parity |
+| Research-refine versus engine-refine separation | `RE_DERIVED` / `MODIFIED` candidate | Compare RSEA, Evo-Bench, and Regimes; implement disjoint scientific/engine state, noninterference, rollback, and held-out evaluation |
+| Paper claim/citation/run lineage | `RE_DERIVED` / `MODIFIED` candidate | Compare EviGraph, claim-locked reporting, and claim-aware observability; isolate retained-byte, exact-contrast, authority, and immutable-build semantics |
 | ARGO TUI and CLI | `MODIFIED` | Native product diff and usability/recovery evaluation |
 
-Tags are provisional until source archaeology and experiments confirm them. A new name or rewrite does not turn inherited work into an original contribution.
+Tags are provisional until source archaeology and experiments confirm them. A new name or rewrite does not turn inherited work into an original contribution. Full-read prior work already makes aggregate typed-graph, claim-aware artifact-lineage, evidence-before-prose, and held-out harness-promotion originality claims unavailable. In the dual-refinement row, the prior constituents justify only a `RE_DERIVED` / `MODIFIED` candidate classification; the exact cross-lineage noninterference residual remains `UNCLASSIFIED` until separately compared, implemented, and evaluated.
 
 ## Design-paper narrative
 
