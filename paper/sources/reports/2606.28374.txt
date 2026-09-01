@@ -1,0 +1,761 @@
+
+Warning: orx 0.1.117 is outdated (latest 0.1.118). A newer release is available; upgrade to stay compatible with the API. Run `orx update` to upgrade.
+
+alphaXiv: https://www.alphaxiv.org/abs/2606.28374
+
+Recursive Self-Evolving Agents via Held-Out Selection
+Michael Nguyen Quoc Nguyen Paul Vuong
+School of Information Technology
+Monash University Malaysia
+{michael.nguyen, quoc.nguyen, paul.vuong}@monash.edu
+Abstract
+LLM agents are increasingly improved without weight updates, by evolving a
+natural-language artifact – reflections, workflows, playbooks, cheatsheets, or op-
+timized prompts – that conditions a frozen policy. Such methods are typically
+reported as wins on the single benchmark where they help. We study them apples-
+to-apples and surface a sharper picture. We introduce RSEA (Recursive Self-
+Evolving Agent), which carries a compact three-layer natural-language state – an
+imperative strategy, reusable skills, and a procedural playbook – and across gener-
+ations rewrites all three layers from its own trajectories, committing a candidate
+only if it does not regress on a disjoint held-out split (a strict keep-better gate).
+Across four diverse benchmarks (ALFWorld, GAIA, τ -bench, WebShop) and six
+faithful baselines (ReAct, Reflexion, GEPA, AWM, ACE, Dynamic Cheatsheet),
+all on one shared local backbone, we find: (i) no artifact universally wins – RSEA
+is the strongest single-pass method on ALFWorld (69.3% vs. ReAct 64.6%, McNe-
+mar p=0.015; 79.4% with retry, best overall), while concrete-workflow induction
+(AWM) is best on the strong-backbone tool-use tasks; (ii) unguarded context evo-
+lution is high-variance and unsafe – Dynamic Cheatsheet, which curates context
+online with no held-out gate, is near-best on ALFWorld (70.7%) yet collapses
+on WebShop (score 0.14 vs. ReAct 0.43); and (iii) RSEA’s strict held-out selec-
+tion is what makes recursive self-evolution monotone-safe: it never significantly
+underperforms the base agent on any benchmark, falling back to vanilla ReAct
+when evolved context would hurt. Controlled ablations show that every layer of the
+evolved state helps and that removing held-out selection causes severe overfitting
+(a perfect in-sample score but a 33-point drop to test). We argue the reliability of
+context evolution comes less from the artifact and more from the selection gate,
+and release the full harness, the six baseline re-implementations, and pre-registered
+manifests.
+1 Introduction
+A central paradigm for building self-improving LLM agents adapts the context rather than the weights:
+the policy is frozen and an evolving natural-language artifact – accumulated reflections, induced
+workflows, curated playbooks, online cheatsheets, or optimized system prompts – is injected at
+inference. Context adaptation is attractive for concrete reasons: it is interpretable and auditable,
+integrates new knowledge at runtime, transfers across model versions, and – with long-context
+inference and KV-cache reuse – is increasingly cheap to serve.
+Despite rapid progress, these methods are almost always evaluated in isolation: a single benchmark,
+weak or non-matched baselines, and a backbone or decoding budget that varies between methods.
+This makes their relative merits and, crucially, their failure modes hard to read. When we re-run
+six representative methods on one shared backbone across four diverse agent benchmarks, two
+uncomfortable facts emerge. First, which artifact helps is benchmark-dependent: a method that tops
+Preprint.
+arXiv:2606.28374v1 [cs.AI] 17 Jun 2026
+
+Figure 1: No context-evolution artifact universally wins, and unguarded evolution is unsafe.
+Single-pass methods across four benchmarks on one shared backbone (ALFWorld 7B; GAIA/τ -
+bench/WebShop 30B). RSEA (red) is the strongest single-pass method on ALFWorld and never
+significantly underperforms ReAct (grey) elsewhere; AWM is best on the tool-use tasks; and Dynamic
+Cheatsheet – which curates context online with no held-out gate – is near-best on ALFWorld yet
+collapses on WebShop (0.14 vs. ReAct 0.43). RSEA’s strict held-out gate is what makes evolution
+monotone-safe.
+one benchmark is middling or harmful on another. Second, and more importantly, evolving context is
+not a free lunch. We name the failure mode context distraction: an injected artifact that degrades an
+otherwise-capable base policy. Context distraction is not hypothetical – in our study an unguarded
+online method (Dynamic Cheatsheet) goes from near-best on ALFWorld (70.7%) to a WebShop score
+of 0.136 versus the ReAct baseline’s 0.429, a catastrophic regression caused entirely by the context it
+added.
+We argue that the reliability of context evolution comes less from the artifact being evolved and
+more from the selection gate that decides whether to commit it. An evolution loop that commits
+whatever it produces inherits the variance of its own rewrites; one that commits a change only when
+it improves held-out performance cannot do worse than not evolving at all. We make this gate the
+design center of our method rather than an afterthought.
+Concretely, we present RSEA (Recursive Self-Evolving Agent). RSEA carries a compact three-
+layer natural-language state – strategy (an imperative preamble), skills (reusable sub-routines), and
+playbook (procedures distilled from successes) – and across generations (i) rolls the current state out
+on a small evolve pool, (ii) rewrites all three layers from the resulting trajectories, and (iii) commits
+the candidate only if it does not regress on a disjoint validation split, updating the frozen best state
+only on a strict improvement. Only the frozen best state is run on a held-out test split, so there is no
+leakage. RSEA
+R 
+injects this frozen prior into a per-task retry loop.
+Contributions. (1) A formulation of cross-task NL self-evolution centered on a strict held-out
+keep-better gate that makes the operation monotone-safe (§4). (2) A faithful, single-backbone re-
+implementation of six classic and recent baselines on a shared harness (§5). (3) A four-benchmark
+study with multi-seed statistics and paired tests, yielding an honest scope condition rather than a
+universal-win claim (§6–7). (4) Controlled ablations that isolate the contribution of each state layer
+and quantify the cost of removing held-out selection (§8).
+Key findings. (a) On ALFWorld (134 tasks × 5 seeds, 7B) the single-pass evolved prior significantly
+beats ReAct, GEPA, and AWM, and RSEA
+R 
+is best overall (79.4%). (b) On the strong-backbone
+tool-use benchmarks no NL artifact dominates; RSEA is statistically tied with ReAct (and never
+significantly worse), while AWM’s concrete workflows give the only consistent small lift. (c) Methods
+without a held-out gate are high-variance and can catastrophically regress; RSEA’s strict gate converts
+“context evolution” from a coin-flip into a monotone-safe operation. (d) Ablations show every layer
+of the evolved state helps (the layers overlap rather than being strictly complementary) and that
+removing held-out selection overfits the evolve pool (100% in-sample, a 33-point drop to test).
+2 Related Work
+LLM agents that reason and act. A now-standard recipe interleaves free-form reasoning with
+tool/environment actions: ReAct [Yao et al., 2023b] couples chain-of-thought with acting, elaborated
+2
+
+with deliberate search [Yao et al., 2023a], self-critique and revision [Madaan et al., 2023], learned
+tool use [Schick et al., 2023], and grounded planning in embodied or open-ended worlds [Huang
+et al., 2022, Wang et al., 2023]. Recent work strengthens the reasoning substrate – multi-perspective,
+semiotically grounded logical reasoning [Zhang et al., 2025e], “system-2” vision-language-action
+policies [Song et al., 2025, Fang et al., 2025], and spatio-temporal chains of thought for control [Zeng
+et al., 2025a] – while cognitive-architecture and survey treatments organize the pieces into memory,
+planning, and action modules [Sumers et al., 2024, Wang et al., 2024a, Park et al., 2023, Yang et al.,
+2026a]. RSEA keeps this loop unchanged and intervenes only through an evolved natural-language
+state, isolating the contribution of context from scaffold.
+Tool-use agents and tool learning. A large body studies how agents select and compose tools [Qu
+et al., 2025a]: mastering tools via self-driven interaction [Qu et al., 2025b], fine-grained supervision
+for tool-integrated reasoning [Qu et al., 2026], similarity/dependency-aware experience networks
+for multi-tool selection [Zhang et al., 2025f], self-critique under tool-calling errors [Huang et al.,
+2025], tree-search tool planning [Yang et al., 2026b], GUI grounding [Lian et al., 2025], and agentic
+text-to-SQL [Li et al., 2026b, Su, 2026]. Most closely, test-time tool evolution adapts an agent’s tools
+at inference [Lu et al., 2026]. RSEA is complementary: rather than evolving the tool set, it evolves a
+natural-language strategy over a fixed action/tool interface, and our τ -bench/WebShop results explain
+when such NL strategy adds little beyond an already-detailed tool API.
+Prompt and context optimization. A second line optimizes the prompt itself: discrete instruction
+search [Zhou et al., 2023], LLM-as-optimizer loops [Yang et al., 2024], declarative pipelines with
+compiled prompt/demonstration optimization [Khattab et al., 2024, Opsahl-Ong et al., 2024], evolu-
+tionary search [Fernando et al., 2023], and reflective genetic-Pareto evolution [Agrawal et al., 2025];
+prompts are also notoriously brittle to surface form [Cai et al., 2025]. These methods optimize a
+single flat artifact and usually treat selection as an implementation detail. We instead hold the artifact
+family fixed and show that the strictness of held-out selection – not the sophistication of the optimizer
+– governs whether evolution helps or hurts.
+Self-evolving and self-improving agents. Closest in spirit are agents that improve from their own
+experience. Beyond context, this includes bootstrapping reasoning from self-generated data [Zelikman
+et al., 2022] and searching over agent code/topology [Hu et al., 2024]. Within the agent loop, recent
+methods self-evolve tool-use policies via blame-aware mutation and diversity-aware selection [Yang
+et al., 2026c], evolve intrinsic skills in hierarchical RL [Li et al., 2026d], self-improve unified
+multimodal models from self-generated supervision [Han et al., 2026], and evolve task-specific
+prototypes [Zhu et al., 2025b]. RSEA shares the self-evolution goal but is deliberately weight-frozen
+and NL-state-based, and – unlike most of these – makes a strict held-out selection gate the center,
+which our ablations and transfer results identify as the decisive ingredient for safety.
+Reinforcement learning for LLM agents. A parallel thread trains agents/reasoners with RL:
+verifiable meta-reasoning rewards for long-horizon agents [Zhang et al., 2026c], reasoning re-ranking
+agents [Zhang et al., 2025a], and RL for contextual integrity [Lan et al., 2025a]. A recurring concern
+is the design of the optimization signal and diversity collapse under verifiable rewards [Li et al.,
+2025b], addressed via divergence choice [Li et al., 2025b], reward-confidence correction [Li et al.,
+2026c], preference optimization with priors [Lan et al., 2025b], and intrinsic self-reflection [Li et al.,
+2025c]. Our weight-frozen method avoids RL’s cost and instability while still exploiting execution
+feedback through the rewrite/selection loop.
+Agent memory, experiential learning, and overfitting. Closest to RSEA’s artifact are methods
+accumulating reusable NL experience: ExpeL [Zhao et al., 2024], Agent Workflow Memory [Wang
+et al., 2024b], Agentic Context Engineering [Zhang et al., 2025c], Dynamic Cheatsheet [Suzgun et al.,
+2025], and memory-augmented agents with explicit stores [Packer et al., 2023, Zeng et al., 2025b].
+Two failure modes from adjacent fields motivate our selection-first view: catastrophic forgetting /
+collapse, studied in continual learning [Chen and Zeng, 2025] and observed as logical-reasoning
+collapse [Zhang et al., 2026a]; and classical overfitting, controlled by difficulty-aware reweighting
+and adversarial robustness [Zhou et al., 2022, 2024b,a]. RSEA’s strict held-out gate is precisely a
+mechanism that prevents the evolved context from overfitting or collapsing, which we demonstrate
+empirically.
+3
+
+Table 1: Context-adaptation methods as (form, update operator, selection rule). The selection rule
+– whether a candidate is committed only after improving held-out performance – is what we argue
+governs reliability.
+Method Artifact form Update operator Selection rule
+Reflexion per-task reflection verbal self-feedback none (within-task retry)
+GEPA flat prompt reflective mutation Pareto on val minibatch
+AWM workflow list induction from successes none (induce & inject)
+ACE bullet playbook add-only deltas val keep-best (non-strict)
+Dynamic Cheatsheet single cheatsheet online rewrite none (no held-out gate)
+RSEA (ours) 3-layer state holistic rewrite of all layers strict held-out keep-better
+Benchmarks, multi-agent systems, and the broader landscape. We evaluate on a deliberately
+diverse slate – embodied text households [Shridhar et al., 2021], grounded web shopping [Yao
+et al., 2022], open-ended assistants [Mialon et al., 2023], tool-agent-user interaction [Yao et al.,
+2024], interactive coding [Trivedi et al., 2024], and multimodal deep research [Zeng et al., 2026] –
+a spread that surfaces the benchmark-dependence single-benchmark studies miss. Beyond single
+agents, multi-agent and social-simulation systems coordinate many LLM agents [Zhang et al., 2025d,
+2026b]. Finally, our techniques sit within a broad ecosystem of LLM and multimodal systems where
+self-improvement, evolution, and robust reasoning recur: medical and scientific vision-language
+models [Zhu et al., 2025a, Wu et al., 2025], multimodal misinformation detection [Li et al., 2026a,
+2025a], vision-language alignment and compositionality [Zhang et al., 2024a, 2025b], retrieval
+and query expansion [Zhang et al., 2024b, Xie et al., 2025, 2026a, Xie, 2026, Xie et al., 2026b],
+controllable generation and editing [Xu et al., 2024], automated optimization modeling [Liu et al.,
+2026], and efficient models via knowledge distillation and compression [Lan and Tian, 2025, Lan
+et al., 2026b,a].
+3 Background and Motivation
+Context adaptation. Given a frozen policy π
+θ 
+and a benchmark of tasks, context adaptation
+seeks an artifact c (a string injected into the prompt) that improves π
+θ 
+(· | c) without touching θ.
+Methods differ in (i) the form of c, (ii) the update operator that edits c from execution feedback,
+and (iii) the selection rule that decides which c to keep. Table 1 casts the methods we study in
+this (form, update, selection) view; the third column is where they differ most and, we argue, where
+reliability is won or lost.
+Limitations of existing methods. Reflexion [Shinn et al., 2023] adapts within a single task across
+retries but carries nothing across tasks. Prompt/context optimizers carry a cross-task artifact but
+optimize a single form: GEPA [Agrawal et al., 2025] a flat prompt via reflective Pareto evolution;
+AWM [Wang et al., 2024b] a list of induced workflows; ACE [Zhang et al., 2025c] an itemized bullet
+playbook with add-only deltas; Dynamic Cheatsheet [Suzgun et al., 2025] a single cheatsheet curated
+online. Two issues recur. Single-form artifacts conflate complementary kinds of knowledge – a
+high-level strategy, a reusable sub-routine, and a concrete procedure are not interchangeable, yet most
+methods fold them into one string. Unguarded commitment is the more damaging: methods that
+append or rewrite without a held-out check (notably online curation) commit context that can distract
+the base policy, and – because the same mechanism that helps when context is useful is unconstrained
+when it is not – they are high-variance across benchmarks (§7). RSEA targets both: a three-layer
+form, and a strict held-out gate.
+4 Method: RSEA
+Three-layer evolving state. The agent state is a triple s = (STRATEGY, SKILLS, PLAYBOOK):
+(1) STRATEGY, an imperative natural-language preamble (≤ a few sentences); (2) SKILLS, a short list
+of reusable sub-routines / conditional rules; and (3) PLAYBOOK, a list of procedures (ordered step
+sequences) distilled from successful trajectories. The three layers are deliberately complementary –
+a policy of what to prefer, a library of reusable moves, and procedures for recurring task families.
+At inference, s is rendered to a compact preamble and injected immediately ahead of the task in
+4
+
+Algorithm 1: RSEA evolution (strict held-out keep-better).
+Input: frozen LLM π; evolve set D
+e
+, val set D
+v 
+; generations G
+s ← ∅; s
+⋆ 
+← ∅; v
+⋆ 
+← EVAL(π, ∅, D
+v 
+) // empty state = vanilla ReAct
+for g = 1 . . . G do
+T ← ROLLOUT(π, s, D
+e
+) // trajectories + env-verified outcomes
+˜s ← SELFREWRITE(π, s, T ) // rewrite all 3 layers
+v ← EVAL(π, ˜s, D
+v 
+) // held-out score
+if v ≥ EVAL(π, s, D
+v 
+) then
+s ← ˜s // lateral accept
+end
+if v > v
+⋆ 
+then
+s
+⋆ 
+← ˜s; v
+⋆ 
+← v // strict best-update
+end
+end
+return s
+⋆ 
+// frozen; run on held-out test
+an otherwise canonical ReAct loop (Fig. 2); the only difference from vanilla ReAct is this injected,
+evolved state, which keeps the comparison clean.
+The self-rewrite operator. A development pool is split into a disjoint evolve set D
+e 
+and val set D
+v 
+.
+Generation g rolls the current state s
+g−1 
+out on D
+e
+, collecting (task, trajectory, env-verified outcome)
+tuples, then prompts the same frozen LLM to act as its own meta-optimizer: given the current three
+layers and a balanced sample of successful and failed trajectories, it returns a rewritten triple ˜s
+g 
+. The
+rewrite prompt asks the model to derive transferable rules from the trajectories – quoting action
+phrasings that succeeded, recording where objects/values were found, and adding rules that would
+have averted the observed failures – and to keep every skill and playbook entry a single, general,
+instance-agnostic string. Unlike add-only methods, the operator may rewrite or drop any layer, so the
+state does not monotonically grow (avoiding unbounded context); unlike a flat-prompt optimizer, it
+edits three structured layers at once.
+Strict held-out keep-better selection. The candidate ˜s
+g 
+is scored on the held-out D
+v 
+. We accept it
+as the new working state if it does not regress on D
+v 
+(allowing lateral exploration), but we update the
+frozen best state only on a strict improvement (Alg. 1, line 1). This asymmetry is the crux: lateral
+acceptance lets the search escape plateaus, while strict best-update guarantees the returned state is
+never worse than vanilla ReAct on held-out val – if no candidate strictly improves, RSEA returns the
+empty state and reduces exactly to ReAct. Only the frozen best state is later run on the test split. We
+use env-verified success as the selection signal where it is dense enough (ALFWorld, τ -bench) and
+the benchmark’s dense reward where success is sparse (WebShop).
+RSEA
+R
+: evolution × retry. The frozen evolved prior is orthogonal to per-task retry. RSEA
+R
+injects s
+⋆ 
+into a Reflexion-style multi-trial loop, combining a good starting policy with within-task
+self-correction; §8 shows the two contribute near-independent gains.
+5 Experimental Setup
+Backbone (fairness iron law). Every method – ours and all baselines – uses the same locally
+served model and decoding budget; the task LLM and the reflection/rewrite LLM are identical. We
+serve Qwen2.5-7B-Instruct for ALFWorld (to keep the base agent below ceiling) and Qwen3-30B-
+A3B-Instruct for the tool-use benchmarks (GAIA, τ -bench, WebShop), via vLLM across 4×A100,
+round-robined so every method shares identical compute.
+Benchmarks. (i) ALFWorld (text household tasks; env-verified success): a balanced 134-task
+test set, 5 seeds, disjoint 30-task dev pool. (ii) GAIA(v1) Level-1 text tasks with self-built
+search/fetch/python tools and the official deterministic scorer (30 tasks). (iii) τ -bench (retail):
+a tool-calling agent with an LLM user simulator and the official DB-hash reward (60 held-out eval).
+(iv) WebShop (1,000-product subset, Lucene retrieval): dense attribute/option/price reward (100
+held-out eval). For the tool-use benchmarks the official dev split is saturated for our backbone, so we
+carve disjoint evolve/val/eval slices from a seed-shuffled test pool (no leakage).
+5
+
+Figure 2: RSEA recursively rewrites a three-layer natural-language state of a frozen LLM agent. The
+state is injected as a preamble into a standard ReAct loop; across generations it is rewritten from
+evolve-set trajectories and frozen only on a strict held-out validation improvement, which makes the
+loop monotone-safe.
+Baselines. ReAct, Reflexion, GEPA, AWM, ACE, and Dynamic Cheatsheet, each a faithful re-
+implementation on our harness (we open the original repositories and port the core loops), injected
+at the same point as RSEA and held to the same per-method rollout budget. For ALFWorld we
+additionally report “+retry” (
+R
+) variants that add the same Reflexion-style multi-trial loop on top of
+each evolved prior, isolating evolution from retry. We report success rate (ALFWorld/GAIA/τ -bench)
+or mean dense score (WebShop), multi-seed mean±95% CI where applicable, and paired McNemar
+over matched (task[, seed]) cells.
+6 Results on ALFWorld: the evolved prior significantly helps
+Our evaluation shows that: (i) RSEA is the strongest single-pass context method on ALFWorld
+and significantly beats ReAct (§6); (ii) no NL artifact dominates the strong-backbone transfer
+benchmarks, where RSEA ties ReAct and never regresses (§7); (iii) held-out selection is decisive –
+unguarded methods are high-variance (§7) and removing the gate overfits (§8); and (iv) every layer
+of the evolved state helps (§8).
+Table 2 reports the full 10-method comparison. The single-pass evolved prior (RSEA, 69.3%)
+significantly improves over vanilla ReAct (64.6%, McNemar p=0.015) and over the recent single-
+pass baselines GEPA (63.9%, p=0.004) and AWM (65.4%, p=0.037), and ties the strongest single-
+pass baselines ACE (66.9%, p=0.20) and Dynamic Cheatsheet (70.7%, p=0.45). The story of the
+single-pass column is that on a 7B backbone most injected-context baselines barely move over ReAct
+– an evolved prompt frequently distracts the policy – whereas RSEA’s holistic three-layer rewrite
+plus strict val-selection is the method that most reliably nets positive. Adding retry, RSEA
+R 
+attains
+the best overall success (79.4%), significantly above ReAct (p<10
+−4
+), single-pass RSEA (p<10
+−4
+),
+and every no-evolution baseline, and trends above the strongest retry baselines Reflexion (76.4%,
+p=0.09), ACE
+R 
+(76.7%, p=0.13), and GEPA
+R 
+(75.8%, p=0.052).
+Where the gains come from. Table 3 breaks ALFWorld down by task family and connects the
+quantitative gains to the interpretable evolved state (App. A). RSEA’s improvements concentrate
+exactly where its learned content applies: examine tasks jump 6.7% → 26.7% (→ 44.4% with retry),
+because the evolved skill “use <desklamp> before examining objects” is the precise fix for the
+base agent’s dominant failure; pick_two and pick_and_place gain 7–9 points from the playbook’s
+take-before-place procedures. The single regression (clean, −6.5 points) is mild distraction, and is
+recovered by retry. This tight correspondence between the human-readable state and the per-family
+gains is a property the single-string baselines do not expose.
+6
+
+Table 2: ALFWorld (134 tasks × 5 seeds, Qwen2.5-7B). Success rate mean±95% CI; subscripts are
+McNemar-significant gains (green) over ReAct. “+retry” adds the same multi-trial loop to each prior.
+RSEA is the strongest single-pass context method; RSEA
+R 
+is best overall.
+Single-pass Succ. (%) + retry Succ. (%)
+ReAct 64.6 ± 4.3 Reflexion 76.4
+GEPA 63.9 ± 5.3 GEPA
+R 
+75.8 ± 5.4
+AWM 65.4 ± 3.3 ACE
+R 
+76.7 ± 4.9
+ACE 66.9 ± 2.5
+Dynamic Cheatsheet 70.7 ± 3.4
+RSEA (ours) 69.3 ± 9.3 +4.7 RSEA
+R 
+(ours) 79.4 ± 7.4 +14.8
+Table 3: ALFWorld success by task family (%, 5 seeds). RSEA’s gains concentrate in the families its
+evolved skills/playbook directly address (examine, pick_two, pick_and_place).
+Method examine pick_two pick_and_place heat cool clean
+ReAct 6.7 36.5 82.5 76.5 81.0 80.0
+RSEA 26.7 43.5 91.7 79.1 83.8 73.5
+RSEA
+R 
+44.4 67.1 99.2 87.0 88.6 79.4
+7 Transfer to GAIA, τ -bench, and WebShop
+Table 4 reports the cross-benchmark comparison; the tool-use benchmarks use the stronger 30B
+backbone. Three honest findings stand out. (1) No single method dominates. RSEA is the strongest
+single-pass method on ALFWorld but on the 30B tool-use benchmarks the concrete-workflow method
+AWM is marginally best (τ -bench 51.7%, WebShop 0.460): when the long domain wiki / detailed
+tool API already encodes most of what an evolved strategy would add, a library of concrete procedures
+has more to offer than an abstract policy. (2) RSEA never regresses. Where injected NL context
+does not help, RSEA’s strict gate falls back toward vanilla ReAct – e.g. on WebShop every evolved
+candidate hurt held-out val, so the frozen state is empty and RSEA ≈ ReAct (0.437 vs. 0.429);
+RSEA is statistically tied with ReAct on τ -bench, WebShop, and GAIA (McNemar p>0.1). GAIA
+in particular is within run-to-run web noise: two independent evaluations of the same frozen states
+disagree on the sign of the ≤ 1-task gap. (3) Selection matters: unguarded methods are high-
+variance. Dynamic Cheatsheet, which curates context online with no held-out gate, is near-best on
+ALFWorld (70.7%) yet collapses on WebShop (score 0.136 vs. ReAct 0.429) and is worst on τ -bench
+(36.7%) – the same unguarded mechanism is high-reward when context helps and catastrophic when
+it does not. The held-out val metric improves over generations where there is signal (Fig. 3; τ -bench
+val 0.20→0.36) and the strict gate rejects all regressive candidates where there is not (WebShop).
+8 Ablations
+We ablate the two design choices that distinguish RSEA from a generic prompt optimizer: the
+three-layer state and the strict held-out selection. Both ablations use the ALFWorld test set (where
+RSEA helps), the identical ReAct loop, and temp-0.6 multi-seed decoding; only the injected preamble
+(resp. the selection rule) changes.
+Each layer helps; the layers overlap (Table 5). We take the frozen ALFWorld state and inject
+individual and combined subsets of its layers. Every subset improves over ReAct (64.2%): each layer
+on its own lifts success to 67–70%, with the skills and playbook layers (the concrete sub-routines
+and procedures) carrying most of the benefit (69.8% each). Combining layers does not strictly
+improve further at this scale (full state 68.5%, within the multi-seed band), so the three layers encode
+overlapping procedural knowledge rather than three orthogonal signals: the gain comes from injecting
+the distilled procedures in any of these forms (consistent with the per-family analysis, Table 3). The
+three-layer structure is best read as an interpretable organization of that knowledge – and the substrate
+the selection gate operates on – not as a claim that all three are individually necessary.
+7
+
+Table 4: Cross-benchmark comparison (single-pass). ALFWorld: success % (134×5 seeds, 7B).
+GAIA: accuracy % (30, 30B). τ -bench retail: success % (60 eval, 30B). WebShop: mean dense score
+(100 eval, 30B). Bold=column best. ⋆: RSEA p=0.015 vs. ReAct (ALFWorld). DC has no held-out
+gate and is high-variance (best on ALFWorld, worst on WebShop/τ -bench); RSEA is significantly
+best on ALFWorld and never regresses elsewhere.
+Method ALFWorld ↑ GAIA ↑ τ -bench ↑ WebShop ↑
+succ.% acc.% succ.% score
+ReAct 64.6 16.7 41.7 0.429
+GEPA 63.9 – 41.7 0.415
+AWM 65.4 – 51.7 0.460
+ACE 66.9 – 40.0 0.453
+Dynamic Cheatsheet 70.7 – 36.7 0.136
+RSEA (ours) 69.3
+⋆ 
+13.3 40.0 0.437
+Figure 3: RSEA self-evolution: held-out validation over generations (strict keep-better). The best-kept
+state improves where there is signal (τ -bench 0.20→0.36) and the strict gate rejects every regressive
+candidate where there is not (WebShop), so the frozen state never underperforms ReAct.
+Held-out selection prevents overfitting (Table 6). We re-run the evolution with no held-out split
+(selecting on the evolve set itself) and freeze the result. The no-gate state overfits sharply: it reaches a
+perfect 100% in-sample selection score but only 66.7% on test – a 33-point train–test gap – versus
+held-out RSEA’s 67.3% (63.6% for ReAct). On ALFWorld even the overfit state edges out ReAct,
+but the danger of unguarded commitment is starkest on the transfer benchmarks (§7): there, the
+method with no held-out gate (Dynamic Cheatsheet) regresses catastrophically (WebShop 0.14 vs.
+0.43), while RSEA’s strict gate keeps performance at the ReAct level. The gate – not the rewrite
+operator – is what bounds the downside and makes recursive self-evolution safe to deploy.
+Robustness. The strict best-update is what bounds the downside: with a non-strict (≥) best-update,
+a candidate that merely ties on a small or unrepresentative val draw can be frozen and then hurt
+on test; the strict variant returns the simpler (often empty) state in that case, which is exactly the
+fall-back-to-ReAct behavior we observe on WebShop and τ -bench.
+9 Compute and Cost
+Because every method shares one backbone and an iso-rollout budget, cost differences come from the
+number of meta-LLM calls (rewrites/reflections) and the injected context length. RSEA’s evolution
+is a fixed G generations of (evolve rollout + one rewrite + val rollout); the rewrite is a single call
+per generation, so the meta-overhead is O(G) calls – e.g. the τ -bench evolution used 190 meta +
+selection calls in total. At inference RSEA adds only the rendered preamble (≤ a few hundred tokens,
+bounded by construction since the rewrite may drop layers), versus online methods whose context
+grows unboundedly with the test stream. Crucially, the strict gate means this overhead is only ever
+8
+
+Table 5: Layer ablation (ALFWorld test, 54×3
+seeds). Every subset beats ReAct; layers overlap.
+Injected state Succ. (%)
+empty (= ReAct) 64.2
+strategy only 67.3
+skills only 69.8
+playbook only 69.8
+strategy + skills 67.9
+full RSEA 68.5
+Table 6: Selection ablation (ALFWorld). No
+gate ⇒ 100% in-sample but a 33-pt drop to
+test (overfitting).
+Variant in-samp. test
+ReAct (empty) – 63.6
+RSEA, no held-out gate 100.0 66.7
+RSEA, strict gate – 67.3
+spent to match or beat ReAct, never to underperform it – the favorable risk profile that the other
+methods lack.
+10 Discussion and Limitations
+When does cross-task NL evolution help? The scope condition is clear: an evolved NL state
+helps most when the bottleneck is procedural strategy (text-action ReAct agents such as ALFWorld),
+where the state encodes exactly the procedures a weak base policy lacks; it helps least when a strong
+backbone already follows a detailed tool API (τ -bench) or when the bottleneck is retrieval/grounding
+(WebShop, GAIA). This predicts which of many proposed methods will transfer to a new agent
+setting.
+Why our framing is selection-first. The same data that makes the benchmark-dependence visible
+also shows that the dangerous failures (DC’s WebShop collapse) come from committing context
+without a held-out check. RSEA’s contribution is to make that check strict and central, which is what
+converts a high-variance idea into a safe one.
+Limitations. The transfer benchmarks use a single seed of the shuffled split and modest eval sizes;
+GAIA uses live web retrieval, which adds run-to-run noise (the ≤ 1-task gap flips sign across runs).
+Our scope is the weight-frozen, NL-state regime; we do not compare to code- or weight-updating
+self-improvement. The strict gate guarantees safety on held-out val, not on every test draw when val
+is small.
+11 Conclusion
+Apples-to-apples against six classic and recent context-evolution methods on one shared backbone,
+no NL artifact universally wins, and unguarded evolution is unsafe. RSEA’s contribution is a strict
+held-out selection gate over a complementary three-layer state: it yields significant gains where
+strategy is the bottleneck (ALFWorld), is best overall with retry, and – unlike the baselines – never
+significantly regresses anywhere. We release the harness, baseline re-implementations, and manifests
+to support faithful comparison.
+References
+Lakshya A. Agrawal et al. GEPA: Reflective prompt evolution can outperform reinforcement learning.
+arXiv preprint arXiv:2507.19457, 2025.
+Hanyu Cai, Binqi Shen, Lier Jin, Lan Hu, and Xiaojing Fan. Does tone change the answer? evaluating
+prompt politeness effects on modern llms: Gpt, gemini, llama. arXiv preprint arXiv:2512.12812,
+2025.
+Xi Chen and Min Zeng. Prototype conditioned generative replay for continual learning in NLP. In
+Proceedings of the 2025 Conference of the Nations of the Americas Chapter of the Association for
+Computational Linguistics: Human Language Technologies (NAACL-HLT), pages 12754–12770,
+2025.
+9
+
+Zhen Fang, Zhuoyang Liu, Jiaming Liu, Hao Chen, Yu Zeng, Shiting Huang, Zehui Chen, Lin Chen,
+Shanghang Zhang, and Feng Zhao. DualVLA: Building a generalizable embodied agent via partial
+decoupling of reasoning and action. arXiv preprint arXiv:2511.22134, 2025.
+Chrisantha Fernando, Dylan Banarse, Henryk Michalewski, Simon Osindero, and Tim Rock-
+täschel. Promptbreeder: Self-referential self-improvement via prompt evolution. arXiv preprint
+arXiv:2309.16797, 2023.
+Ruiyan Han, Zhen Fang, XinYu Sun, Yuchen Ma, Ziheng Wang, Yu Zeng, Zehui Chen, Lin Chen,
+Wenxuan Huang, Wei-Jie Xu, et al. UniCorn: Towards self-improving unified multimodal models
+through self-generated supervision. arXiv preprint arXiv:2601.03193, 2026.
+Shengran Hu, Cong Lu, and Jeff Clune. Automated design of agentic systems. arXiv preprint
+arXiv:2408.08435, 2024.
+Shiting Huang, Zhen Fang, Zehui Chen, Siyu Yuan, Junjie Ye, Yu Zeng, Lin Chen, Qi Mao, and Feng
+Zhao. CRITICTOOL: Evaluating self-critique capabilities of large language models in tool-calling
+error scenarios. arXiv preprint arXiv:2506.13977, 2025.
+Wenlong Huang, Pieter Abbeel, Deepak Pathak, and Igor Mordatch. Language models as zero-shot
+planners: Extracting actionable knowledge for embodied agents. In International Conference on
+Machine Learning (ICML), 2022.
+Omar Khattab, Arnav Singhvi, Paridhi Maheshwari, Zhiyuan Zhang, et al. DSPy: Compiling
+declarative language model calls into self-improving pipelines. In International Conference on
+Learning Representations (ICLR), 2024.
+Guangchen Lan, Huseyin A Inan, Sahar Abdelnabi, Janardhan Kulkarni, Lukas Wutschitz, Reza
+Shokri, Christopher G Brinton, and Robert Sim. Contextual integrity in LLMs via reasoning and
+reinforcement learning. In Advances in Neural Information Processing Systems (NeurIPS), 2025a.
+Guangchen Lan, Sipeng Zhang, Tianle Wang, Yuwei Zhang, Daoan Zhang, Xinpeng Wei, Xiaoman
+Pan, Hongming Zhang, Dong-Jun Han, and Christopher G Brinton. MaPPO: Maximum a posteriori
+preference optimization with prior knowledge. arXiv preprint arXiv:2507.21183, 2025b.
+Qizhen Lan and Qing Tian. ACAM-KD: Adaptive and cooperative attention masking for knowledge
+distillation. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV),
+pages 3957–3966, 2025.
+Qizhen Lan, Jung Im Choi, and Qing Tian. Visual detector compression via location-aware discrimi-
+nant analysis. In Proceedings of the IEEE/CVF Winter Conference on Applications of Computer
+Vision (WACV), pages 3546–3555, 2026a.
+Qizhen Lan, Yu-Chun Hsu, Nida Saddaf Khan, and Xiaoqian Jiang. ReCo-KD: Region- and
+context-aware knowledge distillation for efficient 3d medical image segmentation. arXiv preprint
+arXiv:2601.08301, 2026b.
+Fanxiao Li, Jiaying Wu, Canyuan He, and Wei Zhou. CMIE: Combining mllm insights with external
+evidence for explainable out-of-context misinformation detection. In Findings of the Association
+for Computational Linguistics: ACL 2025, pages 9342–9354, 2025a.
+Fanxiao Li, Jiaying Wu, Tingchao Fu, Dayang Li, Herun Wan, Wei Zhou, and Min-Yen Kan. What’s
+left unsaid? detecting and correcting misleading omissions in multimodal news previews. arXiv
+preprint arXiv:2601.05563, 2026a.
+Long Li, Zhijian Zhou, Jiaran Hao, Jason Klein Liu, Yanting Miao, Wei Pang, Xiaoyu Tan, Wei Chu,
+Zhe Wang, Shirui Pan, et al. The choice of divergence: A neglected key to mitigating diversity
+collapse in reinforcement learning with verifiable reward. arXiv preprint arXiv:2509.07430, 2025b.
+Long Li, Zhijian Zhou, Jiangxuan Long, Peiyang Liu, Weidi Xu, Zhe Wang, Shirui Pan, and Chao Qu.
+SQL-ASTRA: Alleviating sparse feedback in agentic sql via column-set matching and trajectory
+aggregation, 2026b. URL https://arxiv.org/abs/2603.16161.
+10
+
+Yu Li, Tian Lan, and Zhengling Qi. INSPO: Unlocking intrinsic self-reflection for llm preference
+optimization. arXiv preprint arXiv:2512.23126, 2025c.
+Yu Li, Tian Lan, and Zhengling Qi. When right meets wrong: Bilateral context conditioning with
+reward-confidence correction for grpo. arXiv preprint arXiv:2603.13134, 2026c.
+Yu Li, Rui Miao, Zhengling Qi, and Tian Lan. ARISE: Agent reasoning with intrinsic skill evolution
+in hierarchical reinforcement learning. arXiv preprint arXiv:2603.16060, 2026d.
+Shuquan Lian, Yuhang Wu, Jia Ma, Yifan Ding, Zihan Song, Bingqi Chen, Xiawu Zheng, and Hui Li.
+UI-AGILE: Advancing gui agents with effective reinforcement learning and precise inference-time
+grounding. arXiv preprint arXiv:2507.22025, 2025.
+Weiting Liu, Han Wu, Yufei Kuang, Xiongwei Han, Tao Zhong, Jianfeng Feng, and Wenlian Lu.
+Automated optimization modeling via a localizable error-driven perspective. arXiv preprint
+arXiv:2602.11164, 2026.
+Jiaxuan Lu, Ziyu Kong, Yemin Wang, Rong Fu, Haiyuan Wan, Cheng Yang, Wenjie Lou, Haoran
+Sun, Lilong Wang, Yankai Jiang, et al. Beyond static tools: Test-time tool evolution for scientific
+reasoning. arXiv preprint arXiv:2601.07641, 2026.
+Aman Madaan, Niket Tandon, Prakhar Gupta, Skyler Hallinan, Luyu Gao, et al. Self-refine: Iterative
+refinement with self-feedback. In Advances in Neural Information Processing Systems (NeurIPS),
+2023.
+Grégoire Mialon, Clémentine Fourrier, Craig Swift, Thomas Wolf, Yann LeCun, and Thomas Scialom.
+GAIA: A benchmark for general ai assistants. arXiv preprint arXiv:2311.12983, 2023.
+Krista Opsahl-Ong, Michael J. Ryan, Josh Purtell, David Broman, Christopher Potts, Matei Zaharia,
+and Omar Khattab. Optimizing instructions and demonstrations for multi-stage language model
+programs. In Conference on Empirical Methods in Natural Language Processing (EMNLP), 2024.
+Charles Packer, Sarah Wooders, Kevin Lin, Vivian Fang, Shishir G. Patil, Ion Stoica, and Joseph E.
+Gonzalez. MemGPT: Towards llms as operating systems. arXiv preprint arXiv:2310.08560, 2023.
+Joon Sung Park, Joseph C. O’Brien, Carrie J. Cai, Meredith Ringel Morris, Percy Liang, and
+Michael S. Bernstein. Generative agents: Interactive simulacra of human behavior. In ACM
+Symposium on User Interface Software and Technology (UIST), 2023.
+Changle Qu, Sunhao Dai, Xiaochi Wei, Hengyi Cai, Shuaiqiang Wang, Dawei Yin, Jun Xu, and
+Ji-Rong Wen. Tool learning with large language models: A survey. Frontiers of Computer Science,
+19(8):198343, 2025a.
+Changle Qu, Sunhao Dai, Xiaochi Wei, Hengyi Cai, Shuaiqiang Wang, Dawei Yin, Jun Xu, and Ji-
+Rong Wen. From exploration to mastery: Enabling llms to master tools via self-driven interactions.
+In The Thirteenth International Conference on Learning Representations (ICLR), 2025b. URL
+https://openreview.net/forum?id=QKBu1BOAwd.
+Changle Qu, Sunhao Dai, Hengyi Cai, Jun Xu, Shuaiqiang Wang, and Dawei Yin. MatchTIR:
+Fine-grained supervision for tool-integrated reasoning via bipartite matching. In Proceedings of
+the 64th Annual Meeting of the Association for Computational Linguistics (ACL), 2026.
+Timo Schick, Jane Dwivedi-Yu, Roberto Dessì, Roberta Raileanu, Maria Lomeli, Luke Zettlemoyer,
+Nicola Cancedda, and Thomas Scialom. Toolformer: Language models can teach themselves to
+use tools. In Advances in Neural Information Processing Systems (NeurIPS), 2023.
+Noah Shinn, Federico Cassano, Edward Berman, Ashwin Gopinath, Karthik Narasimhan, and Shunyu
+Yao. Reflexion: Language agents with verbal reinforcement learning. In Advances in Neural
+Information Processing Systems (NeurIPS), 2023.
+Mohit Shridhar, Xingdi Yuan, Marc-Alexandre Côté, Yonatan Bisk, Adam Trischler, and Matthew
+Hausknecht. ALFWorld: Aligning text and embodied environments for interactive learning. In
+International Conference on Learning Representations (ICLR), 2021.
+11
+
+Haoming Song, Delin Qu, Yuanqi Yao, Qizhi Chen, Qi Lv, Yiwen Tang, Modi Shi, Guanghui Ren,
+Maoqing Yao, Bin Zhao, et al. Hume: Introducing system-2 thinking in visual-language-action
+model. arXiv preprint arXiv:2505.21432, 2025.
+Yiyun Su. Agentic-SQL taxonomy: A survey of autonomous and interactive text-to-SQL with llms,
+2026.
+Theodore R. Sumers, Shunyu Yao, Karthik Narasimhan, and Thomas L. Griffiths. Cognitive architec-
+tures for language agents. Transactions on Machine Learning Research (TMLR), 2024.
+Mirac Suzgun, Mert Yuksekgonul, Federico Bianchi, Dan Jurafsky, and James Zou. Dynamic
+cheatsheet: Test-time learning with adaptive memory. arXiv preprint arXiv:2504.07952, 2025.
+Harsh Trivedi, Tushar Khot, Mareike Hartmann, Ruskin Manku, Vinty Dong, Edward Li, Shashank
+Gupta, Ashish Sabharwal, and Niranjan Balasubramanian. AppWorld: A controllable world of
+apps and people for benchmarking interactive coding agents. In Annual Meeting of the Association
+for Computational Linguistics (ACL), 2024.
+Guanzhi Wang, Yuqi Xie, Yunfan Jiang, Ajay Mandlekar, Chaowei Xiao, Yuke Zhu, Linxi Fan, and
+Anima Anandkumar. Voyager: An open-ended embodied agent with large language models. arXiv
+preprint arXiv:2305.16291, 2023.
+Lei Wang, Chen Ma, Xueyang Feng, et al. A survey on large language model based autonomous
+agents. Frontiers of Computer Science, 2024a.
+Zora Zhiruo Wang, Jiayuan Mao, Daniel Fried, and Graham Neubig. Agent workflow memory. arXiv
+preprint arXiv:2409.07429, 2024b.
+Hao Wu, Hui Li, and Yiyun Su. Bridging the perception-cognition gap: Re-engineering SAM2 with
+hilbert-mamba for robust vlm-based medical diagnosis. In 2025 IEEE International Conference
+on Bioinformatics and Biomedicine (BIBM), pages 4275–4278, 2025. doi: 10.1109/BIBM66473.
+2025.11357220.
+Zequn Xie. CONQUER: Context-aware representation with query enhancement for text-based person
+search. arXiv preprint arXiv:2601.18625, 2026.
+Zequn Xie, Chuxin Wang, Yeqiang Wang, Sihang Cai, Shulei Wang, and Tao Jin. Chat-driven
+text generation and interaction for person retrieval. In Proceedings of the 2025 Conference on
+Empirical Methods in Natural Language Processing (EMNLP), pages 5259–5270, 2025.
+Zequn Xie, Xin Liu, Boyun Zhang, Yuxiao Lin, Sihang Cai, and Tao Jin. HVD: Human vision-driven
+video representation learning for text-video retrieval. arXiv preprint arXiv:2601.16155, 2026a.
+Zequn Xie, Boyun Zhang, Yuxiao Lin, and Tao Jin. Delving deeper: Hierarchical visual perception
+for robust video-text retrieval. arXiv preprint arXiv:2601.12768, 2026b.
+Yu Xu, Fan Tang, Juan Cao, Xiaoyu Kong, Yuxin Zhang, Jintao Li, Oliver Deussen, and Tong-Yee
+Lee. Headrouter: A training-free image editing framework for mm-dits by adaptively routing
+attention heads. ACM Transactions on Graphics, 2024.
+Chengrun Yang, Xuezhi Wang, Yifeng Lu, Hanxiao Liu, Quoc V. Le, Denny Zhou, and Xinyun Chen.
+Large language models as optimizers. In International Conference on Learning Representations
+(ICLR), 2024.
+Shuo Yang, Caren Han, Shuhe Wang, Yan Li, Yihao Ding, and Eduard Hovy. Toward understanding
+misalignment in LLM agents: A survey of taxonomy, causes, mitigation, and evaluation, 2026a.
+URL https://openreview.net/forum?id=zzTEGP2BYa. ACL ARR 2026.
+Shuo Yang, Soyeon Caren Han, Yihao Ding, Shuhe Wang, and Eduard Hovy. ToolTree: Efficient llm
+agent tool planning via dual-feedback monte carlo tree search and bidirectional pruning, 2026b.
+ICLR 2026.
+Shuo Yang, Soyeon Caren Han, Xueqi Ma, Yan Li, Mohammad Reza Ghasemi Madani, and Eduard
+Hovy. EvoTool: Self-evolving tool-use policy optimization in LLM agents via blame-aware
+mutation and diversity-aware selection, 2026c. ACL 2026.
+12
+
+Shunyu Yao, Howard Chen, John Yang, and Karthik Narasimhan. WebShop: Towards scalable
+real-world web interaction with grounded language agents. In Advances in Neural Information
+Processing Systems (NeurIPS), 2022.
+Shunyu Yao, Dian Yu, Jeffrey Zhao, Izhak Shafran, Thomas L. Griffiths, Yuan Cao, and Karthik
+Narasimhan. Tree of thoughts: Deliberate problem solving with large language models. In
+Advances in Neural Information Processing Systems (NeurIPS), 2023a.
+Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik Narasimhan, and Yuan Cao.
+ReAct: Synergizing reasoning and acting in language models. In International Conference on
+Learning Representations (ICLR), 2023b.
+Shunyu Yao, Noah Shinn, Pedram Razavi, and Karthik Narasimhan. τ -bench: A benchmark for
+tool-agent-user interaction in real-world domains. arXiv preprint arXiv:2406.12045, 2024.
+Eric Zelikman, Yuhuai Wu, Jesse Mu, and Noah D. Goodman. STaR: Bootstrapping reasoning with
+reasoning. In Advances in Neural Information Processing Systems (NeurIPS), 2022.
+Shuang Zeng, Xinyuan Chang, Mengwei Xie, Xinran Liu, Yifan Bai, Zheng Pan, Mu Xu, and Xing
+Wei. FutureSightDrive: Thinking visually with spatio-temporal cot for autonomous driving. arXiv
+preprint arXiv:2505.17685, 2025a.
+Shuang Zeng, Dekang Qi, Xinyuan Chang, Feng Xiong, Shichao Xie, Xiaolong Wu, Shiyi Liang,
+Mu Xu, and Xing Wei. JanusVLN: Decoupling semantics and spatiality with dual implicit memory
+for vision-language navigation. arXiv preprint arXiv:2509.22548, 2025b.
+Yu Zeng, Wenxuan Huang, Zhen Fang, Shuang Chen, Yufan Shen, Yishuo Cai, Xiaoman Wang,
+Zhenfei Yin, Lin Chen, Zehui Chen, et al. Vision-deepresearch benchmark: Rethinking visual and
+textual search for multimodal large language models. arXiv preprint arXiv:2602.02185, 2026.
+Le Zhang, Rabiul Awal, and Aishwarya Agrawal. Contrasting intra-modal and ranking cross-modal
+hard negatives to enhance visio-linguistic compositional understanding. In Proceedings of the
+IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), pages 13774–13784,
+2024a.
+Le Zhang, Yihong Wu, Qian Yang, and Jian-Yun Nie. Exploring the best practices of query expansion
+with large language models. In Findings of the Association for Computational Linguistics: EMNLP
+2024, pages 1872–1883, 2024b.
+Le Zhang, Bo Wang, Xipeng Qiu, Siva Reddy, and Aishwarya Agrawal. Rearank: Reasoning re-
+ranking agent via reinforcement learning. In Proceedings of the 2025 Conference on Empirical
+Methods in Natural Language Processing (EMNLP), pages 2458–2471, 2025a.
+Le Zhang, Qian Yang, and Aishwarya Agrawal. Assessing and learning alignment of unimodal
+vision and language models. In Proceedings of the IEEE/CVF Conference on Computer Vision
+and Pattern Recognition (CVPR), pages 14604–14614, 2025b.
+Qizheng Zhang, Changran Hu, et al. Agentic context engineering: Evolving contexts for self-
+improving language models. arXiv preprint arXiv:2510.04618, 2025c.
+Xinglang Zhang, Yunyao Zhang, ZeLiang Chen, Junqing Yu, Wei Yang, and Zikai Song. Log-
+ical phase transitions: Understanding collapse in llm logical reasoning. arXiv preprint
+arXiv:2601.02902, 2026a.
+Yunyao Zhang, Zikai Song, Hang Zhou, Wenfeng Ren, Yi-Ping Phoebe Chen, Junqing Yu, and Wei
+Yang. GA-S3: Comprehensive social network simulation with group agents. In Findings of the
+Association for Computational Linguistics: ACL 2025, pages 8950–8970, 2025d.
+Yunyao Zhang, Xinglang Zhang, Junxi Sheng, Wenbing Li, Junqing Yu, Yi-Ping Phoebe Chen, Wei
+Yang, and Zikai Song. From ambiguity to verdict: A semiotic-grounded multi-perspective agent
+for llm logical reasoning. arXiv preprint arXiv:2509.24765, 2025e.
+Yunyao Zhang, Yihao Ai, Zuocheng Ying, Qirui Mi, Junqing Yu, Wei Yang, and Zikai Song.
+Coupling macro dynamics and micro states for long-horizon social simulation, 2026b. URL
+https://arxiv.org/abs/2604.05516.
+13
+
+Zijing Zhang, Zhanpeng Chen, He Zhu, Ziyang Chen, Nan Du, and Xiaolong Li. ToolExpNet: Opti-
+mizing multi-tool selection in LLMs with similarity and dependency-aware experience networks.
+In Findings of the Association for Computational Linguistics: ACL 2025, pages 15706–15722,
+2025f.
+Zijing Zhang, Ziyang Chen, Mingxiao Li, Zhaopeng Tu, and Xiaolong Li. RLVMR: Rein-
+forcement learning with verifiable meta-reasoning rewards for robust long-horizon agents. In
+The Fourteenth International Conference on Learning Representations (ICLR), 2026c. URL
+https://openreview.net/forum?id=cTbAevdwBE.
+Andrew Zhao, Daniel Huang, Quentin Xu, Matthieu Lin, Yong-Jin Liu, and Gao Huang. ExpeL: Llm
+agents are experiential learners. In AAAI Conference on Artificial Intelligence, 2024.
+Xiaoling Zhou, Ou Wu, Weiyao Zhu, and Ziyang Liang. Understanding difficulty-based sample
+weighting with a universal difficulty measure. In Joint European Conference on Machine Learning
+and Knowledge Discovery in Databases (ECML-PKDD), pages 68–84. Springer, 2022.
+Xiaoling Zhou, Ou Wu, and Nan Yang. Adversarial training with anti-adversaries. IEEE Transactions
+on Pattern Analysis and Machine Intelligence (TPAMI), 46(12):10210–10227, 2024a.
+Xiaoling Zhou, Wei Ye, Zhemg Lee, Rui Xie, and Shikun Zhang. Boosting model resilience via
+implicit adversarial data augmentation. arXiv preprint arXiv:2404.16307, 2024b.
+Yongchao Zhou, Andrei Ioan Muresanu, Ziwen Han, Keiran Paster, Silviu Pitis, Harris Chan, and
+Jimmy Ba. Large language models are human-level prompt engineers. In International Conference
+on Learning Representations (ICLR), 2023.
+Chunzheng Zhu, Yangfang Lin, Shen Chen, Yijun Wang, and Jianxin Lin. MedEyes: Learning
+dynamic visual focus for medical progressive diagnosis. arXiv preprint arXiv:2511.22018, 2025a.
+Chunzheng Zhu, Yangfang Lin, Jialin Shao, Jianxin Lin, and Yijun Wang. Pathology-aware prototype
+evolution via LLM-driven semantic disambiguation for multicenter diabetic retinopathy diagnosis.
+In Proceedings of the 33rd ACM International Conference on Multimedia, pages 9196–9205,
+2025b.
+A Evolved states (qualitative)
+The evolved three-layer states are interpretable, which lets us read why the method helps on ALFWorld
+and is neutral on the strong tool-use backbone.
+ALFWorld (frozen best state). Strategy: “Avoid repeating identical actions that return ‘Nothing
+happens.’; always take objects before placing; use desklamps for examining objects.” Skills: “if
+not (take <obj> from <recep>), go to another location and try again”; “use <desklamp> before
+examining objects”; “never repeat an identical action that returns ‘Nothing happens.’ ”. Playbook:
+“pick_and_place: go to <recep> with <obj> → take <obj> → go to <recep> → put <obj>”;
+analogous cool / heat sequences. These are precisely the failure modes of the 7B ReAct agent, and
+injecting them yields the significant ALFWorld gain.
+τ -bench retail (frozen best state). Strategy: “Always authenticate user identity using email first; if
+not found, fall back to name + zip. Confirm all modifications/cancellations/exchanges with the user
+before any tool call. Never invent order/item IDs – retrieve and verify them. Only exchange delivered
+orders; for pending orders use modify_pending_order_items. . . ” This is a faithful summary of
+the retail policy; the 30B agent already follows most of it from the wiki, so the held-out gain is neutral
+– consistent with our scope condition.
+B Reproducibility
+All methods share one locally served backbone and decoding budget; task and reflection LLMs
+are identical. We release the harness, the faithful re-implementations of all six baselines, the pre-
+registered task manifests, the evolve/val/eval splits, and per-task result JSONs. ALFWorld numbers
+14
+
+are 5 seeds with paired McNemar over matched (task, seed) cells; transfer benchmarks use a seed-
+shuffled disjoint split with paired McNemar over tasks; ablations use the ALFWorld test set with
+temp-0.6 multi-seed decoding.
+15
