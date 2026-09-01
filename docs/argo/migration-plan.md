@@ -6,6 +6,16 @@
 
 A big-bang rename would destroy the ability to attribute behavior and merge upstream fixes. Product naming follows behavior, not the other way around.
 
+## Construction pause and resume gate
+
+M1–M8 are design plans, not active implementation. Current authorized work is thesis research and test-instance validation only. Native construction resumes when all of the following are evidenced and the user explicitly approves:
+
+1. a prospective test instance demonstrates material performance and credible high-score potential;
+2. autonomous question/hypothesis/protocol/design/evidence/decision flow is stable under repeated runs;
+3. context resume, duplicate avoidance, protocol comparability, scoped closure, and dual-refine boundaries pass their validation suite;
+4. the main harness bottlenecks and proposed native fixes have immutable evidence;
+5. the user issues a new construction-start instruction.
+
 ## M0 — lineage and evidence foundation (current)
 
 - Preserve GitHub fork ancestry and sync the base to upstream v0.9.1.

@@ -6,6 +6,8 @@ This fork is the construction base for ARGO. ARGO is produced by progressively m
 
 Before ARGO work, read `docs/argo/agent-brief.md` and `docs/argo/migration-state.json`.
 
+ARGO construction is currently paused. Only thesis research and test-instance validation are authorized. Do not implement native ARGO runtime changes until the validation/resume gates pass and the user explicitly restarts construction.
+
 - Preserve the native daemon, persistent IPython REPL, RLM, session recovery, Continual Harness, and TUI architecture unless a measured migration requirement justifies a change.
 - Add research intelligence, context/evidence graphs, protocol comparability, OpenResearch lifecycle integration, dual refine, and paper lineage as native modules with focused tests.
 - Python validation oracles are specifications and regression fixtures, not the product runtime.

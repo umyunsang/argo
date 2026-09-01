@@ -26,7 +26,11 @@ ARGO is the descendant built by migrating the Prime Agent fork. The migration it
 
 ## Current authority
 
-`main` is the synced Prime Agent v0.9.1 base. ARGO work starts on `argo/migration-foundation`. The local LG Aimers instance is stopped. DeepVoice is in contract bootstrap; no model run is admitted until its data, split, metric, license, aggregation, deployment, fixed-command, locality, and preregistration gates pass.
+`main` is the synced Prime Agent v0.9.1 base. The `argo/migration-foundation` branch stores planning and research contracts only. **Native ARGO construction is paused.** Current authorized work is thesis research and prospective DeepVoice test-instance validation. The local LG Aimers instance is stopped.
+
+Construction resumes only after test-instance evidence shows real performance/high-score potential, the autonomous-research architecture is stable across repeated validation, major harness bottlenecks have evidence-backed fixes, and the user explicitly authorizes resumption.
+
+DeepVoice is in contract bootstrap; no model run is admitted until its data, split, metric, license, aggregation, deployment, fixed-command, locality, and preregistration gates pass.
 
 ## Working rule
 
