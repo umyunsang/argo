@@ -1,5 +1,18 @@
 # Development Rules
 
+## ARGO Product Identity
+
+This fork is the construction base for ARGO. ARGO is produced by progressively migrating Prime Agent; it is not a wrapper or a separate pre-existing core that Prime Agent is adapted to fit.
+
+Before ARGO work, read `docs/argo/agent-brief.md` and `docs/argo/migration-state.json`.
+
+- Preserve the native daemon, persistent IPython REPL, RLM, session recovery, Continual Harness, and TUI architecture unless a measured migration requirement justifies a change.
+- Add research intelligence, context/evidence graphs, protocol comparability, OpenResearch lifecycle integration, dual refine, and paper lineage as native modules with focused tests.
+- Python validation oracles are specifications and regression fixtures, not the product runtime.
+- Keep LG Aimers stopped and read-only. DeepVoice is the active second test instance, but instance data and models are never part of the public engine repository.
+- Do not cite discovery snippets as verified paper claims. Read the selected paper before binding a claim to it.
+- Keep upstream mergeability visible: record the upstream base SHA and isolate ARGO changes in reviewable migration slices.
+
 ## Conversational Style
 
 - No fluff or cheerful filler text
