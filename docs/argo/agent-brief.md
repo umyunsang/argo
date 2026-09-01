@@ -31,3 +31,7 @@ ARGO is the descendant built by migrating the Prime Agent fork. The migration it
 ## Working rule
 
 Build downward in small slices. Every slice names its source requirement, affected native owner, compatibility class, tests, migration evidence, and rollback. A Python oracle passing is necessary evidence for a port, not proof that the TypeScript runtime is correct.
+
+## Thesis attribution
+
+The paper studies ARGO as a coherent harness design, but every component is tagged `INHERITED`, `RE_DERIVED`, `MODIFIED`, `ORIGINAL_ARGO`, or `EXTERNAL_ORACLE`. Read `thesis-contribution-ledger.md`. Never relabel inherited Prime Agent work as an original ARGO invention.
