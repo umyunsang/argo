@@ -30,7 +30,7 @@ ARGO is the descendant built by migrating the Prime Agent fork. The migration it
 
 ## Working rule
 
-Build downward in small slices. Every slice names its source requirement, affected native owner, compatibility class, tests, migration evidence, and rollback. A Python oracle passing is necessary evidence for a port, not proof that the TypeScript runtime is correct.
+Every autonomous scientific choice follows `research-decision-contract.md`. Build downward in small slices. Every slice names its source requirement, affected native owner, compatibility class, tests, migration evidence, and rollback. A Python oracle passing is necessary evidence for a port, not proof that the TypeScript runtime is correct.
 
 ## Thesis attribution
 
