@@ -1,11 +1,11 @@
 # ARGO research foundations
 
-This is the curated starting set for the ARGO implementation and graduation thesis. Discovery results are candidates. Method or result claims below are included only after the selected source was read, unless marked abstract-only.
+This is the curated starting set for the ARGO implementation and graduation thesis. Discovery results are candidates. Method or result claims below are included only after the selected source was read, unless marked `ABSTRACT_VERIFIED`.
 
 ## Harness substrate
 
 - [Prime Agent: A Self-Improving RLM Harness](https://www.alphaxiv.org/abs/2608.23552) defines the inherited four-level information hierarchy, persistent IPython computation, recursive sessions, daemon continuity, Continual Harness, and long-horizon evaluation substrate. ARGO treats this as its software and research ancestry, not as an external plugin.
-- [Recursive Language Models](https://www.alphaxiv.org/abs/2512.24601) treats long prompts as an external environment that a model examines and decomposes programmatically with recursive calls. This entry is currently **abstract-verified only**; detailed method claims need a focused full read before the thesis uses them.
+- [Recursive Language Models](https://www.alphaxiv.org/abs/2512.24601) treats long prompts as an external environment that a model examines and decomposes programmatically with recursive calls. This entry is currently **`ABSTRACT_VERIFIED` only**; detailed method claims need a focused full read before the thesis uses them.
 - [Continual Harness](https://www.alphaxiv.org/abs/2605.09998) performs reset-free online edits to prompts, subagents, skills, and memory from trajectory windows. Its in-episode adaptation motivates ARGO's engine-refine lineage, while the reported risk of preserving harmful shortcuts motivates independent held-out gates and rollback.
 
 ## Research design and evidence state
@@ -22,4 +22,4 @@ This is the curated starting set for the ARGO implementation and graduation thes
 
 ## Paper evidence rule
 
-Every thesis claim records one of: `paper_full_read`, `paper_abstract_only`, `official_source`, `immutable_run`, `verified_local_artifact`, or `human_authority`. Abstract-only and discovery-only records may motivate a question but cannot support detailed methodological or empirical claims.
+Every source record uses the canonical ordered enum in `paper-pipeline-contract.md`. `DISCOVERY_ONLY` and `ABSTRACT_VERIFIED` may motivate a question but cannot support detailed method or result claims.

@@ -35,3 +35,7 @@ Every autonomous scientific choice follows `research-decision-contract.md`. Buil
 ## Thesis attribution
 
 The paper studies ARGO as a coherent harness design, but every component is tagged `INHERITED`, `RE_DERIVED`, `MODIFIED`, `ORIGINAL_ARGO`, or `EXTERNAL_ORACLE`. Read `thesis-contribution-ledger.md`. Never relabel inherited Prime Agent work as an original ARGO invention.
+
+## Paper pipeline
+
+Paper generation is downstream of validated DecisionRecords and evidence. Read `paper-pipeline-contract.md`; session prose and harness memories are not scientific evidence.
