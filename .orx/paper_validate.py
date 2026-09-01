@@ -2,6 +2,7 @@
 """Closed-world static and deterministic-build validator for the ARGO thesis."""
 
 import collections
+import csv
 import hashlib
 import json
 import os
@@ -155,6 +156,38 @@ def main():
     if not all(x["verified"] for x in evidence_receipts.values()):
         errors.append("evidence receipt or locator identity mismatch")
 
+    structured_evidence = {}
+    expectations = cfg.get("structured_expectations", {})
+    if expectations:
+        locator_obj = json.loads((ROOT / "paper/sources/claim-locators.json").read_text(encoding="utf-8"))
+        locators = locator_obj.get("locators", [])
+        reviewed_count = sum(x.get("status") == "REVIEWED_SUPPORTS_SCOPED_MANUSCRIPT_CLAIM" for x in locators)
+        structured_evidence["locator_count"] = len(locators)
+        structured_evidence["reviewed_locator_count"] = reviewed_count
+        if len(locators) != expectations["reviewed_locator_count"] or reviewed_count != expectations["reviewed_locator_count"]:
+            errors.append("claim-locator semantic review count mismatch")
+
+        metadata_obj = json.loads((ROOT / "paper/sources/arxiv-metadata-receipt.json").read_text(encoding="utf-8"))
+        metadata_count = len(metadata_obj.get("records", []))
+        structured_evidence["bibliography_metadata_record_count"] = metadata_count
+        if metadata_count != expectations["bibliography_metadata_record_count"]:
+            errors.append("bibliography metadata record count mismatch")
+
+        with (ROOT / "paper/evidence-matrix.csv").open(newline="", encoding="utf-8") as f:
+            matrix_rows = list(csv.DictReader(f))
+        structured_evidence["evidence_matrix_csv_rows"] = len(matrix_rows)
+        if len(matrix_rows) != expectations["evidence_matrix_csv_rows"]:
+            errors.append("evidence matrix row count mismatch")
+        actual_tags = {row.get("component"): row.get("contribution_tag") for row in matrix_rows if row.get("component")}
+        tag_failures = {
+            component: {"expected": tag, "actual": actual_tags.get(component)}
+            for component, tag in expectations["required_component_tags"].items()
+            if actual_tags.get(component) != tag
+        }
+        structured_evidence["component_tag_failures"] = tag_failures
+        if tag_failures:
+            errors.append("contribution ledger classification mismatch")
+
     forbidden = []
     for pattern in cfg["forbidden_regexes"]:
         hits = line_hits(clean, pattern)
@@ -259,7 +292,7 @@ def main():
     result = {
         "schema_version": "argo-thesis-paper-validation-result/v1",
         "status": "PASS" if not errors else "FAIL",
-        "variant": "Revision 4 prospective manuscript baseline",
+        "variant": cfg.get("variant", "unspecified paper variant"),
         "paper": {
             "path": cfg["paper_path"],
             "bytes": len(raw),
@@ -271,6 +304,7 @@ def main():
         "result_claim_scan": {"violations": claim_hits},
         "required_text_missing": missing_required,
         "evidence_receipts": evidence_receipts,
+        "structured_evidence": structured_evidence,
         "evidence_scope_note": cfg.get("evidence_scope_note"),
         "latex_static": {
             "brace_depth": brace_depth,
