@@ -1786,8 +1786,13 @@ def main():
                 dangling_references.append({"in": rel, "reference": "(file missing)"})
                 continue
             text = source.read_text(encoding="utf-8", errors="replace")
+            skip_prefix = scan_cfg.get("external_artifact_prefix")
             for match in pattern.finditer(text):
                 ref = match.group(1)
+                # Paths under the external prefix are classified below, not here, or a
+                # re-fetchable archive would be reported twice and as the wrong kind.
+                if skip_prefix and ref.startswith(skip_prefix):
+                    continue
                 if not (ROOT / ref).exists():
                     dangling_references.append({"in": rel, "reference": ref})
             # Upstream source archives are large and re-fetchable, so they are recorded
@@ -1805,7 +1810,8 @@ def main():
                 def walk(node):
                     if isinstance(node, dict):
                         refs = [v for v in node.values()
-                                if isinstance(v, str) and v.startswith(external_prefix)]
+                                if isinstance(v, str) and v.startswith(external_prefix)
+                                and v != external_prefix and not v.endswith("/")]
                         for ref in refs:
                             if (ROOT / ref).exists():
                                 continue

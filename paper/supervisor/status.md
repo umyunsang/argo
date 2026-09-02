@@ -17,6 +17,7 @@
 - **Resolution, not concealment:** upstream archives are external re-fetchable artifacts. The quoted evidence is committed as extracted text for **all 114** archives (419 tex files, 91 full-text and 114 report captures tracked). Every archive record must carry a fetch address and a digest.
 - **Verified by re-fetch:** three archives and one PDF were re-fetched and reproduced their recorded digests **exactly**, including the originally missing PDF at 5,885,207 bytes.
 - **My first gate verified nothing.** It scanned a character window around each reference, so a record could satisfy it by borrowing a neighbour's address and digest. The failing-first test stripped one record and **did not fire**. The check now walks the parsed structure so both must sit in the same record, and the same test then fired.
+- **The clean clone caught two more gate defects.** The first version passed locally and failed in a clean checkout: the protocol's own prefix value matched as a reference, and an absent archive PDF was reported as both dangling and external. Both fixed, then re-tested by deleting the local PDF to reproduce the clean-checkout condition.
 - **Limit stated:** a re-fetch depends on the upstream service still serving that version. The digest proves identity when a fetch succeeds; it cannot substitute for bytes if it does not.
 
 ### Cycle 29 — the analysis became code, and a dangling path surfaced
