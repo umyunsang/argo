@@ -10,6 +10,10 @@
 
 ## Completed in current phase
 
+### Second near miss — a receipt made stale by editing after validating
+
+The clean-clone run failed while the working tree passed. Cause: the cost ledger was written **after** the validator had already run, so its committed receipt was stale by one edit. The working tree agreed with itself and proved nothing. The commit path now refreshes receipts, re-runs the validator, and refuses to commit on a failing gate, so "edit after validating" can no longer reach a commit.
+
 ### Cycle 18 — cost stopped being a proxy, and the measurement overturned the plan
 
 - **Gap picked:** the pilot recorded token accounting as `UNMEASURED` and kept wall-clock duration as a proxy, which cannot support any budget-matched claim.
