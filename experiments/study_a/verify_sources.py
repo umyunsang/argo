@@ -86,7 +86,12 @@ def verify_archive(record: dict, fetch=True) -> dict:
         try:
             archive = tarfile.open(local, "r:*")
         except tarfile.ReadError:
-            result["status"] = "NOT_AN_ARCHIVE"
+            # Some records are versioned PDFs with no members. The archive digest has
+            # already been verified above, so the accurate report is that identity is
+            # established and there is nothing further to compare, not that the fetch
+            # produced something unexpected.
+            result["status"] = ("DIGEST_VERIFIED_NO_MEMBERS"
+                                if local.read_bytes()[:5] == b"%PDF-" else "NOT_AN_ARCHIVE")
             return result
         by_name = {m.name: m for m in archive.getmembers() if m.isfile()}
         for member, repo_path in zip(members, repo_paths):

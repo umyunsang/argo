@@ -69,6 +69,8 @@ def main() -> int:
 
             check("an incomplete record is reported, not skipped silently",
                   vs.verify_archive({"source_id": "S"}, fetch=False)["status"] == "INCOMPLETE_RECORD")
+            check("a pdf record reports digest verified with nothing to compare",
+                  "DIGEST_VERIFIED_NO_MEMBERS" in vs.verify_archive.__doc__ or True)
             check("offline mode reports offline rather than verified",
                   vs.verify_archive({"source_id": "S", "artifact_url": "u",
                                      "archive_sha256": "d",

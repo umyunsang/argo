@@ -1,0 +1,1467 @@
+
+Warning: orx 0.1.117 is outdated (latest 0.1.118). A newer release is available; upgrade to stay compatible with the API. Run `orx update` to upgrade.
+
+alphaXiv: https://www.alphaxiv.org/abs/2605.27710
+
+DEEPSCIVERIFY: Verifying Scientific Claim–Citation Alignment via
+LLM-Driven Evidence Escalation
+Shaghayegh Sadeghi* 
+1 
+Khashayar Khajavi* 
+1 2 
+Rise Adhikari 
+1 
+Alexander Tessier 
+1
+Abstract
+Misalignment between claims and their cited ev-
+idence is a common failure mode in reports gen-
+erated by large language models, limiting their
+reliability in scientific and other high-stakes set-
+tings. We present DEEPSCIVERIFY, a two-stage
+pipeline for scientific claim–citation verification
+that combines abstract-level reasoning with se-
+lective escalation to passage-level evidence. The
+system first verifies claims using the abstract and
+defers uncertain cases, retrieving and analyzing
+full-text passages only when necessary. This de-
+sign leverages complementary behaviors across
+LLMs, as some models are more conservative
+while others are more decisive under uncertainty.
+On the SCITANCE benchmark, DEEPSCIVERIFY
+achieves 86.7 Micro-F1, outperforming strong
+abstract-only baselines by +4.5 points while re-
+solving 67% of instances without full-text re-
+trieval. These results suggest that selective ev-
+idence escalation improves both accuracy and ef-
+ficiency in claim–citation verification.
+1. Introduction
+Scientific claim verification (Wadden et al., 2022; Fang et al.,
+2025; Alvarez et al., 2024; Wang et al., 2025) is the task
+of determining whether a scientific claim is supported, con-
+tradicted, or not sufficiently resolved by evidence from the
+research literature. In generated scientific reports, scientific
+claim verification can be framed as claim–citation align-
+ment: given a claim and its associated citation, the goal is to
+verify whether the cited work actually provides evidence for
+the claim. This distinction is important because a citation
+may be bibliographically valid while still being semanti-
+cally misaligned with the statement it is used to support.
+As the volume of scientific publications continues to grow,
+and as AI-generated text becomes increasingly common in
+* Equal contribution. 
+1
+FirstPrinciples 
+2
+School of Computing
+Science, Simon Fraser University. Correspondence to: FirstPrinci-
+ples <research@firstprinciples.org>.
+research workflows (Liang et al., 2024a;b; Khalifa & Al-
+badawy, 2024; Kobak et al., 2025), automatic verification of
+claim–citation alignment has become an important require-
+ment for maintaining the reliability and trustworthiness of
+scientific writing.
+Existing work in scientific claim verification has largely
+been developed around benchmark settings where claims
+are verified against abstracts from a fixed scientific corpus.
+Systems such as SciFact (Wadden et al., 2022) and SCIVER
+(Wang et al., 2025) provide a controlled setting for evaluat-
+ing evidence retrieval and veracity prediction, but they sim-
+plify several challenges that arise in practical claim–citation
+verification. In particular, abstracts provide only a com-
+pressed summary of a paper and often omit methodological
+details, experimental conditions, quantitative results, ab-
+lation findings, or limitations that are necessary to assess
+whether a cited work truly supports a claim. As a result, an
+abstract may be insufficient even when the cited paper itself
+contains relevant evidence.
+To address this limitation, in this work, we propose DEEP-
+SCIVERIFY, a two-stage claim–citation verification pipeline
+(Figure 1). Given a claim and its associated citation, the sys-
+tem first parses the citation into structured retrieval signals,
+retrieves the cited paper’s abstract through a multi-source
+retrieval cascade, and performs abstract-level verification
+with an LLM. If the abstract provides sufficient evidence
+to support or contradict the claim, the system returns the
+verdict through an early-exit mechanism. Otherwise, when
+the abstract evidence is insufficient, DEEPSCIVERIFY es-
+calates to full-text verification: it retrieves the complete
+paper when available, extracts relevant passages using RAG-
+based passage retrieval, and produces a final verdict from
+passage-level evidence.
+We evaluate DEEPSCIVERIFY on SCITANCE(Alvarez et al.,
+2024), a scientific claim verification dataset derived from
+citation sentences and evidence abstracts. In the three-class
+setting, DEEPSCIVERIFY achieves 86.7 Micro-F1 and 81.5
+Macro-F1, outperforming the strongest abstract-only base-
+line by 4.5 Micro-F1 and improving over the best prior
+result on SCITANCE by 6.6 Micro-F1 (Section 6.3). Beyond
+overall performance, we analyze how different LLMs be-
+have under evidence uncertainty. Our calibration analysis
+1
+arXiv:2605.27710v1 [cs.AI] 26 May 2026
+
+DEEPSCIVERIFY
+Claim + citation
+LLM Citation Parser
+Normalizes any citation
+into structured identifiers
+P H A S E 1 — A B S T R A C T - L E V E L
+Abstract retrieval cascade
+Multi-source
+citation retrieval
+Abstract comparison
+LLM verifier: SUPPORTS | CONTRADICTS | NEI
+Definitive
+verdict?
+Yes
+Early exit when
+abstract is sufficient
+Return verdict
+SUPPORTS | CONTRADICTS
+No (NEI — escalate)
+P H A S E 2 — P A S S A G E - L E V E L
+Full-text retrieval cascade
+Escalates only
+on NEI verdicts
+RAG passage extraction
+chunk → embed → retrieve top-k
+semantic search over full document
+Passage retrieval
+over full text
+Passage comparison
+LLM verifier classifies retrieved passages against the claim
+Final verdict
+SUPPORTS | CONTRADICTS | NEI
+ID-based → DOI-based → title-based → fallback
+arXiv · Semantic Scholar · CrossRef · OpenAlex · PubMed · web search 
+URL → arXiv → open-access sources → fallback
+Figure 1: Overview of the proposed two-stage claim verification pipeline. The system first performs abstract-level
+verification with an early-exit mechanism and escalates to passage-level retrieval and verification only when abstract
+evidence is insufficient.
+reveals distinct model-level biases: GPT-5.4 is overly cau-
+tious and frequently defaults to NEI, while Claude Sonnet
+4.6 is more overconfident and tends to commit to SUPPORTS
+or CONTRADICTS even when the available evidence is in-
+complete (Section 6.2). Finally, our escalation analysis
+shows that DEEPSCIVERIFY resolves 67.0% of instances
+at the abstract level and escalates only the remaining 33.0%
+to full-text verification, yielding a net gain on it’s correct
+predictions(Section D).
+Our work makes the following contributions:
+• We propose DEEPSCIVERIFY, a two-stage claim–citation
+verification pipeline that combines abstract-level early
+exit with selective escalation to passage-level evidence.
+• We develop multi-source retrieval cascades for citation
+parsing, abstract retrieval, and full-text retrieval, enabling
+verification under incomplete or noisy citation metadata.
+• We analyze model-level calibration in abstract-only ver-
+ification and show that different LLMs exhibit distinct
+biases under evidence uncertainty, motivating our use of
+complementary models across pipeline stages.
+• 
+We show that selective evidence escalation improves over
+strong abstract-only baselines on SCITANCE, and provide
+ablations demonstrating the importance of RAG-based
+passage extraction 
+1
+.
+2. Related Work
+Scientific claim verification is a subarea of fact veri-
+fication focused on determining whether scientific evi-
+dence supports, contradicts, or is insufficient to verify a
+claim. FEVER (Thorne et al., 2018) established the gen-
+1
+Code and data are available upon request.
+eral evidence-based verification formulation, while SciFact
+(Wadden et al., 2020; 2022) adapted it to the scientific do-
+main by pairing expert-written claims with evidence ab-
+stracts. Recent benchmarks further extend this setting: SC-
+ITANCE (Alvarez et al., 2024) uses citation sentences as
+claims, and SCIVER (Wang et al., 2025) evaluates verifica-
+tion in multimodal scientific contexts.
+Our work is also related to retrieval-augmented generation
+and dense retrieval. RAG (Lewis et al., 2020), dense passage
+retrieval (Karpukhin et al., 2020), and sentence embedding
+methods (Reimers & Gurevych, 2019) show that retrieval
+can improve reasoning on knowledge-intensive tasks and
+enable scalable search over long documents. These meth-
+ods are especially relevant for scientific verification, where
+necessary evidence may appear outside the abstract.
+Despite these advances, most scientific claim verification
+systems remain centered on abstract-level evidence. In prac-
+tical claim–citation verification, the cited paper may need
+to be resolved from multiple sources, and the relevant evi-
+dence may appear only in the full text. DEEPSCIVERIFY
+addresses this gap by combining abstract-level verification
+with selective escalation to passage-level evidence.
+3. Problem Definition
+Let c denote a scientific claim and r a cited refer-
+ence. The goal is to determine a veracity label y ∈
+{SUPPORTS, CONTRADICTS, NEI} 
+for the pair (c, r)
+based on evidence from the cited work. Here, NEI denotes
+not enough information, following the label schema used in
+prior work (Wadden et al., 2020; Thorne et al., 2018). This
+formulation captures the task of claim–citation alignment,
+where the objective is to verify whether the cited reference
+provides sufficient evidence to support or contradict the
+claim, or whether the available evidence is inconclusive.
+2
+
+DEEPSCIVERIFY
+4. Methodology
+We present DEEPSCIVERIFY, a two-stage pipeline for
+claim–citation verification (Figure 1). The system first at-
+tempts to verify claims using abstract-level evidence and es-
+calates to passage-level analysis only when necessary. Each
+stage consists of a retrieval step followed by an evidence
+comparison step.
+The pipeline operates as a staged decision process. In the
+first stage, an abstract-level verifier f
+a 
+produces a prediction
+ˆy
+a 
+based on abstract evidence e
+a
+. If ˆy
+a
+̸
+ 
+= NEI, the system
+returns this prediction. Otherwise, the system retrieves
+passage-level evidence e
+p 
+= {p
+1
+, . . . , p
+k
+} from the full text
+and applies a second verifier f
+p 
+to produce the final label:
+ˆy =
+(
+f
+a
+(c, e
+a
+), if f
+a
+(c, e
+a
+)̸ = NEI,
+f
+p
+(c, e
+p
+), otherwise. 
+(1)
+4.1. Phase 1: Abstract-Level Verification
+Phase 1 verifies the claim using only the abstract of the
+cited paper, resolving a substantial proportion of instances
+without full-text access (Wadden et al., 2020; Wadden & Lo,
+2021).
+4.1.1. ABSTRACT RETRIEVAL
+The abstract retrieval stage operates as a cascade guided by
+signals extracted from the citation, as shown in Figure 2(a).
+Given a claim–citation pair (c, r), the goal is to retrieve an
+abstract e
+a 
+corresponding to the cited reference r.
+Citation Parsing. The process begins with an LLM-based
+citation parser, which converts the raw citation string into
+structured fields, including arXiv ID, DOI, URL, and title.
+These fields serve as retrieval signals that determine which
+branches of the cascade can be activated. By standardizing
+heterogeneous citation formats into a consistent representa-
+tion, the parser enables reliable downstream retrieval.
+Identifier-based Retrieval. When an arXiv identifier is
+available, the system performs direct lookup using the arXiv
+API, followed by resolution through Semantic Scholar (Kin-
+ney et al., 2023). This stage provides the most precise
+retrieval signal, as identifiers uniquely specify a document.
+DOI-based Retrieval. If a DOI is present, the sys-
+tem queries multiple scholarly APIs, including Semantic
+Scholar (Kinney et al., 2023) and OpenAlex (Priem et al.,
+2022). DOI-based lookup offers high coverage and reliabil-
+ity across publishers and disciplines.
+Title-based Retrieval. In the absence of reliable identi-
+fiers, the system falls back to title-based search across mul-
+Input citation r
+LLM Citation Parser
+Extracts: arXiv ID DOI URL title
+Identifier-based Retrieval
+• arXiv API
+• Semantic Scholar (by arXiv ID)
+Abstract Retrieval (R
+a
+)
+DOI-based Retrieval
+• Semantic Scholar (by DOI)
+• OpenAlex (by DOI)
+Title-based Retrieval
+• Semantic Scholar
+• CrossRef
+• OpenAlex
+• PubMed
+Fallback Retrieval
+• Direct URL retrieval
+• LLM web search
+Accept if:
+• abstract is non-empty
+• sufficient title similarity
+(τ = 0.30)
+Direct Retrieval
+• URL (HTML / PDF)
+Full-text Retrieval (R
+p
+)
+arXiv Retrieval
+• HTML
+• PDF
+Open-access Retrieval
+• Semantic Scholar OA PDF
+• PubMed Central XML
+Fallback Retrieval
+• LLM web search
+Accept if:
+• valid content is retrieved
+• passes quality checks
+(a)
+(b)
+Figure 2: Overview of the two-stage retrieval architecture in.
+An input citation r is first processed by an LLM-based parser
+to extract structured signals (e.g., arXiv ID, DOI, URL, and
+title), which guide both retrieval cascades. (a) Abstract-
+level retrieval (R
+a
+) operates as a hierarchical cascade from
+identifier-based lookup to fallback strategies. (b) Full-text
+retrieval (R
+p
+) retrieves and processes complete documents
+when abstract-level evidence is insufficient. Each cascade
+halts at the first stage that satisfies its acceptance criterion,
+and the retrieved evidence is forwarded to the corresponding
+verification module.
+tiple sources, including Semantic Scholar, CrossRef (Hen-
+dricks et al., 2020), OpenAlex, and PubMed (Sayers et al.,
+2022). This stage trades precision for recall, allowing recov-
+ery of references with incomplete or noisy metadata.
+Fallback Retrieval. If all structured retrieval attempts fail,
+the system applies fallback strategies, including direct URL-
+based retrieval and LLM-assisted web search. This stage is
+designed to maximize coverage in cases where bibliographic
+metadata is missing or corrupted. Prompts for LLM-assisted
+abstract search are provided in Appendix A.3.
+Acceptance Criterion. At each stage, retrieved candi-
+dates are validated using a lightweight acceptance gate.
+An abstract is accepted if it is non-empty and sufficiently
+matches the citation, measured via title similarity. The
+cascade terminates at the first stage that produces a valid
+result, ensuring both efficiency and robustness. Additional
+implementation details, including acceptance criteria, are
+provided in Appendix B.
+3
+
+DEEPSCIVERIFY
+4.1.2. ABSTRACT COMPARISON AND EARLY EXIT
+Once the abstract e
+a 
+is retrieved, the system performs claim–
+evidence classification using a large language model. The
+model receives the claim c and the abstract e
+a 
+as input and
+predicts a label:
+ˆy
+a 
+= f
+a
+(c, e
+a
+), ˆy
+a 
+∈ {SUPPORTS, CONTRADICTS, NEI}.
+(2)
+The model is prompted to assess whether the abstract pro-
+vides sufficient evidence to support or contradict the claim,
+or whether the available evidence is inconclusive. Full
+prompts are provided in Appendix A.
+The predicted label ˆy
+a 
+also serves as a decision signal for
+the pipeline. If ˆy
+a 
+∈ {SUPPORTS, CONTRADICTS}, the
+system returns this prediction directly, avoiding unnecessary
+full-text retrieval. Otherwise, if ˆy
+a 
+= NEI, the pipeline
+escalates to the full-text retrieval stage. This design allocates
+computational resources according to instance difficulty
+(Wadden et al., 2022).
+4.2. Phase 2: Passage-Level Verification
+Phase 2 is triggered when ˆy
+a 
+= NEI. In this case, abstract-
+level evidence is insufficient, and the system performs
+deeper verification using full-text content.
+4.2.1. FULL-TEXT RETRIEVAL
+The full-text retrieval stage follows a structured cascade
+similar to the abstract retrieval process, as illustrated in
+Figure 2(b). Given a cited reference r, the goal is to retrieve
+the full document from which fine-grained evidence can be
+extracted.
+Direct Retrieval. The system first attempts to retrieve
+content directly from the URL associated with the citation,
+when available. This includes both HTML pages and PDF
+documents, which are parsed into raw text.
+arXiv Retrieval. If an arXiv identifier is available, the
+system retrieves the document from arXiv. When possible,
+the HTML version is preferred due to its cleaner structure,
+with PDF used as a fallback.
+Open-access Retrieval. Next, the system queries open-
+access repositories, including Semantic Scholar (Kinney
+et al., 2023) and PubMed Central (PMC) (Sayers et al.,
+2022), to obtain full-text documents in PDF or structured
+XML formats.
+Fallback Retrieval. If all previous stages fail, the system
+performs LLM-assisted web search using the cited paper
+title. The search prompt asks the model to return a freely
+accessible direct full-text URL in PDF, XML, or HTML
+format, prioritizing open repositories such as PMC, arXiv,
+preprint servers, and institutional repositories. To reduce
+hallucinated retrievals, the model is instructed to return
+found: false rather than guess or invent a URL when
+no direct full-text link is found. Prompts for LLM-assisted
+full-text search are provided in Appendix A.4.
+Acceptance Criterion. Retrieved documents are validated
+using a lightweight acceptance criterion. A document is
+accepted if it contains sufficient textual content and passes
+basic quality checks (e.g., excluding corrections or errata).
+As in Phase 1, the cascade terminates at the first stage that
+produces a valid result. Additional implementation details,
+including filtering criteria, are provided in Appendix B.
+4.2.2. PASSAGE EXTRACTION
+Once the full text is retrieved, the system extracts a set
+of relevant passages e
+p 
+= {p
+1
+, p
+2
+, . . . , p
+k
+} that are most
+likely to contain evidence for the claim c. Our approach
+follows the retrieval-augmented generation (RAG) paradigm
+(Lewis et al., 2020). The full text is segmented into chunks,
+each of which is mapped to a dense vector representation
+using a sentence embedding model (Reimers & Gurevych,
+2019). The claim is embedded in the same space, and the
+top-k most relevant passages are selected based on cosine
+similarity:
+e
+p 
+= top-k
+ 
+v
+c 
+· v
+p
+i
+∥v
+c
+∥ ∥v
+p
+i 
+∥
+
+, (3)
+where v
+c 
+denotes the embedding of the claim and v
+p
+i 
+de-
+notes the embedding of the i-th passage. This approach
+scales efficiently to long documents and enables focused
+retrieval of evidence without requiring the entire document
+to be processed by the LLM.
+Furthermore, we also consider an LLM-based extraction
+strategy in which the full text and claim are provided di-
+rectly to a model, which selects relevant passages based
+on semantic reasoning. This approach is evaluated as an
+ablation (Section 6.4) to compare against the RAG-based
+method.
+4.2.3. PASSAGE COMPARISON
+The extracted passages e
+p 
+are then compared against the
+claim c using an LLM-based classifier:
+ˆy
+p 
+= f
+p
+(c, e
+p
+), ˆy
+p 
+∈ {SUPPORTS, CONTRADICTS, NEI}.
+(4)
+The classifier evaluates the passages collectively and deter-
+mines whether they provide sufficient evidence to support or
+contradict the claim. If the evidence remains inconclusive,
+the system outputs NEI.
+4
+
+DEEPSCIVERIFY
+4.3. Final Verdict
+The overall verdict ˆy follows Equation 1: the system returns
+the Phase 1 prediction if definitive, or the Phase 2 prediction
+otherwise. When evidence remains inconclusive after both
+phases, the system outputs NEI, prioritizing precision over
+unsupported conclusions.
+5. Experiments
+5.1. Dataset
+We evaluate on SCITANCE (Alvarez et al., 2024), a scientific
+claim verification dataset derived from SCIFACT (Wadden
+et al., 2020). Unlike SCIFACT, which uses expert-written
+claims, SCITANCE uses citation sentences (citances) as
+claims, making it closely aligned with claim–citation verifi-
+cation. Each citance is paired with an evidence abstract and
+labeled as SUPPORTS, CONTRADICTS, or NEI. Contra-
+diction examples were generated by negating citances with
+GPT-3.5 (Alvarez et al., 2024). The dataset contains 656 in-
+stances in total: 251 SUPPORTS, 225 CONTRADICTS, and
+180 NEI, split into 467 train, 98 dev, and 91 test instances.
+Following our experimental design, we use the combined
+train and development splits to analyze model behavior and
+calibration, and reserve the test split exclusively for final
+evaluation and comparison against baselines.
+5.2. Experimental Setting
+We evaluate both two-class and three-class settings. In
+the two-class setting, the model predicts only SUPPORTS
+or CONTRADICTS, whereas in the three-class setting it
+additionally predicts NEI. We report Micro-F1 and Macro-
+F1 in both settings, and in the three-class setting, we also
+report the binary support versus not-support metric used in
+prior work. We compare DEEPSCIVERIFY against several
+strong LLM baselines, including GPT-4, GPT-5.4, Gemini
+2.5 Flash, and Claude Sonnet 4.6. In this work, All LLM-
+driven components are accessed via hosted provider APIs.
+All baseline models are evaluated in a zero-shot setting, with
+temperature set to 0.
+For DEEPSCIVERIFY, we use the two-stage pipeline de-
+scribed in Section 4, consisting of abstract-level verification
+followed by optional full-text retrieval and passage-level
+verification when the abstract is insufficient. The specific
+design choices of the pipeline, including the selection of
+LLMs and retrieval configurations, are informed by the
+model behavior and calibration analysis presented in Sec-
+tion 6.2. Final performance is reported on the held-out
+test set (Section 6.3), and ablation studies examining key
+components of the system are provided in Section 6.4.
+Table 1: Coverage of abstract and full-text retrieval over 412
+unique papers in SCITANCE.
+Retrieval Type Count Percentage
+Abstract retrieved 391 94.9%
+Full text retrieved 333 80.8%
+Abstract only 74 18.0%
+No retrieval 5 1.2%
+Implementation details. For passage-level retrieval, the
+full text is segmented into chunks of 5,000 tokens. We
+retrieve the top-2 passages based on cosine similarity
+with a threshold of 0.5. The embedding model used
+is text-embedding-3-small (OpenAI, 2024). The
+choice of models and retrieval parameters is guided by the
+analysis in Section 6.2. All prompts are provided in Ap-
+pendix A, and full model and experiment configuration
+details are reported in Appendix C.
+6. Results
+6.1. Retrieval Coverage Analysis
+To evaluate the effectiveness of our retrieval modules (Sec-
+tions 4.1.1 and 4.2.1), we analyze their coverage over all
+unique cited papers in SCITANCE. We extract 412 unique
+references across the train, development, and test splits, and
+attempt to retrieve both abstracts and full text for each paper.
+Table 1 summarizes the results. Abstract retrieval achieves
+high coverage, successfully retrieving abstracts for 391 pa-
+pers (94.9%). Full-text retrieval is more challenging but still
+recovers complete documents for 333 papers (80.8%). In
+74 cases (18.0%), the abstract is available but full text is
+not retrieved, while only 5 papers (1.2%) have no retrieved
+evidence.
+These results highlight two important aspects of the task.
+First, while abstracts are widely available, full-text access
+is not guaranteed, reinforcing the need for a system that
+can operate effectively under partial evidence. Second, the
+retrieval pipeline provides full-text access for the major-
+ity of cited papers, enabling passage-level verification in
+many cases where abstract evidence may be insufficient.
+Additional source-level, split-level, and latency analyses are
+provided in Appendix E.
+6.2. Calibration Analysis
+We first analyze how different LLMs behave in the abstract-
+level verification setting on the combined train+dev split
+(n = 565). In these experiments, each model is given the
+claim together with the corresponding evidence abstract and
+asked to predict one of SUPPORTS, CONTRADICTS, or
+NEI. Our goal is to determine whether the models exhibit
+5
+
+DEEPSCIVERIFY
+similar behavior or whether they have distinct implicit biases
+under the same evidence conditions. Figure 3 provides
+a detailed view of error distributions across labels, while
+Figure 4 summarizes per-class recall in a compact form.
+Together, these visualizations show that the models differ
+substantially not only in overall performance, but also in
+how they allocate predictions across the three labels.
+Surprisingly, GPT-4 emerges as the most well-calibrated
+abstract-level verifier, exhibiting consistently strong and bal-
+anced recall across all three classes (81% SUPPORTS, 86%
+CONTRADICTS, 74% NEI; Figure 3). Table 2 summarizes
+these patterns qualitatively and connects each model’s error
+profile to its role in our pipeline design. This balanced be-
+havior is also reflected in Figure 4, where GPT-4 exhibits the
+most uniform recall profile across all three classes. In con-
+trast, GPT-5.4 which is a newer model, exhibits a markedly
+conservative bias: while it achieves the highest NEI recall
+(81%), it does so at the expense of SUPPORTS recall (62%),
+misclassifying 33% of true SUPPORTS instances as NEI.
+This asymmetry suggests that GPT-5.4 systematically defers
+judgment when abstract evidence is even mildly incomplete.
+While detrimental in a single-stage setting, this behavior is
+desirable in a staged pipeline, where NEI serves as a trigger
+for escalation rather than a terminal prediction.
+Claude Sonnet 4.6 displays the opposite calibration profile.
+It is highly decisive, achieving strong recall on SUPPORTS
+(81%) and the highest recall on CONTRADICTS (90%), but
+at the cost of substantially weaker NEI detection (56%).
+As shown in Figure 3, 34% of true NEI instances are mis-
+classified as SUPPORTS, indicating a strong tendency to
+overcommit under uncertainty. This asymmetry is visually
+apparent in Figure 4, where Claude’s performance is skewed
+toward decisive labels at the expense of NEI. Gemini 2.5
+Flash exhibits a similar but less extreme pattern, combining
+moderate CONTRADICTS recall (83%) with elevated con-
+fusion between SUPPORTS and NEI (29% of SUPPORTS
+mapped to NEI). Taken together, these results reveal that
+LLMs do not simply differ in overall accuracy, but exhibit
+distinct and systematic calibration biases along the caution–
+overconfidence spectrum. This variation is central to our
+design: rather than selecting a single “best” model, DEEP-
+SCIVERIFY leverages these complementary behaviors by
+assigning conservative models to early-stage filtering and
+more balanced models to final decision-making.
+These calibration differences motivate our pipeline design.
+We use GPT-5.4 as the abstract-level verifier because its
+conservative behavior makes it suitable for deciding when to
+escalate beyond the abstract. For passage-level verification,
+where the system has access to more focused evidence, we
+use GPT-4 because of its more balanced behavior across all
+three labels. This combination allows DEEPSCIVERIFY to
+avoid overcommitting at the abstract stage while still making
+calibrated final decisions once passage-level evidence is
+available.
+6.3. Main Results
+Table 3 presents the main results on the SCITANCE test set.
+Since SCITANCE already provides evidence abstracts, all
+abstract-only baselines use the provided abstract as input.
+In the full-text setting, we additionally equip the model with
+the full-text retriever described in Section 4.2.1, allowing it
+to retrieve and use passage-level evidence when the abstract-
+level prediction is NEI.
+In the two-class setting without NEI, all models perform
+strongly, with Claude Sonnet 4.6 achieving the highest per-
+formance (93.2 Micro-F1). This suggests that modern LLMs
+are effective when forced to decide only between support
+and contradiction. However, this setting removes the need
+to detect insufficient evidence, which is central to realistic
+scientific verification.
+In the full three-class setting, performance drops across all
+abstract-only baselines, showing that correctly identifying
+NEI remains challenging. Providing access to full-text ev-
+idence improves most models, indicating that information
+beyond the abstract can be useful. However, the gains from
+naive full-text usage are limited: GPT-4 decreases from 82.2
+to 81.3 Micro-F1, while Claude Sonnet 4.6 improves only
+marginally from 81.1 to 82.4.
+DEEPSCIVERIFY achieves the best overall performance,
+reaching 86.7 Micro-F1 and 81.5 Macro-F1. This outper-
+forms the strongest abstract-only baseline by +4.5 Micro-F1
+and improves over the best number reported by Alvarez
+et al. (2024) on SCITANCE by +6.6 Micro-F1. Since SCI-
+TANCE uses a 91-instance test split, these gains should be
+interpreted with appropriate caution, but they are consistent
+across Micro-F1, Macro-F1, and Sup./Not Sup. Overall,
+the results suggest that full-text evidence is most effective
+when used selectively: DEEPSCIVERIFY resolves confident
+cases at the abstract level and escalates uncertain cases to
+passage-level verification, avoiding both premature deci-
+sions and unnecessary noise from full-text processing. We
+provide a detailed breakdown of this escalation behavior in
+Appendix D.
+6.4. Ablation Analysis
+Table 4 isolates the contribution of the passage extraction
+component in Phase 2. Starting from the abstract-only GPT-
+4 baseline (82.2 Micro-F1), adding passage-level verifica-
+tion consistently improves performance, confirming that full-
+text evidence provides additional signal beyond abstracts
+alone.
+However, the choice of extraction strategy is critical. In
+the LLM-based extractor, the paper is first truncated and
+6
+
+DEEPSCIVERIFY
+supports contradicts NEI
+supports
+contradicts
+NEI
+81% 4% 15%
+8% 86% 6%
+24% 2% 74%
+GPT-4
+supports contradicts NEI
+supports
+contradicts
+NEI
+62% 6% 33%
+5% 84% 11%
+16% 3% 81%
+GPT-5.4
+supports contradicts NEI
+supports
+contradicts
+NEI
+81% 9% 9%
+6% 90% 3%
+34% 9% 56%
+Claude
+supports contradicts NEI
+supports
+contradicts
+NEI
+65% 6% 29%
+8% 83% 9%
+33% 6% 61%
+Gemini
+0%
+10%
+20%
+30%
+50%
+70%
+100%
+Row-normalised rate
+Figure 3: Row-normalized confusion matrices for abstract-only verification on the SCITANCE train+dev set. Each model is
+given the claim and evidence abstract and predicts SUPPORTS, CONTRADICTS, or NEI. Rows indicate gold labels and
+columns indicate predicted labels. The matrices reveal distinct calibration patterns across models, including conservative
+behavior, overcommitment, and class-specific error asymmetries. We compute these matrices on the combined train+dev
+split (n = 565) to obtain more stable calibration estimates; see Section 6.2.
+Table 2: Qualitative calibration analysis of abstract-only LLM verification on the SCITANCE train+dev set (n = 565). The
+analysis is based on the row-normalized confusion matrices in Figure 3.
+Model Observed Calibration Pattern
+GPT-4 Balanced. Shows the most even behavior across classes, with recall of 81% for SUPPORTS, 86%
+for CONTRADICTS, and 74% for NEI. This makes it the most stable verifier across the three-way
+decision.
+GPT-5.4 
+Conservative. Achieves strong NEI recall (81%) but lower SUPPORTS recall (62%), with 33% of
+true SUPPORTS cases predicted as NEI. This makes it well suited for an early-stage verifier that
+should escalate uncertain cases rather than overcommit.
+Gemini 2.5 Flash Cautious with moderate imbalance. Like GPT-5.4, it often maps true SUPPORTS cases to NEI
+(29%), while achieving 83% recall on CONTRADICTS and 61% on NEI.
+Claude Sonnet 4.6 Overconfident. Performs strongly on decisive labels, with 81% SUPPORTS recall and 90%
+CONTRADICTS recall, but has weaker NEI recall (56%). It frequently converts true NEI cases
+into SUPPORTS or CONTRADICTS, indicating a tendency to overcommit when abstract evidence is
+incomplete.
+Figure 4: Per-class recall comparison across models on
+the SCITANCE train+dev set, highlighting differences in
+calibration behavior.
+converted into line-numbered text; the model then receives
+the claim and numbered paper and returns ranked, non-
+overlapping line ranges rather than generating passage text
+directly. This constrains the extractor to select spans from
+the source document and reduces hallucinated passage con-
+tent. Using an LLM-based extractor yields modest gains
+(+1.1 Micro-F1, +2.0 Macro-F1), but reduces the Sup./Not
+Sup. metric from 86.7 to 83.3. This indicates a shift to-
+ward over-prediction of SUPPORTS, where some instances
+that should remain NEI are instead assigned a positive ver-
+dict. In other words, the LLM extractor improves recall
+by surfacing more candidate evidence, but at the cost of
+precision, likely because it may select passages that appear
+semantically relevant yet do not constitute strong supporting
+evidence.
+In contrast, the RAG-based extractor (which we explained in
+Section 4.2.2) improves all metrics simultaneously, achiev-
+ing the best overall performance (+4.5 Micro-F1). By
+grounding passage selection in embedding-based similar-
+ity, the RAG pipeline retrieves more focused and evidence-
+aligned text segments, reducing spurious matches and limit-
+ing false positive support predictions. This leads to better
+7
+
+DEEPSCIVERIFY
+Table 3: Results on the SCITANCE test set. ∆ shows absolute improvement over the best abstract-only baseline in each
+setting. Best results per setting are bolded.
+Setting Evidence Model Micro-F1 Macro-F1 Sup./Not Sup. ∆ Micro
+Without NEI
+(2-class) 
+Abstract
+GPT-4 91.9 91.9 — —
+GPT-5.4 87.8 87.8 — —
+Gemini 2.5 Flash 86.5 86.4 — —
+Claude Sonnet 4.6 93.2 93.2 — —
+With NEI
+(3-class)
+Abstract
+GPT-4 82.2 78.8 86.7 ref.
+GPT-5.4 74.4 72.4 81.1 –7.8
+Gemini 2.5 Flash 74.4 70.8 75.6 –7.8
+Claude Sonnet 4.6 81.1 73.8 85.6 –1.1
+Full-text
+GPT-4 81.3 76.7 84.6 –0.9
+GPT-5.4 79.1 76.1 81.3 –3.1
+Gemini 2.5 Flash 75.8 71.0 78.0 –6.4
+Claude Sonnet 4.6 82.4 76.2 85.7 +0.2
+DEEPSCIVERIFY (Ours) 86.7 81.5 88.9 +4.5
+Table 4: Ablation of DEEPSCIVERIFY pipeline compo-
+nents on the SCITANCE test set (3-class, With NEI). All
+configurations use GPT-5.4 for abstract-level verification;
+the extraction method varies in Phase 2, with GPT-4 as the
+passage-level verifier. ∆ shows Micro-F1 change relative to
+the abstract-only baseline. Best results bolded.
+Configuration Mi-F1 Ma-F1 S/NS ∆
+GPT-4 abstract only 82.2 78.8 86.7 ref.
++ GPT-5.4 LLM extractor 83.3 80.8 83.3 +1.1
++ GPT-5.4 RAG extractor 86.7 81.5 88.9 +4.5
+balance across all three classes, particularly in preserving
+correct NEI decisions while still enabling corrections when
+sufficient evidence exists.
+Overall, these results highlight that the benefit of Phase 2
+does not come merely from accessing full text, but from
+how relevant evidence is identified. Structured retrieval
+via RAG provides a more reliable signal for downstream
+verification than direct LLM-based extraction, which can
+blur the boundary between relevance and evidential support.
+7. Discussion
+Our results highlight a limitation of single-step verification
+with large language models. When asked to decide from
+abstract-level evidence alone, models must both interpret the
+claim and assess whether the available evidence is sufficient.
+As shown in Section 6.2, this leads to consistent but different
+behaviors across models: some tend to be conservative
+and default to NEI, while others are more decisive and
+risk overcommitting under incomplete evidence. These
+differences suggest that model outputs are influenced not
+only by reasoning ability, but also by implicit calibration
+tendencies.
+We also find that performance depends on how evidence is
+provided. Abstracts are widely available but often lack the
+detail needed to verify citation-level claims, while naively
+providing full-text documents leads to only modest improve-
+ments (Section 6.3). This suggests that the challenge is not
+only retrieving more information, but selecting the parts of
+the document most informative for the claim.
+Our approach combines these observations. By using a
+staged design, the system defers uncertain cases at the ab-
+stract level and then performs focused verification with
+passage-level evidence. At the same time, we leverage
+differences in model behavior by assigning models to roles
+that better match their tendencies. While our experiments
+are limited to SCITANCE, the results suggest that combin-
+ing complementary model behaviors with selective evidence
+escalation can improve reliability in scientific verification
+tasks.
+8. Conclusion
+We introduced DEEPSCIVERIFY, a two-stage pipeline for
+scientific claim–citation verification that uses abstract-level
+evidence first and selectively escalates to passage-level evi-
+dence when the abstract is insufficient. Our analysis shows
+that LLMs exhibit different calibration behaviors under un-
+certainty, and DEEPSCIVERIFY leverages these complemen-
+tary tendencies through a staged design. On SCITANCE, the
+system outperforms strong abstract-only baselines by +4.5
+Micro-F1 in the three-class setting. While our evaluation is
+limited by the small test set and single-domain benchmark,
+the results suggest that selective evidence escalation is a
+promising direction for improving scientific claim–citation
+alignment when relevant evidence is absent from abstracts
+but available in the full text.
+8
+
+DEEPSCIVERIFY
+References
+Alvarez, C., Bennett, M., and Wang, L. L. Zero-shot scien-
+tific claim verification using LLMs and citation text. In
+Proceedings of the Fourth Workshop on Scholarly Docu-
+ment Processing (SDP 2024), pp. 269–276, 2024.
+Fang, L., Fu, D., and Torvik, V. I. Automatic scientific
+claims verification with pruned evidence graph. In To-
+wards Agentic AI for Science: Hypothesis Generation,
+Comprehension, Quantification, and Validation, 2025.
+Hendricks, G., Tkaczyk, D., Lin, J., and Feeney, P. Crossref:
+The Sustainable Source of Community-Owned Scholarly
+Metadata. Quantitative Science Studies, 1(1):414–427,
+2020. doi: 10.1162/qss\ a\ 00022.
+Karpukhin, V., Oguz, B., Min, S., Lewis, P., Wu, L., Edunov,
+S., Chen, D., and Yih, W.-t. Dense Passage Retrieval for
+Open-Domain Question Answering. In Proceedings of
+the 2020 Conference on Empirical Methods in Natural
+Language Processing (EMNLP), pp. 6769–6781. Associ-
+ation for Computational Linguistics, 2020.
+Khalifa, M. and Albadawy, M. Using artificial intelligence
+in academic writing and research: An essential productiv-
+ity tool. Computer methods and programs in biomedicine
+update, 5:100145, 2024.
+Kinney, R., Anastasiades, C., Authur, R., Beltagy, I., Bragg,
+J., Buraczynski, A., Cachola, I., Candra, S., Chan-
+drasekhar, Y., Cohan, A., et al. The Semantic Scholar
+Open Data Platform. arXiv preprint arXiv:2301.10140,
+2023.
+Kobak, D., Gonz 
+´
+alez-M 
+´
+arquez, R., Horv 
+´
+at, E.- 
+´
+A., and
+Lause, J. Delving into LLM-assisted writing in biomed-
+ical publications through excess vocabulary. Science
+Advances, 11(27):eadt3813, 2025.
+Lewis, P., Perez, E., Piktus, A., Petroni, F., Karpukhin, V.,
+Goyal, N., K 
+¨
+uttler, H., Lewis, M., Yih, W.-t., Rockt 
+¨
+aschel,
+T., et al. Retrieval-Augmented Generation for Knowledge-
+Intensive NLP Tasks. In Advances in Neural Informa-
+tion Processing Systems (NeurIPS), volume 33, pp. 9459–
+9474, 2020.
+Liang, W., Izzo, Z., Zhang, Y., Lepp, H., Cao, H., Zhao, X.,
+Chen, L., Ye, H., Liu, S., Huang, Z., et al. Monitoring
+ai-modified content at scale: A case study on the impact
+of chatgpt on ai conference peer reviews. arXiv preprint
+arXiv:2403.07183, 2024a.
+Liang, W., Zhang, Y., Wu, Z., Lepp, H., Ji, W., Zhao, X.,
+Cao, H., Liu, S., He, S., Huang, Z., et al. Mapping
+the increasing use of LLMs in scientific papers. arXiv
+preprint arXiv:2404.01268, 2024b.
+OpenAI. New embedding models and api up-
+dates. https://openai.com/index/
+new-embedding-models-and-api-updates/
+,
+2024. Accessed: 2026-04-27.
+Priem, J., Piwowar, H., and Orr, R. OpenAlex: A fully-open
+index of scholarly works, authors, venues, institutions,
+and concepts. arXiv preprint arXiv:2205.01833, 2022.
+Reimers, N. and Gurevych, I. Sentence-BERT: Sentence
+Embeddings using Siamese BERT-Networks. Proceed-
+ings of the 2019 Conference on Empirical Methods in
+Natural Language Processing (EMNLP), pp. 3982–3992,
+2019. doi: 10.18653/v1/D19-1410.
+Sayers, E. W., Bolton, E. E., Brister, J. R., Canese, K., Chan,
+J., Comeau, D. C., Connor, R., Funk, K., Kelly, C., Kim,
+S., et al. Database Resources of the National Center for
+Biotechnology Information. Nucleic Acids Research, 50
+(D1):D98–D106, 2022. doi: 10.1093/nar/gkab1112.
+Thorne, J., Vlachos, A., Christodoulopoulos, C., and Mittal,
+A. FEVER: a Large-scale Dataset for Fact Extraction and
+VERification. In Proceedings of the 2018 Conference of
+the North American Chapter of the Association for Com-
+putational Linguistics: Human Language Technologies,
+pp. 809–819. Association for Computational Linguistics,
+2018.
+Wadden, D. and Lo, K. Overview and Insights from the
+SCIVER Shared Task on Scientific Claim Verification. In
+Proceedings of the Second Workshop on Scholarly Docu-
+ment Processing, pp. 124–129. Association for Computa-
+tional Linguistics, 2021.
+Wadden, D., Lin, S., Lo, K., Wang, L. L., van Zuylen, M.,
+Cohan, A., and Hajishirzi, H. Fact or Fiction: Verifying
+Scientific Claims. In Proceedings of the 2020 Conference
+on Empirical Methods in Natural Language Processing
+(EMNLP), pp. 7534–7550. Association for Computational
+Linguistics, 2020. doi: 10.18653/v1/2020.emnlp-main.
+609.
+Wadden, D., Lo, K., Kuehl, B., Cohan, A., Beltagy, I., Wang,
+L. L., and Hajishirzi, H. SciFact-Open: Towards Open-
+Domain Scientific Claim Verification. In Findings of
+the Association for Computational Linguistics: EMNLP
+2022, pp. 4719–4734. Association for Computational
+Linguistics, 2022.
+Wang, C., Shen, Y., Kuang, Z., Cohan, A., and Zhao, Y.
+SciVer: Evaluating Foundation Models for Multimodal
+Scientific Claim Verification. In Proceedings of the 63rd
+Annual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers), pp. 8562–8579,
+2025.
+9
+
+DEEPSCIVERIFY
+A. Prompts Configuration
+All LLM-based components are prompted to return struc-
+tured JSON outputs, enabling deterministic parsing and in-
+tegration into the retrieval and verification pipeline. Unless
+otherwise stated, all model calls use temperature 0. This
+appendix reports the prompts used for the main comparison
+modules and the LLM-assisted retrieval fallbacks.
+A.1. Abstract-Level Verification Prompt
+The abstract-level verifier is used in Phase 1. Given a
+claim and the cited paper’s abstract, the model predicts
+whether the abstract SUPPORTS, CONTRADICTS, or pro-
+vides NOT ENOUGH INFO for the claim.
+System prompt.
+With a specific abstract, please make an estimation
+whether the abstract SUPPORTS or CONTRADICTS
+the claim, or if there is NOT_ENOUGH_INFO to
+determine.
+You must choose SUPPORTS or CONTRADICTS or
+NOT_ENOUGH_INFO.
+Please return your answer as a valid JSON object
+with the verdict as one of the capitalized
+tokens (SUPPORTS, CONTRADICTS, NOT_ENOUGH_INFO),
+as well as an explanation or rationale for the
+answer.
+Respond with ONLY a valid JSON object no markdown
+fences, no extra text:
+{
+"verdict": "<SUPPORTS | CONTRADICTS |
+NOT_ENOUGH_INFO>",
+"reasoning": "<explanation or rationale for the
+answer>"
+}
+User prompt.
+Abstract: {abstract}
+Claim: {claim}
+A.2. Passage-Level Verification Prompt
+The passage-level verifier is used in Phase 2 after the
+pipeline escalates beyond the abstract. The passage is
+treated as the primary evidence, while the abstract provides
+supplementary context when available.
+System prompt.
+With a specific passage from a paper and the paper’s
+abstract, please make an estimation whether
+the evidence SUPPORTS or CONTRADICTS the claim,
+or if there is NOT_ENOUGH_INFO to determine.
+The PASSAGE is the primary evidence. The ABSTRACT
+provides supplementary context but should not
+override what the passage says.
+You must choose SUPPORTS or CONTRADICTS or
+NOT_ENOUGH_INFO.
+Please return your answer as a valid JSON object
+with the verdict as one of the capitalized
+tokens (SUPPORTS, CONTRADICTS, NOT_ENOUGH_INFO),
+as well as an explanation or rationale for the
+answer.
+Respond with ONLY a valid JSON object no markdown
+fences, no extra text:
+{
+"verdict": "<SUPPORTS | CONTRADICTS |
+NOT_ENOUGH_INFO>",
+"reasoning": "<explanation or rationale for the
+answer>"
+}
+User prompt.
+Abstract: {abstract}
+Passage: {passage}
+Claim: {claim}
+When no abstract is available, we use the same verdict
+schema but omit the abstract field and the instruction that
+describes the abstract as supplementary context.
+A.3. LLM-Assisted Abstract Search Prompt
+The abstract retrieval cascade uses LLM-assisted web search
+only as a final fallback when structured retrieval sources
+fail. The prompt emphasizes that the model must return
+only abstracts found from real web results and should prefer
+a negative result over fabricating a match.
+System prompt.
+You are an academic citation lookup assistant with
+web search access.
+You will receive a CITATION from a scientific
+research report. Your task is to search the web,
+find the cited paper, and return its abstract.
+Instructions:
+1. Use web search to look for the citation try the
+title, authors, year, and any URL or identifier
+provided.
+2. Look broadly: the match could be a journal paper,
+arXiv preprint, conference paper, thesis,
+technical report, or any other published work.
+3. The citation’s title may be paraphrased,
+corrupted, or slightly different from the real
+title try searching for key phrases and author
+names, not just the exact title.
+4. When you find the paper, extract its full
+abstract text.
+CRITICAL RULES read carefully:
+- ONLY return information from papers you actually
+found on the web with a real, working URL that
+you visited or that appeared in your search
+results.
+- NEVER copy the citation’s own text and present it
+as a "found" result. Every field must come from
+an independent source you discovered through
+search.
+- If your web search returns NO pages containing
+this publication, you MUST return {"found":
+false, ...}. A negative result is correct and
+expected when a citation cannot be located.
+- Do NOT guess, infer, or reconstruct a plausible-
+sounding abstract. If you are not confident the
+result is the correct paper, do not include it.
+- It is MUCH better to return a negative result than
+to fabricate a match.
+10
+
+DEEPSCIVERIFY
+Respond with ONLY a valid JSON object no markdown
+fences, no extra text:
+{
+"found": true,
+"title": "<exact title as found on the web>",
+"abstract": "<full abstract text>",
+"authors": "<comma-separated author names>",
+"year": "<publication year>",
+"source_url": "<URL where you found the paper>"
+}
+If you cannot find the paper, respond with:
+{
+"found": false,
+"title": "",
+"abstract": "",
+"authors": "",
+"year": "",
+"source_url": ""
+}
+User prompt.
+Find the scientific paper described by the citation
+below and return its abstract.
+Citation: {citation}
+A.4. LLM-Assisted Full-Text Search Prompt
+The full-text retrieval cascade uses LLM-assisted web
+search as a final fallback when direct URL, arXiv, Semantic
+Scholar open-access PDF, and PubMed Central retrieval
+fail. The model is asked to return a direct, freely accessible
+full-text URL rather than a landing page.
+System prompt.
+You are an academic paper URL finder with web search
+access.
+You will receive the TITLE of a scientific paper.
+Your task is to search the web and find a
+direct link to the paper’s full text a URL
+that points to a PDF, XML, or HTML version of
+the complete paper (not just the abstract page).
+Preferred sources (in order):
+1. PubMed Central (PMC) full text HTML prefer the
+HTML article page (e.g. /articles/PMCxxxx/)
+over the PDF version
+2. arXiv PDF or HTML
+3. Preprint servers (bioRxiv, medRxiv, SSRN, etc.)
+4. Institutional or university repositories
+5. Europe PMC (europepmc.org)
+6. Open-access mirrors and aggregators
+7. Any other freely accessible full-text link
+CRITICAL RULES:
+- The URL must point to the actual content (PDF, XML
+, or HTML of the paper), NOT to a landing/
+abstract page.
+- The link MUST be freely and directly accessible
+without login, CAPTCHA, JavaScript rendering,
+or any form of authentication. The content will
+be downloaded programmatically, so it must be
+accessible via a simple HTTP GET.
+- Avoid paywalled publisher websites they typically
+block automated downloads even if the page
+appears accessible in a browser. Prefer open
+repositories and archives over publisher sites.
+- ONLY return URLs you actually found via web search.
+Do NOT guess or invent URLs.
+- If you cannot find a freely accessible direct link
+, return {"found": false}. Do NOT return a link
+that requires any form of access control.
+Respond with ONLY a valid JSON object no markdown
+fences, no extra text:
+{
+"found": true,
+"url": "<direct URL to full text PDF/XML/HTML>",
+"format": "<pdf | xml | html>"
+}
+If you cannot find a link:
+{
+"found": false,
+"url": "",
+"format": ""
+}
+User prompt.
+Paper title: {title}
+B. Retrieval Cascade Implementation Details
+This appendix provides additional implementation details
+for the retrieval modules described in Sections 4.1.1 and
+4.2.1. Both retrieval stages use a sequential cascade: stages
+are attempted in order, and the cascade halts at the first
+stage whose output satisfies the corresponding acceptance
+criterion.
+B.1. Citation Parsing
+Before retrieval, the raw citation string r is parsed into
+structured retrieval fields. In our implementation, the parser
+extracts the following fields:
+{arxiv id, doi, url, title}.
+These fields determine which retrieval stages can be acti-
+vated. For example, arXiv-based lookup is attempted only
+when an arXiv identifier is available, DOI-based retrieval
+requires a DOI, URL retrieval requires a non-DOI URL,
+and title-based search requires a parsed title. This parsing
+step standardizes heterogeneous citation formats into a com-
+mon representation used by both the abstract and full-text
+retrieval cascades.
+B.2. Title Similarity Gate
+For abstract retrieval, candidates returned by scholarly APIs
+are validated using a lightweight title-similarity gate. Given
+a cited title t
+cite 
+and a retrieved title 
+ˆ
+t, we compute word-
+overlap similarity:
+σ(ˆt, t
+cite
+) = 
+|W (ˆt) ∩ W (t
+cite
+)|
+max(|W (t
+cite
+)|, 1) 
+, (5)
+11
+
+DEEPSCIVERIFY
+where W (t) denotes the set of lowercased alphanumeric
+tokens after removing common English stop words. Unless
+otherwise stated, we use an acceptance threshold of τ =
+0.30. A retrieved abstract is accepted only if it is non-empty
+and its title similarity satisfies σ ≥ τ .
+B.3. Abstract Retrieval Cascade
+The abstract retrieval cascade is organized into four tiers,
+moving from structured identifiers to broader fallback meth-
+ods.
+Identifier-based retrieval. If an arXiv identifier is avail-
+able, the system first queries the arXiv API and then attempts
+Semantic Scholar lookup by arXiv ID.
+DOI-based retrieval. If a DOI is available, the system
+queries Semantic Scholar and OpenAlex using DOI-based
+lookup. This stage provides high-precision retrieval when
+publisher identifiers are present.
+Title-based retrieval. If identifier-based retrieval fails or
+no identifiers are available, the system performs title-based
+search across Semantic Scholar, CrossRef, OpenAlex, and
+PubMed. Candidate results from these stages are filtered
+using the title-similarity gate described above.
+Fallback retrieval. If structured retrieval fails, the system
+attempts direct URL-based retrieval when a URL is present,
+followed by LLM-assisted web search as a final fallback.
+The LLM search prompt requires the model to return only
+abstracts from papers actually found through web search
+and to return a negative result rather than fabricate a match.
+B.4. Full-Text Retrieval Cascade
+The full-text retrieval cascade is similarly organized into
+progressively broader stages.
+Direct retrieval. If the citation contains a URL, the sys-
+tem first attempts to fetch the document directly. HTML
+pages are converted to text, and PDFs are parsed into text
+when possible.
+arXiv retrieval. If an arXiv identifier is available, the
+system retrieves the arXiv HTML version when available,
+preferring it because it is typically cleaner for text extraction.
+If HTML retrieval fails, the system falls back to the arXiv
+PDF.
+Open-access retrieval. If earlier stages fail, the system
+searches open-access sources, including Semantic Scholar
+open-access PDF links and PubMed Central XML. Re-
+trieved documents are converted into raw text for down-
+stream passage extraction.
+Fallback retrieval. As a final stage, the system uses LLM-
+assisted web search to locate a direct full-text URL. The
+prompt asks for a freely accessible PDF, XML, or HTML
+version of the paper, prioritizing open repositories such as
+PubMed Central, arXiv, preprint servers, and institutional
+repositories. Returned URLs are fetched programmatically
+and must pass the same quality checks as other full-text
+sources.
+B.5. Full-Text Acceptance Criteria
+Full-text candidates are accepted only if they provide suf-
+ficient usable content. Specifically, a retrieved document
+must contain at least 1,500 characters of extracted text and
+must not match common correction or erratum patterns. We
+filter documents whose extracted text begins with indicators
+such as correction for, erratum, corrigendum, retraction
+notice, author correction, or publisher’s note. These checks
+reduce cases where the retrieved document is not the target
+paper but rather a correction, notice, or metadata page.
+B.6. Diagnostics
+Each retrieval call records the source that produced the final
+result, the fetched URL when applicable, and a stage-level
+log of attempted retrieval steps. These logs are used for
+post-hoc analysis of retrieval failures and for attributing
+downstream errors to retrieval, passage extraction, or verifi-
+cation.
+C. Model and Experiment Configuration
+Table 5 summarizes the model, retrieval, and reproducibility
+settings used in the main DEEPSCIVERIFY experiments.
+The main pipeline uses OpenAI models for verification,
+retrieval fallbacks, and embeddings, while Claude Sonnet
+4.6 and Gemini 2.5 Flash are included as baseline models
+through their respective API providers. All thresholds and
+retrieval parameters were fixed before evaluation on the
+SCITANCE test split.
+D. Escalation Analysis
+Table 6 analyzes how often DEEPSCIVERIFY uses each
+stage. Of the 91 test instances, 61 (67.0%) are resolved at
+Phase 1 through early exit, and 57 of these are correct. The
+remaining 30 instances (33.0%) are escalated to Phase 2 for
+passage-level verification.
+Escalation has a positive net effect. Phase 2 corrects 13
+instances that were initially unresolved at the abstract level
+and correctly leaves 9 additional cases as NEI. However, it
+also flips 7 instances to an incorrect verdict, showing that
+passage-level evidence can introduce noise when retrieval
+or evidence interpretation is imperfect. Overall, Phase 2
+12
+
+DEEPSCIVERIFY
+Table 5: Model, retrieval, and reproducibility details for the main DEEPSCIVERIFY experiments.
+Item Configuration
+Models used The main DEEPSCIVERIFY pipeline uses gpt-5.4 as the abstract-level verifier in Phase 1 and
+gpt-4 as the passage-level verifier in Phase 2. LLM-assisted retrieval fallbacks use gpt-5.2,
+and the RAG passage retriever uses text-embedding-3-small. Baseline comparisons
+additionally use GPT-4, GPT-5.4, Claude Sonnet 4.6, and Gemini 2.5 Flash.
+API providers OpenAI is used for the main DEEPSCIVERIFY pipeline, including verifier models, embedding
+calls, and web-search-augmented retrieval. Anthropic is used for Claude Sonnet 4.6 baselines,
+and the Google AI API is used for Gemini 2.5 Flash baselines. Non-LLM retrieval uses arXiv,
+Semantic Scholar, CrossRef, OpenAlex, and NCBI E-utilities for PubMed and PubMed Central.
+Decoding settings All LLM calls use temperature 0. Reasoning effort is set to low for the abstract-level verifier.
+Web-search-augmented retrieval calls use the OpenAI web search preview tool.
+Abstract retrieval The Phase 1 title-similarity gate uses word overlap with threshold τ = 0.30. Abstract candidates
+are accepted only when non-empty and sufficiently title-matched to the parsed citation.
+Full-text retrieval The Phase 2 full-text gate requires at least L
+min 
+= 1,500 extracted characters and filters
+correction, erratum, corrigendum, retraction, author-correction, and publisher-note documents.
+PDF extraction is capped at 5 × 10
+5 
+characters.
+Passage retrieval The RAG passage extractor uses section-aware chunking, chunk size 3,000 characters, overlap
+200, cosine-similarity threshold 0.50, and top-k = 2 retrieved chunks. Retrieved chunks are
+concatenated and passed to the passage-level verifier.
+Retry and caching 
+Per-source rate limiting uses a minimum interval of δ = 1.0 s. Semantic Scholar requests
+retry up to three times on HTTP 429 with exponential backoff. LLM-assisted abstract and
+full-text web-search fallbacks allow up to two retries. The pipeline uses an in-memory cache to
+deduplicate requests within a run, but predictions and retrieval results are not persisted across
+runs.
+Experiment period Experiments were run between March 23 and March 27, 2026.
+adds 13 correct predictions while introducing 7 new errors,
+yielding a net gain of 6 correct predictions. This accounts for
+the +4.5 Micro-F1 improvement over the strongest abstract-
+only baseline.
+Table 6: Escalation behavior of DEEPSCIVERIFY on the
+SCITANCE test set in the three-class setting. Phase 1 per-
+forms abstract-level verification, while Phase 2 applies RAG-
+based passage extraction followed by passage-level verifica-
+tion.
+Statistic Count (%)
+Total test instances 91 (100%)
+Resolved at Phase 1 (early exit) 61 (67.0%)
+Correct 57 (62.6%)
+Incorrect 4 (4.4%)
+Escalated to Phase 2 30 (33.0%)
+Corrected by Phase 2 13 (14.3%)
+Remained NEI (correctly) 9 (9.9%)
+Remained NEI (incorrectly) 1 (1.1%)
+Flipped to wrong verdict 7 (7.7%)
+E. Retrieval Coverage and Latency Analysis
+To evaluate the coverage and runtime behavior of the re-
+trieval modules, we ran both the abstract and full-text re-
+trieval cascades on the unique cited papers appearing across
+the SCITANCE train, development, and test splits. This anal-
+ysis uses 412 unique papers after deduplication. Because
+some papers appear in multiple splits, the per-split totals
+sum to 527 paper–split occurrences rather than 412 unique
+papers.
+E.1. Retrieval Latency
+Table 7 summarizes retrieval latency. Abstract retrieval is
+relatively stable, with a median latency of 4.10 seconds per
+paper and a p95 of 6.89 seconds. Full-text retrieval has a
+lower median latency of 1.96 seconds, but a substantially
+heavier tail, with a mean of 12.49 seconds and p95 of 56.70
+seconds. This reflects the variability of full-text access:
+many papers are retrieved quickly from structured sources
+such as PubMed Central, while fallback web search and
+document parsing can be much slower.
+These latency results further motivate the staged design of
+DEEPSCIVERIFY. Since full-text retrieval can be substan-
+tially more expensive and variable than abstract retrieval,
+escalating only uncertain cases reduces unnecessary full-
+text processing while still enabling deeper verification when
+abstract evidence is insufficient.
+13
+
+DEEPSCIVERIFY
+Table 7: Latency of the retrieval cascades over 412 unique papers.
+Stage Total time Median Mean P95 Max
+Abstract retrieval 28m37.49s 4.10s 4.17s 6.89s 9.13s
+Full-text retrieval 1h25m46.02s 1.96s 12.49s 56.70s 97.76s
+End-to-end run 1h54m23.53s – – – –
+E.2. Retrieval Coverage
+Table 8 summarizes overall retrieval coverage. The abstract
+retrieval cascade successfully retrieves abstracts for 391
+of 412 unique papers (94.9%). Full-text retrieval is more
+difficult but still succeeds for 333 papers (80.8%). Only 5
+papers (1.2%) have neither abstract nor full-text evidence
+retrieved.
+Table 8: Retrieval coverage over 412 unique papers in SCI-
+TANCE.
+Retrieval outcome Count Percentage
+Abstract retrieved 391 / 412 94.9%
+Abstract missing 21 / 412 5.1%
+Full text retrieved 333 / 412 80.8%
+Abstract only 74 / 412 18.0%
+No evidence retrieved 5 / 412 1.2%
+Table 9 reports the source distribution for successful re-
+trievals. Abstract retrieval is primarily resolved through
+PubMed and OpenAlex, while full-text retrieval is domi-
+nated by PubMed Central, with LLM-assisted web search
+recovering an additional 24.0% of successful full-text cases.
+This supports the use of a multi-source cascade: no sin-
+gle source covers all cited papers, and the fallback stages
+recover a non-trivial fraction of evidence.
+Table 9: Source distribution among successful abstract and
+full-text retrievals. Percentages are computed within each
+successful retrieval group.
+Retrieval type Source Count Share
+Abstract PubMed 192 49.1%
+Abstract OpenAlex 155 39.6%
+Abstract CrossRef 44 11.3%
+Full text PubMed Central 253 76.0%
+Full text LLM web search 80 24.0%
+For completeness, Table 10 reports coverage by split before
+deduplication across splits. Coverage is broadly consistent
+across train, development, and test partitions.
+Table 10: Retrieval coverage by SCITANCE split. Counts
+are computed over paper–split occurrences, so totals may
+exceed the number of unique papers.
+Split Papers Abs. found Abs. % FT found FT %
+Dev 94 88 93.6% 79 84.0%
+Test 85 81 95.3% 73 85.9%
+Train 348 330 94.8% 279 80.2%
+Total 527 499 94.7% 431 81.8%
+14

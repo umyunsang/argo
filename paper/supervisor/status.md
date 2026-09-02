@@ -1,14 +1,22 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** run the byte-level verification over the remaining source receipts, since only four of thirty-six have been checked at that level.
+- **next_first_action:** wire the byte-level source verification into the validation gate so the evidence chain is re-checked automatically rather than on request.
 
-- **last_updated:** 2026-09-03T02:47:27+09:00
+- **last_updated:** 2026-09-03T02:53:39+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 39 closed — source evidence verified at claim, archive and byte level
+- **current_phase:** cycle 40 closed — every source receipt verified at byte level; 782 of 782 files identical to their archive members
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 40 — the whole evidence base verified, not a sample
+
+- **Gap picked:** byte-level verification covered 4 of 38 receipts, leaving the untested part exactly where a reader would look.
+- **Executed across every receipt:** **130 archives** re-fetched and accepted only on a digest match, **782 files** compared byte for byte with their archive members. **782 identical, zero mismatches.**
+- **One record is a versioned PDF with no members.** It was reporting `NOT_AN_ARCHIVE`, which reads like a failure although its digest had already been verified. It now reports `DIGEST_VERIFIED_NO_MEMBERS` — stating what was established and what was not, rather than sounding an alarm or hiding the gap.
+- **Why not sample:** misalignment between a claim and its cited evidence is a common failure of model-generated reports, and this project generates its own citations, so a sample would leave the interesting part unchecked.
+- **Limit unchanged and stated:** a re-fetch depends on the upstream service continuing to serve those exact versions.
 
 ### Cycle 39 — archive identity is not file identity
 
