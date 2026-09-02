@@ -1,0 +1,256 @@
+# Released evidence excerpt 2608.01913: retrieval versus utilization gaps and evidence saturation
+
+
+Warning: orx 0.1.117 is outdated (latest 0.1.118). A newer release is available; upgrade to stay compatible with the API. Run `orx update` to upgrade.
+
+alphaXiv: https://www.alphaxiv.org/abs/2608.01913
+GitHub: https://github.com/liuqi6777/search_agent
+
+Diagnosing Search Behavior and Failure Modes in Long-Horizon
+Search Agents
+Qi Liu
+qiliu6777@gmail.com
+Renmin University of China
+Beijing, China
+Jiaxin Mao
+maojiaxin@gmail.com
+Renmin University of China
+Beijing, China
+Fengbin Zhu
+fengbin@nus.edu.sg
+National University of Singapore
+Singapore
+Tat-Seng Chua
+dcscts@nus.edu.sg
+National University of Singapore
+Singapore
+Abstract
+Deep search agents answer difficult information-seeking questions
+by iteratively issuing search queries to gather supporting evidence,
+but it remains unclear whether and how greater search effort leads
+to better answers. We study these questions through a trajectory-
+level diagnosis of long-horizon search agents. Using human-annotated
+document-level relevance judgments, we evaluate the evidence re-
+trieved at each search step and separate two stages of agent be-
+havior: what evidence an agent retrieves and how effectively it
+uses that evidence. This distinction further allows us to decompose
+failures into retrieval gaps, where the necessary evidence is never
+found, and utilization gaps, where relevant evidence is retrieved but
+not used correctly. With the retrieval model and evaluation harness
+held fixed, we compare six agents on BrowseComp-Plus and further
+validate our findings on BrowseComp with an open-web search
+API. Across settings, we find that search effort and answer quality
+are only weakly aligned. Answer accuracy is better correlated with
+the quality of retrieved evidence, especially cumulative retrieval
+recall, than with the number of searches or the amount of context
+consumed. Useful evidence often appears early in the trajectory,
+yet agents tend to continue searching, producing a long tail of
+low-yield retrieval steps. At the query level, exploratory reformula-
+tions remain useful, but the best-performing agents issue far fewer
+redundant queries.
+Overall, by systematically characterizing the search behavior
+and failure modes of long-horizon search agents, this work points
+to practical directions for building better deep research systems,
+including stronger query formulation, more effective evidence se-
+lection and context management, and stopping criteria based on
+whether sufficient supporting evidence has been retrieved.
+1
+1 Introduction
+Deep search agents, such as OpenAI Deep Research and Tongyi
+DeepResearch [26], are LLM-based systems for long-horizon infor-
+mation seeking and answering complex and multi-hop questions,
+where evidence is scattered across documents and must be searched
+for, checked, and synthesized before a conclusion holds [23]. The
+agent reasons, searches, reads what comes back, and decides turn
+by turn what to look for next, until it can commit to an answer [25].
+Over one question, an agent may sustain retrieval and reasoning
+1
+Code and data at https://github.com/liuqi6777/search_agent
+over tens of steps, and this long-horizon capacity is what separates
+it from single-shot retrieval-augmented generation.
+However, evaluation practice has not caught up with these ad-
+vances. Progress is still reported primarily through final-answer
+metrics, such as answer accuracy on BrowseComp [28], while the
+trajectory that produces the answer remains an opaque byproduct.
+This poses concrete challenges for diagnosing agent behavior and
+developing improvement strategies: 1) Wasted effort is mistaken
+for capability. Long horizons and heavy tool use are routinely
+showcased as strengths, yet an effective and efficient search agent
+should instead adapt its search effort to what the problem genuinely
+requires: searching more only when the problem calls for it, not as
+a default behaviour. 2) Bottlenecks get misdiagnosed. A wrong
+answer may read as “the agent could not find the evidence,” so the
+fix is more or better search. Yet some errors occur with the decisive
+evidence already in hand, and more search cannot repair them.
+Differentiating between error types is essential for prescribing
+the right fix. 3) Persistence and floundering look the same.
+Trajectories often run long after new evidence stops arriving, yet
+the score cannot tell late turns that are closing in on an answer from
+those that never anchor on the right direction, the very distinction
+between needing to search deeper and needing to search better.
+To bridge this gap, we propose a diagnostic framework that
+opens up the trajectory itself. By grounding every step in human-
+annotated, document-level relevance, it measures retrieval-side and
+reasoning-side behaviour directly, and analyzes search agents from
+coarse to fine granularity. Specifically, we organize our analysis
+into three key perspectives: 1) Outcome attribution: which signal
+actually tracks final accuracy: search effort or gold-evidence recall?
+2) Failure-mode taxonomy: every error is sorted into a retrieval
+gap (supporting evidence never found) or a utilization gap (evidence
+found but still incorrect). 3) Trajectory mechanism and query
+strategy: each trajectory is followed episode by episode, tracking
+how the agent searches and when and where evidence arrives.
+We conduct our analysis with six agents, spanning two scale
+tiers: three mid-scale (Tongyi DeepResearch [26], Qwen3.5-35B-
+A3B [21], gpt-oss-120b [19]) and three frontier-scale (Kimi K2.6
+[13], GLM 5.1 [32], Deepseek V4 Pro [9]). All are run under the
+same ReAct framework, tools, and retriever on BrowseComp-Plus
+[6], whose fixed corpus and human-annotated qrels supply the
+relevance grounding; we further validate the main conclusions on
+BrowseComp [28] with open-web search.
+arXiv:2608.01913v1 [cs.AI] 3 Aug 2026
+
+Liu et al.
+Our analysis distills into five findings, which trace a single thread
+from symptom through mechanism to prescription:
+1) More effort does not buy more accuracy. Across the six
+agents we analyze, neither search volume nor context spend pre-
+dicts accuracy; if anything, the more accurate agents are also the
+cheaper ones (§4.2).
+2) What does track accuracy is retrieval recall. Accuracy
+follows how much of the gold evidence an agent’s queries cumula-
+tively retrieve; on the same question, the agent that retrieves the
+gold evidence answers correctly most of the time, while the agent
+that misses it almost never does (§4.2, §4.6).
+3) Failures split into two gaps with opposite fixes. When
+agents do fail, the error is either a retrieval gap — the evidence
+was never surfaced — or a utilization gap — it was surfaced, yet
+the answer still went wrong. Agents at nearly identical accuracy
+can sit at opposite ends of this balance, so the fix is per-diagnosis
+rather than per-leaderboard: better queries repair the former, better
+verification the latter (§4.3).
+4) Evidence early or never, then a wasted tail. The great
+majority of search episodes add no new evidence, and the waste is
+not spread evenly: whatever evidence a trajectory will surface, it
+surfaces in the early episodes. Correct runs assemble their evidence
+early and stop soon after; incorrect runs surface only part of it, or
+none at all, yet keep searching far longer without recovering the
+rest — their extra length is a wasted tail, not late progress (§4.4).
+5) Stronger agents search cleaner, not more. The behavioral
+signature of strength is query discipline: redundant re-queries are
+rare but mark failure. Query strategy is not decisive: agents favor
+different styles, from broad pivoting to anchor-and-verify, and what
+counts is whether queries land on evidence (§4.5).
+Together, the findings argue that the next gains lie not in deeper
+search but in better-directed search (§5): 1) For weaker agents,
+fix the queries: improve query direction and search strategy, so
+that the agent recognizes when a hypothesis has failed and pivots
+to a new angle, instead of re-asking near-paraphrases of queries
+that already failed. 2) For stronger agents, shift effort to ver-
+ification: the strongest agent already sits near the oracle-reader
+ceiling; the headroom that remains lies in verification and answer
+normalization, not in more retrieval. 3) For both, improve at the
+harness level: snippet-stream management so old results do not
+dominate the context window, visit gating against low-value page
+opens, and evidence-driven stopping in place of fixed budgets.
+The paper contributes (i) a diagnostic framework for search
+agents grounded in relevance; (ii) a controlled comprehensive study
+of six agents and the five findings above, tracing search behavior
+and failure modes from coarse to fine; and (iii) a planned release of
+trajectories and code to support follow-up analysis.
+2 Related Work
+Deep research agents and their evaluation. Deep research agents
+extend ReAct [30] to long-horizon information seeking by inter-
+leaving search, document fetching, and synthesis [23, 29]; recent
+systems include proprietary [13] and open variants [10, 14, 17, 26]
+alongside search-enhanced reasoning frameworks [15, 16], with a
+parallel training literature on trajectory synthesis, RL for search-
+augmented reasoning, and tool-call efficiency [3, 12, 27]. Progress is
+reported as end-to-end accuracy on BrowseComp [28]. Our work is
+orthogonal: rather than building or evaluating an agent end-to-end,
+we open the trajectory and ask which steps pay off.
+Analyzing agent search behavior. Recent works examine what
+happens during search rather than only at its endpoint. Ning et al.
+[18] characterize 14M+ requests from DeepResearchGym [7] at log
+scale but without per-query relevance supervision; Chen et al. [6]
+provide the human-annotated qrels we build on, but use them to
+compare retrieval backends rather than diagnose the agent’s pro-
+cess; AgentIR [5] shows reasoning traces are themselves retrieval
+signals, motivating the snippet-first reading our findings support;
+other process-level work studies confidence / stopping calibration
+and trajectory-level evaluation [4, 20, 24], and reasoning–action
+pathologies in which agents over-reason relative to acting [8]. None
+combines the three properties our diagnosis requires — per-query
+document-level qrels, multiple agents, and a single shared harness and
+retriever — the conjunction that makes the retrieval-vs.-utilization
+attribution deterministic (decided by qrels rather than an LLM judge)
+and comparable across agents.
+3 Setup
+3.1 Agent Settings
+ReAct paradigm. We focus on agents that follow a ReAct-style
+[30] search-and-reason loop. Given a question 𝑞, an agent’s policy
+𝜋
+𝜃 
+produces, at each step 𝑡, a reasoning trace 𝜏
+𝑡 
+and an action 𝑎
+𝑡 
+con-
+ditioned on the running history ℎ
+𝑡 
+= (𝑞, 𝜏
+1
+, 𝑎
+1
+, 𝑜
+1
+, . . . , 𝜏
+𝑡 −1
+, 𝑎
+𝑡 −1
+, 𝑜
+𝑡 −1
+):
+(𝜏
+𝑡 
+, 𝑎
+𝑡 
+) ∼ 𝜋
+𝜃 
+(· | ℎ
+𝑡 
+). Each action is either a tool call or a terminal
+answer; non-terminal actions yield an observation 𝑜
+𝑡 
+= T (𝑎
+𝑡 
+) from
+the environment T , which is appended to the history. A trajectory
+is the resulting finite sequence 𝜉 = (𝜏
+1
+, 𝑎
+1
+, 𝑜
+1
+, . . . , 𝜏
+𝑇 
+, 𝑎
+𝑇 
+), ending
+either with a terminal answer or with an early termination due to
+a step cap, context overflow, or tool error.
+Tool interface. The tool interface contains two tools, search and
+visit. Both tools are routed to a local backend over the official
+BrowseComp-Plus corpus. The search tool issues a query 𝑞
+′ 
+and
+returns the top-𝐾=5 results retrieved by Qwen3-Embedding-8B
+[33]. Each result contains the document id, retrieval score, and a
+snippet truncated to 512 tokens. The visit tool fetches the full
+document text given a document id.
+Agents. We evaluate six agents in two scale tiers. All six have
+open weights, so the study never mixes open and closed systems
+and every rollout is in principle reproducible; what separates the
+tiers is model scale, and with it how we serve them. The mid-scale
+tier comprises Tongyi DeepResearch [26], Qwen3.5-35B-A3B [21],
+and gpt-oss-120b [19], none ab

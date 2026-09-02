@@ -1,0 +1,193 @@
+# Released evidence excerpt 2609.00038: outcome-only judging blind spots
+
+
+Warning: orx 0.1.117 is outdated (latest 0.1.118). A newer release is available; upgrade to stay compatible with the API. Run `orx update` to upgrade.
+
+alphaXiv: https://www.alphaxiv.org/abs/2609.00038
+
+trajectory-judge: What Outcome-Only LLM Judges
+Miss on Agent Trajectories
+Hadi Mohammadi
+Utrecht University
+h.mohammadi@uu.nl
+Abstract
+Outcome-only evaluation is the production default for LLM agents: show a judge
+the request and the final reply and ask whether it was handled well. The metric
+is structurally blind to an agent that reaches the right answer the wrong way.
+We measure that blind spot where ground truth is known by construction: a
+deterministic tool-using support-desk environment, a scripted oracle policy that
+always solves it, and a fault injector that breaks exactly one thing at a known step,
+stratifying faults by whether the customer-visible outcome survived (silent) or not
+(loud). Five judges (programmatic rules, outcome-only, step-rubric at two model
+sizes, and a self-consistency ensemble) are scored on detection, step localisation,
+fault typing, calibration, and cost over 400 trajectories. The outcome-only judge
+catches 84% of loud faults but 45% of silent ones while flagging 33% of correct
+trajectories; a step-rubric judge reaches 77% silent recall with zero false alarms
+at 3× the cost. No judge reads the final reply: an invented promise appended to
+an otherwise perfect trajectory evades the rules entirely and the step judge 82%
+of the time, and self-consistency triples cost while improving nothing. We argue
+that judge evaluations must stratify recall by outcome survival, and release the
+environment, the injector, all raw verdicts, and an analysis pipeline that rebuilds
+every number offline.
+1 Introduction
+Agents that call tools are gated on outcome-level judgment. A model reads the user’s request and the
+agent’s final answer, decides whether the case was handled well, and that verdict feeds a dashboard, a
+release gate, or a reward signal. The failures that survive this filter are precisely the ones it cannot see:
+the agent that skipped a required eligibility check, acted against what a tool returned, or promised
+something no observation supports, whenever the final answer nevertheless came out right. A refund
+of the correct amount issued without ever checking eligibility reads, from the outside, exactly like the
+same refund issued correctly. These are the faults that reach production, because the metric meant to
+catch them is structurally blind to them.
+Evaluating the evaluator normally requires human labels, and the labeller is then the thing under
+test. We escape the circle by construction. A deterministic support-desk environment is solved by
+a scripted oracle policy that is provably correct (a test suite asserts it passes every process rule and
+reaches the expected outcome on every instance), and a fault injector then breaks exactly one thing at
+a known step and replays the trajectory so its observations stay internally consistent. Every trajectory
+therefore carries an exact label at zero annotation cost: faulty or not, at which step, of which type,
+and whether the customer-visible outcome survived. This paper holds the agent fixed and puts the
+judges on the bench: every judge error is attributable to the judge.
+The stratification by outcome survival is the move that makes the measurement possible. Pooled
+over all faults, the outcome-only judge’s recall is a respectable-looking 0.61. Split it, and the number
+Preprint.
+arXiv:2609.00038v1 [cs.CL] 29 Aug 2026
+
+decomposes into 0.840 on faults that broke the answer against 0.451 on faults that did not. The gap is
+the result, and a single pooled recall averages it away.
+Contributions. (i) A correct-by-construction testbed for judges of tool-using agents: a permissive en-
+vironment with a strict checker, a six-type single-fault injector with known step and outcome-survival
+labels, and a rule-engine baseline whose coverage gaps are pinned by tests (§3). (ii) A controlled
+comparison of five judge designs on five axes (detection, localisation, typing, calibration, cost) with
+stratified bootstrap confidence intervals (§4–§6). (iii) Findings with deployment consequences: the
+quantified silent blind spot; a fault type, unsupported_claim, that evades every judge including
+those shown the full trajectory; a negative result on self-consistency ensembling; and an 8B judge
+that is an always-say-faulty baseline wearing a judge’s clothes (§7). (iv) A fully offline-reproducible
+artifact: raw verdicts are released, and every table, figure, and interval in this paper regenerates from
+them without a model call (§10).
+2 Related work
+Reliability of LLM judges. Model-as-judge evaluation is standard for open-ended outputs [Zheng
+et al., 2023, Liu et al., 2023, Gu et al., 2024], and its pathologies are well documented: position
+and verbosity bias [Wang et al., 2023a], self-preference [Panickssery et al., 2024], objective failures
+on instruction-following comparisons [Zeng et al., 2024], and misalignment that grows with task
+difficulty [Thakur et al., 2024]. That line audits judges of single responses against human labels;
+we audit judges of multi-step tool trajectories against labels correct by construction, so a flag on a
+clean trajectory is a false positive with nothing to argue about. The judge design itself (reasoning
+before verdict, a stated confidence) follows Mohammadi et al. [2026], and treating a model’s labels as
+measurements that need their own reliability estimate follows Mohammadi et al. [2025]; Mohammadi
+[2026] develops both at thesis length.
+Agent benchmarks. Benchmarks for tool-using agents score the agent, increasingly on the trajectory
+rather than the outcome alone: τ -bench compares final database state [Yao et al., 2024], AgentBench
+and WebArena score task success [Liu et al., 2024, Zhou et al., 2024], AgentBoard tracks subgoal
+progress [Ma et al., 2024], and recent work scores reasoning trajectories directly [Kim et al., 2025,
+He et al., 2025]. We invert the roles: the agent is a fixed oracle, and the evaluator is the system under
+test.
+Failure attribution. Locating the failing step or agent in a trace is an emerging task [Zhang et al.,
+2025b, Deshpande et al., 2025, Cemri et al., 2025, Ma et al., 2025], and AgenTracer injects faults
+into successful trajectories to mint labelled error pairs at scale [Zhang et al., 2025a]. Fault injection is
+the established part of our design; the delta is what is done with it: a five-way instrument comparison
+that separates detection from attribution and stratifies recall by outcome survival, which that literature
+does not report.
+Process versus outcome supervision. Process reward models show step-level feedback beats
+outcome-level feedback for training verifiers in mathematics [Lightman et al., 2024, Uesato et al.,
+2022, Wang et al., 2024], and ProcessBench measures error localisation in reasoning chains [Zheng
+et al., 2024, Zhang et al., 2025c]. That agenda trains scorers where the final answer is checkable; we
+ask the measurement question underneath it, whether an off-the-shelf judge can see process faults at
+all when the final answer is right, and find the answer depends on the judge’s view, not its metric.
+Calibration. We score every judge’s stated confidence with expected calibration error [Pak-
+daman Naeini et al., 2015, Guo et al., 2017]. Verbalized confidence can be usable [Kadavath
+et al., 2022, Tian et al., 2023] but trends overconfident [Xiong et al., 2024]; we add the evaluator-side
+result that an ensemble’s vote share (the “principled” alternative) is structurally coarser than a stated
+number at small k.
+Mutation testing. Seeding known defects to measure a detector is half a century old [DeMillo et al.,
+1978, Jia and Harman, 2011]. Whether mutants substitute for real faults is the classic validity question
+[Just et al., 2014]; §8 answers it here: no for prevalence, yes for capability.
+2
+
+support-desk instances
+6 strata, seeded
+oracle policy
+correct by construction
+clean
+n = 100
+fault injection
+6 types, known step
+silent
+n = 175
+loud
+n = 125
+five judges 
+detection · localisation
+typing · calibration · cost
+outcome survived
+outcome broke
+Figure 1: Ground truth without annotation: the oracle is correct by construction and each mutation
+breaks exactly one thing, so every trajectory carries an exact label: faulty, step, type, and whether the
+customer-visible outcome survived.
+3 A testbed with ground truth by construction
+Environment. The environment is a customer-support desk with seven tools (get_customer,
+lookup_order, get_policy, check_eligibility, issue_refund, escalate, reply) and a
+written standard operating procedure: verify the customer, look up the order, read the policy for the
+item, confirm eligibility before moving money, refund exactly the authorised amount, escalate when
+not eligible, and reply asserting only what the observations support. Instances are generated in six
+strata: full-price refunds, restocking fees, expired windows, non-refundable items, orders belonging
+to a different customer, and orders already refunded, drawn round-robin from a single seeded stream
+(Appendix A).
+The environment is permissive and the checker is strict. issue_refund will refund an order
+whose eligibility was never checked, exactly as a real payments API would. Nothing in the world
+stops an agent from skipping the process; only the rule checker says it was wrong. This is the
+load-bearing design choice: without it there would be no silent failures to measure, which is why
+it is pinned by a test (test_environment_is_permissive_by_design) rather than stated in a
+comment.
+Notation. A trajectory τ = (g, s
+0
+, . . . , s
+T −1
+, a) pairs a goal g and final answer a with steps
+s
+t 
+= (h
+t
+, c
+t
+, o
+t
+): a thought, a tool call c
+t 
+= (tool
+t
+, args
+t
+), and an observation o
+t
+. Its label is
+ℓ(τ ) = (y, t
+∗
+, ϕ, ω): faulty or not, the failure step, the failure type ϕ ∈ Φ (|Φ| = 6), and whether
+the customer-visible outcome matched the instance’s expected outcome. A fault is silent iff y ∧ ω
+and loud iff y ∧ ¬ω. A judge maps a view of the trajectory to a verdict (ˆy, 
+ˆ
+t, 
+ˆ
+ϕ, ˆc, r) with stated
+confidence ˆc and rationale r. The outcome-only view is V
+out
+(τ ) = (g, a); the step view V
+step
+(τ ) is
+the full rendering. The two LLM judges in this paper differ in exactly this view and in nothing else.
+Oracle. The oracle is a fixed six-step script, identical across strata up to one branch: verify, look up,
+read the policy for the SKU returned by the lookup observation, check eligibility, then refund the
+authorised amount if eligible and escalate otherwise, and reply. A test parametrised over all instances
+asserts it violates no rule and reaches the expected outcome; correctness is computed, not assumed.
+Fault injector. Each mutation edits the call list only (one edit, one step) and then replays the edited
+list against a fresh environment, regenerating every observation. A hallucinated SKU therefore
+genuinely fails its lookup; nothing is hand-written, and a test asserts the replayed observations are
+consistent with the calls. Table 1 lists the six types. Injection is string-seeded per (instance, type), so
+the set is deterministic. One discipline matters enough to state: mutations are constructed to break
+exactly one rule. skipped_precondition, for example, rewrites the refund amount to the order
+total specifically so the argument stays grounded in the lookup observation; otherwise a second rule
+would fire and the confusion matrix would measure the injector rather than the judge. The judged set
+is 400 trajectories: 100 clean, 175 silent, 125 loud (50 per type), deterministically shuffled so any
+prefix is a stratified sample.
+The rule engine, and its two zeros. A checker walks each trajectory once, maintaining a pool of
+grounded values seeded from the goal, and enforces eight rules over grounding, ordering, amounts,
+identity, and terminality (Appendix B). It covers four of the six f

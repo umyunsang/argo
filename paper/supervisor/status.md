@@ -1,14 +1,20 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** collect the 25-label human-anchored calibration set on tasks disjoint from the burned pilot set, starting by drafting the label protocol and the four unseen confirmation tasks.
+- **next_first_action:** draft the human-label protocol for the 25-label calibration set (item sampling, per-element verdict form, disagreement handling), then run the four frozen confirmation tasks under the pinned backend to produce unscored artifacts.
 
-- **last_updated:** 2026-09-02T22:44:13+09:00
+- **last_updated:** 2026-09-02T22:48:10+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 4 closed — scoring anchor solved: reference-anchored analytic coverage executed on pilot artifacts, judge admission bounded, calibration size computed
+- **current_phase:** cycle 5 in progress — four unseen confirmation tasks frozen with anchors written before any artifact; judged scoring waits on the 25-label calibration set
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 5 (in progress) — confirmation set frozen
+
+- Four confirmation tasks frozen on sources disjoint from the pilot and excluded from their own released evidence packs: structure-versus-insight ablation, attribution of improvement to harness rather than model, instrument-change measurement under scarce labels, and budget and access control in optimization benchmarks.
+- Element checklists were written and frozen **before any artifact exists**, which is the property the pilot anchors could not have (`RD-2026-09-02-12A`).
+- Judged scoring remains blocked on the 25-label calibration set; unscored artifact generation is not.
 
 ### Cycle 4 — the scoring anchor gap is closed by construction
 
