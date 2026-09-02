@@ -98,3 +98,12 @@ declared ceilings.
 Block cost: $1.26082. GPU credit units remain 0.
 No treatment effect is estimated from one repeat per cell.
 
+## 2026-09-03 — second repeat, and the first binding ceiling
+
+Eight further episodes completed the two-repeat design. Block cost $1.20026;
+cumulative for the confirmation block $2.46108. GPU credit units remain 0.
+
+One episode was refused for exceeding the declared call ceiling, 18 against 16. It fell in
+the full condition, which uses the most calls in every observation. The ceiling was left
+where measurement placed it and the violation is treated as an outcome.
+

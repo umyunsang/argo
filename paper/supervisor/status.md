@@ -1,14 +1,24 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** decide the confirmatory sample size from an allocation re-derived on these admissible episodes rather than on the voided provisional numbers.
+- **next_first_action:** report the refusal rate per condition as a declared secondary outcome in the design document, so budget failure is analysed rather than only recorded.
 
-- **last_updated:** 2026-09-03T03:16:20+09:00
+- **last_updated:** 2026-09-03T03:23:56+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 44 closed — the first block of episodes admissible under the scoring rule has been executed
+- **current_phase:** cycle 45 closed — the declared ceiling bound for the first time and it bound asymmetrically
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 45 — the ceiling bound, and it bound on one side
+
+- **Gap picked:** allocation could not be re-derived, because one repeat per cell leaves no residual term. The variance guard said so and refused, which is what it is for.
+- **Executed:** a second repeat, 8 more episodes, completing a 2 tasks x 4 conditions x 2 repeats design. All 8 transcripts complete, zero canary leaks.
+- **The declared ceiling bound for the first time.** One episode was refused at **18 calls against a limit of 16** — and it fell in the **full condition**, which uses the most calls in every single observation (C00 max 4, C01 max 10, C10 max 8, C11 max 18).
+- **That is a selection hazard, not a nuisance.** A ceiling that binds asymmetrically removes episodes non-randomly, so dropping them would bias the comparison toward the cheaper condition.
+- **Decision: treat violation as an outcome, not data loss.** If the full condition needs more calls, capping calls *is* the budget match, and the endpoint becomes completion within budget. The ceiling was **not** raised to make the refusal disappear, which would have hidden the asymmetry the measurement just revealed.
+- **Consequence accepted:** the admissible set is now unbalanced at 7 against 8, so the variance guard again refuses to compute components. Both refusals are the guard working, not failing.
+- Block cost $1.20; confirmation block total $2.46. GPU credit units remain 0.
 
 ### Cycle 44 — the first episodes that can actually be scored
 
