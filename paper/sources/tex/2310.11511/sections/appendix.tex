@@ -1,0 +1,476 @@
+\startcontents[sections]
+\printcontents[sections]{l}{1}{\setcounter{tocdepth}{2}}
+\newpage
+
+
+\section{\model Details} 
+\subsection{Reflection Tokens.}
+\label{sec:data_collection_gpt4}
+\paragraph{Definitions of reflection tokens.} Below, we provide a detailed definition of reflection type and output tokens.   
+The first three aspects will be provided at each segment level, while the final aspect is only given at each output level.
+\begin{itemize}[leftmargin=*]
+    \item {\bf Retrieval-on-demand} (\ret): Given an input and previous-step generation (if applicable), an LM determines whether the continuation requires factual grounding. 
+    \texttt{No} indicates retrieval is unnecessary as the sequence does not require factual grounding or may not be enhanced by knowledge retrieval, \texttt{Yes} indicates retrieval is necessary. 
+    We additionally have \texttt{continue to use evidence}, which indicates that a model can continue to use the evidence retrieved previously. For instance, a passage may contain rich factual information, and thus \model generates multiple segments based on the passage. 
+    \item {\bf Relevant} (\crel): Retrieved knowledge may not be always relevant to the input. This aspect indicates whether the evidence provides useful information (\texttt{Relevant}) or not (\texttt{Irrelevant}). 
+    \item {\bf Supported} (\cgr): Attribution is the concept of whether the output is fully supported by certain evidence~\citep{menick2022teaching,bohnet2022attributed}. 
+    This aspect judges how much information in the output is entailed by the evidence. 
+    We evaluate attributions in three scale, \texttt{Fully supported}, \texttt{Partially supported}, and \texttt{No support / Contradictory}, following \cite{yue2023automatic,nakano2021webgpt}. 
+    \item {\bf Useful} (\cuse): Following the definitions from ~\cite{liu2023evaluating}, we define the perceived utility as whether the response is a helpful and informative answer to the query, independently from whether it is in fact factual or not. This can be also viewed as plausibility in \citet{menick2022teaching}. For usefulness, we use a five-scale evaluation (1 is the lowest and 5 is the highest).
+\end{itemize}
+
+
+\paragraph{Details of GPT-4-based data collections.} 
+We use the instruction and demonstration pairs to prompt GPT-4, listed in Section~\ref{sec:instruction_gpt_4}. 
+Following an official recommendation, we separate instructions and outputs with ``\#\#''. 
+We use the temperature 1 and set the maximum output token counts to be 200. 
+We discard instances where GPT-4 does not follow the designated output formats or output sequences that do not match our expected category names. 
+As a result, we collected 1,2594 for \ret, 11,181 for \cgr, 19,317 for relevance, 3,831 for utility.  
+
+\paragraph{Manual analysis of the GPT-4 predictions.}
+The authors of this paper manually assess randomly sampled 20 instances for each aspect and check if GPT-4 predictions match their assessments given the same instruction, demonstrations, and test instances. 
+We found our assessments show high agreement with GPT-4 predictions, especially for relevance (95\%), retrieval necessity (95\%), and the degree of support (90\%). Agreement was slightly lower in usefulness (80\%), mostly due to the disagreement between 1 and 2 or 4 and 5.   
+
+\subsection{\model Training}
+\paragraph{Overview of training.}
+Algorithm~\ref{alg:self_reward training} provides a high-level overview of our training. 
+
+
+
+\begin{algorithm}
+\caption{\model Training}\label{alg:self_reward training}
+\begin{algorithmic}[1]
+% \Require Retrieval model \mret, Non-parametric datastore $\{d_1, \ldots, d_N\}$
+\State {\bf Input} input-output data $\mathcal{D} = \{X, Y\}$, generator $\mathcal{M}$, \mcrt $\theta$
+\State Initialize \mcrt with a pre-trained LM
+\State Sample data $\{X^{sample}, Y^{sample}\} \sim \{X, Y\}$ \Comment{\textcolor{blue}{\bf Training Critic LM (Section~\ref{sec:critic_trainig}) }}
+\For{$(x, y) \in (X^{sample}, Y^{sample})$} \Comment{\textcolor{blue}{Data collections for \mcrt} }
+\State Prompt GPT-4 to collect a reflection token $r$ for $(x,y)$ 
+\State Add $\{(x, y, r)\}$ to $\mathcal{D}_{critic}$ 
+\EndFor
+\State Update \mcrt with next token prediction loss \Comment{\textcolor{blue}{ Critic learning; Eq.~\ref{eq:crt_training} }}
+\State Initialize \mgen with a pre-trained LM \Comment{\textcolor{blue}{\bf Training Generator LM (Section~\ref{sec:gen_training}) }}
+\For{$(x, y) \in (X, Y)$} \Comment{\textcolor{blue}{Data collection for \mgen with $\mathcal{D}_{critic}$ } }
+\State Run \mcrt to predict $r$ given $(x, y)$
+\State Add $(x, y, r)$ to $\mathcal{D}_{gen}$ 
+\EndFor
+\State Update \mgen on $\mathcal{D}_{gen}$ with next token prediction loss \Comment{\textcolor{blue}{ Generator LM learning}; Eq.~\ref{eq:gen_training} }
+\end{algorithmic}
+\end{algorithm}
+
+
+\paragraph{Full list of seed datasets.}
+To sample diverse input-output pairs, we sample instances of the Open-Instruct~\citep{wang2023far} dataset. In particular, we use their ShareGPT, GPT-4 Alpaca, Alpaca, OpenAssistant, and FLAN subsets subsets. 
+We also sample instances from a couple of knowledge-intensive datasets, Natural Questions~\citep{kwiatkowski-etal-2019-natural}, Wizard of Wikipedia~\citep{dinan2018wizard} and FEVER~\citep{thorne-etal-2018-fever} from the KILT benchmark~\citep{petroni-etal-2021-kilt}, ASQA~\citep{stelmakh2022asqa} and multiple QA datasets including ARC-Easy and OpenBookQA~\citep{mihaylov-etal-2018-suit}. 
+Table~\ref{tab:mgen_training} shows the full list of training instances, and in total, we use {145,619} instances. 
+\begin{table}[t!]
+\centering
+\small
+\begin{tabular}{l|c c c}
+\toprule
+Dataset name & category & Data source & the number of instances  \\
+\midrule
+% Llama & {\bf 93.8} & {\bf 93.5} &  80.2  & {\bf 73.5}  \\
+% FLAN & 85.6 & 73.1 & {\bf 82.0} & 72.1  \\
+GPT-4 Alpaca &  Instruction-following & Open-Instruct & 26,168\\ 
+Stanford Alpaca &  Instruction-following & Open-Instruct & 25,153 \\ 
+FLAN-V2 &  Instruction-following & Open-Instruct &17,817 \\
+ShareGPT & Instruction-following & Open-Instruct & 13,406 \\
+Open Assistant 1 &  Instruction-following & Open-Instruct & 9,464 \\
+Wizard of Wikipedia &  Knowledge-intensive & KILT & 17,367  \\
+Natural Questions &  Knowledge-intensive & KILT & 15,535\\ 
+FEVER &  Knowledge-intensive & KILT & 9,966\\ 
+OpenBoookQA &  Knowledge-intensive & HF Dataset & 4,699 \\ 
+Arc-Easy &  Knowledge-intensive & HF Dataset & 2,147 \\ 
+ASQA &  Knowledge-intensive & ASQA &3,897 \\ 
+\bottomrule
+\end{tabular}
+\caption{The generator LM \mgen training data statistics.}\label{tab:mgen_training}
+\end{table}
+% \akari{add original instance number}
+
+
+\paragraph{Performance of the Critic \mcrt.}
+We evaluate the accuracy of reward predictions by splitting GPT-4 generated feedback into training, development, and test sets. 
+The accuracy of the reward model is as follows. Table~\ref{tab:reward_prediction} shows the model performance of predicting GPT-4 judgments. 
+As you can see, overall our fine-tuned reward model shows high prediction matching with GPT-4 predicted feedback. 
+While our final model uses Llama2-7B as a base LM, we also train and compare FLAN-3B~\citep{wei2022finetuned} model on the same data, to investigate the effectiveness of different data sizes affect final reward predictions. 
+In most aspects, our reward model shows higher than 80\% accuracy, indicating the powerful ability of fine-tuned specialized LMs to evaluate text. While both models show relatively lower performance on \cuse, this is because both models often confuse between the two highest cases (5 and 4), where human annotators can also disagree.   
+\begin{figure}[t!]
+\begin{minipage}{\textwidth}
+\centering
+\small
+\begin{tabular}{l|cccc}
+\toprule
+base LM & \ret & \cgr & \crel & \cuse \\
+\midrule
+Llama2-7B & {\bf 93.8} & {\bf 93.5} &  80.2  & {\bf 73.5}  \\
+FLAN-3B & 85.6 & 73.1 & {\bf 82.0} & 72.1  \\
+\bottomrule
+\end{tabular}
+\caption{Reward prediction accuracy using GPT-4 predictions as ground-truth predictions. 
+% Llama2 indicates a fine-tuned Llama2-7B model while FLAN indicates a fine-tuned 3B model. 
+}\label{tab:reward_prediction}
+\end{minipage}
+\end{figure}
+
+\paragraph{Details of \mgen data creation.}
+ Here, we provide detailed data creation procedures. 
+Algorithm~\ref{algo:data_aug} summarizes the process. 
+Here we set $y_t$ to $y$ for simplification.   
+Once we train the critic model, we first run it on input data from the aforementioned datasets, to predict whether retrieval is needed or not. For the instances where the critic predicts \ret=\texttt{No}, we only predict the \cuse given input and output. For the instances where the critic predicts \ret=\texttt{Yes}, we first retrieve passages using the input and the entire output as queries, to find passages that are relevant to the entire output. We then split output sentences using Spacy.\footnote{\url{https://spacy.io/}} 
+For each sentence, we run \mcrt to predict whether the retrieval is necessary or not, given the input, preceding segments, and the initial retrieved passage.  
+If \mcrt predicts \ret=\texttt{No}, then do not insert any paragraph at the $t$th segment. 
+If \mcrt predicts \ret=\texttt{Yes}, then we use the original input and the $t$th segment as a retrieval query to find relevant passages for the $t$-th segment. For each retrieved passage, we predict \crel and \cgr. 
+If there is any passage and continuation with \crel=\texttt{Relevant} and \cgr=\texttt{Fully Supported} / \cgr=\texttt{Partially Supported}, then we sample it as the continuation. If there is more than one passage satisfying this criterion, we use the one with the highest retrieval score. 
+If there are only \crel=\texttt{Irrelevant} or \cgr=\texttt{No Support} passages, we randomly sample one passage. 
+
+\begin{algorithm}
+\caption{$\mathcal{M}_{gen}$ Data creation}\label{algo:data_aug}
+\begin{algorithmic}[1]
+% \Require Retrieval model \mret, Critic model \mcrt, passage collections $\{d_1, \ldots, d_N\}$
+\State {\bf Input}  Input-output data $\mathcal{D}$ = ${X, Y}$
+% \State Initialize $\mathcal{M}_{reward} \gets \mathcal{M}$
+% \State Sample data from $(X, Y)$
+\For{$(x, y) \in \{X, Y\}$} 
+\State Given $(x,y)$ \mcrt predicts \ret
+\If{\ret~is predicted}
+    \State Retrieve relevant passages $\mathbf{D}$ using \mret given $(x,y)$
+    \Comment{\textcolor{blue}{Retrieve passages} }
+    \For {$d \in \mathbf{D}$}
+    \State \mcrt predicts \crel for each $d$     \Comment{\textcolor{blue}{Predict relevance of passages} }
+     \State \mcrt predicts \cgr for each $(y, d)$ \Comment{\textcolor{blue}{Predict supports of outputs} }
+    \EndFor
+    \State\mcrt predicts \cuse for each $d$ \Comment{\textcolor{blue}{Predict overall utility ($t=\mathcal{T}$ only)} }
+    \State Sample $d$
+\ElsIf{\ret~is not predicted}
+    % \State \mgen predicts $y$ \Comment{\textcolor{blue}{Generate} }
+    \State \mcrt predicts \cuse given $x, y$
+    % \Comment{\textcolor{blue}{Critique} }
+\EndIf
+Add augmented $(x, y, d, r)$ to $\mathcal{D}_{gen}$
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Training examples.}
+Table~\ref{tab:examplse_training_table} show several training examples used for \mgen training. 
+
+
+\begin{table*}[t!]
+\renewcommand{\arraystretch}{1.2}
+\setlength{\tabcolsep}{2pt}
+\footnotesize
+    \centering
+    \begin{tabular}{p{14cm}}%|ccccccc}
+\toprule
+% \textbf{Input} & \textbf{Output} \\\midrule
+{\bf Input} Identify the two types of computer memory. (from \texttt{gpt4\_alpaca})\\
+{\bf Output} [\ret=\texttt{Yes}]\texttt{<p>}\textcolor{gray}{Computer memory Computer memory -- In computing, memory refers to the computer hardware integrated circuits that store information for immediate use in a computer; it is synonymous with the term ``primary storage''. Computer memory operates at a high speed, for example random-access memory (RAM), as a distinction from storage that provides slow-to-access information but offers higher capacities. If needed, contents of the computer memory can be transferred to secondary storage; a very common way of doing this is through a memory management technique called ``virtual memory''. An archaic synonym for memory is store. The term ``memory'', meaning ``primary storage'' or ``main memory'', is}\texttt{<p>}[\crel=\texttt{Relevant}]Primary memory, also known as main memory, is the memory that the computer can directly access and manipulate. [\cgr=\texttt{Fully Supported}] [\ret=\texttt{Yes}]\texttt{<p>}\textcolor{gray}{Computer memory--often associated with addressable semiconductor memory, i.e. integrated circuits consisting of silicon-based transistors, used for example as primary storage but also other purposes in computers and other digital electronic devices. There are two main kinds of semiconductor memory, volatile and non-volatile. Examples of non-volatile memory are flash memory (used as secondary memory) and ROM, PROM, EPROM and EEPROM memory (used for storing firmware such as BIOS). Examples of volatile memory are primary storage, which is typically dynamic random-access memory (DRAM), and fast CPU cache memory, which is typically static random-access memory (SRAM) that is fast but energy-consuming, offering lower memory}\texttt{<p>}[\crel=\texttt{Relevant}]Primary memory can be accessed quickly, but it is volatile, meaning that the data is lost if the power is turned off.[\cgr=\texttt{Partially Supported}]...[\cuse:5] \\ \midrule
+{\bf Input} Give an example of a situation where you have to delegate tasks (from \texttt{gpt4\_alpaca})\\
+{\bf Output} [\ret=\texttt{No}]The manager realizes that there is an extensive list of tasks that need to be completed in order to make the event a success.[\ret=\texttt{Yes}]\texttt{<p>}\textcolor{gray}{Delegation--Delegation is the assignment of any responsibility or authority to another person (normally from a manager to a subordinate) to carry out specific activities. It is one of the core concepts of management leadership. However, the person who delegated the work remains accountable for the outcome of the delegated work. Delegation empowers a subordinate to make decisions, i.e. it is a shifting of decision-making authority from one organizational level to a lower one. Delegation, if properly done, is not fabrication. The opposite of effective delegation is micromanagement, where a manager provides too much input,}\texttt{<p>}[\crel=\texttt{Relevant}]This includes tasks such as creating a guest list, designing and sending invitations, booking a venue, coordinating with vendors, planning the event\'s program, and monitoring the budget.[\cgr=\texttt{Partially Supported}][\ret=\texttt{No}]Since it is not possible for the manager to handle everything alone, they must delegate tasks to their team members.[\ret=\texttt{No}]The manager would then assign each team member specific responsibilities based on their individual skillsets and strengths.[\ret=\texttt{Yes}]\textcolor{gray}{\texttt{<p>}Joint application design -- Subject Matter Experts: These are the business users, the IS professionals, and the outside experts that will be needed for a successful workshop. This group is the backbone of the meeting\texttt{<p>}}[\crel=\texttt{Irrelevant}]For instance, the team\'s graphic designer might be tasked with designing the invitations, while the event coordinator would be in charge of planning the program and working with vendors...[\ret=\texttt{No}]By delegating tasks, the manager can ensure that all necessary tasks are completed in a timely manner, while also empowering their team members to take on responsibilities and contribute to the success of the event.[\cuse=5]\\
+\midrule
+{\bf Input} Synthesize a poem based on this prompt:``The sun is setting'' (from \texttt{stanford\_alpaca})\\
+{\bf Output} [\ret=\texttt{No}]The stars begin to twinkle bright the trees, scattered throughout the night; [\ret=\texttt{No}]The stars begin to twinkle bright the trees, scattered throughout the night [\ret=\texttt{No}] They flicker like a silent dance, A peaceful moment in its trance. [\ret=\texttt{No}] They flicker like a silent dance, A peaceful moment in its trance. [\ret=\texttt{No}] A chorus of crickets sing a lullaby, To every creature that roams the sky [\cuse=5]\\ \midrule
+{\bf Input} when did walking dead season 7 come out  (from \texttt{nq})\\
+{\bf Output} [\ret=\texttt{Yes}]\texttt{<p>}\textcolor{gray}{The Walking Dead (season 7)--The Walking Dead (season 7) The seventh season of ``The Walking Dead'', an American post-apocalyptic horror television series on AMC, premiered on October 23, 2016, and concluded on April 2, 2017, consisting of 16 episodes. Developed for television by Frank Darabont, the series is based on the eponymous series of comic books by Robert Kirkman, Tony Moore, and Charlie Adlard. ...}\texttt{<p>}[\crel=\texttt{Relevant}]October 23 , 2016[\cgr=\texttt{Fully Supported}][\cuse=5] \\ \midrule
+{\bf Input} Given a chat history separated by new lines, generates an informative, knowledgeable and engaging response: Hello, I love German shepherd dogs and you? -- My favorite dog,  they are officially known as German Shepherd Dogs? -- Yes, I have a German shepherd in my house and she is pregnant (from \texttt{wow})\\
+{\bf Output} hey also are easily trained, obedient, and intelligent.[\ret=\texttt{Yes}]\texttt{<p>}\textcolor{gray}{German Shepherd -- a simple difference of opinion, it is the fundamental issue of the breed\'s essential conformation and movement. ... They are known for being easy to train and good for performing tasks and following instructions. They are especially well known for their police work, being used for tracking criminals, patrolling troubled areas and detecting and holding suspects. }\texttt{<p>}[\crel=\texttt{Relevant}]Because of this, they are often used for disability assistance and for police work. [\cgr=\texttt{Partially Supported}][\cuse=2] \\ 
+\bottomrule
+ \end{tabular}
+    \caption{List of the training examples.}\label{tab:examplse_training_table}
+\end{table*}
+
+
+\subsection{\model Inference}
+\label{sec:inference_details}
+\paragraph{Details of beam-search score calculations.}
+We first compute scores for each critique type by taking the normalized probabilities of desirable tokens. 
+For \crel, we compute the score as follows:
+\begin{equation*}
+    s(\crel) = \frac{p(\crel = \textsc{Relevant})}{p(\crel = \textsc{Relevant}) + p(\crel = \textsc{Irrelevant})}.
+\end{equation*}
+For \cgr, we compute the score as follows:
+\begin{equation*}
+    s(\crel) = \frac{p(\cgr = \textsc{Fully})}{S} + 0.5 \times \frac{p(\cgr = \textsc{Partially})}{S}, 
+\end{equation*}
+where $S = \sum_{t \in \{\textsc{Fully}, \textsc{Partially}, \textsc{No}\}}p(\cgr=t)$. 
+For \cuse where we have a five-scale score, we compute the weighted sum of the scores. 
+We assigns weighted scores of $w =\{-1, -0.5, 0, 0.5, 1\}$ to the tokens \cuse=$\{1, 2, 3, 4, 5\}$, and compute the final scores as follows:
+\begin{equation*}
+    s(\cuse) = \sum_{i}^5 w_i\frac{p(\cuse = i)}{S},
+\end{equation*}
+where $S =\sum_{t \in \{1,2,3,4,5\}}p(\cuse=t)$. 
+\paragraph{Details of adaptive retrieval.}
+% \akari{TODO: add details}
+For retrieval based on soft constraints, we trigger retrieval if the following condition is satisfied: 
+\begin{equation*}
+   \frac{p(\ret = \textsc{Yes})}{p(\ret = \textsc{Yes})+ p(p(\ret = \textsc{No})} > \delta.
+\end{equation*}
+\section{Experimental Details}
+
+
+% \subsection{Details of training data}
+
+
+\subsection{More Details of Training }
+\label{sec:training_details}
+\paragraph{More details of training and computations.}
+We use 4 Nvidia A100 with 80GB memory to train our models. All models are trained for 3 epochs with a batch size of 128, a peak learning rate of 2e-5 with 3\% warmup steps, and linear decay afterward. We set the maximum token length to be 2,048 for the 7B model, and 1,524 for the 13B model due to the memory constraint. We use Deepspeed stage 3~\citep{rajbhandari2020zero} to conduct multi-GPU distributed training, with training precision Bfloat16 enabled. FlashAttention~\citep{dao2022flashattention} is used to make the long-context training more efficient.
+We run inference of our trained models using 1-2 Quadro RTX 6000 GPUs with 24GB memory. 
+
+\subsection{More Details of Evaluations}
+\label{sec:details_experiments}
+\paragraph{Retrieval setup details.}
+By default, we use Contriever-MS MARCO to retrieve the top five documents from Wikipedia{, and use official Wikipedia embeddings based on 2018 English Wikipedia. On PopQA, where question and answer pairs are created based on WikiData in 2022, we found that the 2018 Wikipedia sometimes lacks articles about some entities that have been more recently added to Wikipedia. 
+Therefore, for PopQA, we used the December 2020 preprocessed Wikipedia corpus provided by 
+\cite{izacard2022few} and generated document embeddings.\footnote{\url{https://github.com/facebookresearch/atlas}}}
+The issues of performance variance from different Wikipedia dumps have been reported by prior work~\citep{asai2019learning,izacard2022few}. 
+Yet, we observe limited effectiveness of such off-the-shelf retrieval models trained primarily on knowledge-intensive tasks for open-ended generation (e.g., instruction following). 
+{Recent or concurrent work studies instruction-tuning of retrieval systems~\citep{asai-etal-2023-task} or joint training of retrieval and LM components~\citep{lin2023radit}, while we leave exploring the effectivess of such appraoches for future work. }
+For bio generation and open-domain QA tasks, we additionally retrieve five documents using Google Programmable Search\footnote{\url{https://programmablesearchengine.google.com/about/}} and search documents from English Wikipedia. As this API only provides snippets, we retrieve Wikipedia introductory paragraphs for the corresponding entities. 
+
+\paragraph{Detailed experimental settings for individual datasets.}
+For OpenQA datasets, we set the maximum new token number to 100 tokens. For closed-set tasks (PubHealth and ARC-C), we set the maximum new token length to 50 for all baselines. 
+For \model inference on PubHealth and ARC-C, instead of determining the output with the highest score~\ref{eq:reward} as in other tasks, we aggregate the scores for each option and select the answer option with the highest score. 
+We found in zero-shot settings of fact checking, some LLMs can generate capitalized class labels (e.g., True) while our gold labels are lower-cased. Therefore, across different LMs, for fact checking, we lowercase the predictions. 
+In multiple choice tasks, we found some models generate answers in slightly different ways (e.g., (A) instead of A). We slightly modify instructions for each LLM to avoid such format violations, and further conduct string matching between each candidate and model predictions if format violations still remain. After that processing, in closed set tasks, model predictions match one of the gold classes in almost all cases. 
+For ALCE, we found that Llama2-chat tend to generate significantly lower outputs than other models (e.g., on average, their output is nearly 100 token, while ChatGPT generates 40 tokens on average), resulting in inflated str-em scores. We limit the maximum generation length to 100 tokens for all baselines to avoid this issue, rather than the original 300 tokens in the ALCE paper. Consequently, all of the baseline output length is within 30-60 tokens. 
+For FactScore, we set the maximum new token length to 500 for baselines and 200 for \model at each segment level. 
+
+\paragraph{Task-specific instructions.} Table~\ref{tab:list_of_instructions} shows the list of the instructions used during evaluations. For Open-domain QA, we do not provide explicit instructions. 
+
+\begin{table*}[t!]
+\renewcommand{\arraystretch}{1.2}
+\setlength{\tabcolsep}{2pt}
+\footnotesize
+    \centering
+    \begin{tabular}{lp{12cm}}%|ccccccc}
+\toprule
+\textbf{Dataset} & \textbf{Instruction} \\\midrule
+ARC-C & Given four answer candidates, A, B, C and D, choose the best answer choice. Please answer with the capitalized alphabet only, without adding any extra phrase or period. \\
+PubHealth & Is the following statement correct or not? Say true if it's correct; otherwise, say false. Don't capitalize or add periods, just say ``true'' or ``false''. \\
+Bio Generation & Tell me a bio about \texttt{[Person Name]}\\
+ASQA (baseline) & Instruction: Write an accurate, engaging, and concise answer for the given question using only the provided search results (some of which might be irrelevant) and cite them properly. Use an unbiased and journalistic tone. Always cite for any factual claim. When citing several search results, use [1][2][3]. Cite at least one document and at most three documents in each sentence. If multiple documents support the sentence, only cite a minimum sufficient subset of the documents. \\
+ASQA (ours) & Answer the following question. The question may be ambiguous and have multiple correct answers, and in that case, you have to provide a long-form answer including all correct answers. \\
+% {\bf Training} & \\
+\bottomrule
+ \end{tabular}
+    \caption{Full list of instructions used during zero-shot evaluations. For open-domain QA, we don't use any task specific instruction and simply use the original questions as input query. }\label{tab:list_of_instructions}
+\end{table*}
+
+\section{Results}
+% \subsection{Qualitative Examples}
+\subsection{Analysis}
+\paragraph{Reliance on parametric- and non-parametric memories.}
+We conduct analysis on how frequently model answers come from retrieved passages (non-parametric memories) or their own parametric memories. 
+On two open-domain QA datasets, TriviaQA and PopQA, we conduct the following analysis: 1) sample query models successfully answer correctly, 2) for each query in this group, check whether the matched ground-truth answer is a sub-string of the retrieved passage or not. We evaluate \model 7B, Alpaca 7B, Alpaca 13B, and Llama2-Chat-13B. 
+We found that \model significantly less frequently generates answers that are not included in the provided evidence; in particular, in Alpaca 30B, 20\% of the correct predictions are not included in the provided passages, followed by Llama2-chat 13B (18\%) and Alpaca (15\%), while it is only 2\% in \model. When retrieved passages are not relevant, \model generates \crel=\texttt{Irrelevant}, indicating that the following answers may not be factually grounded, while those instruction-tuned models continue to generate plausible answers. 
+% Figure~\ref{fig:answer_included} shows that all other models generate many answers that were originally not included in the retrieved passages. 
+
+\subsection{Human Evaluation Examples}
+Table~\ref{tab:human_evaluations} shows examples with human evaluations on S\&P and correctness of \crel and \cgr reflection tokens. 
+
+\begin{table*}[t!]
+\renewcommand{\arraystretch}{1.2}
+\setlength{\tabcolsep}{2pt}
+\footnotesize
+    \centering
+    \begin{tabular}{p{14cm}}%|ccccccc}
+\toprule
+% \textbf{Input} & \textbf{Output} \\\midrule
+{\bf Input} What genre is A Question and Answer Guide to Astronomy? (\texttt{PopQA})\\
+{\bf Output} [\ret=\texttt{Yes}] \texttt{<p>}{\textcolor{gray}{\bf Reference [1]}}\texttt{<p>}[\crel=\texttt{Relevant}] A Question and Answer Guide to Astronomy is a non-fiction book that falls under the genre of Astronomy and Cosmology. [\cgr=\texttt{Fully Supported}][\cuse=5] \\\hdashline
+{\bf Reference [1]} A Question and Answer Guide to Astronomy is a book about astronomy and cosmology, and is intended for a general audience. The book was written by Pierre-Yves Bely, Carol Christian, and Jean-Rene Roy, and published in English by Cambridge University Press in 2010. It was originally written in French. The content within the book is written using a question and answer format. It contains some 250 questions, which The Science Teacher states each are answered with a concise and well-formulated essay that is informative and readable. The Science Teacher review goes on to state that many of the answers given in the book are little gems of science writing. The Science Teacher summarizes by stating that each question is likely to be thought of by a student, and that the answers are informative, well constructed, and thorough. The book covers information about the planets, the Earth, the Universe, practical astronomy, history, and awkward questions such as astronomy in the Bible, UFOs, and aliens. Also covered are subjects such as the Big Bang, comprehension of large numbers, and the Moon illusion. \\\hdashline
+{\bf S\&P } Supported and Plausible. \\
+{\bf Correctness of \crel and \cgr: } Both \crel and \cgr are correct, as the Reference [1] provides detailed information of the book including the genre, and the model output is fully supported by the reference. \\
+{\bf Input }Who is the author of The Lie? (\texttt{PopQA})\\
+{\bf Output } [\ret=\texttt{Yes}] \texttt{<p>}{\textcolor{gray}{\bf Reference [1]}}\texttt{<p>}[\crel=\texttt{Relevant}] The author of The Lie is Sam Harris.[\cgr=\texttt{Fully Supported}][\cuse=5] \\\hdashline
+{\bf Reference [1]} Lying is a 2011 long-form essay book by American author and neuroscience expert Sam Harris. Harris argues that we can radically simplify our lives and improve society by merely telling the truth in situations where others often lie. \\\hdashline
+{\bf S\&P } Plausible but not supported. \\
+{\bf Correctness of \crel and \cgr } Both \crel and \cgr are incorrect, as the Reference [1] is about a different book whose title is similar to The Lie. \\\midrule
+{\bf Input} Tell me a bio about Ronaldinho (\texttt{Bio})\\
+{\bf Output} [\ret=\texttt{Yes}] \texttt{<p>}{\textcolor{gray}{\bf Reference [1]}}\texttt{<p>}[\crel=\texttt{Relevant}] Ronaldinho is a retired professional footballer from Brazil.[\cgr=\texttt{Fully Supported}][\ret=\texttt{Continue}]He played as an attacking midfielder and was known for his technical skills, creativity, dribbling ability, and accuracy from free kicks[\ret=\texttt{Continue}]He won two FIFA World Player of the Year awards and a Ballon d'Or.[\cuse=5] \\\hdashline
+{\bf Reference [1]} Ronaldo de Assis Moreira (born 21 March 1980), commonly known as Ronaldinho Gaúcho or simply Ronaldinho, is a Brazilian retired professional footballer who played mostly as an attacking midfielder, but was also deployed as a winger. Considered one of the best players of his generation and regarded by many as one of the greatest of all time, Ronaldinho won two FIFA World Player of the Year awards and a Ballon d'Or. A global icon of the sport, he was renowned for his technical skills, creativity, dribbling ability and accuracy from free-kicks, as well as his use of tricks, feints, no-look passes and overhead... \\\hdashline
+{\bf S\&P} Plausible and fully supported. \\
+{\bf Correctness of \crel and \cgr }Both \crel and \cgr are correct. \\\midrule
+{\bf Input} Tell me a bio about Sergei Bodrov (\texttt{Bio})\\
+{\bf Output} [\ret=\texttt{Yes}] \texttt{<p>}{\textcolor{gray}{\bf Reference [1]}}\texttt{<p>}[\crel=\texttt{Relevant}] Sergei Vladimirovich Bodrov (born June 28, 1948) is a Russian film director, screenwriter, and producer.[\cgr=\texttt{Fully Supported}][\ret=\texttt{Continue}]He was born in Moscow, Russia.[\ret=\texttt{Continue}]He is the president of the Russian Guild of Film Producers.[\cuse=5] \\\hdashline
+{\bf Reference [1]} Sergei Vladimirovich Bodrov (born June 28, 1948) is a Russian film director, screenwriter, and producer. In 2003 he was the President of the Jury at the 25th Moscow International Film Festival.  \\\hdashline
+{\bf S\&P} Plausible but only partially supported. The the Reference [1] does not explicitly mention the person is born in Moscow and there is no description about the Russian Guild of Film Producers. \\
+{\bf Correctness of \crel and \cgr } \crel and \cgr are correct as the reference document is highly relevant and the first sentence is fully supported. \\
+\bottomrule
+ \end{tabular}
+    \caption{Examples of human evaluation results.}\label{tab:human_evaluations}
+\end{table*}
+
+\subsection{Qualitative Examples}
+% \akari{add qualitative examples}
+Table~\ref{tab:examplse_test} shows several examples predicted by our \model (13B). 
+The first example is the model output to an ASQA question. The first reference states that Emperor Constantine made Sunday a day of rest from labor, and further the second citation supports the fact that the official adoption of Sunday as a day of rest by Constantine in AD 321. 
+In the second example, the model predicts \texttt{Contradictory} to the first output as the output says the person has served as the CEO since 2010, while the passage says he stepped down as CEO in 2015. Indicating those factual contradictions as reflection tokens enables to enforcement of hard control and also verification of model outputs easily. 
+In the third example, while the generation is mostly correct, \model predicts \texttt{Partially Support} to the statement listing the name of the songs, as they were not explicitly mentioned. 
+
+\begin{table*}[t!]
+\renewcommand{\arraystretch}{1.2}
+\setlength{\tabcolsep}{2pt}
+\footnotesize
+    \centering
+    \begin{tabular}{p{14cm}}%|ccccccc}
+\toprule
+{\bf Input} When did sunday became the seventh day of the week (\texttt{asqa})\\
+{\bf Output} [\ret=\texttt{Yes}] \texttt{<p>}{\textcolor{gray}{\bf Reference [1]}}\texttt{<p>}[\crel=\texttt{Relevant}] In 321 AD, the Roman Emperor Constantine the Great made Sunday a day of rest from labor, stating: ``On the venerable Day of the Sun let the magistrates and people residing in cities rest, and let all workshops be closed''.[\cgr=\texttt{Fully Supported}] [\ret=\texttt{Yes}] \texttt{<p>}{\bf \textcolor{gray}{Reference [2]}}\texttt{<p>}[\crel=\texttt{Relevant}] The official adoption of Sunday as a day of rest by Constantine the Great in AD 321 made Sunday the seventh day of the week.{\bf [2]}[\cgr=\texttt{Fully Supported}][\cuse=5] \\\hdashline
+{\bf Reference [1]} Emperor Constantine then enacted the first Sunday Laws, for ``the venerable Day of the Sun'' in 321 A.D. On March 7, 321, the Roman emperor Constantine issued a decree making Sunday a day of rest from labor, stating: We find a good description of this in sources such as the book Rest Days which states: Early Christian observance of both the spiritual seventh-day sabbath and a Lord\'s Day assembly is evidenced in Ignatius\'s letter to the Magnesians ca. 110.  \\
+{\bf Reference [2]} Despite the official adoption of Sunday as a day of rest by Constantine, the seven-day week and the nundial cycle continued to be used side-by-side until at least the Calendar of 354 and probably later. ...  The fact that the canon had to be issued at all is an indication that adoption of Constantine's decree of 321 was still not universal ...  \\\midrule
+{\bf Input} Tell me a bio about Rory Tapner. (\texttt{bio generation}) \\
+{\bf Output} 
+\texttt{<p>}{\textcolor{gray}{\bf Reference [1]}}\texttt{<p>}[\crel=\texttt{Relevant}] Rory Tapner is a British businessman who has served as the Chief Executive Officer of Coutts, a private banking and wealth management company, since 2010.[\cgr=\texttt{Contradictory}], {\bf Reference [2]}\texttt{<p>}[\crel=\texttt{Relevant}] Rory Tapner was born on 30 September 1959 in London, England.[\cgr=\texttt{Fully Supported}]\\\hdashline
+{\bf Reference [1]} Rory Tapner Rory Tapner  is a UK businessman who, in September 2010 was appointed CEO of Coutts, the Wealth Management division of Royal Bank of Scotland Group. In February 2015 he stepped down as CEO when he was replaced in the role by Alison Rose \\
+{\bf Reference [2]} Holdings (from August 2016); and the Council of the University of Buckingham (from July 2017). Rory Tapner Rory Tapner (born 30 September 1959) is a UK businessman ... \\\midrule
+{\bf Input} Tell me a bio about G. Venugopa. (\texttt{bio generation}) \\
+{\bf Output (ranked 1)} 
+[\ret=\texttt{Yes}] \texttt{<p>}{\textcolor{gray}{\bf Reference [1]}}\texttt{<p>}[\crel=\texttt{Relevant}] G. Venugopal is a popular playback singer in the Malayalam film industry. [\ret=\texttt{Continue}] He has sung over 300 songs in Malayalam, Tamil, and Hindi movies.[\cgr=\texttt{Partially Supported}] [\ret=\texttt{Yes}] \texttt{<p>}{\textcolor{gray}{\bf Reference [2]}}\texttt{<p>}G. Venugopal was born on December 10, 1960 in India.[\cgr=\texttt{Fully Supported}] \\\hdashline
+{\bf Reference [1]} 'G. Venugopal G Venugopal (born 10 December 1960) is an Indian playback singer known for his work in Malayalam films. He started his singing career in the film ``Odaruthammaava Aalariyaam'' (1984). Since then he has sung in more than 300 films; and has over 500 private albums to his credit. The many awards he has won include the coveted Best Playback Singer (Kerala State) which he won thrice, the Film Critics award and the Kerala Kaumudi Gallop Poll award (twice). He won The Kerala State award for Best Playback singer (2004) third time for the song "aadedee..aadaadedee" from the film "Ullam".Venugopal' \\
+{\bf Reference [2]} Kerala State Film Awards: Kerala Film Critics Award Kerala State Government Award (Professional Drama): Asianet Film Awards: Kerala Kaumadi Gallup Poll Award: Academic G. Venugopal G Venugopal (born 10 December 1960) is an Indian playback singer known for his work in Malayalam films.  \\
+\bottomrule
+ \end{tabular}
+    \caption{Examples of outputs.}\label{tab:examplse_test}
+\end{table*}
+
+\section{Full List of Instructions and Demonstrations for GPT-4}
+\label{sec:instruction_gpt_4}
+Here, we show the instructions and demonstrations used to prompt GPT-4 to collect reflection tokens. 
+Table~\ref{tab:algo_box} shows the instructions and demonstrations for the initial retrieval token. 
+Table~\ref{tab:algo_box_multiple_retrieval} shows the instruction and demonstrations used to collect the three-way output tokens for \ret~given instruction, preceding sentences, and previously retrieved passages. 
+Due to the longer demonstration and test input, we only use a single demonstration. 
+Table~\ref{tab:algo_box_relevant} shows an instruction and demonstrations used to collect the three-way output tokens for \crel. 
+Table~\ref{tab:algo_box_grd} shows an instruction and demonstrations used to collect the three-way output tokens for \crel.
+Table~\ref{tab:algo_box_use} shows an instruction and demonstrations used to collect the five-way output tokens for \cuse.
+\begin{table*}[h!]
+\begin{tcolorbox}
+{\bf Instructions}\\ 
+Given an instruction, please make a judgment on whether finding some external documents from the web (e.g., Wikipedia) helps to generate a better response. Please answer [Yes] or [No] and write an explanation. 
+\tcblower
+{\bf Demonstrations}  \\
+{\bf Instruction} Give three tips for staying healthy. \\
+{\bf Need retrieval?} [Yes] \\
+{\bf Explanation} There might be some online sources listing three tips for staying healthy or some reliable sources to explain the effects of different behaviors on health. So retrieving documents is helpful to improve the response to this query. \\ 
+\\
+{\bf Instruction} Describe a time when you had to make a difficult decision. \\ 
+{\bf Need retrieval?} [No] \\ 
+{\bf Explanation} This instruction is asking about some personal experience and thus it does not require one to find some external documents. \\
+\\
+{\bf Instruction} Write a short story in third person narration about a protagonist who has to make an important career decision. \\
+{\bf Need retrieval?} [No] \\
+{\bf Explanation} This instruction asks us to write a short story, which does not require external evidence to verify. \\
+\\
+{\bf Instruction} What is the capital of France?\\
+{\bf Need retrieval?} [Yes] \\
+{\bf Explanation} While the instruction simply asks us to answer the capital of France, which is a widely known fact, retrieving web documents for this question can still help. \\
+\\
+{\bf Instruction}  Find the area of a circle given its radius. Radius = 4 \\
+{\bf Need retrieval?} [No]\\
+{\bf Explanation} This is a math question and although we may be able to find some documents describing a formula, it is unlikely to find a document exactly mentioning the answer. \\
+\\
+{\bf Instruction} Arrange the words in the given sentence to form a grammatically correct sentence. quickly the brown fox jumped\\
+{\bf Need retrieval?} [No]\\
+{\bf Explanation}  This task doesn't require any external evidence, as it is a simple grammatical question. 
+\\
+\\
+{\bf Instruction} Explain the process of cellular respiration in plants.\\
+{\bf Need retrieval?} [Yes]\\
+{\bf Explanation} This instruction asks for a detailed description of a scientific concept, and is highly likely that we can find a reliable and useful document to support the response. 
+\end{tcolorbox}
+\caption{\label{tab:algo_box} Instructions and demonstrations for \ret~aspect given the input only. }
+\end{table*} 
+
+\begin{table*}[h!]
+\begin{tcolorbox}
+{\bf Instructions}\\ 
+You will be provided with an instruction, evidence, output sentence, and preceding sentences (optional). If the preceding sentence is given, the output should be the sentence that follows those preceding sentences.  Your task is to determine whether the information in the output sentence can be fully verified by the evidence or if it requires further external verification. There are three cases: \\
+- If the output sentence can be verified solely with the evidence, then respond with [Continue to Use Evidence]. \\
+- If the sentence doesn’t require any factual verification (e.g., a subjective sentence or a sentence about common sense), then respond with  [No Retrieval]. \\
+- If additional information is needed to verify the output sentence, respond with [Retrieval]. Please provide explanations for your judgments. 
+\tcblower
+{\bf Instruction} Explain the use of word embeddings in Natural Language Processing. \\
+{\bf Preceding sentences} Word embeddings are one of the most powerful tools available for Natural Language Processing (NLP). They are mathematical representations of words or phrases in a vector space, allowing similarities between words and the context in which they are used to be measured. \\
+{\bf Evidence}: 
+Word embedding \\
+Word embedding is the collective name for a set of language modeling and feature learning techniques in natural language processing (NLP) where words or phrases from the vocabulary are mapped to vectors of real numbers. Conceptually it involves a mathematical embedding from a space with one dimension per word to a continuous vector space with a much lower dimension. 
+Output: Word embeddings are useful for tasks such as sentiment analysis, text classification, predicting the next word in a sequence, and understanding synonyms and analogies. \\
+{\bf Rating} [Retrieval] \\
+{\bf Explanation} The output discusses the applications of word embeddings, while the evidence only discusses the definitions of word embeddings and how they work. Therefore, we need to retrieve other evidence to verify whether the output is correct or not. 
+\end{tcolorbox}
+\caption{\label{tab:algo_box_multiple_retrieval} Instructions and demonstrations for \ret~aspect given the input, preceding generations, and retrieved passages. }
+\end{table*}
+
+
+\begin{table*}[h!]
+\begin{tcolorbox}
+{\bf Instructions}\\ 
+You'll be provided with an instruction, along with evidence and possibly some preceding sentences. When there are preceding sentences, your focus should be on the sentence that comes after them. Your job is to determine if the evidence is relevant to the initial instruction and the preceding context, and provides useful information to complete the task described in the instruction. If the evidence meets this requirement, respond with [Relevant]; otherwise, generate [Irrelevant].
+\tcblower
+{\bf Instruction} Given four answer options, A, B, C, and D, choose the best answer. \\
+{\bf Input} Earth's rotating causes \\
+A: the cycling of AM and PM \\
+B: the creation of volcanic eruptions \\
+C: the cycling of the tides \\
+D: the creation of gravity \\ 
+{\bf Evidence} Rotation causes the day-night cycle which also creates a corresponding cycle of temperature and humidity creates a corresponding cycle of temperature and humidity. Sea level rises and falls twice a day as the earth rotates. \\
+{\bf Rating} [Relevant] \\
+{\bf Explanation} The evidence explicitly mentions that the rotation causes a day-night cycle, as described in the answer option A. \\
+\\
+{\bf Instruction} age to run for US House of Representatives \\
+{\bf Evidence} The Constitution sets three qualifications for service in the U.S. Senate: age (at least thirty years of age); U.S. citizenship (at least nine years); and residency in the state a senator represents at the time of election. \\
+{\bf Rating} [Irrelevant] \\
+{\bf Explanation} The evidence only discusses the ages to run for the US Senate, not for the House of Representatives.  
+\end{tcolorbox}
+\caption{\label{tab:algo_box_relevant} Instructions and demonstrations for \crel~aspect given the input only. }
+\end{table*}
+
+
+\begin{table*}[h!]
+\begin{tcolorbox}
+{\bf Instructions}\\ 
+You will receive an instruction, evidence, and output, and optional preceding sentences.  If the preceding sentence is given, the output should be the sentence that follows those preceding sentences. Your task is to evaluate if the output is fully supported by the information provided in the evidence.\\
+Use the following entailment scale to generate a score:\\
+- [Fully supported] - All information in output is supported by the evidence, or extractions from the evidence. This is only applicable when the output and part of the evidence are almost identical. \\
+- [Partially supported] - The output is supported by the evidence to some extent, but there is major information in the output that is not discussed in the evidence. For example, if an instruction asks about two concepts and the evidence only discusses either of them, it should be considered a [Partially supported]. \\
+- [No support / Contradictory] - The output completely ignores evidence, is unrelated to the evidence, or contradicts the evidence. This can also happen if the evidence is irrelevant to the instruction.\\\\
+Make sure to not use any external information/knowledge to judge whether the output is true or not. Only check whether the output is supported by the evidence, and not whether the output follows the instructions or not.
+\tcblower
+{\bf Instruction} Explain the use of word embeddings in Natural Language Processing. \\
+{\bf Preceding sentences} Word embeddings are one of the most powerful tools available for Natural Language Processing (NLP). They are mathematical representations of words or phrases in a vector space, allowing similarities between words and the context in which they are used to be measured. \\
+{\bf Output} Word embeddings are useful for tasks such as sentiment analysis, text classification, predicting the next word in a sequence, and understanding synonyms and analogies. \\
+{\bf Evidence} 
+Word embedding \\
+Word embedding is the collective name for a set of language modeling and feature learning techniques in natural language processing (NLP) where words or phrases from the vocabulary are mapped to vectors of real numbers. Conceptually it involves a mathematical embedding from a space with one dimension per word to a continuous vector space with a much lower dimension. Methods to generate this mapping include neural networks, dimensionality reduction on the word co-occurrence matrix, probabilistic models, explainable knowledge base method, and explicit representation in terms of the context in which words appear. Word and phrase embeddings, when used as the underlying input representation, have been shown to boost the performance in NLP tasks such as syntactic parsing, sentiment analysis, next token predictions as well and analogy detection. \\
+{\bf Score} [Fully supported] \\
+{\bf Explanation} The output sentence discusses the application of word embeddings, and the evidence mentions all of the applications syntactic parsing, sentiment analysis, next token predictions as well as analogy detection as the applications. Therefore, the score should be [Fully supported].
+\end{tcolorbox}
+\caption{\label{tab:algo_box_grd} Instructions and demonstrations for \cgr tokens. }
+\end{table*}
+
+\begin{table*}[h!]
+\begin{tcolorbox}
+{\bf Instructions}\\ 
+Given an instruction and an output, rate whether the response appears to be a helpful and informative answer to the query, from 1 (lowest) - 5 (highest). We call this score perceived utility. The detailed criterion is as follows: 
+5: The response provides a complete, highly detailed, and informative response to the query, fully satisfying the information needs. 
+4: The response mostly fulfills the need in the query, while there can be some minor improvements such as discussing more detailed information, having better structure of the response, or improving coherence.   
+3: The response is acceptable, but some major additions or improvements are needed to satisfy users’ needs. 
+2: The response still addresses the main request, but it is not complete or not relevant to the query. 
+1: The response is barely on-topic or completely irrelevant. 
+\tcblower
+{\bf Instruction} Who is the current prime minister of the UK as of 2023? \\
+{\bf Output} Boris Johnson was the prime minister of the UK from 2019 - 2022. \\
+{\bf Perceived utility} 2 \\
+{\bf Explanation} While the output provides a factually correct statement about the UK prime minister from 2019 to 2022, this instruction asks who the prime minister is as of 2023, so it doesn't answer the instruction. Therefore, the utility is 2. \\
+\\
+{\bf Instruction} Given a description of a travel destination, recommend 10 tourist attractions with detailed descriptions of each. The travel destination is Tokyo, Japan.\\
+{\bf Output} 
+Tokyo is a vibrant city full of exciting tourist attractions. Some must-see sights include the Tokyo Skytree, Tokyo Disneyland, Sensoji Temple, Meiji Shrine, Tsukiji Fish Market, Harajuku, and Shinjuku Gyoen. \\
+{\bf Perceived utility} 3 \\
+{\bf Explanation} This output doesn't provide descriptions of each attraction and the number of the attractions is also less than 10. While this output partially answers the instructions, it doesn't match the instructions strictly. 
+\end{tcolorbox}
+\caption{\label{tab:algo_box_use} Instructions and demonstrations for \cuse tokens. }
+\end{table*}

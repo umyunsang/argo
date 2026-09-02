@@ -565,6 +565,9 @@ def main():
             metadata_obj.get("records", []) + round2_metadata_records
             + round3_metadata_records + round4_metadata_records + round5_metadata_records
             + round6_metadata_records + round7_metadata_records
+            + json.loads(
+                (ROOT / "paper/sources/arxiv-metadata-literature-round8-receipt.json").read_text(encoding="utf-8")
+            ).get("records", [])
         )
         combined_metadata_ids = [x.get("source_id") for x in combined_metadata_records]
         duplicate_metadata_ids = sorted(k for k, v in collections.Counter(combined_metadata_ids).items() if v > 1)
@@ -1061,7 +1064,12 @@ def main():
             restored_path = ROOT / entry.get("path", "")
             if not restored_path.is_file() or sha256_path(restored_path) != entry.get("sha256"):
                 restoration_failures.append(entry.get("path"))
-        if restoration_obj.get("locator_verification", {}).get("verified_from_bytes") != len(locators):
+        restoration_verification = restoration_obj.get("locator_verification", {})
+        if (
+            restoration_verification.get("verified_from_bytes")
+            != restoration_verification.get("locator_count")
+            or restoration_verification.get("locator_count", 0) > len(locators)
+        ):
             restoration_failures.append("locator_verification_count")
         structured_evidence["legacy_restoration_failures"] = restoration_failures
         if restoration_failures:
@@ -1362,6 +1370,67 @@ def main():
         structured_evidence["matrix_round7_count_failures"] = matrix_round7_count_failures
         if set(matrix_round7_counts) != required_round7_source_ids or matrix_round7_count_failures:
             errors.append("round-7 evidence matrix source identity, admission fields, or expected facet-link count mismatch")
+
+        round8_metadata_obj = json.loads(
+            (ROOT / "paper/sources/arxiv-metadata-literature-round8-receipt.json").read_text(encoding="utf-8")
+        )
+        round8_metadata_records = round8_metadata_obj.get("records", [])
+        required_round8_source_ids = set(expectations.get("required_round8_source_ids", []))
+        round8_source_receipts = json.loads(
+            (ROOT / "paper/sources/literature-round8-source-receipts.json").read_text(encoding="utf-8")
+        )
+        round8_failures = []
+        if {x.get("source_id") for x in round8_metadata_records} != required_round8_source_ids:
+            round8_failures.append("metadata_identity")
+        if {x.get("source_id") for x in round8_source_receipts} != required_round8_source_ids:
+            round8_failures.append("receipt_identity")
+        expected_round8_locator_counts = expectations.get("required_round8_locator_counts", {})
+        for receipt in round8_source_receipts:
+            source_id = receipt.get("source_id")
+            expected_version = expectations.get("required_bibliography_metadata_versions", {}).get(source_id)
+            report_path = ROOT / receipt.get("report_path", "")
+            fulltext_path = ROOT / receipt.get("fulltext_path", "")
+            if (
+                receipt.get("reading_level") != "FULL_PAPER_READ"
+                or receipt.get("version") != expected_version
+                or receipt.get("url") != "https://arxiv.org/abs/%s%s" % (source_id, expected_version)
+                or not report_path.is_file()
+                or sha256_path(report_path) != receipt.get("report_sha256")
+                or not fulltext_path.is_file()
+                or sha256_path(fulltext_path) != receipt.get("fulltext_sha256")
+                or len(receipt.get("claim_locator_ids", []))
+                != expected_round8_locator_counts.get(source_id)
+            ):
+                round8_failures.append(source_id)
+        matrix_round8_counts = collections.Counter(
+            row.get("source_id", "").removeprefix("alphaxiv:")
+            for row in matrix_rows
+            if row.get("source_id", "").removeprefix("alphaxiv:") in required_round8_source_ids
+            and row.get("record_type") == "facet_evidence"
+            and row.get("screening_status") == "recorded_full_read"
+            and row.get("current_evidence_level") == "FULL_PAPER_READ"
+        )
+        if dict(matrix_round8_counts) != expectations.get("required_round8_matrix_counts", {}):
+            round8_failures.append("matrix_counts")
+        decision_ledger_obj = json.loads(
+            (ROOT / "paper/research/autonomous-research-decision-ledger.json").read_text(encoding="utf-8")
+        )
+        required_fields = {
+            "decision_id", "question", "alternatives", "reviewed_locators",
+            "rationale", "decision", "expected_effect_and_risk", "falsifier",
+        }
+        round8_decisions = decision_ledger_obj.get("round8_decision_records", [])
+        known_locator_ids = {x.get("claim_locator_id") for x in locators}
+        for record in round8_decisions:
+            if not required_fields.issubset(record.keys()):
+                round8_failures.append("decision_fields:" + str(record.get("decision_id")))
+            if not set(record.get("reviewed_locators", [])) <= known_locator_ids:
+                round8_failures.append("decision_locator:" + str(record.get("decision_id")))
+        if len(round8_decisions) != expectations.get("round8_decision_record_count", 0):
+            round8_failures.append("decision_count")
+        structured_evidence["round8_failures"] = round8_failures
+        if round8_failures:
+            errors.append("round-8 source, matrix, or six-field decision record mismatch")
 
         component_names = [row.get("component") for row in matrix_rows if row.get("component")]
         duplicate_components = sorted(k for k, v in collections.Counter(component_names).items() if v > 1)

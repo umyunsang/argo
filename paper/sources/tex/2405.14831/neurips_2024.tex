@@ -1,0 +1,1056 @@
+\documentclass{article}
+
+
+% if you need to pass options to natbib, use, e.g.:
+%     \PassOptionsToPackage{numbers, compress}{natbib}
+% before loading neurips_2023
+\usepackage[square,numbers]{natbib}
+% \usepackage[round]{natbib}
+
+
+% ready for submission
+\usepackage[final]{neurips_2024}
+
+% to compile a preprint version, e.g., for submission to arXiv, add add the
+% [preprint] option:
+    % \usepackage[preprint]{neurips_2024}
+
+
+% to compile a camera-ready version, add the [final] option, e.g.:
+%     \usepackage[final]{neurips_2023}
+
+
+% to avoid loading the natbib package, add option nonatbib:
+%    \usepackage[nonatbib]{neurips_2023}
+
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}         % colors
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{colortbl}
+\usepackage{array}  
+\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\usepackage{appendix}
+\usepackage{esvect}
+\usepackage{multirow}
+
+
+% provides \num for better type-setting of numbers
+\usepackage{siunitx}
+\sisetup
+{
+output-exponent-marker=\ensuremath{\mathrm{e}},
+group-separator = {,},
+group-minimum-digits = 4,
+list-final-separator={, }
+}
+          
+\title{HippoRAG: Neurobiologically Inspired \\Long-Term Memory for Large Language Models}
+
+
+% The \author macro works with any number of authors. There are two commands
+% used to separate the names and addresses of multiple authors: \And and \AND.
+%
+% Using \And between authors leaves it to LaTeX to determine where to break the
+% lines. Using \AND forces a line break at that point. So, if LaTeX puts 3 of 4
+% authors names on the first line, and the last on the second line, try using
+% \AND instead of \And before the third author name.
+
+
+\author{%
+  Bernal Jim\'{e}nez Guti\'{e}rrez\\
+  The Ohio State University\\
+  \And
+  Yiheng Shu \\
+  The Ohio State University \\
+  % \texttt{email} \\
+  \AND
+  Yu Gu \\
+  The Ohio State University \\
+  % \texttt{email} \\
+  \And
+  Michihiro Yasunaga \\
+  Stanford University \\
+  % Address \\
+  % \texttt{email} \\
+  \And
+  Yu Su \\
+  The Ohio State University \\
+  % Address \\
+  % \texttt{email} \\
+}
+
+\newcommand{\ourbenchmark}{HippoQA}
+\newcommand{\michi}[1]{\textcolor{magenta}{[Michi: #1]}}
+\newcommand{\bernal}[1]{\textcolor{cyan}{[Bernal: #1]}}
+
+% \definecolor{hippoblue}{rgb}{0.42, 0.53, 0.71}
+\definecolor{hippoblue}{rgb}{0.35,0.45,0.65}
+
+\begin{document}
+
+
+\maketitle
+
+
+\begin{abstract}
+
+In order to thrive in hostile and ever-changing natural environments, mammalian brains evolved to store large amounts of knowledge about the world and continually integrate new information while avoiding catastrophic forgetting.
+Despite their impressive accomplishments, large language models (LLMs), even with retrieval-augmented generation (RAG), still struggle to efficiently and effectively integrate a large amount of new experiences after pre-training. 
+% integrate new memories with each other and with past information.
+In this work, we introduce HippoRAG, a novel retrieval framework inspired by the hippocampal indexing theory of human long-term memory to enable deeper and more efficient knowledge integration over new experiences.
+HippoRAG synergistically orchestrates LLMs, knowledge graphs, and the Personalized PageRank algorithm to mimic the different roles of neocortex and hippocampus in human memory.
+We compare HippoRAG with existing RAG methods on multi-hop question answering (QA) and show that our method outperforms the state-of-the-art methods remarkably, by up to \num{20}\%.
+Single-step retrieval with HippoRAG achieves comparable or better performance than iterative retrieval like IRCoT while being \num{10}-\num{20} times cheaper and \num{6}-\num{13} times faster, and integrating HippoRAG into IRCoT brings further substantial gains.
+Finally, we show that our method can tackle new types of scenarios that are out of reach of existing methods.\footnote{Code and data are available at \url{https://github.com/OSU-NLP-Group/HippoRAG}.}
+
+\end{abstract}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/HippoRAG_hook_fig_version_4.pdf}
+  \caption{
+  \textbf{Knowledge Integration \& RAG.} Tasks that require knowledge integration are particularly challenging for current RAG systems. In the above example, we want to find a \textit{Stanford} professor that does \textit{Alzheimer's} research from a pool of passages describing potentially thousands \textit{Stanford} professors and \textit{Alzheimer's} researchers. 
+  Since current methods encode passages in isolation, they would struggle to identify \textit{Prof. Thomas} unless a passage mentions both characteristics at once. 
+  In contrast, most people familiar with this professor would remember him quickly due to our brain's associative memory capabilities, thought to be driven by the index structure depicted in the C-shaped hippocampus above (in \textcolor{hippoblue}{blue}). 
+  Inspired by this mechanism, \textbf{HippoRAG} allows LLMs to build and leverage a similar graph of associations to tackle knowledge integration tasks.
+  }
+  \label{fig:hook}
+  \vspace{-15pt}
+\end{figure}
+
+\section{Introduction}
+\label{sec:introduction}
+
+Millions of years of evolution have led mammalian brains to develop the crucial ability to store large amounts of world knowledge and continuously integrate new experiences without losing previous ones.
+This exceptional long-term memory system eventually allows us humans to keep vast stores of continuously updating knowledge that forms the basis of our reasoning and decision making \cite{19Eichenbaum2000ACS}. 
+
+Despite the progress of large language models (LLMs) in recent years, such a continuously updating long-term memory is still conspicuously absent from current AI systems.
+Due in part to its ease of use and the limitations of other techniques such as model editing \cite{li2024unveiling}, retrieval-augmented generation (RAG) has become the \textit{de facto} solution for long-term memory in LLMs, allowing users to present new knowledge to a static model \cite{15Izacard2022FewshotLW,14Lewis2020RetrievalAugmentedGF,13Ram2023InContextRL, xie2024knowledgeconflict}.
+
+However, current RAG methods are still unable to help LLMs perform tasks that require integrating new knowledge across passage boundaries since each new passage is encoded in isolation.
+Many important real-world tasks, such as scientific literature review, legal case briefing, and medical diagnosis, require knowledge integration across passages or documents. Although less complex, standard multi-hop question answering (QA) also requires integrating information between passages in a retrieval corpus. In order to solve such tasks, current RAG systems resort to using multiple retrieval and LLM generation steps iteratively to join disparate passages \cite{self-ask,ircot}.
+Nevertheless, even perfectly executed multi-step RAG is still oftentimes insufficient to accomplish many scenarios of knowledge integration, as we illustrate in what we call \textit{path-finding} multi-hop questions in Figure \ref{fig:hook}.
+
+In contrast, our brains are capable of solving challenging knowledge integration tasks like these with relative ease. 
+The hippocampal memory indexing theory \cite{21Teyler1986TheHM}, a well-established theory of human long-term memory, offers one plausible explanation for this remarkable ability.
+\citet{21Teyler1986TheHM} propose that our powerful context-based, continually updating memory relies on interactions between the neocortex, which processes and stores actual memory representations, and the C-shaped hippocampus, which holds the \textit{hippocampal index}, a set of interconnected indices which point to memory units on the neocortex and stores associations between them \cite{19Eichenbaum2000ACS,20Teyler2007TheHI}. 
+
+In this work, we propose HippoRAG, a RAG framework that serves as a long-term memory for LLMs by mimicking this model of human memory.
+Our novel design first models the neocortex's ability to process perceptual input by using an LLM to transform a corpus into a schemaless knowledge graph (KG) as our artificial hippocampal index.
+Given a new query, HippoRAG identifies the key concepts in the query and runs the Personalized PageRank (PPR) algorithm \cite{david02topic} on the KG, using the query concepts as the seeds, to integrate information across passages for retrieval. 
+PPR enables HippoRAG to explore KG paths and identify relevant subgraphs, essentially performing multi-hop reasoning in a single retrieval step.
+
+This capacity for \textit{single-step multi-hop} retrieval yields strong performance improvements of around \num{3} and \num{20} points over current RAG methods \cite{densex,contriever,gtr,colbertv2,raptor} on two popular multi-hop QA benchmarks, MuSiQue \cite{musique} and 2WikiMultiHopQA \cite{2wiki}. 
+Additionally, HippoRAG's online retrieval process is \num{10} to \num{30} times cheaper and \num{6} to \num{13} times faster than current iterative retrieval methods like IRCoT \cite{ircot}, while still achieving comparable performance.
+Furthermore, our approach can be combined with IRCoT to provide complementary gains of up to \num{4}\% and \num{20}\% on the same datasets and even obtain improvements on HotpotQA, a less challenging multi-hop QA dataset.
+Finally, we provide a case study illustrating the limitations of current methods as well as our method's potential on the previously discussed \textit{path-finding} multi-hop QA setting.
+% We hope that our proposed approach's strong performance makes it a useful addition to the RAG toolbox and that our neurobiological framework can inspire other researchers to leverage the rich architectural modularity of the mammalian brain to augment AI systems further.
+
+\section{HippoRAG}
+\label{sec:long-term}
+
+In this section, we first give a brief overview of the hippocampal memory indexing theory, followed by how HippoRAG's indexing and retrieval design was inspired by this theory, and finally offer a more detailed account of our methodology.
+
+\subsection{The Hippocampal Memory Indexing Theory}
+\label{subsec:indexing_theory}
+
+The hippocampal memory indexing theory \cite{21Teyler1986TheHM} is a well-established theory that provides a functional description of the components and circuitry involved in human long-term memory.
+In this theory, \citet{21Teyler1986TheHM} propose that human long-term memory is composed of three components that work together to accomplish two main objectives: \textit{pattern separation}, which ensures that the representations of distinct perceptual experiences are unique, and \textit{pattern completion}, which enables the retrieval of complete memories from partial stimuli \cite{19Eichenbaum2000ACS,20Teyler2007TheHI}.
+
+The theory suggests that pattern separation is primarily accomplished in the memory encoding process, which starts with the \textbf{neocortex} receiving and processing perceptual stimuli into more easily manipulatable, likely higher-level, features, which are then routed through the \textbf{parahippocampal regions} (PHR) to be indexed by the hippocampus. 
+When they reach the \textbf{hippocampus}, salient signals are included in the hippocampal index and associated with each other.
+
+After the memory encoding process is completed, pattern completion drives the memory retrieval process whenever the hippocampus receives partial perceptual signals from the PHR pipeline. 
+The hippocampus then leverages its context-dependent memory system, thought to be implemented through a densely connected network of neurons in the CA3 sub-region \cite{20Teyler2007TheHI}, to identify complete and relevant memories within the hippocampal index and route them back through the PHR for simulation in the neocortex. 
+Thus, this complex process allows for new information to be integrated by changing only the hippocampal index instead of updating neocortical representations. 
+
+\subsection{Overview}
+\label{subsec:method overview}
+
+Our proposed approach, HippoRAG, is closely inspired by the process described above. As shown in Figure \ref{fig:detailed_method}, each component of our method corresponds to one of the three components of human long-term memory. A detailed example of the HippoRAG process can be found in Appendix \ref{sec:method_example}.
+
+\noindent \textbf{Offline Indexing.} Our offline indexing phase, analogous to memory encoding, starts by leveraging a strong instruction-tuned \textbf{LLM}, our artificial neocortex, to extract knowledge graph (KG) triples. 
+The KG is schemaless and this process is known as open information extraction (OpenIE)~\cite{angeli-etal-2015-leveraging-openie, openie_from_web_banko, pei-etal-2023-use-openie, ijcai2022p0793_openie_zhou}.
+This process extracts salient signals from passages in a retrieval corpus as discrete noun phrases rather than dense vector representations, allowing for more fine-grained pattern separation. 
+It is therefore natural to define our artificial hippocampal index as this open \textbf{KG}, which is built on the whole retrieval corpus passage-by-passage.
+Finally, to connect both components as is done by the parahippocampal regions, we use off-the-shelf dense encoders fine-tuned for retrieval (\textbf{retrieval encoders}).
+These retrieval encoders provide additional edges between similar but not identical noun phrases within this KG to aid in downstream pattern completion.
+
+\noindent \textbf{Online Retrieval.} These same three components are then leveraged to perform online retrieval by mirroring the human brain's memory retrieval process. 
+Just as the hippocampus receives input processed through the neocortex and PHR, our LLM-based neocortex extracts a set of salient named entities from a query which we call \textit{query named entities}.
+These named entities are then linked to nodes in our KG based on the similarity determined by retrieval encoders; we refer to these selected nodes as \textit{query nodes}.
+Once the query nodes are chosen, they become the partial cues from which our synthetic hippocampus performs pattern completion.
+In the hippocampus, neural pathways between elements of the hippocampal index enable relevant neighborhoods to become activated and recalled upstream. 
+To imitate this efficient graph search process, we leverage the Personalized PageRank (PPR) algorithm \cite{david02topic}, a version of PageRank that distributes probability across a graph only through a set of user-defined source nodes.
+This constraint allows us to bias the PPR output only towards the set of query nodes, just as the hippocampus extracts associated signals from specific partial cues.\footnote{Intriguingly, some work in cognitive science has also found a correlation between human word recall and the output of the PageRank algorithm \cite{22Griffiths2007GoogleAT}.}
+Finally, as is done when the hippocampal signal is sent upstream, we aggregate the output PPR node probability over the previously indexed passages and use that to rank them for retrieval.
+
+\subsection{Detailed Methodology}
+\label{detailed_method}
+
+\noindent \textbf{Offline Indexing.} Our indexing process involves processing a set of passages $P$ using an instruction-tuned LLM $L$ and a retrieval encoder $M$. 
+As seen in Figure \ref{fig:detailed_method} we first use $L$ to extract a set of noun phrase nodes $N$ and relation edges $E$ from each passage in $P$ via OpenIE. 
+This process is done via 1-shot prompting of the LLM with the prompts shown in Appendix \ref{sec:prompts}. 
+Specifically, we first extract a set of named entities from each passage. 
+We then add the named entities to the OpenIE prompt to extract the final triples, which also contain concepts (noun phrases) beyond named entities.
+% This is done as a way to bias the LLM away from KG triples that contain only general noun phrases instead of more salient named entities.
+We find that this two-step prompt configuration leads to an appropriate balance between generality and bias towards named entities.
+Finally, we use $M$ to add the extra set of \textit{synonymy} relations $E'$ discussed above when the cosine similarity between two entity representations in $N$ is above a threshold $\tau$.
+As stated above, this introduces more edges to our hippocampal index and allows for more effective pattern completion.
+This indexing process defines a $|N| \times |P|$ matrix $\mathbf{P}$, which contains the number of times each noun phrase in the KG appears in each original passage. 
+
+\noindent \textbf{Online Retrieval.} During the retrieval process, we prompt $L$ using a 1-shot prompt to extract a set of named entities from a query $q$, our previously defined query named entities $C_q = \{c_1, ..., c_n\}$ (\textit{Stanford} and \textit{Alzheimer's} in our Figure \ref{fig:detailed_method} example).
+These named entities $C_q$ from the query are then encoded by the same retrieval encoder $M$. 
+Then, the previously defined query nodes are chosen as the set of nodes in $N$ with the highest cosine similarity to the query named entities $C_q$.
+More formally, query nodes are defined as $R_q = \{r_1, ..., r_n\}$ such that $r_i = e_k$ where $k = \argmax_j cosine\_similarity(M(c_i), M(e_j))$, represented as the \textit{Stanford} logo and the \textit{Alzheimer's} purple ribbon symbol in Figure \ref{fig:detailed_method}.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/HippoRAG_method_version_4.pdf}
+  \caption{\textbf{Detailed HippoRAG Methodology.} We model the three components of human long-term memory to mimic its pattern separation and completion functions. For offline indexing \textbf{(Middle)}, we use an LLM to process passages into open KG triples, which are then added to our artificial hippocampal index, while our synthetic parahippocampal regions (PHR) detect synonymy. In the example above, triples involving Professor Thomas are extracted and integrated into the KG. For online retrieval \textbf{(Bottom)}, our LLM neocortex extracts named entities from a query while our parahippocampal retrieval encoders link them to our hippocampal index. We then leverage the Personalized PageRank algorithm to enable context-based retrieval and extract Professor Thomas.\protect\footnotemark}
+  \label{fig:detailed_method}
+  \vspace{-10pt}
+\end{figure}
+
+\footnotetext{Many details around the hippocampal memory indexing theory are omitted from this study for simplicity. 
+We encourage interested reader to follow the references in \S \ref{subsec:indexing_theory} for more.}
+
+After the query nodes $R_q$ are found, we run the PPR algorithm over the hippocampal index, i.e., a KG with $|N|$ nodes and $|E| + |E'|$ edges (triple-based and synonymy-based), using a personalized probability distribution $\vv{n}$ defined over $N$, in which each query node has equal probability and all other nodes have a probability of zero. 
+This allows probability mass to be distributed to nodes that are primarily in the (joint) neighborhood of the query nodes, such as \textit{Professor Thomas}, and contribute to eventual retrieval. 
+After running the PPR algorithm, we obtain an updated probability distribution $\vv{n'}$ over $N$.
+Finally, in order to obtain passage scores, we multiply $\vv{n'}$ with the previously defined $\mathbf{P}$ matrix to obtain $\vv{p}$, a ranking score for each passage, which we use for retrieval.
+
+\noindent \textbf{Node Specificity.} We introduce node specificity as a neurobiologically plausible way to further improve retrieval. 
+It is well known that global signals for word importance, like inverse document frequency (IDF), can improve information retrieval.
+However, in order for our brain to leverage IDF for retrieval, the number of total ``passages'' encoded would need to be aggregated with all node activations before memory retrieval is complete. 
+While simple for normal computers, this process would require activating connections between an aggregator neuron and all nodes in the hippocampal index every time retrieval occurs, likely introducing prohibitive computational overhead.
+Given these constraints, we propose \textit{node specificity} as an alternative IDF signal which requires only local signals and is thus more neurobiologically plausible.
+We define the node specificity of node $i$ as $s_i = |P_i|^{-1}$, where $P_i$ is the set of passages in $P$ from which node $i$ was extracted, information that is already available at each node.
+Node specificity is used in retrieval by multiplying each query node probability $\vv{n}$ with $s_i$ before PPR; this allows us to modulate each of their neighborhood's probability as well as their own.
+We illustrate node specificity in Figure \ref{fig:detailed_method} through relative symbol size: the \textit{Stanford} logo grows larger than the \textit{Alzheimer's} symbol since it appears in fewer documents.
+
+% We introduce node specificity to further improve retrieval. 
+% It is well known that global signals for word salience, like inverse document frequency (IDF), can improve information retrieval.
+% However, calculating IDF for nodes in the hippocampal index would require each node to have access to the total number of ``passages'' encoded, a process that would require connections to all the nodes.
+% Due to physical constraints of the biological system, using local signals is much more neurobiologically plausible than such global signals. 
+% Therefore, we define ``node specificity'', which defines node salience as the reciprocal of the number of passages a node appears in, information that is already available to every node by default.
+% In Figure \ref{fig:detailed_method}, the \textit{Stanford} emoji grows larger since it appears in fewer documents than \textit{Alzheimer's}, whose emoji becomes slightly smaller.
+% To implement this we multiply the personalized probability distribution $\vv{n}$ with this score before running PPR so that more general nodes and their neighborhoods contribute less to overall passage ranking.
+
+
+\section{Experimental Setup}
+\label{sec:experimental_setup}
+
+\subsection{Datasets}
+\label{subsec:datasets}
+
+We evaluate our method's retrieval capabilities primarily on two challenging multi-hop QA benchmarks, \textbf{MuSiQue} (answerable) \cite{musique} and \textbf{2WikiMultiHopQA} \cite{2wiki}. For completeness, we also include the \textbf{HotpotQA} \cite{hotpotqa} dataset even though it has been found to be a much weaker test for multi-hop reasoning due to many spurious signals \cite{musique}, as we also show in Appendix \ref{sec:dataset_comparison}.
+To limit the experimental cost, we extract \num{1000} questions from each validation set as done in previous work \cite{17Press2022MeasuringAN,ircot}. 
+In order to create a more realistic retrieval setting, we follow IRCoT \cite{ircot} and collect all candidate passages (including supporting and distractor passages) from our selected questions and form a retrieval corpus for each dataset. The details of these datasets are shown in Table \ref{tab:dataset statistics}. 
+% \footnote{The tokenizer is cl100k\_base (\url{https://platform.openai.com/tokenizer}).}.
+
+\begin{table}[h]
+\centering
+\small
+\caption{Retrieval corpora and extracted KG statistics for each of our \num{1000} question dev sets.}
+\label{tab:dataset statistics}
+\begin{tabular}{lrrr}
+\toprule
+ & \textbf{MuSiQue} & \textbf{2Wiki} & \textbf{HotpotQA} \\ \midrule%& HippoQA\\ \midrule
+% \# of Questions & $1,000$ & $1,000$ & $1,000$\\% & 150 \\ 
+\# of Passages ($P$) & $11,656$ & $6,119$ & $9,221$ \\%& 14,807 \\ 
+% Avg. Doc. Length & \\
+\# of Unique Nodes ($N$) & $91,729$ & $42,694$ & $82,157$\\% & 84,110 \\
+\# of Unique Edges ($E$) & $21,714$  & $7,867$ & $17,523$ \\%& 16,942 \\
+\# of Unique Triples & $107,448$ & $50,671$ & $98,709$ \\
+\# of Contriever Synonym Edges ($E'$) & $145,990$  & $146,020$ & $159,112$ \\
+\# of ColBERTv2 Synonym Edges ($E'$) & $191,636$  & $82,526$ & $171,856$ \\
+\bottomrule
+\end{tabular}
+\vspace{-10pt}
+\end{table}
+
+
+\subsection{Baselines}
+
+We compare against several strong and widely used retrieval methods: \textbf{BM25} \cite{bm25}, \textbf{Contriever} \cite{contriever}, \textbf{GTR} \cite{gtr} and \textbf{ColBERTv2} \cite{colbertv2}.
+Additionally, we compare against two recent LLM-augmented baselines: \textbf{Propositionizer} \cite{densex}, which rewrites passages into propositions, and \textbf{RAPTOR} \cite{raptor}, which constructs summary nodes to ease retrieval from long documents.
+In addition to the single-step retrieval methods above, we also include the multi-step retrieval method \textbf{IRCoT} \cite{ircot} as a baseline.
+
+\subsection{Metrics}
+
+We report retrieval and QA performance on the datasets above using recall@2 and recall@5 (R@2 and R@5 below) for retrieval and exact match (EM) and F1 scores for QA performance. 
+% We use the official evaluation scripts of the multi-hop QA benchmarks.
+
+\subsection{Implementation Details}
+\label{implementation_details}
+
+By default, we use \texttt{GPT-3.5-turbo-1106} \cite{openai_gpt_3_5_turbo} with temperature of \num{0} as our LLM $L$ and Contriever \cite{contriever} or ColBERTv2 \cite{colbertv2} as our retriever $M$.
+We use \num{100} examples from MuSiQue's training data to tune HippoRAG's two hyperparameters: the synonymy threshold $\tau$ at \num{0.8} and the PPR damping factor at \num{0.5}, which determines the probability that PPR will restart a random walk from the query nodes instead of continuing to explore the graph. 
+Generally, we find that HippoRAG's performance is rather robust to its hyperparameters. 
+More implementation details can be found in Appendix \ref{sec:implementation}.
+
+\section{Results}
+\label{experiment_results}
+
+We present our retrieval and QA experimental results below. Given that our method indirectly affects QA performance, we report QA results on our best-performing retrieval backbone ColBERTv2 \cite{colbertv2}. However, we report retrieval results for several strong single-step and multi-step retrieval techniques. 
+
+% \begin{table}[]
+% \small
+%   \caption{\textbf{Single-step retrieval performance.} HippoRAG outperforms all baselines on MuSiQue and 2WikiMultiHopQA and achieves comparable performance on the less challenging HotpotQA dataset.}
+%   \label{tab:single_retrieve}
+%   \centering
+%   \small
+% \begin{tabular}{@{}lcccccccc@{}}
+% \toprule
+%              & \multicolumn{2}{c}{MuSiQue} & \multicolumn{2}{c}{2Wiki} & \multicolumn{2}{c}{HotpotQA} \\ \cmidrule(l){2-7} 
+%              & R@2          & R@5          & R@2             & R@5             & R@2           & R@5                     \\ \midrule
+% % \multicolumn{7}{c}{Baselines}    \\ \midrule
+% BM25~\cite{bm25}         & $32.3$      & $41.2$    & $51.8$                & $61.9$            & $55.4$          & $72.2$         \\ 
+% Contriever~\cite{contriever} & $34.8$    & $46.6$       & $46.6$           & $57.5$     & $57.2$       & $75.5$       \\% & 0.8 & 1.7       \\
+% GTR~\cite{gtr} & $37.4$ & $49.1$ & $60.2$ & $67.9$ & $59.4$ & $73.3$ \\
+% ColBERTv2~\cite{colbertv2} & $37.9$        & $49.2$            & $59.2$               & $68.2$            & $\mathbf{64.7}$              & $\mathbf{79.3}$             \\ %\midrule
+% % \multicolumn{7}{c}{LLM-augmented Baselines} \\ \midrule
+% RAPTOR~\cite{raptor} & $35.7$ & $45.3$ & $46.3$ & $53.8$ & $58.1$ & $71.2$ \\ 
+% Proposition~\cite{densex} & $37.6$ & $49.3$ & $56.4$ & $63.1$ & $58.7$ & $71.1$ \\ \midrule
+% % Proposition (ColBERTv2) & $37.8$ & $50.1$ & $55.9$ & $64.9$ & $63.9$ & $78.1$ \\ \midrule
+% % \multicolumn{7}{c}{HippoRAG}  \\ \midrule
+% % - BERT        & 35.8 & 43.7 & 65.6 & 80.9 & 56.0 & 70.2               \\
+% % - SimCSE       & 38.9 & 47.3 & 70.1 & 87.0 & 59.3 & 74.0               \\
+% HippoRAG (Contriever) & $\mathbf{41.0}$ & $\mathbf{52.1}$ & $\mathbf{71.5}$ & $\mathbf{89.5}$ & $59.0$ & $76.2$ \\
+% HippoRAG (ColBERTv2) & $\underline{40.9}$ & $\underline{51.9}$ & $\underline{70.7}$ & $\underline{89.1}$ & $\underline{60.5}$ & $\underline{77.7}$  \\ \midrule
+% % \multicolumn{7}{c}{HippoRAG w/ Uncertainty-based Ensemble}\\ \midrule
+% % Contriever & $42.3$ & $54.5$ & $71.3$ & $87.2$ & $60.6$ & $79.1$ \\ 
+% % ColBERTv2 & $\mathbf{42.5}$ & $\mathbf{54.8}$ & $\mathbf{71.9}$ & $89.0$ & $62.5$ & $\mathbf{80.0}$ \\ \bottomrule
+% \end{tabular}
+% \end{table}
+
+
+\begin{table}[t]
+\small
+  \caption{\textbf{Single-step retrieval performance.} HippoRAG outperforms all baselines on MuSiQue and 2WikiMultiHopQA and achieves comparable performance on the less challenging HotpotQA dataset.}
+  \label{tab:single_retrieve}
+  \centering
+  \small
+\begin{tabular}{@{}lcccccc|cc@{}}
+\toprule
+             & \multicolumn{2}{c}{\textbf{MuSiQue}} & \multicolumn{2}{c}{\textbf{2Wiki}} & \multicolumn{2}{c}{\textbf{HotpotQA}} & \multicolumn{2}{c}{\textbf{Average}}\\ \cmidrule(l){2-9} 
+             & R@2   & R@5     & R@2      & R@5       & R@2    & R@5   & R@2  & R@5                         \\ \midrule
+BM25~\cite{bm25}         & $32.3$      & $41.2$    & $51.8$                & $61.9$            & $55.4$          & $72.2$ & $46.5$ & $58.4$        \\ 
+Contriever~\cite{contriever} & $34.8$    & $46.6$       & $46.6$           & $57.5$     & $57.2$       & $75.5$ & $46.2$ & $59.9$       \\
+GTR~\cite{gtr} & $37.4$ & $49.1$ & $60.2$ & $67.9$ & $59.4$ & $73.3$ & $52.3$ & $63.4$ \\
+ColBERTv2~\cite{colbertv2} & $37.9$        & $49.2$            & $59.2$               & $68.2$            & $\mathbf{64.7}$              & $\mathbf{79.3}$ & $53.9$ & $65.6$            \\ 
+RAPTOR~\cite{raptor} & $35.7$ & $45.3$ & $46.3$ & $53.8$ & $58.1$ & $71.2$ & $46.7$ & $56.8$ \\ 
+RAPTOR (ColBERTv2) & $36.9$ & $46.5$ & $57.3$ & $64.7$ & $63.1$ & $75.6$ & $52.4$ & $62.3$ \\
+Proposition~\cite{densex} & $37.6$ & $49.3$ & $56.4$ & $63.1$ & $58.7$ & $71.1$ & $50.9$ & $61.2$ \\
+Proposition (ColBERTv2) & $37.8$ & $50.1$ & $55.9$ & $64.9$ & $63.9$ & $78.1$ & $52.5$	& $64.4$ \\ \midrule
+HippoRAG (Contriever) & $\mathbf{41.0}$ & $\mathbf{52.1}$ & $\mathbf{71.5}$ & $\mathbf{89.5}$ & $59.0$ & $76.2$ & $\underline{57.2}$ & $\underline{72.6}$ \\
+HippoRAG (ColBERTv2) & $\underline{40.9}$ & $\underline{51.9}$ & $\underline{70.7}$ & $\underline{89.1}$ & $\underline{60.5}$ & $\underline{77.7}$ & $\mathbf{57.4}$ & $\mathbf{72.9}$  \\ \midrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\small
+  \caption{\textbf{Multi-step retrieval performance.} Combining HippoRAG with standard multi-step retrieval methods like IRCoT results in strong complementary improvements on all three datasets.}
+  \label{tab:multi_retrieve}
+  \centering
+\begin{tabular}{@{}lcccccc|cc@{}}
+\toprule
+             & \multicolumn{2}{c}{\textbf{MuSiQue}} & \multicolumn{2}{c}{\textbf{2Wiki}} & \multicolumn{2}{c}{\textbf{HotpotQA}} & \multicolumn{2}{c}{\textbf{Average}}  \\ \cmidrule(l){2-9} 
+             & R@2   & R@5     & R@2      & R@5       & R@2    & R@5   & R@2  & R@5     \\ \midrule
+% \multicolumn{7}{c}{IRCoT~\cite{ircot}} \\ \midrule
+IRCoT + BM25 (Default)      & $34.2$       &  $44.7$        & $61.2$                &  $75.6$     & $65.6$  & $79.0$ & $53.7$ & $66.4$ \\
+IRCoT + Contriever &  $39.1$           &  $52.2$           &  $51.6$          &   $63.8$ & $65.9$            &   $81.6$ & $52.2$ & $65.9$       \\%& 2.0 & 2.6    \\
+IRCoT + ColBERTv2 &   $41.7$           & $53.7$             &   $64.1$           & $74.4$         & $\mathbf{67.9}$            &   $82.0$ & $57.9$ & $70.0$          \\ \midrule
+% \multicolumn{7}{c}{IRCoT + HippoRAG}                 \\ \midrule
+IRCoT + HippoRAG (Contriever) & $\underline{43.9}$ & $\underline{56.6}$ & $\underline{75.3}$ &  $\underline{93.4}$ & $65.8$ & $\underline{82.3}$ & $\underline{61.7}$ & $\underline{77.4}$ \\%& 4.9 & 11.4 \\
+IRCoT + HippoRAG (ColBERTv2) & $\mathbf{45.3}$ & $\mathbf{57.6}$ & $\mathbf{75.8}$ & $\mathbf{93.9}$ & $\underline{67.0}$ & $\mathbf{83.0}$ & $\mathbf{62.7}$ & $\mathbf{78.2}$ \\ 
+% \midrule
+% \multicolumn{7}{c}{IRCoT +  HippoRAG w/ Uncertainty-based Ensemble}                 \\ \midrule
+% Contriever & $44.4$ & $\mathbf{58.5}$ & $75.3$ & $91.5$ & $66.9$ & $85.0$ \\
+% ColBERTv2 & $40.2$ & $53.4$ & $74.5$ & $91.2$ & $\mathbf{68.2}$ & $\mathbf{85.3}$  \\
+\bottomrule
+\end{tabular}
+\vspace{-5pt}
+\end{table}
+
+\noindent \textbf{Single-Step Retrieval Results.} As seen in Table \ref{tab:single_retrieve}, HippoRAG outperforms all other methods, including recent LLM-augmented baselines such as Propositionizer and RAPTOR, on our main datasets, MuSiQue and 2WikiMultiHopQA, while achieving competitive performance on HotpotQA.
+We notice an impressive improvement of \num{11} and \num{20}\% for R@2 and R@5 on 2WikiMultiHopQA and around \num{3}\% on MuSiQue. 
+This difference can be partially explained by 2WikiMultiHopQA's entity-centric design, which is particularly well-suited for HippoRAG.
+Our lower performance on HotpotQA is mainly due to its lower knowledge integration requirements, as explained in Appendix \ref{sec:dataset_comparison}, as well as a due to a concept-context tradeoff which we alleviate with an ensembling technique described in Appendix \ref{subsec:concepts and context tradeoff}.
+
+\noindent \textbf{Multi-Step Retrieval Results.} For multi-step or iterative retrieval, our experiments in Table \ref{tab:multi_retrieve} demonstrate that IRCoT \cite{ircot} and HippoRAG are complementary. Using HippoRAG as the retriever for IRCoT continues to bring R@5 improvements of around \num{4}\% for MuSiQue, \num{18}\% for 2WikiMultiHopQA and an additional \num{1}\% on HotpotQA.
+
+
+\begin{table}[t]
+\small
+\centering
+\caption{\textbf{QA performance.} HippoRAG's QA improvements correlate with its retrieval improvements on single-step (rows 1-3) and multi-step retrieval (rows 4-5).}
+\label{tab:qa results}
+\begin{tabular}{lcccccc|cc}
+\toprule
+ & \multicolumn{2}{c}{\textbf{MuSiQue}} & \multicolumn{2}{c}{\textbf{2Wiki}} & \multicolumn{2}{c}{\textbf{HotpotQA}} & \multicolumn{2}{c}{\textbf{Average}}  \\ \midrule
+Retriever & EM & F1 & EM & F1 & EM & F1 & EM & F1\\ \midrule
+None & $12.5$ & $24.1$ & $31.0$ & $39.6$ & $30.4$ & $42.8$ & $24.6$ & $35.5$ \\ 
+% BM25 \cite{bm25} & 17.3 & 27.2 & 29.7 & 39.3 & 42.4 & 55.2  \\ 
+ColBERTv2 & $15.5$ & $26.4$ & $33.4$ & $43.3$ & $43.4$ & $57.7$ & $30.8$ & $42.5$ \\  
+% ColBERT v2 & 53.3 & 59.9 & 8.5 & 14.4 & 39.2 & 52.9 & & & & \\  
+HippoRAG (ColBERTv2) & $\underline{19.2}$ & $29.8$ & $\underline{46.6}$ & $\underline{59.5}$ & $41.8$ & $55.0$ & $\underline{35.9}$ & $\underline{48.1}$ \\ \midrule 
+IRCoT (ColBERTv2) & $19.1$ & $\underline{30.5}$ & $35.4$ & $45.1$ & $\underline{45.5}$ & $\underline{58.4}$ & $33.3$ & $44.7$ \\  
+IRCoT + HippoRAG (ColBERTv2) & $\mathbf{21.9}$ & $\mathbf{33.3}$ & $\mathbf{47.7}$ & $\mathbf{62.7}$ & $\mathbf{45.7}$ & $\mathbf{59.2}$ & $\mathbf{38.4}$ & $\mathbf{51.7}$ \\
+ \bottomrule
+\end{tabular}
+% \vspace{-5pt}
+\end{table}
+
+
+\noindent \textbf{Question Answering Results.} We report QA results for HippoRAG, the strongest retrieval baselines, ColBERTv2 and IRCoT, as well as IRCoT using HippoRAG as a retriever in Table \ref{tab:qa results}. As expected, improved retrieval performance in both single and multi-step settings leads to strong overall improvements of up to \num{3}\%, \num{17}\% and \num{1}\% F1 scores on MuSiQue, 2WikiMultiHopQA and HotpotQA respectively using the same QA reader. 
+Notably, single-step HippoRAG is on par or outperforms IRCoT while being \num{10}-\num{30} times cheaper and \num{6}-\num{13} times faster during online retrieval (Appendix \ref{sec:cost}).
+
+\section{Discussions}
+
+\subsection{What Makes HippoRAG Work?}
+
+\begin{table}[b]
+\small
+  \caption{\textbf{Dissecting HippoRAG.} To understand what makes it work well, we replace its OpenIE module and PPR with plausible alternatives and ablate node specificity and synonymy-based edges.} 
+  \label{tab:ablations}
+  \centering
+\begin{tabular}{@{}lccccccc|cc@{}}
+\toprule
+             & & \multicolumn{2}{c}{\textbf{MuSiQue}} & \multicolumn{2}{c}{\textbf{2Wiki}} & \multicolumn{2}{c}{\textbf{HotpotQA}} & \multicolumn{2}{c}{\textbf{Average}} \\ \cmidrule(l){3-10} 
+             & & R@2          & R@5          & R@2             & R@5            & R@2           & R@5 & R@2 & R@5  \\ \midrule
+HippoRAG & & $40.9$ & $51.9$ & $\mathbf{70.7}$ & $\mathbf{89.1}$ & $60.5$ & $77.7$ & $\mathbf{57.4}$ & $\mathbf{72.9}$ \\ 
+\midrule
+\multirow{3}{*}{\begin{tabular}[l]{@{}l@{}}OpenIE \\ Alternatives\end{tabular} }  & REBEL \cite{rebel}     &  $31.7$ & $39.6$ & $63.1$ & $76.5$ & $43.9$ & $59.2$   & $46.2$ & $58.4$ \\ 
+ & Llama-3.1-8B-Instruct \cite{llama3modelcard}     &   $40.8$ & $51.9$ & $62.5$ & $77.5$ & $59.9$ & $75.1$  & $54.4$ & $67.8$ \\ 
+ & Llama-3.1-70B-Instruct \cite{llama3modelcard}   & $\mathbf{41.8}$ & $\mathbf{53.7}$ & $68.8$ & $85.3$ & $\mathbf{60.8}$ & $\mathbf{78.6}$ & $57.1$ & $72.5$ \\ 
+ \midrule
+% \multicolumn{7}{c}{Graph Algorithm}                 \\ \midrule
+\multirow{2}{*}{\begin{tabular}[c]{@{}l@{}}PPR \\ Alternatives \end{tabular}} & $R_q$ Nodes Only   &       $37.1$ & $41.0$ & $59.1$ & $61.4$ & $55.9$ & $66.2$ & $50.7$ & $56.2$ \\ 
+& $R_q$ Nodes \& Neighbors &   $25.4$ & $38.5$ & $53.4$ & $74.7$ & $47.8$ & $64.5$ & $42.2$ & $59.2$ \\ \midrule
+\multirow{2}{*}{\begin{tabular}[c]{@{}l@{}}Ablations \end{tabular}} & w/o Node Specificity & $37.6$ & $50.2$ & $70.1$ & $88.8$ & $56.3$ & $73.7$ & $54.7$ & $70.9$       \\
+& w/o Synonymy Edges & $40.2$ & $50.2$ & $69.2$ & $85.6$ & $59.1$ & $75.7$ & $56.2$ & $70.5$    \\ 
+% Passage Co-Occurrence     &   31.6 & 38.0 & 58.7 & 67.4 & 41.7 & 56.9 \\
+% Sentence Co-Occurrence  &  31.2 & 38.4  & 54.4 & 61.6 & 39.1 & 54.2 \\
+% OpenNER + Sentence Co-Occ.  & 30.5 & 39.3 & 54.9 & 67.7 & 44.0 & 62.1 \\ 
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent \textbf{OpenIE Alternatives.}
+To determine if using a closed model like GPT-3.5 is essential to retain our performance improvements, we replace it with an end-to-end OpenIE model REBEL \cite{rebel} as well as the 8B and 70B instruction-tuned versions of Llama-3.1, a class of strong open-weight LLMs \cite{llama3modelcard}. As shown in Table \ref{tab:ablations} row 2, building our KG using REBEL results in large performance drops, underscoring the importance of LLM flexibility. Specifically, GPT-3.5 produces twice as many triples as REBEL, indicating its bias against producing triples with general concepts and leaving many useful associations behind. 
+
+In terms of open-weight LLMs, Table \ref{tab:ablations} (rows 3-4) shows that the performance of Llama-3.1-8B is competitive with GPT-3.5 in all datasets except for 2Wiki, where performance drops substantially. 
+Nevertheless, the stronger 70B counterpart outperforms GPT-3.5 in two out of three datasets and is still competitive in 2Wiki.
+The strong performance of Llama-3.1-70B and the comparable performance of even the 8B model is encouraging since it offers a cheaper alternative for indexing over large corpora.
+The graph statistics for these OpenIE alternatives can be found in Appendix \ref{sec:ablation statistics}.
+
+To understand the relationship between OpenIE and retrieval performance more deeply, we extract 239 gold triples from 20 examples from the MuSiQue training set. We then perform a small-scale intrinsic evaluation using the CaRB \cite{bhardwaj-etal-2019-carb} framework for OpenIE. We find that both Llama-3.1-Instruct models underperform GPT-3.5 slightly on this intrinsic evaluation but all LLMs vastly outperform REBEL. More details about this evaluation experiments can be found in Appendix \ref{sec:intrinsic evaluation}.
+
+\noindent \textbf{PPR Alternatives.} As shown in Table \ref{tab:ablations} (rows 5-6), to examine how much of our results are due to the strength of PPR, we replace the PPR output with the query node probability $\vv{n}$  multiplied by node specificity values (row 5) and a version of this that also distributes a small amount of probability to the direct neighbors of each query node (row 6).
+First, we find that PPR is a much more effective method for including associations for retrieval on all three datasets compared to both simple baselines. 
+It is interesting to note that adding the neighborhood of $R_q$ nodes without PPR leads to worse performance than only using the query nodes themselves. 
+
+\noindent \textbf{Ablations.} As seen in Table \ref{tab:ablations} (rows 7-8), node specificity obtains considerable improvements on MuSiQue and HotpotQA and yields almost no change in 2WikiMultiHopQA. This is likely because 2WikiMultiHopQA relies on named entities with little differences in terms of term weighting. In contrast, synonymy edges have the largest effect on 2WikiMultiHopQA, suggesting that noisy entity standardization is useful when most relevant concepts are named entities, and improvements to synonymy detection could lead to stronger performance in other datasets. 
+
+\subsection{HippoRAG's Advantage: Single-Step Multi-Hop Retrieval}
+
+A major advantage of HippoRAG over conventional RAG methods in multi-hop QA is its ability to \textit{perform multi-hop retrieval in a single step}.
+We demonstrate this by measuring the percentage of queries where \textit{all} the supporting passages are retrieved successfully, a feat that can only be accomplished through successful multi-hop reasoning.
+Table \ref{tab:all_single_retrieve} below shows that the gap between our method and ColBERTv2, using the top-\num{5} passages, increases even more from \num{3}\% to \num{6}\% on MuSiQue and from \num{20}\% to \num{38}\% on 2WikiMultiHopQA, suggesting that large improvements come from obtaining all supporting documents rather than achieving partially retrieval on more questions.
+
+\begin{table}[!ht]
+\small
+  \caption{\textbf{All-Recall metric.} We measure the percentage of queries for which all supporting passages are successfully retrieved (all-recall, denoted as AR@2 or AR@5) and find even larger performance improvements for HippoRAG.}
+  \label{tab:all_single_retrieve}
+  \centering
+\begin{tabular}{@{}lrrrrrr|rr@{}}
+\toprule
+             & \multicolumn{2}{c}{\textbf{MuSiQue}} & \multicolumn{2}{c}{\textbf{2Wiki}} & \multicolumn{2}{c}{\textbf{HotpotQA}} & \multicolumn{2}{c}{\textbf{Average}}  \\ \cmidrule(l){2-9} 
+             & AR@2          & AR@5          & AR@2             & AR@5             & AR@2           & AR@5 & AR@2 & AR@5                    \\ \midrule
+ColBERTv2~\cite{colbertv2} &  $6.8$ & $16.1$   & $25.1$ & $37.1$ & $33.3$ & $59.0$ & $21.7$ & $37.4$      \\ 
+HippoRAG &  $10.2$ & $22.4$ & $45.4$ & $75.7$ & $33.8$ & $57.9$ & $29.8$ & $52.0$\\ \bottomrule
+\end{tabular}
+\end{table}
+
+We further illustrate HippoRAG's unique \textit{single-step multi-hop retrieval} ability through the first example in Table \ref{tab:single_step_multi}. 
+In this example, even though \textit{Alhandra} was not mentioned in \textit{Vila de Xira's} passage, HippoRAG can directly leverage Vila de Xira's connection to Alhandra as his place of birth to determine its importance, something that standard RAG methods would be unable to do directly. 
+Additionally, even though IRCoT can also solve this multi-hop retrieval problem, as shown in Appendix \ref{sec:cost}, it is \num{10}-\num{30} times more expensive and \num{6}-\num{13} times slower than ours in terms of online retrieval, arguably the most important factor when it comes to serving end users.
+
+\begin{table}[h]
+\small
+  \caption{\textbf{Multi-hop question types.} We show example results for different approaches on path-finding vs.\ path-following multi-hop questions.}
+  \label{tab:single_step_multi}
+  \centering
+\begin{tabular}{@{}lllll@{}}
+\toprule
+\begin{tabular}[l]{@{}c@{}}\end{tabular}  & \textbf{Question} & \begin{tabular}[l]{@{}c@{}}\textbf{HippoRAG}\end{tabular} & \begin{tabular}[l]{@{}c@{}}\textbf{ColBERTv2}\end{tabular} & \begin{tabular}[l]{@{}c@{}}\textbf{IRCoT}\end{tabular} \\ \midrule
+\begin{tabular}[l]{@{}l@{}}Path-\\Following\end{tabular} & \begin{tabular}[l]{@{}l@{}} In which \\district was\\ \textbf{Alhandra}\\ born? \end{tabular} & \begin{tabular}[c]{@{}l@{}} \textbf{1. Alhandra} \\ \textbf{2. Vila de Xira} \\ \textbf{3.} Portugal \end{tabular} & \begin{tabular}[l]{@{}l@{}} \textbf{1. Alhandra} \\ \textbf{2.} Dimuthu \\Abayakoon \\ \textbf{3.} Ja`ar \end{tabular} & \begin{tabular}[c]{@{}l@{}} \textbf{1. }\textbf{Alhandra} \\ \textbf{2. }\textbf{Vila de Xira} \\ \textbf{3. }Póvoa de \\Santa Iria  \end{tabular} \\ \midrule
+\begin{tabular}[l]{@{}l@{}}Path-\\Finding \end{tabular} & \begin{tabular}[l]{@{}l@{}}Which \textbf{Stanford} \\professor works on\\ the neuroscience\\ of  \textbf{Alzheimer's}?\end{tabular} & \begin{tabular}[c]{@{}l@{}} \textbf{1. }\textbf{Thomas Südhof} \\ \textbf{2. }Karl Deisseroth \\ \textbf{3. }Robert Sapolsky\end{tabular} & \begin{tabular}[l]{@{}l@{}} \textbf{1. }Brian Knutson \\ \textbf{2. }Eric Knudsen \\ \textbf{3. }Lisa Giocomo \end{tabular} & \begin{tabular}[l]{@{}l@{}} \textbf{1. }Brian Knutson \\ \textbf{2. }Eric Knudsen \\ \textbf{3. }Lisa Giocomo \end{tabular}   \\
+% \begin{tabular}[l]{@{}c@{}}One-to-Many\\Multi-Hop \end{tabular} & \begin{tabular}[l]{@{}c@{}}What treatment for \\\textbf{herpes simplex} will not \\work with a deficient \textbf{viral} \\\textbf{thymidine kinase}?\end{tabular} & \begin{tabular}[c]{@{}c@{}} Brivudine \\ Thymidine kinase \\ \textbf{Aciclovir} \end{tabular} & \begin{tabular}[l]{@{}c@{}} Thymidine kinase (Chem.) \\ Nucleoside analogue \\ Thymidine kinase \end{tabular}   \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{HippoRAG's Potential: Path-Finding Multi-Hop Retrieval}
+\label{path_finding_case_study_main_paper}
+
+The second example in Table \ref{tab:single_step_multi}, also present in Figure \ref{fig:hook}, shows a type of questions that is trivial for informed humans but out of reach for current retrievers without further training.
+This type of questions, which we call \textit{path-finding} multi-hop questions, requires identifying one path between a set of entities when 
+many paths exist to explore instead of \textit{following} a specific path, as in standard multi-hop questions.\footnote{Path-finding questions require knowledge integration when search entities like \textit{Stanford} and \textit{Alzheimer's} do not happen to appear together in a passage, a condition which is often satisfied for new information.}
+
+More specifically, a simple iterative process can retrieve the appropriate passages for the first question by following the one path set by \textit{Alhandra's} one place of birth, as seen by IRCoT's perfect performance. 
+However, an iterative process would struggle to answer the second question given the many possible paths to explore\textemdash either through professors at \textit{Stanford University} or professors working on the neuroscience of \textit{Alzheimer's}.
+It is only by associating disparate information about Thomas Südhof that someone who knows about this professor would be able to answer this question easily.
+As seen in Table \ref{tab:single_step_multi}, both ColBERTv2 and IRCoT fail to extract the necessary passages since they cannot access these associations.
+On the other hand, HippoRAG leverages its web of associations in its hippocampal index and graph search algorithm to determine that Professor Thomas is relevant to this query and retrieves his passages appropriately.
+More examples of these path-finding multi-hop questions can be found in our case study in Appendix \ref{sec:path-finding-case-study}.
+
+\section{Related Work}
+
+\subsection{LLM Long-Term Memory}
+
+\noindent \textbf{Parametric Long-Term Memory.} It is well-accepted, even among skeptical researchers, that the parameters of modern LLMs encode a remarkable amount of world knowledge \cite{AlKhamissi2022ARO,  Chen_Cao_Chen_Liu_Zhao_2024,  geva2023dissecting, gurnee2024language, he2024language, Kambhampati2024CanLL, petroni-etal-2019-language,wang2023survey}, which can be leveraged by an LLM in flexible and robust ways \cite{wang2023selfconsistency, wei2022chain, yu2023generate}.
+Nevertheless, our ability to update this vast knowledge store, an essential part of any long-term memory system, is still surprisingly limited. Although many techniques to update LLMs exist, such as standard fine-tuning, model editing \cite{de-cao-etal-2021-editing, 8Meng2022LocatingAE, 10Mitchell2021FastME, 11Mitchell2022MemoryBasedME, nguyen2022survey, zhang2024comprehensive} and even external parametric memory modules inspired by human memory \cite{memoria, memoryllm, camelot}, no methodology has yet to emerge as a robust solution for continual learning in LLMs
+\cite{gu2024model,li2024unveiling, 12Zhong2023MQuAKEAK}.
+
+\noindent \textbf{RAG as Long-Term Memory.} 
+On the other hand, using RAG methods as a long-term memory system offers a simple way to update knowledge over time \cite{15Izacard2022FewshotLW,14Lewis2020RetrievalAugmentedGF,13Ram2023InContextRL, Shi2023REPLUGRB}. 
+More sophisticated RAG methods, which perform multiple steps of retrieval and generation from an LLM, are even able to integrate information across new or updated knowledge elements\cite{jiang-etal-2023-active, self-ask, shao-etal-2023-enhancing,ircot, xiong2021answering, yao2023react,yoran2023answering}, another crucial aspect of long-term memory systems. As discussed above, however, this type of online information integration is unable to solve the more complex knowledge integration tasks that we illustrate with our \textit{path-finding} multi-hop QA examples.
+
+Some other methods, such as RAPTOR \cite{raptor}, MemWalker \cite{chen23walking} and GraphRAG \cite{graphrag}, integrate information during the offline indexing phase similarly to HippoRAG and might be able to handle these more complex tasks.
+However, these methods integrate information by summarizing knowledge elements, which means that the summarization process must be repeated any time new data is added. In contrast, HippoRAG can continuously integrate new knowledge by simply adding edges to its KG.
+% Additionally, some of these methods rely on clustering algorithms to determine which knowledge to integrate, reducing their flexibility.
+
+% \citet{dong23hierarchy,li23leveraging} construct question-specific subgraphs to answer multi-hop questions. Though structural indexing is utilized to integrate passages, these works do not involve building long-term memory because the subgraph size is quite limited.
+
+\noindent \textbf{Long Context as Long-Term Memory.} Context lengths for both open and closed source LLMs have increased dramatically in the past year \cite{longlora, Ding2024LongRoPEEL, fu2024data, peng2023yarn,geminiteam2024gemini}. This scaling trend seems to indicate that future LLMs could perform long-term memory storage within massive context windows. However, the viability of this future remains largely uncertain given the many engineering hurdles involved and the apparent limitations of long-context LLMs, even within current context lengths \cite{levy2024task, li2024longcontext, zhang2024inftybench, fu2024challengesdeployinglongcontexttransformers}.
+
+\subsection{Multi-Hop QA \& Graphs}
+
+Many previous works have also tackled multi-hop QA using graph structures. These efforts can be broadly divided in two major categories: 1) graph-augmented reading comprehension, where a graph is extracted from retrieved documents and used to improve a model's reasoning process and 2) graph-augmented retrieval, where models find relevant documents by traversing a graph structure.
+
+\noindent \textbf{Graph-Augmented Reading Comprehension.} Earlier works in this category are mainly supervised methods which mix signal from a hyperlink or co-occurrence graph with a language model through a graph neural network (GNN) \cite{fang-etal-2020-hierarchical, ramesh-etal-2023-single, qiu-etal-2019-dynamically}. More recent works use LLMs and introduce knowledge graph triples directly into the LLM prompt \cite{park2024graphelicitationguidingmultistep, li-du-2023-leveraging, liu-etal-2024-era}. Although these works share HippoRAG's use of graphs for multi-hop QA, their generation-based improvements are fully complementary to HippoRAG's, which are solely based on improved retrieval.
+
+\noindent \textbf{Graph-Augmented Retrieval.} In this second category, previous work trains a re-ranking module which can traverse a graph made using Wikipedia hyperlinks \cite{ding-etal-2019-cognitive, zhu-etal-2021-adaptive, nie-etal-2019-revealing, das-etal-2019-multi, Asai2020Learning, li_hoptriever}. HippoRAG, in contrast, builds a KG from scratch using LLMs and performs multi-hop retrieval without any supervision, making it much more adaptable.
+
+\subsection{LLMs \& KGs} 
+
+Combining the strengths of language models and knowledge graphs has been an active research direction for many years, both for augmenting LLMs with a KG in different ways \cite{luo2024reasoning, wang2023boosting, wen2023mindmap} or augmenting KGs by either distilling knowledge from an LLM's parametric knowledge \cite{bosselut-etal-2019-comet, west-etal-2022-symbolic} or using them to parse text directly \cite{autokg, han2023pive,zhang-etal-2023-aligning}. In an exceptionally comprehensive survey, \citet{kg_and_llm} present a roadmap for this research direction and highlight the importance of work which \textit{synergizes} these two important technologies \cite{jiang-etal-2023-structgpt, sun2024thinkongraph, gu-etal-2023-dont, yasunaga2022dragon, ZHU2023119369}. Like these works, HippoRAG shows the potential for synergy between these two technologies, combining the knowledge graph construction abilities of LLMs with the retrieval advantages of structured knowledge for more effective RAG.
+% Several popular production LLM systems have deployed modules that allow users to build a knowledge graph to enhance retrieval augmented generation.
+% LlamaIndex \cite{llamaindex_knowledge_graph} recently included a process that chunks text and maps it to triples using an LLM.
+% Although very similar process to our hippocampal index construction, it lacks HippoRAG's pattern completion capacity.
+% which might provide more knowledge integration that LLamaIndex. 
+% However, in contrast with HippoRAG, its pattern completion technique assumes that passages come from a long continuous text and assumes the existence of a specific structure of communities that can be leveraged.
+
+% \noindent \textbf{Neurobiologically Inspired Long-Term Memory.} In terms of work inspired by human memory directly, we highlight Larimar \cite{larimar}, a study which successfully draws on a similar but related human memory theory to motivate their own technique.
+% In contrast to HippoRAG, Larimar proposes a model editing module trained jointly with an LM, making it an interesting architecture to explore but less directly applicable to current LLMs.
+
+\section{Conclusions \& Limitations}
+\label{conclusions_limitations}
+
+Our proposed neurobiologically principled methodology, although simple, already shows promise for overcoming the inherent limitations of standard RAG systems while retaining their advantages over parametric memory.
+HippoRAG's knowledge integration capabilities, demonstrated by its strong results on \textit{path-following} multi-hop QA and promise on \textit{path-finding} multi-hop QA, as well as its dramatic efficiency improvements and continuously updating nature, makes it a powerful middle-ground framework between standard RAG methods and parametric memory and offers a compelling solution for long-term memory in LLMs.
+
+Nevertheless, several limitations can be addressed in future work to enable HippoRAG to achieve this goal better. 
+First, we note that all components of HippoRAG are currently used off-the-shelf without any extra training.
+There is therefore much room to improve our method's practical viability by performing specific component fine-tuning. 
+This is evident in the error analysis discussed in Appendix \ref{sec:error_analysis}, which shows most errors made by our system are due to NER and OpenIE and thus could benefit from direct fine-tuning.
+Given that the rest of the errors are graph search errors, also in Appendix \ref{sec:error_analysis}, we note that several avenues for improvements over simple PPR exist, such as allowing relations to guide graph traversal directly.
+Additionally, as shown in Appendix \ref{sec:openie length}, more work must be done to improve the consistency of OpenIE in longer compared to shorter documents.
+Finally, and perhaps most importantly, HippoRAG's scalability still calls for further validation.
+Although we show that Llama-3.1 could obtain similar performance to closed-source models and thus reduce costs considerably, we are yet to empirically prove the efficiency and efficacy of our synthetic hippocampal index as its size grows way beyond current benchmarks.
+
+\section*{Acknowledgments}
+The authors would like to thank colleagues from the OSU NLP group and Percy Liang for their thoughtful comments. This research was supported in part by NSF OAC 2112606, NIH R01LM014199, ARL W911NF2220144, and Cisco. The views and conclusions contained herein are those of the authors and should not be interpreted as representing the official policies, either expressed or implied, of the U.S.\ government. The U.S.\ Government is authorized to reproduce and distribute reprints for Government purposes notwithstanding any copyright notice herein.
+
+% \section*{References}
+\bibliographystyle{abbrvnat}
+\bibliography{references}
+% \bibliographystyle{plain}
+% \bibliographystyle{plainnat} 
+
+
+\clearpage
+\begin{appendices}
+\section*{Appendices}
+
+Within this supplementary material, we elaborate on the following aspects:
+
+\begin{itemize}
+    \item Appendix \ref{sec:method_example}: HippoRAG Pipeline Example
+    \item Appendix \ref{sec:dataset_comparison}: Dataset Comparison
+    \item Appendix \ref{sec:ablation statistics}: Ablation Statistics
+    \item Appendix \ref{sec:intrinsic evaluation}: Intrinsic OpenIE Evaluation
+    % \item Appendix \ref{sec:all_recall_metric}: Single-Step Multi-Hop: All-Recall Metric
+    \item Appendix \ref{sec:path-finding-case-study}: Path-Finding Multi-Hop Case Study
+    \item Appendix \ref{sec:error_analysis}: Error Analysis
+    \item Appendix \ref{sec:cost}: Cost and Efficiency Comparison
+    \item Appendix \ref{sec:implementation}: Implementation Details \& Compute Requirements
+    \item Appendix \ref{sec:prompts}: LLM Prompts
+\end{itemize}
+
+\clearpage
+
+
+\section{HippoRAG Pipeline Example}
+\label{sec:method_example}
+
+To better demonstrate how our HippoRAG pipeline works, we use the \textit{path-following} example from the MuSiQue dataset shown in Table \ref{tab:single_step_multi}. 
+We use HippoRAG's indexing and retrieval processes to follow this question and a subset of the associated corpus.
+The question, its answer, and its supporting and distractor passages are as shown in Figure \ref{fig:pipeline1}. The indexing stage is shown in Figure \ref{fig:pipeline2}, showing both the OpenIE procedure as well as the relevant subgraph of our KG. 
+Finally, we illustrate the retrieval stage in Figure \ref{fig:pipeline3}, including query NER, query node retrieval, how the PPR algorithm changes node probabilities, and how the top retrieval results are calculated.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\textwidth]{figures/pipeline1.pdf}
+    \caption{\textbf{HippoRAG Pipeline Example (Question and Annotations).} \textbf{(Top)} We provide an example question and its answer. \textbf{(Middle \& Bottom)} The supporting and distractor passages for this question. Two supporting passages are needed to solve this question. The excerpts of the distractor passages are related to the ``district'' mentioned in the question.}
+    \label{fig:pipeline1}
+\end{figure}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\textwidth]{figures/pipeline2.pdf}
+    \caption{\textbf{HippoRAG Pipeline Example (Indexing).} NER and OpenIE are sequentially conducted on each passage of the corpus. Thus, an open knowledge graph is formed for the entire corpus. 
+    We only show the relevant subgraph from the KG.}
+    \label{fig:pipeline2}
+\end{figure}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\textwidth]{figures/pipeline3.pdf}
+    \caption{\textbf{HippoRAG Pipeline Example (Retrieval).}
+    For retrieval, the named entities in the query are extracted from the question \textbf{(Top)}, after which the query nodes are chosen using a retrieval encoder. In this case, the name of the query named entity, ``Alhandra'', is equivalent to its KG node. 
+    \textbf{(Middle)} We then set the personalized probabilities for PPR based on the retrieved query nodes. 
+    After PPR, the query node probability is distributed according to the subgraph in Figure \ref{fig:pipeline2}, leading to some probability mass on the node ``Vila France de Xira''. 
+    \textbf{(Bottom)} These node probabilities are then summed over the passages they appear in to obtain the passage-level ranking. The top-ranked nodes after PPR are highlighted in the top-ranked passages.
+    }
+    \label{fig:pipeline3}
+\end{figure}
+\clearpage
+
+
+\section{Dataset Comparison}
+\label{sec:dataset_comparison}
+
+To analyze the differences between the three datasets we use, we pay special attention to the quality of the distractor passages, i.e., whether they can be effectively confounded with the supporting passages.
+We use Contriever \cite{contriever} to calculate the match score between questions and candidate passages and show their densities in Figure \ref{fig:dataset differences}.
+In an ideal case, the distribution of distractor scores should be close to the mean of the support passage scores. 
+However, it can be seen that the distribution of the distractor scores in HotpotQA is much closer to the lower bound of the support passage scores compared to the other two datasets.
+
+\begin{figure}[!ht]
+    \centering
+    \includegraphics[width=\textwidth]{figures/Dataset_differences.pdf}
+    \caption{Density of similarity scores of candidate passages (distractors and supporting passages) obtained by Contriever. The similarity score of HotpotQA distractors is not substantially larger than that of the least similar supporting passages, meaning that these distractors are not very effective.}
+    \label{fig:dataset differences}
+\end{figure}
+
+\section{Ablation Statistics}
+\label{sec:ablation statistics}
+
+We use GPT-3.5 Turbo, REBEL \cite{rebel} and Llama-3.1 (8B and 70B) \cite{llama3modelcard} for OpenIE ablation experiments. 
+As shown in Table \ref{tab:graph_ablation_statistics},
+compared to both GPT-3.5 Turbo and both Llama models, REBEL generates around half the number of nodes and edges. This illustrates REBEL's lack of flexibility in open information extraction when compared to using both open and closed-source LLMs. Meanwhile, both Llama-3.1 versions produce a similar amount of OpenIE triples than GPT-3.5 Turbo.
+
+\begin{table}[!ht]
+\small
+\centering
+\caption{Knowledge graph statistics using different OpenIE methods.}
+\label{tab:graph_ablation_statistics}
+\begin{tabular}{llrrr}
+\toprule
+\textbf{Model} & \textbf{Count} & \textbf{MuSiQue} & \textbf{2Wiki} & \textbf{HotpotQA} \\ \midrule
+% \multicolumn{4}{c}{GPT-3.5 Turbo (Default)} \\ \midrule
+\multirow{4}{*}{\begin{tabular}[c]{@{}l@{}}GPT-3.5 Turbo (1106) \\\cite{openai_gpt_3_5_turbo} (Default)  \end{tabular}} &  \# of Unique Nodes ($N$) & $91,729$ & $42,694$ & $82,157$\\% & 84,110 \\
+& \# of Unique Edges ($E$) & $21,714$  & $7,867$ & $17,523$ \\%& 16,942 \\
+& \# of Unique Triples & $107,448$ & $50,671$ & $98,709$ \\
+& \# of ColBERTv2 Synonym Edges ($E'$) & $191,636$  & $82,526$ & $171,856$ \\
+\midrule
+% \multicolumn{4}{c}{REBEL~\cite{rebel}} \\ \midrule
+\multirow{4}{*}{\begin{tabular}[c]{@{}l@{}} REBEL-large \\\cite{rebel}  \end{tabular}} 
+& \# of Unique Nodes ($N$) & $36,653$ & $22,146$ & $30,426$ \\
+& \# of Unique Edges ($E$) & $269$ & $211$ & $262$ \\
+& \# of Unique Triples & $52,102$ & $30,428$ & $42,038$ \\
+& \# of ColBERTv2 Synonym Edges ($E'$) & $48,213$  & $33,072$ & $39,053$ \\
+\midrule
+% \multicolumn{4}{c}{Llama-3.1-8B-Instruct \cite{llama3modelcard}}   \\ \midrule
+\multirow{4}{*}{\begin{tabular}[c]{@{}l@{}} Llama-3.1-8B-Instruct \\\cite{llama3modelcard}  \end{tabular}} 
+& \# of Unique Nodes ($N$) & $86,864$ & $37,875$ & $76,311$\\ 
+& \# of Unique Edges ($E$) & $22,807$ & $6,729$ & $18,109$\\
+& \# of Unique Triples &  $118,430$ & $47,420$ & $104,981$ \\
+& \# of ColBERTv2 Synonym Edges ($E'$) & $155,889$  & $72,963$ & $139,181$ \\
+\midrule
+% \multicolumn{4}{c}{Llama-3.1-70B-Instruct \cite{llama3modelcard}}   \\ \midrule
+\multirow{4}{*}{\begin{tabular}[c]{@{}l@{}} Llama-3.1-70B-Instruct \\\cite{llama3modelcard}  \end{tabular}} 
+& \# of Unique Nodes ($N$) & $80,634$ & $39,845$ & $70,304$\\
+& \# of Unique Edges ($E$) & $22,120$ & $6,996$ & $16,404$\\
+& \# of Unique Triples & $120,514$ & $55,940$ & $105,281$ \\ 
+& \# of ColBERTv2 Synonym Edges ($E'$) & $140,328$  & $69,125$ & $119,948$ \\\bottomrule
+\end{tabular}
+\end{table}
+
+
+\section{Intrinsic OpenIE Evaluation}
+\label{sec:intrinsic evaluation}
+
+In order to better understand how OpenIE and retrieval interact, we extracted gold triples from 20 documents from the MuSiQue training dataset. In total, we extracted 239 gold triples. From the results in Table \ref{tab:intrinsic_openie_results}, we first note that there is a massive difference between end-to-end information extraction systems like REBEL and LLMs. Additionally, we note that there is some correlation better OpenIE and retrieval performance, given that the 8B Llama-3.1-Instruct version performs worse that its 70B counterpart in both retrieval and intrinsic metrics. More specifically, we see that this larger model only provides intrinsic improvements in the recall metric, which seems specially important in improving retrieval performance. Finally, we note that this evaluation is not perfectly correlated with retrieval performance, since GPT-3.5's intrinsic performance is much stronger than Llama-3.1-70B-Instruct while its retrieval score is only slightly higher.
+
+\begin{table}[!h]
+\small
+  \caption{Intrinsic OpenIE evaluation using the CaRB \cite{bhardwaj-etal-2019-carb} framework on 20 annotated passages.}
+  \label{tab:intrinsic_openie_results}
+  \centering
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+& \textbf{AUC} & \textbf{Precision} & \textbf{Recall} & \textbf{F1}\\ \midrule
+GPT-3.5 Turbo (1106) \cite{openai_gpt_3_5_turbo} (Default) & $46.5$ & $68.4$ & $55.2$ & $61.1$ \\
+Llama-3.1-8B-Instruct \cite{llama3modelcard} & $40.0$ & $66.4$ & $48.1$ & $55.8$ \\
+Llama-3.1-70B-Instruct \cite{llama3modelcard} & $42.3$ & $66.3$ & $50.9$ & $57.6$ \\
+REBEL \cite{rebel} & $1.0$ & $8.0$ & $1.8$ & $2.9$ \\
+ \bottomrule
+\end{tabular}
+\end{table}
+
+% \section{Single-Step Multi-Hop: All-Recall Metric}
+% \label{sec:all_recall_metric}
+
+% HippoRAG performs better on multi-hop QA benchmarks than standard RAG mainly because of its ability to perform multi-hop retrieval in a single step.
+% Table \ref{tab:all_single_retrieve} demonstrates this by measuring the percentage of queries where all supporting passages are retrieved successfully, something that can only be achieved through successful multi-hop reasoning.
+% The fact that the gaps shown in this table are much larger than the gaps in Table \ref{tab:single_retrieve} indicates that much of HippoRAG's improvements are coming from the ability to retrieve all supporting documents not by performing better partial retrieval.
+
+% \begin{table}[!ht]
+% \small
+%   \caption{\textbf{All-Recall metric.} We measure the percentage of queries for which all supporting passages are successfully retrieved (all-recall, denoted as AR@2 or AR@5) and find even larger performance improvements for HippoRAG.}
+%   \label{tab:all_single_retrieve}
+%   \centering
+% \begin{tabular}{@{}lrrrrrr|rr@{}}
+% \toprule
+%              & \multicolumn{2}{c}{\textbf{MuSiQue}} & \multicolumn{2}{c}{\textbf{2Wiki}} & \multicolumn{2}{c}{\textbf{HotpotQA}} & \multicolumn{2}{c}{\textbf{Average}}  \\ \cmidrule(l){2-9} 
+%              & AR@2          & AR@5          & AR@2             & AR@5             & AR@2           & AR@5 & AR@2 & AR@5                    \\ \midrule
+% ColBERTv2~\cite{colbertv2} &  $6.8$ & $16.1$   & $25.1$ & $37.1$ & $33.3$ & $59.0$ & $21.7$ & $37.4$      \\ 
+% HippoRAG &  $10.2$ & $22.4$ & $45.4$ & $75.7$ & $33.8$ & $57.9$ & $29.8$ & $52.0$\\ \bottomrule
+% \end{tabular}
+% \end{table}
+
+\section{Case Study on Path-Finding Multi-Hop QA}
+\label{sec:path-finding-case-study}
+
+As discussed above, path-finding multi-hop questions across passages are exceedingly challenging for single-step and multi-step RAG methods such as ColBERTv2 and IRCoT. These questions require integrating information across multiple passages to find relevant entities among many possible candidates, such as finding all Stanford professors who work on the neuroscience of Alzheimer's. 
+
+\subsection{Path-Finding Multi-Hop Question Construction Process}
+
+These questions and the curated corpora around them were built through the following procedure. The first two questions follow a slightly separate process as the third one as well as the motivating example in the main paper. For the first two, we first identify a book or movie and then found the book's author or the movie's director. We would then find 1) a trait for either the book/movie and 2) another trait for the author/director. These two traits would then be used to extract distractors from Wikipedia for each question. 
+
+For the third question and our motivating example, we first choose a professor or a drug at random as the answer for each question. We then obtain the university the professor works at or the disease the drug treats as well as one other trait for the professor or drug (in these questions research topic and mechanism of action were chosen). In these questions, distractors were extracted from Wikipedia using the University or disease on the one hand and the research topic or mechanism of action on the other. This process, although quite tedious, allowed us to curate these challenging but realistic path-finding multi-hop questions.
+
+\subsection{Qualitative Analysis}
+
+In Table \ref{tab:path finding multi-hop case study}, we show three more examples from three different domains that illustrate HippoRAG's potential for solving retrieval tasks that require such cross-passage knowledge integration.
+
+In the first question of Table \ref{tab:path finding multi-hop case study}, we want to find a book published in \textbf{2012} by an English author who won a specific award. In contrast to HippoRAG, ColBERTv2 and IRCoT are unable to identify \textbf{Mark Haddon} as such an author. ColBERTv2 focuses on passages related to awards while IRCoT mistakenly decides that Kate Atkinson is the answer to such question since she won the same award for a book published in 1995. 
+For the second question, we wanted to find a war film based on a non-fiction book directed by someone famous for sci-fi and crime movies. 
+HippoRAG is able to find our answer \textbf{Black Hawk Down} by \textbf{Ridley Scott} within the first four passages, while ColBERTv2 misses the answer completely and retrieves other films and film collections.
+In this instance, even though IRCoT is able to retrieve Ridley Scott, it does so mainly through parametric knowledge. The chain-of-thought output discusses his and Denis Villeneuve fame as well as their sci-fi and crime experience. Given the three-step iteration restriction used here and the need to explore two directors, the specific war film \textbf{Black Hawk Down} was not identified.
+Although a bit convoluted, people often ask these first two questions to remember a specific movie or book they watched or heard about from only a handful of disjointed details.
+
+Finally, the third question is more similar to the motivating example in the main paper and shows the importance of this type of question in real-world domains. 
+In this question, we ask for a drug used to treat lymphocytic leukemia through a specific mechanism (cytosolic p53 interaction). While HippoRAG is able to leverage the associations within the supporting passages to identify the \textbf{Chlorambucil} passage as the most important, ColBERTv2 and IRCoT are only able to extract passages associated with lymphocytic leukemia. Interestingly enough, IRCoT uses its parametric knowledge to guess that Venetoclax, which also treats leukemia, would do so through the relevant mechanism even though no passage in the curated dataset explicitly stated this.
+
+\begin{table}[!ht]
+  \caption{Ranking result examples for different approaches on several path-finding multi-hop questions.}
+  \label{tab:path finding multi-hop case study}
+  \centering
+  \small
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Question} & \begin{tabular}[l]{@{}c@{}}\textbf{HippoRAG}\end{tabular} & \begin{tabular}[l]{@{}c@{}}\textbf{ColBERTv2}\end{tabular} & \textbf{IRCoT}\\ \midrule
+\begin{tabular}[l]{@{}l@{}}Which book was \\published in \textbf{2012} by an \\\textbf{English} author who is a\\ \textbf{Whitbread Award}\\ winner?\end{tabular} & \begin{tabular}[c]{@{}l@{}} \textbf{1. }Oranges Are \\Not the Only Fruit \\ \textbf{2. }William Trevor \\Legacies \\ \textbf{3. }\textbf{Mark Haddon} \end{tabular}  & \begin{tabular}[c]{@{}l@{}} \textbf{1. }World Book Club \\Prize winners
+\\ \textbf{2. }Leon Garfield \\Awards
+ \\ \textbf{3. }Twelve Bar\\ Blues (novel)
+\end{tabular} & \begin{tabular}[c]{@{}l@{}} \textbf{1. }Kate Atkinson
+\\ \textbf{2. }Leon Garfield \\Awards
+ \\ \textbf{3. }Twelve Bar \\Blues (novel)
+\end{tabular}\\ \midrule
+\begin{tabular}[l]{@{}l@{}}Which \textbf{war film} based \\on a \textbf{non fiction book} \\was directed by someone\\ famous in the \textbf{science}\\ \textbf{fiction} and \textbf{crime} \\\textbf{genres}? \end{tabular} & \begin{tabular}[c]{@{}l@{}}\textbf{1. }War Film \\ \textbf{2. }Time de Zarn\\ \textbf{3. }Outline of Sci-Fi\\ \textbf{4. }\textbf{Black Hawk}\\ \textbf{Down}\end{tabular} & \begin{tabular}[c]{@{}l@{}} \textbf{1. }Paul Greengrass \\ \textbf{2. }List of book-based\\ war films\\ \textbf{3. }Korean War Films\\ \textbf{4. }All the King's \\Men Book \end{tabular} & \begin{tabular}[c]{@{}l@{}} \textbf{1. }\textbf{Ridley Scott} \\ \textbf{2. }Peter Hyams \\ \textbf{3. }Paul Greengrass \\ \textbf{4. }List of book-based\\ war films \end{tabular} \\ \midrule
+\begin{tabular}[l]{@{}l@{}}What drug is used to \\treat \textbf{chronic}\\ \textbf{lymphocytic leukemia} \\by interacting with \\\textbf{cytosolic p53}?\end{tabular} & \begin{tabular}[c]{@{}l@{}} \textbf{1. }\textbf{Chlorambucil} \\ \textbf{2. }\textbf{Lymphocytic}\\ \textbf{leukemia} \\ \textbf{3. }Mosquito bite \\allergy\\ \end{tabular}  & \begin{tabular}[c]{@{}l@{}} \textbf{1. }\textbf{Lymphocytic} \\\textbf{leukemia} \\ \textbf{2. }Obinutuzumab \\ \textbf{3. }Venetoclax \end{tabular} & \begin{tabular}[c]{@{}l@{}} \textbf{1. }Venetoclax \\ \textbf{2. }\textbf{Lymphocytic} \\\textbf{leukemia} \\\textbf{3. }Idelalisib  \end{tabular}\\ 
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Error Analysis}
+\label{sec:error_analysis}
+
+\subsection{Overview}
+
+In this section, we provide a detailed error analysis of 100 errors made by HippoRAG on the MuSiQue dataset.
+As shown in Table \ref{tab:musique error}, these errors can be categorized into three main types: NER, OpenIE and PPR.
+
+The main error type, with nearly half of all error examples, is due to limitations of our NER based design. As further discussed in \S \ref{subsec:concepts and context tradeoff}, our NER design does not extract enough information from the query for retrieval. For example, in the question ``When was one internet browser's version of Windows 8 made accessible?'', only the phrase ``Windows 8'' is extracted, leaving any signal about ``browsers'' or ``accessibility'' behind for the subsequent graph search. OpenIE errors, the second most common, are discussed in more detail in \S \ref{subsec:openie limitations}.
+
+We define the third error category as cases where both NER and OpenIE are functioning properly but the PPR algorithm is still unable to identify relevant subgraphs, often due to confounding signals. For instance, consider the query ``How many refugees emigrated to the European country where Huguenots felt a kinship for emigration?''.
+Despite the term ``Huguenots'' being accurately extracted from both the question and the supporting passages, and the PPR algorithm initiating with the nodes labeled ``European'' and ``Huguenots'', the PPR algorithm struggles to find the appropriate subgraphs around them that define the most related passage. This occurs when multiple passages exist in the corpus that discuss very similar topics since the PPR algorithm is not able to leverage query context directly.
+% Even when the term ``Huguenots'' is accurately extracted from both the question and the supporting passages, and the PPR algorithm initiates searches with the nodes labeled ``European'' and ``Huguenots'', it incorrectly prioritizes other passages containing ``European'' and ``Huguenots'' that do not actually support the question. 
+% This misdirection occurs because the algorithm does not effectively discriminate between passages with similar topics but different relevance to the question's context.
+
+\begin{table}[!ht]
+\small
+  \caption{Error analysis on MuSiQue.}
+  \label{tab:musique error}
+  \centering
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Error Type} & \textbf{Error Percentage} (\%)\\ \midrule
+NER Limitation & $48$  \\ 
+Incorrect/Missing OpenIE & $28$ \\
+PPR & $24$  \\
+ \bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Concepts vs. Context Tradeoff}
+\label{subsec:concepts and context tradeoff}
+
+Given our method's entity-centric nature in extraction and indexing, it has a strong bias towards concepts that leaves many contextual signals unused. This design enables single-step multi-hop retrieval while also enabling contextual cues to avoid distracting from more salient entities. As seen in the first example in Table \ref{tab:concept_v_context}, ColBERTv2 uses the context to retrieve passages that are related to famous Spanish navigators but not ``Sergio Villanueva'', who is a boxer. In contrast, HippoRAG is able to hone in on ``Sergio'' and retrieve one relevant passage. 
+
+Unfortunately, this design is also one of our method's greatest limitations since ignoring contextual cues accounts for around \num{48}\% of errors in our small-scale error analysis. This problem is more apparent in the second example since the concepts are general, making the context more important. Since the only concept tagged by HippoRAG is ``protons'', it extracts passages related to ``Uranium'' and ``nuclear weapons'' while ColBERTv2 uses the context to extract more relevant passages associated with the discovery of atomic numbers.
+
+\begin{table}[!ht]
+\small
+  \caption{Examples showing the concept-context tradeoff on MuSiQue.}
+  \label{tab:concept_v_context}
+  \centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Question} & \begin{tabular}[l]{@{}l@{}}\textbf{HippoRAG}\end{tabular} & \begin{tabular}[l]{@{}c@{}}\textbf{ColBERTv2}\end{tabular} \\ \midrule
+\begin{tabular}[l]{@{}l@{}} Whose father was a navigator\\ who explored the east coast \\of the continental region where\\ \textbf{Sergio Villanueva} would\\ later be born?\end{tabular} & \begin{tabular}[l]{@{}l@{}}\textbf{Sergio Villanueva}\\ César Gaytan \\ Faustino Reyes\end{tabular} & \begin{tabular}[l]{@{}l@{}}Francisco de Eliza (navigator)\\Exploration of N. America\\Vicente Pinzón (navigator)\end{tabular}\\ \midrule
+% \begin{tabular}[l]{@{}c@{}} Who did the person considered the founder\\ of three major monotheistic religions\\ marry after the death of \textbf{Sarah}? \end{tabular}& Keturah Abrahamic religions&\\ \midrule
+\begin{tabular}[l]{@{}l@{}} What undertaking included the\\ person who discovered that the\\ number of \textbf{protons} in each\\ element's atoms is unique? \end{tabular} & \begin{tabular}[l]{@{}l@{}}Uranium\\Chemical element\\History of nuclear weapons\end{tabular} & \begin{tabular}[l]{@{}l@{}} \textbf{Atomic number}\\Atomic theory\\Atomic nucleus\end{tabular} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+
+
+\begin{table}[!ht]
+\small
+  \caption{\textbf{Single-step retrieval performance.} HippoRAG performs substantially better on MuSiQue and 2WikiMultiHopQA than all baselines and achieves comparable performance on the less challenging HotpotQA dataset.}
+  \label{tab:single_retrieve_ensemble}
+  \centering
+  \small
+\begin{tabular}{@{}llcccccc|cc@{}}
+\toprule
+\textbf{Model} & \textbf{Retriever} & \multicolumn{2}{c}{\textbf{MuSiQue}} & \multicolumn{2}{c}{\textbf{2Wiki}} & \multicolumn{2}{c}{\textbf{HotpotQA}} & \multicolumn{2}{c}{\textbf{Average}} \\ \cmidrule(l){3-10} 
+             &             & R@2          & R@5          & R@2             & R@5             & R@2           & R@5 & R@2 & R@5                     \\ 
+             \midrule
+\multirow{2}{*}{Baseline} & Contriever & $34.8$    & $46.6$       & $46.6$           & $57.5$     & $57.2$       & $75.5$ & $46.2$ & $59.9$      \\ 
+             & ColBERTv2 & $37.9$        & $49.2$            & $59.2$               & $68.2$            & $\mathbf{64.7}$              & $\underline{79.3}$ & $53.9$ & $65.6$            \\ \midrule
+\multirow{2}{*}{HippoRAG} & Contriever & $41.0$ & $52.1$ & $\underline{71.5}$ & $\mathbf{89.5}$ & $59.0$ & $76.2$ & $57.2$ & $72.6$ \\
+             & ColBERTv2 & $40.9$ & $51.9$ & $70.7$ & $\underline{89.1}$ & $60.5$ & $77.7$ & $57.4$ & $72.9$  \\ \midrule
+\multirow{2}{*}{\begin{tabular}[c]{@{}l@{}}HippoRAG w/ \\ Uncertainty Ensemble\end{tabular}} & Contriever & $\underline{42.3}$ & $\underline{54.5}$ & $71.3$ & $87.2$ & $60.6$ & $79.1$ & $\underline{58.1}$ & $\underline{73.6}$ \\ 
+             & ColBERTv2 & $\mathbf{42.5}$ & $\mathbf{54.8}$ & $\mathbf{71.9}$ & $89.0$ & $\underline{62.5}$ & $\mathbf{80.0}$ & $\mathbf{59.0}$ & $\mathbf{74.6}$ \\ \bottomrule
+\end{tabular}
+\end{table}
+
+To get a better trade-off between concepts and context, we introduce an ensembling setting where HippoRAG scores are ensembled with dense retrievers when our parahippocampal region shows uncertainty regarding the link between query and KG entities. 
+This process represents instances when no hippocampal index was fully activated by the upstream parahippocampal signal and thus the neocortex must be relied on more strongly.
+We only use uncertainty ensembling if one of the query-KG entity scores $cosine\_similarity(M(c_i), M(e_j))$ is lower than a threshold $\theta$, for example, if there was no \textit{Stanford} node in the KG and the closest node in the KG is something that has a cosine similarity lower than $\theta$ such as \textit{Stanford Medical Center}. 
+The final passage score for uncertainty ensembling is the average of the HippoRAG scores and standard passage retrieval using model $M$, both of which are first normalized into the \num{0} to \num{1} over all passages. 
+
+When HippoRAG is ensembled with $M$ under \textit{``Uncertainty Ensemble''}, it further improves on MuSiQue and outperforms our baselines in R@5 for HotpotQA, as shown in Table \ref{tab:single_retrieve_ensemble}. When used in combination with IRCoT, as shown in Table \ref{tab:multi_retrieve_ensemble}, the ColBERTv2 ensemble outperforms all previous baselines in both R@2 and R@5 on HotpotQA.
+Although the simplicity of this approach is promising, more work needs to be done to solve this context-context tradeoff since simple ensembling does lower performance in some cases, especially for the 2WikiMultiHopQA dataset.
+
+
+\begin{table}[!ht]
+\small
+  \caption{\textbf{Multi-step retrieval performance.} Combining HippoRAG with standard multi-step retrieval methods like IRCoT results in substantial improvements on all three datasets.}
+  \label{tab:multi_retrieve_ensemble}
+  \centering
+\begin{tabular}{@{}llcccccc|cc@{}}
+\toprule
+\textbf{Model} & \textbf{Retriever} & \multicolumn{2}{c}{\textbf{MuSiQue}} & \multicolumn{2}{c}{\textbf{2Wiki}} & \multicolumn{2}{c}{\textbf{HotpotQA}} & \multicolumn{2}{c}{\textbf{Average}} \\ \cmidrule(l){3-10} 
+             & & R@2   & R@5    & R@2     & R@5      & R@2     & R@5 & R@2 & R@5 \\  \midrule
+IRCoT & Contriever &  $39.1$           &  $52.2$           &  $51.6$          &   $63.8$ & $65.9$            &   $81.6$  & $52.2$ & $65.9$ \\
+& ColBERTv2 &   $41.7$           & $53.7$             &   $64.1$           & $74.4$         & $\underline{67.9}$            &   $82.0$ & $57.9$ & $70.0$           \\ \midrule
+IRCoT + HippoRAG & Contriever & $43.9$ & $56.6$ & $75.3$ &  $\underline{93.4}$ & $65.8$ & $82.3$ & $61.7$ & $77.4$ \\
+& ColBERTv2 & $\mathbf{45.3}$ & $\underline{57.6}$ & $\mathbf{75.8}$ & $\mathbf{93.9}$ & $67.0$ & $83.0$ & $\mathbf{62.7}$ & $\underline{78.2}$  \\ \midrule
+\multirow{2}{*}{\begin{tabular}[c]{@{}l@{}} IRCoT + HippoRAG w/ \\ Uncertainty Ensemble\end{tabular}} & Contriever & $\underline{44.4}$ & $\mathbf{58.5}$ & $75.3$ & $91.5$ & $66.9$ & $\underline{85.0}$ & $\underline{62.2}$ & $\mathbf{78.3}$ \\
+& ColBERTv2 & $40.2$ & $53.4$ & $74.5$ & $91.2$ & $\mathbf{68.2}$ & $\mathbf{85.3}$ & $61.0$ & $76.6$  \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\subsection{OpenIE Limitations}
+\label{subsec:openie limitations}
+
+OpenIE is a critical step in extracting structured knowledge from unstructured text. 
+Nonetheless, its shortcomings can result in gaps in knowledge that may impair retrieval and QA capabilities. 
+As shown in Table \ref{tab:openie_error}, GPT-3.5 Turbo overlooks the crucial song title ``Don't Let Me Wait Too Long'' during the OpenIE process.
+This title represents the most significant element within the passage. 
+A probable reason is that the model is insensitive to such a long entity.
+Besides, the model does not accurately capture the beginning and ending years of the war, which are essential for the query. 
+This is an example of how models routinely ignore temporal properties.
+Overall, these failures highlight the need to improve the extraction of critical information.
+
+
+\begin{table}[!ht]
+\small
+  \caption{Open information extraction error examples on MuSiQue.}
+  \label{tab:openie_error}
+  \centering
+  \begin{tabular}{@{}p{4cm}p{6cm}p{3cm}@{}}
+    \toprule
+    \textbf{Question} & \textbf{Passage} & \textbf{Missed Triples} \\
+    \midrule
+    \begin{tabular}[c]{@{}p{4cm}@{}}
+      What company is the label responsible for ``Don't Let Me Wait Too Long'' a part of?
+    \end{tabular} &
+    \begin{tabular}[c]{@{}p{6cm}@{}}
+      ``Don't Let Me Wait Too Long'' was sequenced on side one of the LP, between the ballads ``The Light That Has Lighted the World'' and ``Who Can See It'' ...
+    \end{tabular} &
+    \begin{tabular}[c]{@{}p{3cm}@{}}
+      (Don't Let Me Wait Too Long, sequenced on, side one of the LP)
+    \end{tabular} \\
+    \midrule
+    \begin{tabular}[c]{@{}p{4cm}@{}}
+      When did the president of the Confederate States of America end his fight in the Mexican-American war?
+    \end{tabular} &
+    \begin{tabular}[c]{@{}p{6cm}@{}}
+      Jefferson Davis fought in the Mexican–American War (1846–1848), as the colonel of a volunteer regiment ...
+    \end{tabular} &
+    \begin{tabular}[c]{@{}p{3cm}@{}}
+      (Mexican-American War, starts, 1846), (Mexican-American War, ends, 1848)
+    \end{tabular} \\
+    
+    \bottomrule
+  \end{tabular}
+\end{table}
+    
+
+\subsection{OpenIE Document Length Analysis}
+\label{sec:openie length}
+
+Finally, we present a small-scale intrinsic experiment to help us understand the robustness of our OpenIE methods to increasing passage length. The length-dependent evaluation results in Table \ref{tab:intrinsic_openie_length_results}, show that GPT-3.5-Turbo OpenIE results deteriorate substantially when extracting from longer instead of shorter passages. This is likely due to a higher sentence and paragraph complexity for longer passages which leads to lower quality extraction. More work is needed to address this limitation since further chunking would only create other issues due to sentence interdependence.
+
+\begin{table}[!h]
+\small
+  \caption{Intrinsic OpenIE evaluation using the CaRB \cite{bhardwaj-etal-2019-carb} framework. Performance difference between the 10 longest and 10 shortest annotated passages using our default GPT-3.5 Turbo (1106) model.}
+  \label{tab:intrinsic_openie_length_results}
+  \centering
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+& \textbf{AUC} & \textbf{Precision} & \textbf{Recall} & \textbf{F1}\\ \midrule
+10 Shortest Passages & $58.9$ & $79.2$ & $65.7$ & $71.8$ \\
+10 Longest Passages & $39.0$ & $60.7$ & $48.5$ & $53.9$ \\
+ \bottomrule
+\end{tabular}
+\end{table}
+
+\section{Cost and Efficiency Comparison}
+\label{sec:cost}
+
+One of HippoRAG's main advantages against iterative retrieval methods is the dramatic online retrieval efficiency gains brought on by its single-step multi-hop retrieval ability in terms of both cost and time. Specifically, as seen in Table \ref{tab:retrieval_cost}, retrieval costs for IRCoT are \num{10} to \num{30} times higher than HippoRAG since it only requires extracting relevant named entities from the query instead of processing all of the retrieved documents. In systems with extremely high usage, a cost difference of an order of magnitude such as this one could be extremely important. The difference with IRCoT in terms of latency is also substantial, although more challenging to measure exactly. 
+Also as seen in Table \ref{tab:retrieval_cost}, HippoRAG can be \num{6} to \num{13} times faster than IRCoT, depending on the number of retrieval rounds that need to be executed (\num{2}-\num{4} in our experiments).\footnote{We use a single thread to query the OpenAI API for online retrieval in both IRCoT and HippoRAG. Since IRCoT is an iterative process and each of the iterations must be done sequentially, these speed comparisons are appropriate.}
+
+\begin{table}[!ht]
+\small
+  \caption{Average cost and efficiency measurements for online retrieval using GPT-3.5 Turbo on \num{1000} queries.}
+  \label{tab:retrieval_cost}
+  \centering
+\begin{tabular}{@{}lccc@{}}
+\toprule
+& \textbf{ColBERTv2} & \textbf{IRCoT} & \textbf{HippoRAG}\\ \midrule
+API Cost (\$) & $0$ & $1$-$3$ & $0.1$ \\
+Time (minutes) & $1$ & $20$-$40$ & $3$\\
+ \bottomrule
+\end{tabular}
+\end{table}
+
+Although offline indexing time and costs are higher for HippoRAG than IRCoT\textemdash around \num{10} times slower and \$\num{15} more expensive for every \num{10000} passages \footnote{To speed up indexing, we use \num{10} threads querying \textit{gpt-3.5-turbo-1106} through the OpenAI API in parallel. At the time of writing, the cost of the API is \$\num{1} for a million input tokens and \$\num{2} for a million output tokens.}, these costs can be dramatically reduced by leveraging open source LLMs. 
+As shown in our ablation study in Table \ref{tab:ablations} Llama-3.1-70B-Instruct \cite{llama3modelcard} performs similarly to GPT-3.5 Turbo even though it can be deployed locally using vLLM \cite{vllm} and 4 H100 GPUs to index 10,000 documents in around 4 hours, as seen in Table \ref{tab:indexing_cost}. 
+Additionally, since these costs could be even further reduced by locally deploying this model, the barriers for using HippoRAG at scale could be well within the computational budget of many organizations.
+Finally, we note that even if LLM generation cost drops, the online retrieval efficiency gains discussed above remain intact given that the number of tokens required for IRCoT vs. HippoRAG stay constant and LLM use is likely to also remain the system's main computational bottleneck.
+
+
+
+\begin{table}[!h]
+\small
+  \caption{Average cost and latency measurements for offline indexing using GPT-3.5 Turbo and locally deployed Llama-3.1 (8B and 70B) using vLLM on \num{10000} passages.}
+  \label{tab:indexing_cost}
+  \centering
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Model} & \textbf{Metric} & \textbf{ColBERTv2} & \textbf{IRCoT} & \textbf{HippoRAG}\\ \midrule
+GPT-3.5 Turbo-1106 (Main Results) & API Cost (\$) & $0$ & $0$ & $15$ \\
+ & Time (minutes) & $7$ & $7$ & $60$ \\\midrule
+GPT-3.5 Turbo-0125 & API Cost (\$) & $0$ & $0$ & $8$ \\
+ & Time (minutes) & $7$ & $7$ & $60$ \\\midrule
+Llama-3.1-8B-Instruct & API Cost (\$) & $0$ & $0$ & $0$ \\
+ & Time (minutes) & $7$ & $7$ & $120$ \\\midrule
+Llama-3.1-70B-Instruct & API Cost (\$) & $0$ & $0$ & $0$ \\
+ & Time (minutes) & $7$ & $7$ & $250$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+
+
+\section{Implementation Details \& Compute Requirements}
+\label{sec:implementation}
+
+Apart from the details included in \S \ref{implementation_details}, we use implementations based on PyTorch \cite{pytorch} and HuggingFace \cite{Wolf2019HuggingFacesTS} for both Contriever \cite{contriever} and ColBERTv2 \cite{colbertv2}. 
+We use the python-igraph \cite{igraph} implementation of the PPR algorithm.
+For BM25, we employ Elastic Search \cite{Gormley2015ElasticsearchTD}. 
+For multi-step retrieval, we use the same prompt implementation as IRCoT \cite{ircot} and retrieve the top-\num{10} passages at each step. We set the maximum number of reasoning steps to \num{2} for HotpotQA and 2WikiMultiHopQA and \num{4} for MuSiQue due to their maximum reasoning chain length. 
+We combine IRCoT with different retrievers by replacing its base retriever BM25 with each retrieval method, including HippoRAG, noted as ``IRCoT + HippoRAG'' below.\footnote{Since the original IRCoT does not provide a score for each retrieved passage, we employ beam search for the iterative retrieval process. Each candidate passage maintains the highest historical score during beam search.}
+For the QA reader, we use top-\num{5} retrieved passages as the context and \num{1}-shot QA demonstration with CoT prompting strategy \cite{ircot}.
+
+In terms of compute requirements, most of our compute requirements are unfortunately not disclosed by the OpenAI. We run ColBERTv2 and Contriever for indexing and retrieval we use 4 NVIDIA RTX A6000 GPUs with 48GB of memory. For indexing with Llama-3.1 models, we use 4 NVIDIA H100 GPUs with 80GB of memory. Finally, we used 2 AMD EPYC 7513 32-Core Processors to run the Personalized PageRank algorithm.
+
+\section{LLM Prompts}
+\label{sec:prompts}
+
+The prompts we used for indexing and query NER are shown in Figure \ref{fig:prompt1} and Figure \ref{fig:prompt2}, while the OpenIE prompt is shown in Figure \ref{fig:prompt3}. 
+
+\begin{figure}[!h]
+    \centering
+    \includegraphics[width=\textwidth]{figures/prompt1.pdf}
+    \caption{Prompt for passage NER during indexing.}
+    \label{fig:prompt1}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=\textwidth]{figures/prompt2.pdf}
+    \caption{Prompt for query NER during retrieval.}
+    \label{fig:prompt2}
+\end{figure}
+
+
+\begin{figure}
+    \centering
+    \includegraphics[width=\textwidth]{figures/prompt3.pdf}
+    \caption{Prompt for OpenIE during indexing.}
+    \label{fig:prompt3}
+\end{figure}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\end{appendices}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\end{document}

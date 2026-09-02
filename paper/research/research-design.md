@@ -49,7 +49,8 @@ The thesis asks:
 - fatal-error-free complete design (`FEC`), binary;
 - retrieval/utilization gaps, productive/redundant/unproductive episodes;
 - decision-changing retrieval share, duplicate-query rate, graph errors;
-- tokens, calls, wall time, and human interventions.
+- tokens, calls, wall time, and human interventions;
+- retrieval-decision quality inside retrieval-on conditions: share of retrievals that a condition-blind reviewer judges appropriate to the stated need (`RD-2026-09-02-08B`, secondary and possibly underpowered).
 
 ### Controls
 
@@ -68,6 +69,10 @@ Model revision, task packet, clean-session policy, output schema, 32k-token ceil
 Use four paper-derived dry-lab tasks from four distinct families, sampled by a fixed seed after eligibility filtering. An evaluator-owned preparation step releases only instructions, data, and permitted related work. The root agent does not inspect target studies or scoring rubrics. Target bytes must be absent from source archives, mounts, environment, links, caches, process arguments, and error channels.
 
 The 16-episode instrument pilot (`4 tasks × 4 conditions × 1 clean run`) validates only execution and measurement. Pilot tasks never enter development or confirmation.
+
+An attribution arm adds a controlled disclosure condition on a fixed two-task subset: the withheld target idea is stated in one sentence without resources, configuration, or code. Comparing disclosed and undisclosed episodes separates ideation failure from configuration failure (`RD-2026-09-02-08C`). Disclosed tasks are burned and never reused in confirmation.
+
+Execution-graded closed-loop replication is not part of this cycle. It is deferred as Study C with an explicit resource RUNBOOK at `paper/research/study-c-runbook.md` (`RD-2026-09-02-08A`), because the reviewed environment requires a GPU and roughly 24 hours per task.
 
 ## 5. Metrics and baselines
 
@@ -109,7 +114,7 @@ Therefore FEC is a protected co-primary validity outcome but may be estimation-o
 ## 7. Procedure and reproducibility
 
 1. Freeze task eligibility, release manifest, conditions, output schema, redlines, metrics, scorer, and budgets.
-2. Run failing-first hidden-evidence probes and deterministic fixture tests.
+2. Run failing-first hidden-evidence probes and deterministic fixture tests, including integrity probes that must fire on deliberately corrupted fixtures: edited or bypassed scoring code, released-task leakage into the scored artifact, and hardcoded metric values (`RD-2026-09-02-08C`, from `2602.15112`).
 3. Create a separate experiment project with one fixed command: `/usr/bin/python3 experiments/study_a/run_episode.py`.
 4. Encode conditions only in committed configuration. C00 is baseline; C01/C10/C11 are co-equal first-round children.
 5. Start each episode in a clean capability sandbox; capture delivered prompt, tools, queries, graph mutations, output, tokens, and timestamps.
@@ -200,6 +205,9 @@ Confirmatory hard cap: 192 episodes ×32k = 6.144M treatment tokens; scoring cap
 | H-A | LongHorizon-Harness `2608.01964` FULL | 3 long-horizon benchmarks; exact task N differs by benchmark | PassRate/binary completion | same backbone and native execution backend | 51.8→80.7, 69.7→77.2, 2.8→8.3 in reported settings | matched benchmark comparisons; scope prevents direct effect transfer |
 | H-B | SCOPE `2608.03501` FULL | 300 tasks; 7 models | design score/redline | CoT-only vs CoT+Search | five models no significant total change; GPT-5.2 18.22→16.77; one redline 7.67→14.00 | direct counterevidence; statistical test details not located in scoped source |
 | H-B | search diagnosis `2608.01913` FULL | 830 questions, 6 agents | recall, accuracy, calls/context, gap types | fixed retriever/harness across agents | recall–accuracy r=.99; context–accuracy r=.16; 77.5–93.6% episodes no new evidence | descriptive six-agent correlations; informs diagnostics, not causal MDE |
+| H-B | Adaptive-RAG `2403.14403` FULL | 6 QA datasets; benchmark-native N | accuracy and per-query cost/latency | no-retrieval, single-step, and always-multi-step strategies | complexity-conditioned routing is reported more efficient than always-multi-step, with an oracle classifier as upper bound | positive conditioning precedent; silver labels are derived from the same strategies |
+| H-B | Self-RAG `2310.11511` FULL | 6 tasks; benchmark-native N | task metrics plus support/utility judgements | indiscriminate retrieval and standard RAG | on-demand retrieval with explicit relevance/support judgements replaces always-retrieve | retrieval-decision precedent; critique tokens are self-generated, so support is not independently verified |
+| H-A | HippoRAG `2405.14831` FULL | multi-hop QA benchmarks | accuracy, retrieval cost, latency | iterative retrieval and single-step dense baselines | graph-indexed single-step retrieval reported cheaper and faster than iterative retrieval at comparable or better accuracy | graph-state precedent for the structured condition; ratios do not transfer to design tasks |
 | H-B | Agent-Orchestrated Adaptive RAG `2606.05658` FULL | 2 contrasting corpora; benchmark-native N | retrieval score, MRR, Success@5, citation/coverage, latency | direct/naive retrieval vs decomposed and reflective paths | decomposition helps the structured corpus but harms ranking on MuSiQue; reflection adds latency without consistent quality gain | direct retrieval-structure counterevidence; small assisted corpus and heuristic routing limit transfer |
 | H-C | SCOPE `2608.03501` FULL | 300 tasks; six OptED model evaluations | HL/LL dimensions and redline | CoT+Search, stage-only, T-A-O, full | stage isolation consistent; T-A-O and norms add model-dependent gains | component ablation directly motivates interaction |
 | H-C | Arbor `2606.11926` FULL | 6 AO tasks + MLE-Bench Lite; stochastic methods Avg@3 | held-out task metrics / Any Medal | flat queue; tree without insight | full 81.82% vs 63.64% no-tree and 54.54% no-insight on MLE Lite | matched access/budget; tests structure+insight complementarity |
@@ -231,6 +239,9 @@ The active H-A–H-C hypotheses and deferred H-D each have at least three compar
 | dynamic model and workflow routing | `2608.06867`, `2607.08665v1`, `2608.00685`, `2607.09600v2` — FULL; deferred from Study A |
 | agent/tool/human protocol layers | `2606.19135`, `2606.09751`, `2308.08155` — FULL; official evolving specifications still require version pins |
 | RAG chunking, hybrid retrieval, reranking, adaptive orchestration | `2005.11401`, `2606.01240`, `2608.03860`, `2606.05658` — FULL |
+| complexity-conditioned retrieval and retrieval decisions | `2403.14403`, `2310.11511` — FULL |
+| graph-indexed memory as a retrieval substrate | `2405.14831` — FULL |
+| execution-graded closed-loop research and integrity provisions | `2602.15112` — FULL; deferred Study C |
 | vector-database products and personalized memory | product/spec and privacy evidence gaps; design-only/follow-up |
 
 ## Supersession record
