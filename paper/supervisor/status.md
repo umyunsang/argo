@@ -1,14 +1,21 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** move the artifact format checks into the deterministic validator so a rebuild that loses numerals, spacing, page numbers, or citations fails the gate instead of passing silently.
+- **next_first_action:** rebuild the artifact from a clean checkout and confirm the gate passes there, closing the loop between the builder and an independent verifier.
 
-- **last_updated:** 2026-09-03T00:28:19+09:00
+- **last_updated:** 2026-09-03T00:31:29+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 13 closed — official format properties verified from artifact bytes and implemented in the builder
+- **current_phase:** cycle 14 closed — submission artifact format is now guarded by the deterministic gate, proven by five mutations
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 14 — the artifact format is now guarded, not merely asserted
+
+- **Gap picked:** the builder asserted numerals, spacing, page numbers, and citations, but nothing stopped a later rebuild from silently dropping them. A property asserted only by its producer is unguarded.
+- **Executed:** the checks moved into the deterministic validator, which now re-derives title, front matter, chapter numerals, summary length, keyword count, double spacing, page numbering, citation numbering, and forbidden names from the artifact bytes on every run.
+- **Proven by mutation, not by assertion.** Five deliberate corruptions each failed the gate: removing the footer, switching to single spacing, stripping the numerals, deleting the citations, and inflating the summary past its limit (`korean summary length 662`). Restoring the artifact returned the gate to pass with a matching digest.
+- **One imprecise message recorded rather than hidden:** a crude sixth mutation that merged text into the keyword paragraph still failed closed but reported a less precise reason, so it is not counted as a clean length test.
 
 ### Cycle 13 — the inherited format properties were all missing
 

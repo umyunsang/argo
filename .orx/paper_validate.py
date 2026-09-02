@@ -1704,6 +1704,86 @@ def main():
         ):
             errors.append("context graph identity, topology, authority, projection, or outcome-state mismatch")
 
+    submission_artifact = {}
+    artifact_cfg = cfg.get("submission_artifact_gate")
+    if artifact_cfg:
+        import zipfile
+
+        artifact_path = ROOT / artifact_cfg["path"]
+        if not artifact_path.is_file():
+            errors.append("submission artifact missing")
+        else:
+            with zipfile.ZipFile(artifact_path) as zf:
+                names = zf.namelist()
+                part = lambda n: zf.read(n).decode("utf-8", errors="replace") if n in names else ""
+                doc_xml = part("word/document.xml")
+                styles_xml = part("word/styles.xml")
+                rels_xml = part("word/_rels/document.xml.rels")
+                types_xml = part("[Content_Types].xml")
+                footer_xml = part("word/footer1.xml")
+
+            paragraphs = re.findall(r"<w:p[ >].*?</w:p>", doc_xml, re.S)
+
+            def para_text(block):
+                return re.sub(r"<[^>]+>", "", "".join(re.findall(r"<w:t[^>]*>(.*?)</w:t>", block, re.S)))
+
+            headings = [
+                (re.search(r'w:val="(Heading\d|Title)"', b).group(1), para_text(b))
+                for b in paragraphs
+                if re.search(r'w:val="(Heading\d|Title)"', b)
+            ]
+            chapters = [t for lvl, t in headings if lvl == "Heading1"]
+            body_text = " ".join(para_text(b) for b in paragraphs)
+            numbered = [t for t in chapters if re.match(r"^(I|II|III|IV|V|VI|VII|VIII|IX|X)\. ", t)]
+            summary_heading = artifact_cfg["front_matter_heading"]
+            failures = []
+            if not any(lvl == "Title" for lvl, _ in headings):
+                failures.append("title missing")
+            if summary_heading not in chapters:
+                failures.append("front matter heading missing")
+            elif chapters and chapters[0] != summary_heading:
+                failures.append("front matter is not first")
+            if [re.sub(r"^[IVX]+\. ", "", t) for t in numbered] != artifact_cfg["expected_chapters"]:
+                failures.append("chapter numbering or order mismatch")
+            keyword_marker = artifact_cfg["keyword_marker"]
+            texts = [para_text(b).strip() for b in paragraphs]
+            heading_idx = next((i for i, t in enumerate(texts) if t == summary_heading), -1)
+            keyword_idx = next((i for i, t in enumerate(texts) if t.startswith(keyword_marker)), -1)
+            summary_chars = (
+                len(" ".join(texts[heading_idx + 1:keyword_idx]).strip())
+                if 0 <= heading_idx < keyword_idx else -1
+            )
+            if not 0 < summary_chars <= artifact_cfg["summary_max_chars"]:
+                failures.append(f"korean summary length {summary_chars}")
+            keyword_line = texts[keyword_idx][len(keyword_marker):] if keyword_idx >= 0 else ""
+            keywords = [k.strip() for k in re.split(r"[,，]", keyword_line) if k.strip()]
+            if not 0 < len(keywords) <= artifact_cfg["keywords_max"]:
+                failures.append(f"keyword count {len(keywords)}")
+            if not re.search(r'<w:pPrDefault><w:pPr><w:spacing w:line="480"', styles_xml):
+                failures.append("double spacing absent from document defaults")
+            if not ("word/footer1.xml" in names and "<w:footerReference" in doc_xml
+                    and "PAGE" in footer_xml and "footer1.xml" in rels_xml and "footer+xml" in types_xml):
+                failures.append("page numbering incomplete")
+            citations = re.findall(r"\[\d+(?:, \d+)*\]", body_text)
+            highest = max((int(n) for c in citations for n in re.findall(r"\d+", c)), default=0)
+            if highest != artifact_cfg["expected_reference_count"] or not citations:
+                failures.append(f"citation numbering reaches {highest}")
+            artifact_tokens = public_token_hits(body_text, cfg["public_output_gate"]["patterns"])
+            if artifact_tokens:
+                failures.append("forbidden public name in artifact text")
+            submission_artifact = {
+                "path": artifact_cfg["path"],
+                "sha256": sha256_path(artifact_path),
+                "chapters": chapters,
+                "numbered_chapters": numbered,
+                "korean_summary_chars": summary_chars,
+                "keywords": keywords,
+                "citation_high_water": highest,
+                "failures": failures,
+            }
+            if failures:
+                errors.append("submission artifact format gate failed: " + "; ".join(failures))
+
     forbidden = []
     for pattern in cfg["forbidden_regexes"]:
         hits = line_hits(clean, pattern)
@@ -1918,6 +1998,7 @@ def main():
             "pdf_text_extraction_errors": pdf_text_extraction_errors,
             "pdf_token_failures": pdf_token_failures,
         },
+        "submission_artifact": submission_artifact,
         "evidence_receipts": evidence_receipts,
         "structured_evidence": structured_evidence,
         "evidence_scope_note": cfg.get("evidence_scope_note"),
