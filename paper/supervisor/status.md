@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** re-examine the three low-confidence calibration items, since replay showed that band carries no reproducible content and those items may be unlabelable rather than merely hard.
+- **next_first_action:** recompute the recorded verdicts for every low-confidence element judgement in the pool as a modal verdict over five repeats, so the stored record matches the adopted rule.
 
-- **last_updated:** 2026-09-03T01:34:32+09:00
+- **last_updated:** 2026-09-03T01:40:59+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 25 closed — judged reproducibility measured per confidence band; the 0.9 floor is now supported by measurement
+- **current_phase:** cycle 26 closed — my own hypothesis about unlabelable items was refuted by measurement
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 26 — the items are labelable; the recorded draw was not representative
+
+- **Hypothesis tested and refuted.** The previous cycle proposed that items below 0.7 confidence might be unlabelable. Repeating every low-confidence item five times, against five high-confidence controls, shows they are not.
+- **Within-item stability:** low band mean modal share **0.88** (2 of 5 unanimous) versus **1.00** for the high-confidence controls (4 of 4). The items carry a stable answer.
+- **What actually fails is the recorded draw.** It matches the item's own modal answer in only **1 of 5** low-band cases, and it returned `unclear` three times where repeats converge on a definite verdict.
+- **The earlier claim was too strong and is corrected.** "Verdicts below 0.7 carry no reproducible content" is wrong as stated: the single verdict does not reproduce, the item's modal answer largely does. `RD-2026-09-02-30A` is now `REFINED_BY_MEASUREMENT`.
+- **Consequences:** the three low-confidence items stay in the calibration set because a human can label them; and any recorded low-confidence verdict is replaced by a modal verdict over at least five repeats before comparison with a human label.
+- **Limit kept in front:** agreement across repeats measures how concentrated an answer distribution is, not whether its mode is correct. A stable modal answer can still be wrong.
 
 ### Cycle 25 — the judged layer replays only where it is admitted
 
