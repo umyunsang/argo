@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** re-examine whether the paired detectable effect is still meaningful now that a method choice dominates it, since a design sized to detect 0.0825 cannot be interpreted under an instrument that moves 0.188.
+- **next_first_action:** rebuild sample-size planning as a generalizability design with the scoring method as a facet, and measure that facet properly before it carries a plan.
 
-- **last_updated:** 2026-09-03T04:00:56+09:00
+- **last_updated:** 2026-09-03T04:50:50+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 56 closed — the scoring method moves the endpoint by 2.3x the effect the design was sized to detect
+- **current_phase:** cycle 57 closed — the paired detectable effect is void as a design target; the instrument facet varies more than the effect
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 57 — the design target was sized on the smaller half of the problem
+
+- **Gap picked:** if the scoring method moves the endpoint by 2.3x the detectable effect, whether that detectable effect still means anything had to be checked.
+- **It does not.** Across the eight artifacts the method difference has **sd 0.301**, about **3.65x** the detectable effect of 0.0825, and the variance of that difference is **1.48x** the variance of the coverage being measured. The instrument varies more than the thing it measures.
+- **It cannot be corrected away.** The difference changes sign, from **-0.167 to +0.667**, so no constant adjustment recovers the earlier number.
+- **The paired detectable effect is void as a design target.** It was computed with the scoring method treated as fixed, so it omits a variance component larger than the one it used. `RD-2026-09-02-15B` and `RD-2026-09-02-33A` carry that status.
+- **What replaces it is named, not hand-waved:** sample-size planning must treat the scoring method as a facet with its own variance, as generalizability designs do. That replacement is not built, and the facet estimated here rests on eight artifacts judged by one model, so it needs its own measurement before it can carry a plan.
+- Claim checks now stand at 50.
 
 ### Cycle 56 — the instrument moves the endpoint more than the effect it was built to find
 
