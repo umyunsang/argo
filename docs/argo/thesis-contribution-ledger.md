@@ -2,17 +2,17 @@
 
 ## Non-negotiable boundary
 
-The thesis may present ARGO as one coherent harness design and explain every architectural choice from first principles. It may not present an inherited Prime Agent component as an original ARGO invention.
+This ledger is an internal repository accounting artifact and is not a manuscript source. The public thesis presents a generic harnessed LLM-agent system grounded in published literature and executed experiments; it excludes product lineage, migration, internal oracle, branch, commit, and operational-control details.
 
-Every architecture, method, experiment, and result claim carries one contribution tag:
+Internal architecture work may carry one contribution tag for repository review:
 
-| Tag | Meaning | Permitted thesis wording |
+| Tag | Meaning | Internal accounting rule |
 |---|---|---|
-| `INHERITED` | Present in the Prime Agent base before the ARGO branch. | “ARGO inherits/adopts … from Prime Agent.” Cite the Prime Agent paper and source revision. |
-| `RE_DERIVED` | Independently motivated from literature and revalidated under an ARGO protocol. | “We re-derived and evaluated … for ARGO.” Cite both prior work and the ARGO experiment. |
-| `MODIFIED` | An inherited component whose contract or behavior ARGO changed. | “We modify … by …” State the base behavior, diff, and matched evaluation. |
-| `ORIGINAL_ARGO` | A new ARGO mechanism with no equivalent in the base. | “We introduce …” Bind the claim to design records, code commits, ablations, and evidence. |
-| `EXTERNAL_ORACLE` | OpenResearch, DACON, or another external system supplies lifecycle or evaluation facts. | “The external system reports …” Never imply ARGO generated the fact. |
+| `INHERITED` | Present in the Prime Agent base before the ARGO branch. | Track the inherited base internally; the manuscript cites only public foundations needed for the generic method. |
+| `RE_DERIVED` | Independently motivated from literature and revalidated under an ARGO protocol. | A public method claim requires prior work plus an executed, scoped experiment; internal derivation history is omitted. |
+| `MODIFIED` | An inherited component whose contract or behavior ARGO changed. | Track the implementation delta internally; only the generic intervention and matched result may enter the manuscript. |
+| `ORIGINAL_ARGO` | A new ARGO mechanism with no equivalent in the base. | Do not use this tag as manuscript authority; originality requires public prior-art review and executed ablations. |
+| `EXTERNAL_ORACLE` | OpenResearch, DACON, or another external system supplies lifecycle or evaluation facts. | Keep external authority and scope explicit; internal lifecycle details remain outside the manuscript. |
 
 ## Initial component ledger
 
@@ -22,18 +22,18 @@ Every architecture, method, experiment, and result claim carries one contributio
 | Daemon, worker, detach/reattach, recovery | `INHERITED` | Base architecture and lifecycle tests |
 | Recursive RLM subagents and agent messaging | `INHERITED` | RLM paper, Prime Agent paper, base tests |
 | Continual Harness prompts/memories/skills/subagent specs | `INHERITED` | Continual Harness and Prime Agent papers, base source |
-| ARGO research-object taxonomy and evidence graph | `RE_DERIVED` / `MODIFIED` candidate | Compare EviGraph and artifact-centered claim-aware observability; isolate immutable answered-run, exact-contrast, and authority semantics; implement and test |
-| Exact protocol fingerprint and comparability gate | `ORIGINAL_ARGO` candidate | Formal contract, cross-language fixtures, unmatched-comparison tests |
+| ARGO research-object taxonomy and evidence graph | `RE_DERIVED` / `MODIFIED` candidate | Compare EviGraph, claim-aware observability, XScientist, and ScientistOne; isolate immutable answered-run, exact-contrast, and authority semantics; implement and test |
+| Exact protocol fingerprint and comparability gate | `UNCLASSIFIED` candidate | Compare matched-budget and inaccessible-held-out protocols from Rethinking Harness Evaluation and HarnessOpt-Bench; formalize the residual; add cross-language and unmatched-comparison tests |
 | OpenResearch receipt boundary | `MODIFIED` / integration | OpenResearch contract, capability boundary, identity tests |
-| Research-refine versus engine-refine separation | `RE_DERIVED` / `MODIFIED` candidate | Compare RSEA, Evo-Bench, and Regimes; implement disjoint scientific/engine state, noninterference, rollback, and held-out evaluation |
-| Paper claim/citation/run lineage | `RE_DERIVED` / `MODIFIED` candidate | Compare EviGraph, claim-locked reporting, and claim-aware observability; isolate retained-byte, exact-contrast, authority, and immutable-build semantics |
+| Research-refine versus engine-refine separation | `RE_DERIVED` / `MODIFIED` candidate | Compare RSEA, Evo-Bench, Regimes, and Autogenesis; implement disjoint scientific/engine state, matched-budget noninterference, rollback, and inaccessible held-out evaluation |
+| Paper claim/citation/run lineage | `RE_DERIVED` / `MODIFIED` candidate | Compare EviGraph, claim locking/observability, XScientist, and ScientistOne; isolate retained-byte, exact-contrast, authority, and immutable-build semantics |
 | ARGO TUI and CLI | `MODIFIED` | Native product diff and usability/recovery evaluation |
 
-Tags are provisional until source archaeology and experiments confirm them. A new name or rewrite does not turn inherited work into an original contribution. Full-read prior work already makes aggregate typed-graph, claim-aware artifact-lineage, evidence-before-prose, and held-out harness-promotion originality claims unavailable. In the dual-refinement row, the prior constituents justify only a `RE_DERIVED` / `MODIFIED` candidate classification; the exact cross-lineage noninterference residual remains `UNCLASSIFIED` until separately compared, implemented, and evaluated.
+Tags are provisional until source archaeology and experiments confirm them. A new name or rewrite does not turn inherited work into an original contribution. Full-read prior work already makes aggregate typed-graph, portable research-artifact, claim-aware lineage, claim-typed writing/verification, evidence-before-prose, and versioned harness-promotion originality claims unavailable. Matched-budget counterevidence and inaccessible-held-out protocols make important evaluation constituents prior art and force the exact comparability gate to remain `UNCLASSIFIED`; they do not establish an equivalent invariant-key/per-arm-receipt/planned-contrast triple. In the dual-refinement row, the prior constituents justify only a `RE_DERIVED` / `MODIFIED` candidate classification; the exact cross-lineage noninterference residual remains `UNCLASSIFIED` until separately compared, implemented, and evaluated.
 
-## Design-paper narrative
+## Public-paper exclusion boundary
 
-The final paper should center the research problem, competing architectures, selected contracts, falsifiers, implementation, and evaluation. Migration details belong in the implementation/provenance section. The narrative can therefore read as a complete ARGO harness design paper without becoming a misleading clean-room origin story.
+The public paper centers the necessity, literature-derived architecture, falsifiers, and executed evaluation of a generic harnessed LLM-agent system. It has no implementation/provenance section for product migration. Prime-to-ARGO lineage, repository archaeology, internal contracts, code commits, oracle records, OpenResearch internals, supervisor artifacts, and instance operations are excluded. Reproducibility may name only public foundations, public research engines, and the minimum condition settings needed to rerun an experiment.
 
 ## Claim record
 
