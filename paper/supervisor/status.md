@@ -1,12 +1,28 @@
 # ARGO paper autonomous-research status
 
-- **last_updated:** 2026-09-02T15:49:19+09:00
+- **last_updated:** 2026-09-02T21:41:37+09:00
 - **goal:** active — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** immutable paper-artifact validation run `3fe2958b-44b6-4760-89fb-f711440c2ae0` in flight from checkpoint `b2070ed09`; Study A remains unexecuted and prelaunch-blocked
-- **last_checkpoint:** `b2070ed09` — 43-source/74-locator nine-area corpus, preregistration-ready design, round-7 failing-first gate, and expanded manuscript
+- **current_phase:** round 8 design-competition integrated; claim locators now re-derivable from the repository; clean-clone validation node PASS; Study A still prelaunch-blocked
+- **last_checkpoint:** `5527c7926` — round-8 sources, six-field decision records, Study C RUNBOOK, engine usage notes
 
 ## Completed in current phase
+
+### Resume procedure (instruction #0004 §2)
+
+- HEAD confirmed and continued on the canonical branch; no ancestor node edited.
+- `paper/evidence-matrix.csv` was 0 bytes in the working tree and was restored from HEAD. Cause: the receipt had recorded CRLF working-tree bytes while git stores the LF-normalized blob, so the recorded digest could never be reproduced from the repository. The writer now emits LF, `.gitattributes` pins `eol=lf`, and the digest matches the committed blob.
+- Validation run `3fe2958b-44b6-4760-89fb-f711440c2ae0` is **failed** (exit 1) at commit `b2070ed09`. Root cause was not the manuscript: the local pass depended on working-tree bytes absent from the repository — five round-4 reports were never committed and 25 of 74 claim locators pointed at source slices missing from both repo and worktree.
+- Repair: 16 exact-version archives re-fetched, all **byte-identical** to recorded digests; 20 TeX slices re-extracted and one PDF-derived text reproduced (recipe recovered as `pdftotext -layout`); all locators verified by file digest, line slice, and excerpt digest; a global fail-closed locator gate was added and shown to fire on a deleted slice. Receipts: `paper/sources/legacy-source-restoration-receipt.json`, `paper/sources/global-locator-gate-failing-first.json`. Commit `c677aeb6e`, clean-clone run `67bec1bc-b8da-47a6-8f49-6a486799f844` **PASS**.
+
+### Round 8 — design competition (instruction #0003 §3-3~§3-5)
+
+- Four full reads with exact versions: `2403.14403v2`, `2310.11511v1`, `2405.14831v3`, `2602.15112v2`; 8 line-anchored locators; 8 evidence rows; graph now 170 nodes / 397 edges.
+- Three six-field decision records (`RD-2026-09-02-08A/B/C`) recorded in the ledger and linked into the context graph as `decision:*` nodes with `informs_decision` edges from their reviewed sources.
+- Study A inherits its 2x2 structure; changed elements: retrieval-decision quality added as a secondary endpoint, integrity probes added to the evaluator gate, and an ideation-versus-configuration attribution arm added to the pilot.
+- Execution-graded replication deferred as Study C with resources and steps in `paper/research/study-c-runbook.md`.
+- Engine usage verified and written to `paper/research/orx-usage.md`.
+- Commit `5527c7926`; clean-clone run `7184ad85-57e3-4fa4-a12c-21a5b80513db` **PASS** with 82/82 locators re-derived.
 
 - Root-agent adaptive round 5: five `FULL_PAPER_READ` design/evaluation records. Architecture round 6 adds six `FULL_PAPER_READ` harness/context anchors, including programmatic context management. Corpus: 43 full reads and 74 reviewed locators; round 7 adds routing, protocol, RAG, and agentic-stack evidence with 22 exact locators.
 - Prospective experiment revised to provisional 2×2 structured-state × dynamic-retrieval Study A.
@@ -39,7 +55,7 @@
 
 ## Next concrete actions
 
-1. Inspect immutable paper-validation run `3fe2958b-44b6-4760-89fb-f711440c2ae0`; admit only exact commit/command/artifact evidence and keep it separate from efficacy.
+1. Build the hidden-task release sandbox and the integrity probes as failing-first fixtures, since both are now specified by `RD-2026-09-02-08C`.
 2. Build the final Word thesis pipeline from the validated manuscript and visually inspect DOCX/PDF pagination, equations, references, and headings.
 3. Run one residual literature cycle for personalized-memory/privacy and official product/provenance specifications; do not reopen closed routing/protocol/RAG academic streams without a named gap.
 4. Design evaluator-owned hidden-task isolation, independent scoring calibration, and the separate fixed Study A runner without native runtime changes.
