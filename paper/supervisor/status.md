@@ -1,14 +1,24 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** while Q-0007 is unanswered, apply the same precision planning to the quality endpoint so both outcomes have a stated block size rather than only completion.
+- **next_first_action:** run the completion arm design forward under the default of Q-0007 by pre-registering its analysis before any further episodes, so the executable half is fully specified while the quality half waits on labels.
 
-- **last_updated:** 2026-09-03T03:33:28+09:00
+- **last_updated:** 2026-09-03T03:36:11+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 48 closed — the decisive block size is computed from measured cost; the spend is a declared question, not a drift
+- **current_phase:** cycle 49 closed — half the plan is executable and costed; the other half is blocked by a single human input, and that is now stated by committed code
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 49 — one half of the plan is executable, the other is blocked by one input
+
+- **Gap picked:** completion had a costed block size; the quality endpoint had none.
+- **It cannot be given one, and that is the finding.** A committed check walks each declared outcome and reports whether its block size is computable.
+  - **Budget completion: planable.** 29 per condition, 116 episodes, about $18 — measured by the admission path with no judge in the loop.
+  - **Design quality: not planable**, blocked twice. Judged scoring is inadmissible at **0 of 25** human-anchored labels, and the endpoint variance is **not estimable** from admissible episodes because the ceiling refusal left the design unbalanced.
+- **The labels are the single binding constraint** on the entire quality arm, and nothing this loop can execute removes that dependency. Saying so is more useful than a block size resting on a variance the design cannot yield.
+- **A receipt completeness defect was fixed:** the confirmation receipt listed only the first repeat, so the blocker was misreported as "one observation per cell" instead of "unbalanced". Both repeats are now listed with a per-episode admissible flag, and only admissible episodes may inform a plan.
+- **11 fixtures, 5 of 5 mutations caught**, including "report planable despite blockers" and "let an inadmissible episode inform the plan".
 
 ### Cycle 48 — how much more measuring, computed rather than guessed
 
