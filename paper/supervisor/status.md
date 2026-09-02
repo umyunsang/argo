@@ -1,14 +1,22 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** implement element verification over candidate spans behind the selective evaluator, then rescore the 32 retained artifacts and recompute variance components on the verified endpoint.
+- **next_first_action:** sample the 25 calibration pairs from `paper/experiments/study-a-variance-block-2026-09-02/element-verdicts.json` under the frozen label protocol and emit the blinded label form.
 
-- **last_updated:** 2026-09-02T23:05:52+09:00
+- **last_updated:** 2026-09-02T23:50:56+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 6 closed — adversarial test falsified the cue-matching endpoint; endpoint redesigned to filter-plus-verification; calibration labels now load-bearing
+- **current_phase:** cycle 7 closed — verified endpoint implemented and run over 32 retained episodes; variance recomputed; scoring inadmissible until calibration labels exist
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 7 — replacement endpoint implemented and measured
+
+- **Executed:** filter-plus-verification over all 32 retained episodes, 192 element judgements, judge drawn from a different provider family than the treatment backend. Receipt `paper/experiments/verified-endpoint-receipt.json`.
+- **The falsification held outside the probe set.** On real artifacts the falsified cue endpoint and the verified endpoint correlate at **0.043** with a mean absolute difference of **0.484**. They were not measuring the same thing.
+- **Variance recomputed on the verified endpoint:** residual **83.8 percent**, task **16.2 percent**, condition and interaction both estimated at **zero**.
+- **Consequence for allocation:** with a zero interaction component the standard error of a condition mean does not depend on the task-versus-repeat split, so resolution cannot be bought by reallocating. The split is now chosen for task breadth, and the projected paired minimum detectable effect is about **0.081**, roughly double what the falsified endpoint implied (`RD-2026-09-02-15B`).
+- **Nothing is scored.** All 192 verdicts come from an uncalibrated judge and are inadmissible; 2 unparsed and 3 unclear replies are counted rather than dropped. The verdicts are now the labelling material for the 25-label calibration set.
 
 ### Cycle 6 — my primary endpoint failed its own falsifier
 
