@@ -1030,6 +1030,43 @@ def main():
         if adaptive_locator_source_failures:
             errors.append("adaptive tracked locator source file, hash, or line slice mismatch")
 
+        global_locator_failures = {}
+        for locator in locators:
+            locator_id = locator.get("claim_locator_id")
+            source_path = ROOT / locator.get("source_file", "")
+            if not source_path.is_file():
+                global_locator_failures[locator_id] = "source file absent from repository"
+                continue
+            if sha256_path(source_path) != locator.get("source_file_sha256"):
+                global_locator_failures[locator_id] = "source file digest mismatch"
+                continue
+            source_lines = source_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            start_line = locator.get("line_start", 0)
+            end_line = locator.get("line_end", 0)
+            if not 0 < start_line <= end_line <= len(source_lines):
+                global_locator_failures[locator_id] = "line range outside source"
+                continue
+            if "\n".join(source_lines[start_line - 1:end_line]) != locator.get("excerpt"):
+                global_locator_failures[locator_id] = "line slice differs from excerpt"
+        structured_evidence["global_locator_source_failures"] = global_locator_failures
+        structured_evidence["global_locator_verified_count"] = len(locators) - len(global_locator_failures)
+        if global_locator_failures:
+            errors.append("claim locator source bytes are not re-derivable from the repository")
+
+        restoration_obj = json.loads(
+            (ROOT / "paper/sources/legacy-source-restoration-receipt.json").read_text(encoding="utf-8")
+        )
+        restoration_failures = []
+        for entry in restoration_obj.get("restored_files", []):
+            restored_path = ROOT / entry.get("path", "")
+            if not restored_path.is_file() or sha256_path(restored_path) != entry.get("sha256"):
+                restoration_failures.append(entry.get("path"))
+        if restoration_obj.get("locator_verification", {}).get("verified_from_bytes") != len(locators):
+            restoration_failures.append("locator_verification_count")
+        structured_evidence["legacy_restoration_failures"] = restoration_failures
+        if restoration_failures:
+            errors.append("legacy source restoration receipt does not match retained bytes")
+
         correction_obj = json.loads(
             (ROOT / "paper/sources/report-corrections.json").read_text(encoding="utf-8")
         )

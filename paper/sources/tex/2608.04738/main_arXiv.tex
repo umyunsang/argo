@@ -1,0 +1,573 @@
+\documentclass[letterpaper]{article} % DO NOT CHANGE THIS
+\ifdefined\pdfminorversion
+  \pdfminorversion=7
+\fi
+\ifdefined\pdfobjcompresslevel
+  \pdfobjcompresslevel=0
+\fi
+\usepackage[preprint]{aaai2027}  % Public preprint: show authors without AAAI copyright
+% The serif, sans-serif, and monospaced fonts are loaded automatically by
+% aaai2027.sty (newtxtext, helvet, courier). DO NOT add \usepackage{times},
+% \usepackage{helvet}, \usepackage{courier}, or any other font package.
+\usepackage[hyphens]{url}  % DO NOT CHANGE THIS
+\usepackage{graphicx} % DO NOT CHANGE THIS
+\urlstyle{rm} % DO NOT CHANGE THIS
+\def\UrlFont{\rm}  % DO NOT CHANGE THIS
+\usepackage{natbib}  % DO NOT CHANGE THIS AND DO NOT ADD ANY OPTIONS TO IT
+\usepackage{caption} % DO NOT CHANGE THIS AND DO NOT ADD ANY OPTIONS TO IT
+\frenchspacing  % DO NOT CHANGE THIS
+
+% Breakable prompt listings used in the Appendix.
+\usepackage{listings}
+\DeclareCaptionFormat{promptlisting}{%
+  \rule{\linewidth}{0.5pt}\par
+  \vspace{1pt}%
+  #1#2#3\par
+  \vspace{1pt}%
+  \rule{\linewidth}{0.5pt}}
+\lstset{%
+  basicstyle={\footnotesize\ttfamily},%
+  aboveskip=4pt,belowskip=0pt,%
+  showstringspaces=false,tabsize=2,breaklines=true,%
+  columns=fullflexible,keepspaces=true,%
+  frame=none}
+\captionsetup[lstlisting]{%
+  format=promptlisting,justification=raggedright,%
+  singlelinecheck=false,margin=0pt,skip=2pt}
+\newcommand{\promptlistingcaption}[2]{%
+  \begingroup
+  \captionof{lstlisting}{#1}\label{#2}%
+  \endgroup}
+\newcommand{\promptlistingend}{%
+  \par\nobreak\noindent\rule{\columnwidth}{0.5pt}%
+  \par\addvspace{4pt}}
+% Native listings captions can leak their position token with this package
+% combination, so captions are produced explicitly by the commands above.
+\makeatletter
+\AtBeginDocument{\let\lst@MakeCaption\@gobble}
+\makeatother
+
+% Algorithms (used in Section: Method)
+\usepackage{algorithm}
+\usepackage{algorithmic}
+
+% \usepackage{hyperref}
+
+% Better-looking tables
+\usepackage{booktabs}
+\usepackage{array}
+
+% Amsmath for the formal definitions / equations
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\newtheorem{definition}{Definition}
+
+\pdfinfo{
+/TemplateVersion (2027.1)
+}
+
+% Retain section numbers in the public preprint.
+\setcounter{secnumdepth}{2}
+
+% ---------------------------------------------------------------------
+% Title  (Title Case required by AAAI)
+% ---------------------------------------------------------------------
+\title{EviGraph: Evidence-Guided Autonomous Research Agents}
+
+\author{
+    Zhenjiang Ren\textsuperscript{\rm 1,\rm 2},
+    Ruiji Li\textsuperscript{\rm 1},
+    Xujing Zhang\textsuperscript{\rm 3},
+    Ziliang Pang\textsuperscript{\rm 1},
+    Shuo Ren\textsuperscript{\rm 1}\corresponding,
+    Jiajun Zhang\textsuperscript{\rm 1,\rm 2,\rm 4}\corresponding
+}
+
+\affiliations{
+    \textsuperscript{\rm 1}Institute of Automation, Chinese Academy of Sciences\\
+    \textsuperscript{\rm 2}School of Artificial Intelligence, University of Chinese Academy of Sciences\\
+    \textsuperscript{\rm 3}Hong Kong Baptist University  \textsuperscript{\rm 4}Wuhan AI Research\\
+    \{renzhenjiang2024, liruiji2026, ziliang.pang, shuo.ren\}@ia.ac.cn, \\24267368@life.hkbu.edu.hk, jjzhang@nlpr.ia.ac.cn
+}
+
+\begin{document}
+
+\maketitle
+
+% =====================================================================
+% ----------------------------------------------------------------------
+% Abstract
+% NOTE: aaai2027.sty does not allow \cite inside the abstract. Keep it
+% citation-free; move all references into the Introduction.
+% ----------------------------------------------------------------------
+\begin{abstract}
+Autonomous research agents can generate hypotheses, execute experiments, and draft manuscripts, yet their outputs often contain unsupported claims and inconsistencies between research questions, experiments, results, and conclusions. We argue that this problem is partly architectural: existing systems organize research as sequential pipelines but do not explicitly maintain or validate the evolving claim–evidence structure across stages.
+In this paper, we introduce \textbf{EviGraph}, an autonomous research framework that represents the research process as a typed evidence graph containing \textit{Problem}, \textit{Gap}, \textit{Hypothesis}, \textit{Experiment}, \textit{Finding}, and \textit{Claim} nodes. The graph serves as the operational state of the agent rather than a post-hoc record. EviGraph inspects evidence chains for missing dependencies, semantic misalignment, and result–claim inconsistencies, localizes the earliest weak node, and regenerates its affected downstream subgraph. Graph checkpointing prevents unsuccessful repairs from corrupting previously validated evidence. Manuscripts are generated only after every retained claim is grounded in a validated evidence chain.
+Experiments on ARC-Bench-ML and NanoResearch-20 show that EviGraph outperforms the compared end-to-end research-agent baselines in overall research performance, improves Claim Support Rate by 40.19\% over the strongest baseline, and achieves 87.73\% Experimental Data Consistency. These results demonstrate the value of explicit evidence-state maintenance for reliable autonomous research.
+
+
+\end{abstract}
+% =====================================================================
+
+% Optional public links block. Uncomment once the code URL is available.
+% \begin{links}
+%     \link{Code}{}
+% \end{links}
+
+\section{Introduction}
+\label{sec:intro}
+
+Autonomous research systems built on large language models can now generate
+ideas, write code, run experiments, analyze results, and draft full manuscripts
+\citep{lu2024aiscientist,schmidgall2025agentlab,internagent2025,m2024augmenting,jansen2024discoveryworld}. Despite this progress, producing a fluent research paper does not guarantee that the underlying process is reliable. In practice, autonomous systems can propagate weak assumptions, unsupported claims, and experimental inconsistencies into the final manuscript, making it difficult to determine whether a conclusion is genuinely supported by the executed research \citep{mlrbench2025,aris2026,whyllm2026,min2023factscore}.
+
+We argue that this problem is partly architectural. Most autonomous research
+systems are organized as sequential pipelines in which outputs move from idea generation to experimentation, analysis, and writing
+\citep{lu2024aiscientist,autoresearchclaw2026,autosci2026,nanoresearch2026}. Such pipelines specify what stage should be executed next, but they do not explicitly maintain the evolving evidential relationships among research objects. Consequently, a hypothesis can drift from its motivating research gap, an experiment can cease to test the current hypothesis after revision, or a manuscript claim can overstate what the recorded findings support. Because these dependencies remain implicit, inconsistencies are often discovered only after they have propagated across several stages. This motivates the problem of \textbf{maintaining claim–evidence consistency} throughout the autonomous research lifecycle, requiring an explicit research-state representation for both cross-stage inspection and dependency-aware revision.
+
+
+To address this problem, we propose \textbf{EviGraph}, a graph-driven autonomous research framework that treats a typed evidence graph as the central operational state of the research process. The graph explicitly connects six types of research objects—\textit{Problem}, \textit{Gap}, \textit{Hypothesis}, \textit{Experiment}, \textit{Finding}, and \textit{Claim}—across the research lifecycle. 
+
+For \textbf{cross-stage inspection}, EviGraph evaluates whether these objects form complete evidence paths and whether adjacent stages remain semantically aligned, including whether an experiment tests the current hypothesis, whether a finding is faithful to execution records, and whether a claim is supported by the resulting evidence. For \textbf{dependency-aware revision}, once a weak node is identified, EviGraph traces its downstream dependencies and regenerates the affected subgraph in topological order. Intermediate checkpoints allow the system to reject repairs that introduce new weaknesses or invalidate previously verified evidence chains.
+
+Manuscript generation is therefore gated by the validated research state rather than triggered automatically after pipeline completion. EviGraph produces a paper only when every retained claim is grounded in a complete and validated evidence chain, and the graph supplies explicit provenance and scope constraints during drafting. Additionally, EviGraph uses the Hypothesis Filter to screen out weak hypotheses during graph initialization and supports the retrieval of prior graph states to inform graph construction and repair on related tasks.
+
+We conduct experiments on ARC-Bench-ML \cite{autoresearchclaw2026} and NanoResearch-20 \cite{nanoresearch2026}. EviGraph achieves an Overall score of 86.45\% on ARC-Bench-ML and obtains the strongest Novelty, Performance, and Writing scores among the compared systems on NanoResearch-20. It improves Claim Support Rate from 27\% to 37.85\% over the strongest baseline while maintaining an Experimental Data Consistency of 87.73\%. These results show that explicit evidence-state maintenance improves the reliability of autonomous research without sacrificing overall performance.
+
+Our contributions are threefold:
+
+\begin{itemize}
+
+    \item \textbf{Evidence graphs as operational research state}. We formulate autonomous research as the construction and validation of a typed graph connecting research problems, gaps, hypotheses, experiments, findings, and manuscript claims, making cross-stage evidential dependencies explicit and inspectable.
+    \item \textbf{Dependency-aware evidence inspection and repair}. We introduce a graph-guided mechanism that detects weak evidence links, localizes their root causes, regenerates affected downstream subgraphs, and uses checkpointed rollback to prevent repair degradation. Manuscript generation is gated by the resulting validated evidence state.
+    \item \textbf{Improvement of auto-research reliability}. Experiments on ARC-Bench-ML and NanoResearch-20 show that EviGraph substantially improves claim support and consistently outperforms the compared baseline systems in overall research performance.
+
+\end{itemize}
+
+
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Autonomous research systems.}
+LLM-based research systems can generate ideas, implement methods, execute experiments, analyze results, and draft manuscripts \citep{lu2024aiscientist,aiscientistv2_2025,schmidgall2025agentlab,agentrxiv2025,internagent2025,skarlinski2024language}. Recent works improve reliability through strict result verification, adversarial evaluation, structured memory, or cross-run self-improvement \citep{autoresearchclaw2026,aris2026,autosci2026,nanoresearch2026}. These approaches primarily organize research as a sequence of stages or accumulated trajectories. EviGraph instead maintains a typed evidence graph as the operational research state and explicitly inspects and repairs the dependencies linking hypotheses, experiments, findings, and claims.
+
+\paragraph{Scientific knowledge graphs and claim provenance.}
+Scientific knowledge graphs, micropublications, and nanopublications represent research objects, claims, evidence, methods, and provenance in structured forms
+\citep{auer2019orkg,clark2014micropublications,groth2010nanopub}. Formal argumentation additionally models support and conflict among claims \citep{dung1995argumentation}. These works establish structured representations for scientific knowledge and evidence. EviGraph builds on this perspective by turning the graph into an active control structure that is continuously updated during research and guides new scientific actions when inconsistencies are detected\citep{bai2024dynamic}.
+
+
+\section{Method}
+\label{sec:method}
+
+\subsection{Framework Overview}
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{Figures/evigraph_arxiv.pdf}
+  \caption{Overall workflow of the EviGraph framework, organized into three collaborative phases.}\label{fig:framework}
+\end{figure*}
+
+As illustrated in Figure \ref{fig:framework}, EviGraph takes a research goal (q) as input. Initialization uses temporary structured records to build $G_0$; thereafter, graph-facing components read and update this shared graph of research problems, gaps, hypotheses, experiments, findings, and claims. The framework proceeds through three phases.
+
+\paragraph{Initial evidence-graph construction.} EviGraph first analyzes the research goal, retrieves relevant literature, and generates candidate hypotheses. The Hypothesis Filter groups the candidates into research directions and uses pilot experiments to screen out weak directions before the retained hypotheses undergo full-scale evaluation. These research objects are assembled into a provisional graph ($G_0$). This graph is intentionally incomplete: it provides an explicit research state that can be inspected and revised, rather than assuming that all stage outputs are already reliable.
+
+\paragraph{Cross-stage evidence inspection and repair.} The graph inspector examines the current graph for incomplete evidence paths, semantic misalignment between adjacent nodes in the graph. Once a node is identified, EviGraph traces its downstream dependencies and regenerates the affected subgraph in dependency order. Intermediate graph checkpoints preserve previously validated evidence and allow the framework to roll back repairs that introduce new weaknesses. The updated graph is then inspected again, forming an iterative inspection-and-repair loop.
+
+\paragraph{Evidence-gated manuscript generation.} The loop terminates when the graph satisfies the evidence-readiness condition, under which every retained claim is grounded in a complete and validated evidence chain. EviGraph then converts the validated graph into a manuscript skeleton and generates the final paper using the recorded research context, experimental artifacts, and claim boundaries. A final review checks the manuscript for consistency with the validated graph and triggers targeted textual revisions when necessary. 
+
+\subsection{Evidence Graph as Operational Research State} \label{sec:evidence-graph} 
+
+EviGraph represents the evolving research state as a typed directed graph. After initialization, it is the shared state of all graph-facing components and the object inspected to determine whether research should continue. Unlike a linear pipeline trace, the graph can branch and merge (e.g., one hypothesis may be evaluated by multiple experiments, while several findings may jointly support or qualify a claim).
+
+
+
+% % \begin{definition}[Research graph]
+\paragraph{Research graph.}
+An EviGraph research graph is a tuple
+$G=(V,E,\tau,\rho,\alpha)$, where $V$ is a set of research-object nodes,
+$E\subseteq V\times V$ is a set of directed edges,
+$\tau:V\rightarrow\mathcal{T}$ assigns a type to each node,
+$\rho:E\rightarrow\mathcal{R}$ assigns a relation type to each edge, and
+$\alpha:V\rightarrow\mathcal{A}$ stores type-specific node attributes, where
+$\mathcal{A}$ denotes the space of structured attribute records. For example, an
+\textit{Experiment} node records the datasets, implementation code, and evaluation
+metrics associated with the experiment. The node-type set is
+\[
+\begin{aligned}
+\mathcal{T}=\{&\textit{Problem},\textit{Gap},\textit{Hypothesis},\\
+              &\textit{Experiment},\textit{Finding},\textit{Claim}\}.
+\end{aligned}
+\]
+% \end{definition}
+
+\paragraph{Node semantics.}
+Each node stores type-specific content together with the structured attributes used during inspection. The six node types are \textbf{\textit{Problem}}, representing the task boundary; \textbf{\textit{Gap}}, representing an unresolved limitation in prior work; \textbf{\textit{Hypothesis}}, representing a testable proposal; \textbf{\textit{Experiment}}, recording its protocol and implementation; \textbf{\textit{Finding}}, recording an outcome derived from execution data; and \textbf{\textit{Claim}}, representing a manuscript-level assertion grounded in findings and carrying an explicit retention status.
+
+
+\paragraph{Edge semantics.}
+The edge-type set $\mathcal{R}$ specifies how research objects depend on one
+another. Table~\ref{tab:edge-types} lists the permitted relation schemas.
+
+\begin{table}[t]
+  \centering
+  \small
+  \begin{tabular}{@{}p{1.55cm}p{2.10cm}p{3.70cm}@{}}
+    \toprule
+    \textbf{Relation} & \textbf{Schema} & \textbf{Meaning} \\
+    \midrule
+    \textit{identifies} & \textit{Problem} $\rightarrow$ \textit{Gap} & Marks a gap relevant to the research problem \\
+    \textit{motivates} & \textit{Gap} $\rightarrow$ \textit{Hypothesis} & Links a gap to a proposed way of addressing it \\
+    \textit{tested-by} & \textit{Hypothesis} $\rightarrow$ \textit{Experiment} & Links a hypothesis to an experiment that evaluates it \\
+    \textit{produces} & \textit{Experiment} $\rightarrow$ \textit{Finding} & Records the finding produced by an experiment \\
+    \textit{supports} & \textit{Finding} $\rightarrow$ \textit{Claim} & Provides evidence in favor of a claim \\
+    \bottomrule
+  \end{tabular}
+  \caption{Typed relations in the EviGraph research graph.}
+  \label{tab:edge-types}
+\end{table}
+
+ % \begin{definition}[Evidence chain]
+ \paragraph{Evidence chain.}
+For a claim $c$ with $\tau(c)=Claim$, an \emph{evidence chain} is a
+directed support subgraph containing at least one typed claim-support path
+\[
+h \xrightarrow{tested-by} e
+  \xrightarrow{produces} f
+  \xrightarrow{supports} c,
+\]
+where $\tau(h)=Hypothesis $, $\tau(e)=Experiment$, and
+$\tau(f)=Finding$. The path can be traced to its research context by
+$p\xrightarrow{identifies}g
+\xrightarrow{motivates}h$, where $p$ and $g$ are a
+Problem and Gap, respectively. The support subgraph may contain
+multiple paths,  for example, when several experiments or findings jointly support $c$. It is
+\emph{valid} when, for every edge $(u,v)$ in the support subgraph, the endpoint
+attributes $\alpha(u)$ and $\alpha(v)$ satisfy the semantic constraints of the
+edge's relation type $\rho((u,v))$.
+% \end{definition}
+
+After $G_0$ is constructed, all graph-facing framework components read from and write to this shared graph. A graph update may add a node or edge, revise a node attribute, or replace a dependent portion of the graph. The graph therefore serves as both the operational research state and the interface through which the framework coordinates research actions.
+
+\subsection{Cross-Stage Evidence Inspection and Dependency-Aware Repair}
+\label{sec:inspection-repair}
+Given the current research graph, EviGraph repeatedly inspects its nodes and evidence chains, identifies unreliable research objects, and repairs the portions of the graph that depend on them. It maintains a run-local short-term library $\mathcal{M}_{S}$ of intermediate graph versions for rollback and a persistent long-term library $\mathcal{M}_{L}$ of evidence-ready graphs and successful repair traces for cross-run retrieval.
+
+\paragraph{Weak-node inspection and repair.}
+The graph inspector evaluates node quality and evidence-chain validity. A node $v$ is considered \emph{weak} if its attributes $\alpha(v)$ and those of a connected node $u$ fail to satisfy the semantic constraints specified by the relation type $\rho((u,v))$ of the edge between them. The inspector returns a set of repair groups $\mathcal{W}=\{S_w\}$. Each repair group $S_w$ contains a weak node $w$ and its subordinate nodes, namely, downstream nodes whose contents depend on the current state of $w$. This graph-based scope prevents the framework from treating an inconsistency as an isolated textual error: when an upstream research object changes, the dependent experiments, findings, and claims must be reconsidered accordingly. Table~\ref{tab:weak-nodes} summarizes the main weak-node patterns and their corresponding repair actions.
+
+
+\begin{table}[t]
+  \centering
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}p{1.5cm}p{3.0cm}p{3.2cm}@{}}
+    \toprule
+    \textbf{Node} & \textbf{Weakness} & \textbf{Repair} \\
+    \midrule
+    Hypothesis & Not aligned with the research gap specified in the Gap node, or not operationally testable under the available constraints & Let the Hypothesis Agent regenerate the Hypothesis node
+    based on the Gap-node description or testability feedback \\
+    Experiment & Cannot validate the hypothesis, or the experimental procedure fails to run & Let the Experiment Agent regenerate the experimental protocol
+    based on the hypothesis, or inspect and repair the code \\
+    Finding & Inconsistent with experimental data or incomplete & Let the Analysis Agent re-analyze the experimental logs
+    in the Experiment node and derive the experimental results \\
+    Claim & Not supported by the experimental protocol and results, or inconsistent with the hypothesis & Let the Analysis Agent regenerate the Claim
+    based on the hypothesis, experimental protocol, and results \\
+    \bottomrule
+  \end{tabular}
+  \caption{Weak-node patterns and repair actions used by graph inspection.}
+  \label{tab:weak-nodes}
+\end{table}
+
+Algorithm~\ref{alg:loop} summarizes the loop. Here $C,L,R,P,X$ denote the task context, literature, retrieved experience, pilot results, and full-scale results; $\mathcal{H},\mathcal{D},\mathcal{H}^{\star},\mathcal{W},\mathcal{T}$ denote candidate hypotheses, grouped directions, retained hypotheses, repair groups, and successful repair traces, respectively. Status $s$ distinguishes ready, repairable, reinitialization, and incomplete outcomes.
+\begin{algorithm}[t] 
+\caption{EviGraph research loop} 
+\label{alg:loop}
+\scriptsize
+\begin{algorithmic}
+\REQUIRE research goal $q$, execution budget $B$, long-term graph library $\mathcal{M}_{L}$
+\ENSURE reviewed manuscript, or available state with \textsc{Incomplete}
+\STATE \COMMENT{Initialize the graph and experiments}
+\STATE $C \leftarrow \textsc{AnalyzeTask}(q)$
+\STATE $L \leftarrow \textsc{RetrieveLiterature}(C)$
+\STATE $R \leftarrow \textsc{RetrieveExperience}(q,\mathcal{M}_{L})$
+\STATE $\mathcal{H} \leftarrow \textsc{GenerateHypotheses}(C,L)$
+\STATE $\mathcal{D}\leftarrow\textsc{GroupDirections}(\mathcal{H})$
+\STATE $P \leftarrow\textsc{RunPilotExperiments}(\mathcal{D})$
+\STATE $\mathcal{H}^{\star}\leftarrow\textsc{SelectBestSupported}(\mathcal{D},P)$
+\STATE $X \leftarrow \textsc{FullScaleEvaluate}(\mathcal{H}^{\star})$
+\STATE $G \leftarrow \textsc{BuildInitialGraph}(C,L,\mathcal{H}^{\star},X,R)$
+\STATE \COMMENT{Inspect and repair with checkpoints}
+\STATE $\mathcal{M}_{S}\leftarrow\langle G\rangle$; $\mathcal{T}\leftarrow\langle\rangle$
+\STATE $(s,\mathcal{W})\leftarrow\textsc{InspectGraph}(G,B)$
+\WHILE{$s=\textsc{Repairable}$ \AND budget $B$ remains}
+\STATE $S_w\leftarrow\textsc{SelectRepairGroup}(\mathcal{W})$
+\STATE $G_{\mathrm{base}}\leftarrow G$
+\STATE $\mathcal{A}_w\leftarrow\textsc{PlanRepair}(G_{\mathrm{base}},S_w,R)$
+\STATE $(G_{\mathrm{cand}},\mathcal{M}_{S},B,\mathrm{complete})\leftarrow\textsc{ExecuteRepairGroup}(\mathcal{A}_w,\mathcal{M}_{S},B)$
+\IF{$\mathrm{complete}$}
+\STATE $d\leftarrow\textsc{Degrading}(G_{\mathrm{cand}},G_{\mathrm{base}})$
+\IF{$\neg d$}
+\STATE $G\leftarrow G_{\mathrm{cand}}$
+\ELSE
+\STATE $G\leftarrow\textsc{RollbackToBest}(\mathcal{M}_{S},G_{\mathrm{base}})$
+\ENDIF
+\ELSE
+\STATE $G\leftarrow\textsc{RollbackToBest}(\mathcal{M}_{S},G_{\mathrm{base}})$
+\ENDIF
+\IF{$\textsc{WeakCount}(G)<\textsc{WeakCount}(G_{\mathrm{base}})$}
+\STATE $\mathcal{T}\leftarrow\textsc{Append}(\mathcal{T},(G_{\mathrm{base}},S_w,\mathcal{A}_w,G))$
+\ENDIF
+\STATE $(s,\mathcal{W})\leftarrow\textsc{InspectGraph}(G,B)$
+\ENDWHILE
+\STATE \COMMENT{Gate writing on evidence readiness}
+\STATE \textbf{if} $s=\textsc{Reinitialize}$ \textbf{ then return} $\textsc{ReinitializeAndResume}(C,L,\mathcal{H}^{\star},X,R,B)$
+\IF{$s\neq\textsc{Ready}$}
+\STATE \textbf{return} $(G,\textsc{Incomplete})$
+\ENDIF
+\STATE $\mathcal{M}_{L}\leftarrow\mathcal{M}_{L}\cup\{(G,\mathcal{T})\}$
+\STATE \textbf{return} $\textsc{GenerateReviewAndRevise}(G,B)$
+\end{algorithmic} 
+\end{algorithm} 
+
+\paragraph{Dependency-aware subgraph repair.} For each selected repair group $S_w$, the repair planner first produces an ordered action sequence from the current graph. It then removes the subordinate nodes $S_w\setminus\{w\}$ whose contents depend on the weak node. Specialized agents repair $w$ and regenerate the affected nodes in dependency order by updating existing nodes or adding new nodes to the graph. The repaired graph is subsequently re-inspected, and the process continues with the remaining weak nodes. \paragraph{Checkpointing and rollback.} Each node-level repair stores a new graph version in $\mathcal{M}_{S}$. After all repairs in a group $S_w$ have been completed, the graph inspector compares the updated graph with the version $G_{\mathrm{base}}$ recorded before the group repair. A repair is considered degrading if it increases the number of weak nodes or removes an evidence chain that was valid in $G_{\mathrm{base}}$. In this case, EviGraph invokes $\textsc{RollbackToBest}(\mathcal{M}_{S},G_{\mathrm{base}})$. The rollback target is the historical version that minimizes the number of weak nodes while preserving all evidence chains that were already valid in $G_{\mathrm{base}}$. If no intermediate version improves upon $G_{\mathrm{base}}$ under these criteria, the framework returns to $G_{\mathrm{base}}$. Otherwise, the best repaired version is retained and used for the next inspection step.
+
+\paragraph{Evidence readiness and manuscript generation.} A graph is \emph{evidence-ready}, written $\textsc{Ready}(G)$, if it is schema-valid, contains at least one retained \textit{Claim}, covers required empirical deliverables, and gives every retained \textit{Claim} a valid evidence chain with no weak node. The loop continues until $\textsc{Ready}(G)$ holds or the budget expires. The writer then expands validated nodes and paths into a manuscript, and a reviewer audits structure, novelty framing, citations, and graph faithfulness. Writing weaknesses trigger targeted revisions. A paper is released only after review and provenance validation succeed; failure to satisfy either graph or manuscript gate within budget returns the available state with \textsc{Incomplete}.
+
+
+\subsection{Auxiliary Mechanisms}
+\label{sec:auxiliary-mechanisms}
+
+During initialization, the \textbf{Hypothesis Filter} groups candidate hypotheses into research directions based on semantic similarity and conducts small-scale pilot experiments for each direction. Based on the pilot results, it retains the best-supported group $\mathcal{H}^{\star}$ for full-scale evaluation, after which the surviving hypotheses are instantiated as \textit{Hypothesis} nodes in the provisional graph.
+
+For related tasks, $\mathcal{M}_L$ retrieves graphs and repair traces using task similarity. Retrieved structures may inform graph construction and repair planning, but their claims are not directly reused and must be validated again in the new graph.
+
+
+\section{Experiment}
+\label{sec:experiment}
+
+
+\subsection{Experiment Setup}
+\label{sec:evaluation}
+
+We evaluate EviGraph on two autonomous-research benchmarks and compare its
+overall research performance and research reliability with existing
+end-to-end systems.
+
+\paragraph{Benchmarks.}
+We conduct experiments on two benchmarks. \textbf{ARC-Bench-ML}~\citep{autoresearchclaw2026} contains 25 machine-learning research topics, each specifying a research question, target dataset, and expected experimental deliverables, including implementation, results, and analysis. \textbf{NanoResearch-20}~\citep{nanoresearch2026} contains 20 research tasks spanning seven domains: NLP, computer vision, multimodal learning, tabular learning, time series, graph learning, and audio. It evaluates complete research workflows under multi-round feedback from an LLM-simulated scientist.
+
+\paragraph{Compared systems.}
+We compare EviGraph with two end-to-end autonomous-research systems. \textbf{AutoResearchClaw}~\citep{autoresearchclaw2026} uses a full-stage research pipeline with strict output evaluation, and we use its full-auto setting. \textbf{NanoResearch}~\citep{nanoresearch2026} performs multi-round self-improvement through cross-run evolution and simulated-scientist feedback. Across both baselines and EviGraph, we use qwen-3.6-plus as the LLM backbone and keep the sandboxed execution environment and per-experiment time budget identical, reducing confounding from model capability and execution infrastructure.
+
+\paragraph{Metrics.}
+Following the baselines' official settings, ARC-Bench-ML reports Code Development (CD), Code Execution (CE), Result Analysis (RA), and their weighted Overall score, with CD:CE:RA$=25:25:50$. CD evaluates implementation correctness; CE, successful execution and valid outputs; and RA, whether conclusions are grounded in measurements, hypotheses receive explicit verdicts, and limitations are properly reported. Two independent agent reviewers apply the strict judge, with disagreements above $0.20$ re-adjudicated. NanoResearch-20 reports Alignment (Align.), end-to-end completion (E2E), Performance (Perf.), Novelty (Novel.), and Writing quality (Writ.), which respectively evaluate task compliance, workflow completion, task effectiveness, originality, and manuscript quality.
+
+We additionally report two reliability metrics. We partition each manuscript into chunks, extract claims from each with an LLM, and aggregate them as $\mathcal{C}$. Claim Support Rate is $\mathrm{CSR}=|\mathcal{S}|/|\mathcal{C}|$, where $\mathcal{S}$ contains claims traceably supported by the corresponding research run. Because extraction is stochastic, $\mathcal{C}$ may vary across runs and include implicit, broad, or difficult-to-ground claims, enlarging the denominator without increasing supported claims. Absolute CSR is therefore conservative and may be lower than an estimate from a manually curated claim set. Experimental Data Consistency is $\mathrm{EDC}=|\mathcal{K}|/|\mathcal{F}|$, where $\mathcal{F}$ contains reported experimental values and $\mathcal{K}$ contains those matching execution records. CSR measures the proportion of extracted final claims supported by research evidence, whereas EDC measures consistency between reported values and execution records.
+
+
+\begin{table*}[htp]
+  \centering
+  \small
+  % \setlength{\tabcolsep}{4.2pt}
+  % \resizebox{\textwidth}{!}{%
+  \begin{tabular}{lccccccccc}
+    \toprule
+    & \multicolumn{4}{c}{\textbf{ARC-Bench-ML}}
+    & \multicolumn{5}{c}{\textbf{NanoResearch-20}} \\
+    \cmidrule(lr){2-5}
+    \cmidrule(lr){6-10}
+    \textbf{Method}
+      & \textbf{CD}\,$\uparrow$
+      & \textbf{CE}\,$\uparrow$
+      & \textbf{RA}\,$\uparrow$
+      & \textbf{Overall}\,$\uparrow$
+      & \textbf{Align.}\,$\uparrow$
+      & \textbf{Novel.}\,$\uparrow$
+      & \textbf{E2E}\,$\uparrow$
+      & \textbf{Perf.}\,$\uparrow$
+      & \textbf{Writ.}\,$\uparrow$ \\
+    \midrule
+    NanoResearch
+      & 98.2\% & 60.64\% & 41.32\% & 60.37\%
+      & \textbf{8.8} & 5.05 & \textbf{100\%} & 64\% & 3.5 \\
+    AutoResearchClaw 
+      & 93.8\% & 56.2\% & 44.2\% & 59.6\%
+      & 4.25 & 4.8 & 100\% & 23\% & 6.1 \\
+    \midrule
+    EviGraph
+      & \textbf{99\%}
+      & \textbf{88\%}
+      & \textbf{79.4\%}
+      & \textbf{86.45\%}
+      & 6.6
+      & \textbf{5.9}
+      & \textbf{100\%}
+      & \textbf{72.84\%}
+      & \textbf{7.5} \\
+    \bottomrule
+  \end{tabular}%
+  % }
+  \caption{Overall research performance on ARC-Bench-ML and NanoResearch-20. ARC-Bench-ML reports Code Development (CD), Code Execution (CE), Result Analysis (RA), and their weighted Overall score. NanoResearch-20 reports Alignment, Novelty, end-to-end completion (E2E), Performance, and Writing quality. Bold values indicate the best result in each column.}
+  \label{tab:benchmark-results}
+\end{table*}
+
+\begin{table}[htp]
+  \centering
+  \small
+  \setlength{\tabcolsep}{3.5pt}
+  \begin{tabular}{lccc}
+    \toprule
+    \textbf{Method}
+      & \textbf{CSR}\,$\uparrow$
+      & \textbf{EDC}\,$\uparrow$ 
+      & \textbf{Avg.}\, $\uparrow$ \\
+    \midrule
+    NanoResearch
+      & 14.4\% & \textbf{96.15\%} & 55.28\%\\
+    AutoResearchClaw
+      & 27\% & 53\% & 40\%\\
+    \midrule
+    EviGraph
+      & \textbf{37.85\%} & 87.73\% & \textbf{62.79\%}\\
+    \bottomrule
+  \end{tabular}
+  \caption{Research-reliability results across ARC-Bench-ML and  NanoResearch-20. CSR measures claim grounding, whereas EDC measures the consistency of reported experimental values with the underlying research artifacts.}
+  \label{tab:reliability}
+\end{table}
+
+\subsection{Main Results}
+\label{sec:results}
+
+\paragraph{Overall research performance}
+Table~\ref{tab:benchmark-results} summarizes both benchmarks. Across them, EviGraph substantially outperforms the compared systems on execution, result analysis, task effectiveness, novelty, and manuscript quality.
+
+On ARC-Bench-ML, EviGraph leads all four metrics, with 99\% Code Development, 88\% Code Execution, 79.4\% Result Analysis, and 86.45\% Overall, versus 60.37\% Overall for the strongest compared system. The pronounced Result Analysis gain is consistent with explicitly maintaining relationships among hypotheses, executed experiments, observed findings, and final claims.
+
+On NanoResearch-20, EviGraph leads in Novelty, Performance, and Writing while matching NanoResearch's 1.0 E2E score. Its Performance (72.84\%) and Writing (7.5) exceed the corresponding strongest-baseline scores of 64\% and 6.1. Its Alignment score of 6.6 exceeds AutoResearchClaw's 4.25 but trails NanoResearch's 8.8, leaving strict adherence to the original task framing for improvement.
+
+
+
+\paragraph{Research reliability.}
+Table~\ref{tab:reliability} reports reliability across both suites. EviGraph achieves the highest Claim Support Rate (37.85\%), versus 27\% for AutoResearchClaw and 14.4\% for NanoResearch. This 40.19\% relative improvement over the strongest baseline shows that a larger fraction of final claims trace to generated hypotheses, executed experiments, and recorded findings.
+
+EviGraph's Experimental Data Consistency (87.73\%) is below NanoResearch's 96.15\% but substantially above AutoResearchClaw's 53\%. Thus, EviGraph improves claim support while maintaining high consistency between reported values and execution records, and achieves the highest average across the two reliability metrics.
+
+Overall, EviGraph substantially improves end-to-end research performance and claim support across both benchmarks; explicit evidence state strengthens reliability, execution, analysis, and final outputs.
+
+\section{Analysis}
+
+\label{sec:discussion}
+
+EviGraph's components are tightly coupled through the shared evidence graph,
+making conventional component-wise ablation difficult to interpret: removing
+one component can change the research state and operating conditions of the
+others. We therefore complement the quantitative results with a qualitative
+component--evaluation alignment and a representative execution trace,
+illustrating how the components coordinate during an actual research run.
+
+\subsection{Component-Evaluation Alignment}
+\label{sec:component-alignment}
+
+Table~\ref{tab:component-alignment} summarizes the operational role of each
+component and the evaluation signals through which its contribution is most
+directly reflected. The Hypothesis Filter and Graph Builder determine which research directions enter the evidence graph and how their dependencies are represented, making their roles closely related to Result Analysis, Novelty, and claim support. The Graph Inspector, Repair Planner, and Repair Agents operate directly on weak claim--evidence relationships and affected downstream subgraphs, connecting them to CSR, EDC, Code Execution, and Result Analysis.
+
+The two graph libraries support the stability and continuity of this process: $\mathcal{M}_S$ preserves intermediate states for version selection and rollback, while $\mathcal{M}_L$ provides prior graph structures and repair experience for related research tasks. Finally, the Paper Writer and Paper Reviewer transform the validated graph into a manuscript and verify its faithfulness, linking their roles to Writing, Novelty, and CSR. This mapping provides a component-level interpretation of the aggregate evaluation results and motivates the representative execution trace presented next.
+
+\begin{table}[t]
+  \centering
+  \small
+  \setlength{\tabcolsep}{2.5pt}
+  \begin{tabular}{@{}>{\raggedright\arraybackslash}p{2.00cm}>{\raggedright\arraybackslash}p{3.5cm}>{\raggedright\arraybackslash}p{2.00cm}@{}}
+    \toprule
+    \textbf{Component}
+      & \textbf{Operational Role}
+      & \textbf{Related Signal} \\
+    \midrule
+
+    Hypothesis Filter and Graph Builder
+      & Screen candidate directions and construct the provisional graph $G_0$
+      & RA, Novel., CSR \\
+    \midrule
+
+    Graph Inspector
+      & Detect weak nodes, misalignment, and invalid evidence chains
+      & CSR, RA \\
+    \midrule
+
+    Repair Planner and Repair Agents
+      & Scope, order, and execute affected-subgraph regeneration
+      & CSR, EDC, CE \\
+    \midrule
+
+    Short-term Library $\mathcal{M}_S$
+      & Store intermediate graph versions for selection and rollback
+      & Repair robustness \\
+    \midrule
+
+    Long-term Library $\mathcal{M}_L$
+      & Retrieve prior graph structures and successful repair traces
+      & Cross-run efficiency \\
+    \midrule
+
+    Paper Writer and Reviewer
+      & Generate and verify a manuscript grounded in the validated graph
+      & Writ., Novel., CSR \\
+    \bottomrule
+  \end{tabular}
+  \caption{Qualitative alignment between EviGraph components and evaluation
+  signals. The final column indicates related evaluation dimensions.}
+  \label{tab:component-alignment}
+\end{table}
+
+
+\begin{figure*}[!t]
+  \centering
+  \includegraphics[width=\textwidth]{Figures/case_study_arxiv.pdf}
+  % Reclaim the exported PDF's blank lower canvas without cropping the figure.
+  \vspace{-0.73\textwidth}
+  \caption{Representative EviGraph execution trace. Three candidate hypotheses are grouped and screened by the Hypothesis Filter through pilot experiments before the Graph Builder constructs $G_0$. The Graph Inspector detects a \texttt{GAP\_MISALIGNMENT} between G1 and H1 along G1$\rightarrow$H1$\rightarrow$E1$\rightarrow$F1$\rightarrow$C1. The Repair Planner and Repair Agents regenerate the affected subgraph, while $\mathcal{M}_S$ stores intermediate graph versions. Once $\textsc{Ready}(G)$ holds, the validated graph proceeds to manuscript generation and review.}
+  \label{fig:case-trace}
+\end{figure*}
+
+This trace highlights the distinction between pipeline completion and evidence readiness. Although all initial research objects are successfully generated, their cross-stage relationship remains invalid until the evidence graph is inspected and the affected subgraph is repaired.
+\subsection{Representative Execution Trace}
+\label{sec:case-study}
+
+We analyze an ARC-Bench-ML run on the \emph{Lightweight Short-Text Classification via Frozen PLM Representation Calibration} task. This is a cold-start run, so the long-term graph library $\mathcal{M}_L$ contains no related prior graph or repair trace.
+
+The Hypothesis Generator produces three candidate hypotheses. The Hypothesis Filter groups them into two research directions and conducts pilot experiments on 10 AG News samples for each group. Group~1, containing H1, receives stronger empirical support and is retained for full-scale evaluation. The Graph Builder then assembles the resulting research objects into the provisional graph $G_0$, covering all six node types.
+
+Although the initial research stages complete successfully, the Graph Inspector detects a blocking \texttt{GAP\_MISALIGNMENT}: H1 focuses on \texttt{[CLS]} attention entropy and pre-training alignment thresholds, whereas its motivating Gap node G1 concerns over-engineered classification heads. This inconsistency is not exposed by stage completion alone because H1 remains syntactically connected to G1 and its associated experiment executes successfully.
+
+The Graph Inspector identifies H1 as the weak node and forms the repair group $S_{\mathrm{H1}}=\{\mathrm{H1},\mathrm{E1},\mathrm{F1},\mathrm{C1}\}$. The Repair Planner orders the updates as $\mathrm{H1}\rightarrow\mathrm{E1}\rightarrow\mathrm{F1}\rightarrow \mathrm{C1}$, and the Repair Agents regenerate the affected nodes in this dependency order. Research objects outside the repair group remain unchanged.
+
+Before repair, the current graph is stored in the short-term graph library $\mathcal{M}_S$, and each node-level update produces an intermediate version. The first repair sequence succeeds in this trace, so rollback is not activated. Because $\mathcal{M}_L$ is empty, prior graph retrieval does not contribute to initialization or repair planning in this case.
+
+After regeneration, the Graph Inspector finds no remaining blocking issue and $\textsc{Ready}(G)$ holds. The validated graph is then passed to the Paper Writer and Paper Reviewer for graph-grounded manuscript generation and review.
+
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+EviGraph reframes autonomous research from single-pass pipeline execution as iterative evidence construction, inspection, and repair over a typed research graph. Its graph structure makes evidence dependencies explicit so that weak links can be detected; the graph experience library preserves reliable states within and across runs; and the Hypothesis Filter screens candidate directions through staged pilot experiments. On ARC-Bench-ML, EviGraph achieves the highest Overall score (86.45\%), leading in Code Exec and Result Analysis. On NanoResearch-20, it leads in Novelty, Performance, and Writing while matching the best E2E rate. These results confirm that enforcing evidence-chain validity during research strengthens both reliability and task quality.
+
+% =====================================================================
+% References
+% NOTE: aaai2027.sty already issues \bibliographystyle{aaai2027}, so we
+% must NOT repeat it here (doing so triggers a duplicate \bibstyle error).
+% =====================================================================
+\bibliography{refs}
+
+% =====================================================================
+% Appendix
+% Start on a fresh page so pending main-paper floats cannot enter it.
+% appendix_arXiv.tex is include-only so arXiv sees a single top-level file.
+% =====================================================================
+\clearpage
+\appendix
+\def\isAppendixMainFile{}
+\input{appendix_arXiv}
+
+\end{document}
