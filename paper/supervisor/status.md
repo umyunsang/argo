@@ -1,11 +1,11 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** 한글 정본 Ⅰ장을 작성하고 그림 참조를 넣은 뒤 G11·G1·G6을 measured에서 enforced로 승격한다.
+- **next_first_action:** 고정 툴체인 개정판(v3)을 만들어 Noto Sans KR을 격리 경계 안에 넣고, 기존 영문 빌드가 바이트 단위로 재현되는지 먼저 확인한 뒤 한글 Ⅰ장을 쓴다.
 
-- **last_updated:** 2026-09-03T05:30:27+09:00
+- **last_updated:** 2026-09-03T05:35:46+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** anthropic/claude-opus-5
-- **current_phase:** instruction-0010 처리 완료 — 그림 9/9 벡터 폴백(이미지 API 크레딧 소진), 라벨 수령(모델 기준), HF 누적 추정 $1.97
+- **current_phase:** cycle 63 closed — 한글 조판 가능성 측정 완료, 격리 규칙이 시스템 폰트를 거부해 툴체인 개정이 필요
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 
