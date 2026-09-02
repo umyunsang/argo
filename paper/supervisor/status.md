@@ -1,14 +1,24 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** re-score the 32 retained variance-block artifacts with the now-audited scoring and verification instruments, since every earlier score came from unaudited code.
+- **next_first_action:** re-derive the judged endpoint bound by re-running the element verifier on a fixed subset and reporting agreement with the recorded verdicts, since that layer is excluded from the deterministic re-derivation.
 
-- **last_updated:** 2026-09-03T01:24:38+09:00
+- **last_updated:** 2026-09-03T01:29:19+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 23 closed — every instrument module now has a mutation-audited suite
+- **current_phase:** cycle 24 closed — both executed blocks re-derive exactly from retained artifacts with the audited instruments
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 24 — the recorded results were re-derived, not assumed
+
+- **Gap picked:** every recorded score came from instrument code written before the mutation audit, so no recorded number had been checked against the audited instruments.
+- **Executed:** the deterministic quantities of both blocks were re-derived from the retained artifacts. Re-running would have spent frozen tasks without testing the recorded numbers at all.
+- **Both blocks matched exactly.** Variance block `32 / 0 / 0 / 26`, pilot block `16 / 0 / 0 / 13`, each equal to what was recorded.
+- **Independent canary scan:** every retained design and state artifact was scanned against all eight per-task withheld canaries read from the **task bundles**, not from the receipts. No leak.
+- **The new tool was defective on first use.** Its filename pattern required a repeat suffix, so it matched nothing in the pilot block and reported zero leaks and zero redlines — which reads as a pass. It now raises on an empty match, with a fixture for that case, and all five injected mutations are caught.
+- **A fixture asserted my assumption again:** a sample artifact was declared clean when it did not satisfy all five structural checks. The sample was corrected, not the check weakened.
+- **Boundary stated, not implied:** judged element verdicts depend on a model call and are outside this check.
 
 ### Cycle 23 — the last three instruments got suites, held to the same standard
 
