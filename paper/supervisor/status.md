@@ -1,14 +1,22 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** generate the three remaining low-confidence element judgements so the 25-item calibration set can certify the judged-scoring risk bound.
+- **next_first_action:** switch episode execution to JSON output mode so per-episode token usage is measured rather than proxied, and record it in the cost ledger.
 
 - **last_updated:** 2026-09-03T00:40:40+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 16 closed — reproducibility folded into the gate, and the self-correction claim replaced by a measured census
+- **current_phase:** cycle 17 closed — the 25-item calibration form is complete and machine-checked; labels remain the only external dependency
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 17 — the calibration set is complete and provably blinded
+
+- **Gap picked:** the calibration set stood at 22 of 25 items, three short in the low-confidence stratum, and judged scoring stays inadmissible until it is complete.
+- **Executed:** exactly three unused low-confidence judgements existed in the verdict pool, which is the number required. The set now stands at **25 items in the intended 10 / 10 / 5 stratification**.
+- **Two defects found by checking rather than assuming.** The three added items lacked the `answer`, `labeller`, `labelled_at`, and `notes` fields the original items carry, and they were not joined to the blinded key. Both were fixed and every item now shares one field set and resolves to exactly one key entry.
+- **Blinding verified mechanically:** no item carries a judge verdict, judge confidence, episode id, or element id. The word `confidence` does appear inside candidate passages, and was checked to be ordinary statistical wording rather than leakage.
+- **Still inadmissible, and said so.** No labels have been collected. `Q-0006` is updated to 25 items and stays non-blocking; the loop continues on its default, and judged scoring remains barred until real labels certify the risk bound.
 
 ### Near miss recorded — a passing run that proved nothing
 

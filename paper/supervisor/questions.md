@@ -57,12 +57,14 @@ Q 형식: `## Q-000N` 제목 아래 6필드(id/시각, 근거 경로, 옵션과 
 - **answer:** (b) 보류. 파일럿 전제와 16-episode 파일럿은 GPU 없이 끝낸다. 파일럿 완료 후 사전등록(목표·고정 명령·입력 sha·est_CU·중단 규칙·체크포인트)과 cost-ledger 행을 커밋한 뒤 새 Q로 다시 올린다. 이 Q는 더 이상 blocking이 아니며 루프를 멈추지 않는다.
 
 
-## Q-0006 — 교정 라벨 22건 수집 요청
+## Q-0006 — 교정 라벨 25건 수집 요청 (양식 완성됨)
 
 - **id:** Q-0006
-- **question:** `paper/experiments/calibration/label-form.json`의 22개 항목에 blind 라벨(satisfied / not_satisfied / unclear)을 기입해 줄 수 있는가? 프로토콜은 `paper/research/human-label-protocol.md`다.
-- **why_it_matters:** 판정 채점은 교정 없이는 아무 것도 승인되지 않는다. 라벨이 없으면 1차 지표는 결정론 층으로만 제한된다.
-- **options:** (a) 22건 라벨 후 3건 보충 (b) 라벨 없이 진행하고 판정 채점을 영구 보류
+- **question:** `paper/experiments/calibration/label-form.json`의 **25개** 항목에 blind 라벨(satisfied / not_satisfied / unclear)을 기입해 줄 수 있는가? 프로토콜은 `paper/research/human-label-protocol.md`다. 각 항목은 `label_id`, 요구사항 한 줄, 후보 구절만 담고 있으며 판정기의 판단과 신뢰도는 들어 있지 않다.
+- **why_it_matters:** 판정 채점은 교정 없이는 아무 것도 승인되지 않는다. 라벨이 없으면 1차 지표는 결정론 층으로만 제한된다. 25건 무결 라벨이면 95% 신뢰도에서 위험 10%를 인증한다.
+- **options:** (a) 25건 라벨 기입 (b) 라벨 없이 진행하고 판정 채점을 영구 보류
 - **default_if_unanswered:** (b) 보류하고 루프는 계속한다. 신뢰도 하한 0.9는 라벨과 무관하게 이미 적용된다.
 - **blocking:** false — 기본값으로 진행해도 되돌릴 수 없는 손실이 없다.
 - **asked_at:** 2026-09-03T00:03:13+09:00
+- **updated_at:** 2026-09-03T00:40:40+09:00
+- **status:** 양식이 완성되어 대기 중이다. 저신뢰 층 3건을 보충해 25건(>0.9 10건 / 0.7-0.9 10건 / <0.7 5건)이 됐고, 모든 항목이 동일한 필드 집합을 갖도록 고쳤다. 항목에 판정 결과가 새지 않는지 기계로 확인했다. 라벨이 없는 동안에도 루프는 기본값으로 계속 진행한다.
