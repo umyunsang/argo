@@ -1,12 +1,33 @@
 # ARGO paper autonomous-research status
 
-- **last_updated:** 2026-09-02T21:41:37+09:00
+- **last_updated:** 2026-09-02T21:52:42+09:00
 - **goal:** active — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** round 8 design-competition integrated; claim locators now re-derivable from the repository; clean-clone validation node PASS; Study A still prelaunch-blocked
-- **last_checkpoint:** `5527c7926` — round-8 sources, six-field decision records, Study C RUNBOOK, engine usage notes
+- **current_phase:** standing loop active; cycle 1 closed (round 9 design competition + release sandbox EXECUTED); cycle 2 starting on independent scoring calibration and the fixed runner
+- **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 1 under the standing loop (instruction #0005)
+
+- **Gap picked:** the round-8 retrieval record had zero discovery loops, no design comparison existed, and no pilot prerequisite had been built.
+- **Literature loop:** 3 objectives x 3 primitives = 9 discovery calls, 135 candidates, 7 new `FULL_PAPER_READ` records with exact versions and 10 line-anchored locators. Record: `paper/research/literature-round9-retrieval-record.json`.
+- **Design comparison:** `paper/research/design-comparison-round8.md` compares 16 prior experiments across 10 design columns and states where Study A is stronger, weaker, and what changed.
+- **Counterevidence found:** a controlled two-agent, 288-run ablation of persistent external context reports no reliable gain and attributes failures to implementation skill. This is direct counterevidence to H-A and forced two design changes.
+- **Decisions 09A-09D:** manipulation probe for state use; pre-registered equivalence margin with TOST plus a resolution target; judge admission on severity, halo, and step-level review; no change to repeats with a pre-registered variance decomposition.
+- **Execution unit: `EXECUTED`.** `experiments/study_a/release_sandbox.py` with six fail-closed probes, verified by `experiments/study_a/test_release_sandbox.py`: 10/10 checks, every probe demonstrated firing on a corrupted fixture. Receipt `paper/sources/study-a-sandbox-fixture-receipt.json`.
+- **Verification:** validator PASS; clean-clone run `d98a34a2-bfd6-43e6-be18-cc57605e1a44` PASS at `f33f5993f`, 92/92 locators re-derived.
+- **Instruction #0006 applied:** Study C moved to `EXECUTION_PATH_SECURED_PREREGISTRATION_REQUIRED`; `paper/research/colab-usage.md`, `paper/supervisor/cost-ledger.md` (cumulative 0 CU, no active sessions), `paper/research/burned-task-ledger.json` created; Q-0005 opened as blocking.
+- **exa MCP usage this cycle: not used.** All candidates were reachable through the research CLI primitives; recorded in the retrieval record `web_queries` field.
+
+### Remaining pilot prerequisites
+
+| Prerequisite | State |
+|---|---|
+| hidden-task release sandbox and integrity probes | **done, executed** |
+| independent scoring calibration and judge agreement fixture | next unit, no GPU needed |
+| fixed Study A runner as one command | next unit, no GPU needed |
+| 16-episode pilot | runs once the two above pass |
 
 ### Resume procedure (instruction #0004 §2)
 
