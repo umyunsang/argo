@@ -27,6 +27,20 @@ This is the curated evidence foundation for the ARGO graduation thesis. It does 
 
 `paper/research/coding-harness-differentiation-matrix.md` separates own-lineage, concept, and contrast sources by axis. Missing cells are not negative claims. `paper/research/capability-map.md` treats all nine literature areas as target R&D capabilities and marks untested rows as design-only or follow-up.
 
+## Protocol, RAG, and model-routing architecture
+
+- [A Technical Taxonomy of LLM Agent Communication Protocols](https://www.alphaxiv.org/abs/2606.19135) separates counterparty, payload, interaction state, discovery, and schema flexibility across nine maintained protocols. It supports a layered tool/agent/human protocol architecture and identifies privacy, compliance, and policy enforcement as open gaps.
+- [Collaborative Human-Agent Protocol](https://www.alphaxiv.org/abs/2606.09751) proposes typed review, override, abstention, escalation, mode, and evidence events for accountable shared work. It is explicitly a v0.2 draft that still needs independent implementations and empirical human-factor evaluation.
+- [Efficient RAG with Intent-Aware Retrieval and Semantics-Preserving Chunking](https://www.alphaxiv.org/abs/2606.01240) decomposes RAG into intent-aware hybrid retrieval, semantic chunk repair, and coverage audit. Its neighbor-repair locality assumption is a direct falsifier for long-distance evidence.
+- [SciRet](https://www.alphaxiv.org/abs/2608.03860) provides negative transfer evidence: an off-the-shelf web-trained reranker reduces precision on scientific text. Its pseudo-label circularity, 15-query set, and abstract-only corpus prevent treating that result as a final efficacy estimate.
+- [Agent-Orchestrated Adaptive RAG](https://www.alphaxiv.org/abs/2606.05658) is the third direct H-B comparator. Decomposition and reflection have mixed, corpus-dependent quality/latency effects, replacing the earlier indirect RAG row in the preregistration design.
+- [LLMRouter](https://www.alphaxiv.org/abs/2608.06867) casts model routing as a sequential decision process evaluated jointly on quality and cost and reports that no router dominates every task or budget.
+- [Resample or Reroute?](https://www.alphaxiv.org/abs/2607.08665) treats resampling and rerouting as competing actions under a fixed per-query budget. The physically reviewed record is v1; v2 was latest at retrieval and is explicitly excluded from the current claim binding. Verifier degradation narrows or reverses gains.
+- [When Does LLM Orchestration Pay Off?](https://www.alphaxiv.org/abs/2608.00685) controls optimization effort across workflows and backbones. It reports moderate model- and benchmark-dependent gains at substantially higher token use; human-derived difficulty does not monotonically predict orchestration benefit.
+- [Agora](https://www.alphaxiv.org/abs/2607.09600) routes decomposed task units by calibrated competence and cost. Calibration, subtask distribution shift, and the independence assumption are explicit limits.
+
+Together these records close the minimum academic-anchor thresholds for literature areas 3, 5, 6, and 9. They do not justify adding model routing to Study A. Routing remains a separate H-E design because it needs an independent verifier, a frozen candidate pool, provider/capability receipts, fallback tests, and its own quality–cost power calculation.
+
 ## Research design and evidence state
 
 - [The AI Scientist](https://www.alphaxiv.org/abs/2408.06292) demonstrates end-to-end idea, experiment, writing, and review automation, while its reported subtle code errors, positive bias, incomplete controls, and execution risks motivate stronger evidence identity.
@@ -43,7 +57,7 @@ This is the curated evidence foundation for the ARGO graduation thesis. It does 
 - [Diagnosing Search Behavior and Failure Modes in Long-Horizon Search Agents](https://www.alphaxiv.org/abs/2608.01913) supplies retrieval-gap versus utilization-gap attribution, productive/redundant/unproductive episode labels, and evidence-saturation stopping measurements. Search count and context volume are therefore resource measures, not capability endpoints.
 - [Hypothesis Evolution Protocol](https://www.alphaxiv.org/abs/2607.09195) supplies a matched explicit hypothesis–test–evidence–belief treatment, but the same agent attaches and validates evidence. ARGO Study A therefore requires programmatic redlines and independent, condition-blind scoring.
 
-These full reads revise the prospective comparison. The first empirical study is provisionally a 2×2 factorial crossing stage-isolated decision/evidence state with dynamic retrieval. The previous bundled BASE–RETRIEVAL–full comparison is not retained as the first causal experiment. `paper/research/autonomous-research-decision-ledger.json` records the candidate scores and falsifiers; `paper/research/minimum-executable-experiment.md` specifies the unexecuted 16-episode instrument pilot. E5 remains blocked until hidden-task, independent-scoring, and fixed-runner gates close.
+The retained full reads establish a preregistration-ready 2×2 factorial crossing stage-isolated decision/evidence state with dynamic retrieval. The previous bundled comparison is not retained as the first causal experiment, and `paper/research/minimum-executable-experiment.md` is superseded by `paper/research/research-design.md`. The decision ledger records alternatives, falsifiers, H-A–H-E comparators, resource ceilings, and the explicit routing deferral. No episode has executed. E5 remains blocked until hidden-task, independent-scoring, and fixed-runner gates close.
 
 ## Held-out adaptation and evaluation
 

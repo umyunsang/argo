@@ -1,6 +1,6 @@
 # Research design: harnessed LLM-agent system for autonomous R&D
 
-**Status:** preregistration draft; unexecuted; comparable-experiment and literature-area gaps remain.
+**Status:** preregistration-ready design; unexecuted; execution remains blocked by hidden-task isolation, independent scoring, and fixed-runner preflight.
 **Root design authority:** the root agent selected the questions, factors, endpoints, falsifiers, and resource ceilings from retained evidence; no empirical outcome has been observed.
 **Planning deadline:** department plan submission `2026-10-31` (user-confirmed).
 **Inputs:** `paper/research/capability-map.md`, `paper/research/autonomous-research-decision-ledger.json`, `paper/research/coding-harness-differentiation-matrix.md`.
@@ -15,6 +15,7 @@ The thesis asks:
 - **RQ2:** What is the main effect of dynamic retrieval, and does structured state change that effect?
 - **RQ3:** Can hidden-task release, deterministic redlines, condition-blind scoring, and trace diagnostics distinguish scientific quality from polished reports and high search volume?
 - **RQ4 (deferred):** After a valid research-state treatment exists, do hypothesis-tree and insight propagation improve held-out artifact optimization?
+- **RQ5 (deferred):** After Study A, can query-, role-, and recursion-depth-conditioned model/workflow routing improve the quality–cost frontier relative to one fixed model without increasing fatal errors?
 
 ## 2. Falsifiable hypotheses
 
@@ -24,6 +25,7 @@ The thesis asks:
 | H-B | Retrieval has no presumed positive main effect; unstructured retrieval may be null or harmful. | Two-sided. SCOPE reports five of seven models without significant gain and one degradation. | C01 improves high- and low-level design without extra redlines and the effect replicates under independent scoring. |
 | H-C | Structure × retrieval interaction is positive because stage isolation converts retrieved material into decision-relevant evidence. | Positive interaction. No precedent supplies a transportable local effect size. | `(C11−C10)−(C01−C00) ≤ 0`, or retrieval changes citations/search count but no valid decision. |
 | H-D (deferred) | A hypothesis tree plus propagated insight improves held-out artifact optimization over a flat queue or a tree without insight. | Positive; Arbor reports large benchmark differences, but cost and task scope prevent current-cycle confirmation. | No held-out advantage, validation-only gain, or benefit disappears under matched budget. |
+| H-E (deferred) | Calibrated, query/role/depth-conditioned model–workflow routing improves quality per unit cost over a fixed-model policy. | Positive only within an independently validated candidate pool and verifier regime; no transportable magnitude is assumed. | No Pareto improvement, fatal errors rise, benefit disappears under held-out tasks, or routing decisions fail calibration/fallback gates. |
 
 ## 3. Variables and conditions
 
@@ -51,7 +53,7 @@ The thesis asks:
 
 ### Controls
 
-Model revision, task packet, clean-session policy, output schema, 32k-token ceiling, 12-call ceiling, 45-minute ceiling, machine class, scorer revision, and zero target-evaluation calls during treatment are fixed. Dynamic model routing is not a factor (`R-ROUTING-DEFER`); adding it would create at least eight conditions and confound the first two mechanisms.
+Model revision, task packet, clean-session policy, output schema, 32k-token ceiling, 12-call ceiling, 45-minute ceiling, machine class, scorer revision, and zero target-evaluation calls during treatment are fixed. Dynamic model routing is not a Study A factor (`R-ROUTING-DEFER`): LLMRouter (`2608.06867`), budget-aware resample/reroute (`2607.08665`), controlled orchestration (`2608.00685`), and Agora (`2607.09600`) show that routing effects depend on task, budget, verifier, workflow, and backbone. Adding routing now would create at least eight conditions and confound the first two mechanisms.
 
 ## 4. Tasks, benchmarks, and data
 
@@ -183,7 +185,9 @@ Confirmatory hard cap: 192 episodes ×32k = 6.144M treatment tokens; scoring cap
 | Stage isolation + typed graph | free notes; flat graph; stage-isolated graph | SCOPE FULL; EviGraph `2608.04738` FULL; Arbor FULL | Low-level resources and high-level protocol interfere; hierarchy without insight is insufficient. | fewer redlines; risk anchoring/bureaucracy | no score/FEC gain under blind scoring |
 | Hidden paper-derived tasks | synthetic fixtures; public target; hidden target | ResearchClawBench `2606.07591` FULL | Open-ended design needs external anchor, but target bytes must be absent. | credible scoring; risk target imitation. | leakage or target-only judge behavior |
 | Redline-adjusted score + FEC | total score only; FEC only; co-primary | SCOPE FULL; ResearchClawBench FULL | Continuous score gives power; FEC preserves scientific validity. | sensitivity plus safety; multiplicity and binary underpower. | component trade-offs hidden or redlines misclassified |
-| Fixed model | dynamic routing; routing-only first; fixed | RLM `2512.24601` FULL; area-9 gap | Routing would double conditions and confound mechanisms before routing MDE exists. | clean attribution; limited generality. | strong routing anchors + feasible matched benchmark justify redesign |
+| Fixed model in Study A | dynamic routing; routing-only first; fixed | LLMRouter `2608.06867`; resample/reroute `2607.08665`; controlled orchestration `2608.00685`; Agora `2607.09600` — FULL | Routing quality depends on task, budget, verifier, workflow, and backbone; including it now doubles conditions and confounds state/retrieval. | clean attribution; limited model generality. | fixed-model results fail to transfer, or a later matched routing study clears power, verifier, and candidate-pool gates |
+| Layered protocol boundary | one monolithic protocol; application-specific messages; layered tool/agent/human protocols | protocol taxonomy `2606.19135`; CHAP `2606.09751` — FULL | Tool access, peer work, and accountable human collaboration have different counterparties, payloads, state, discovery, and authority semantics. | composability and auditability; evolving specs and draft human layer. | versioned interop or non-bypass tests show the layering loses required state or authority |
+| Corpus-specific RAG pipeline | dense-only; sparse-only; hybrid + generic reranker; adaptive hybrid + validated reranker | InSemRAG `2606.01240`; SciRet `2608.03860`; adaptive RAG `2606.05658` — FULL | Chunking, intent, corpus scale, and reranker domain transfer change retrieval quality; extra decomposition/reranking can harm precision or latency. | better evidence coverage; risk of complex self-evaluation and repair overhead. | independent relevance labels show no benefit or fatal/context errors increase |
 | Evidence-saturation stop | hard call cap; model self-stop; evidence stop | search diagnosis `2608.01913` FULL | 77.5–93.6% no-new-evidence episodes and wasted tails make effort a bad endpoint. | lower waste; risk premature stop. | missed evaluator-relevant evidence rises |
 | Current-cycle capability slice | all 46 capabilities; validator only; connected 10-function slice | capability map + SCOPE/HEP/ResearchClaw FULL | Tests treatment and measurement prerequisites within non-native boundary. | executable causal path; limited coverage. | slice still requires native changes |
 
@@ -196,15 +200,19 @@ Confirmatory hard cap: 192 episodes ×32k = 6.144M treatment tokens; scoring cap
 | H-A | LongHorizon-Harness `2608.01964` FULL | 3 long-horizon benchmarks; exact task N differs by benchmark | PassRate/binary completion | same backbone and native execution backend | 51.8→80.7, 69.7→77.2, 2.8→8.3 in reported settings | matched benchmark comparisons; scope prevents direct effect transfer |
 | H-B | SCOPE `2608.03501` FULL | 300 tasks; 7 models | design score/redline | CoT-only vs CoT+Search | five models no significant total change; GPT-5.2 18.22→16.77; one redline 7.67→14.00 | direct counterevidence; statistical test details not located in scoped source |
 | H-B | search diagnosis `2608.01913` FULL | 830 questions, 6 agents | recall, accuracy, calls/context, gap types | fixed retriever/harness across agents | recall–accuracy r=.99; context–accuracy r=.16; 77.5–93.6% episodes no new evidence | descriptive six-agent correlations; informs diagnostics, not causal MDE |
-| H-B | RAG `2005.11401` FULL | multiple knowledge-intensive QA datasets; dataset-native N | task accuracy/generation quality | parametric seq2seq and retrieval baselines | retrieval-augmented models report task gains | indirect retrieval precedent only; replace with direct design-search ablation after area-5 search |
+| H-B | Agent-Orchestrated Adaptive RAG `2606.05658` FULL | 2 contrasting corpora; benchmark-native N | retrieval score, MRR, Success@5, citation/coverage, latency | direct/naive retrieval vs decomposed and reflective paths | decomposition helps the structured corpus but harms ranking on MuSiQue; reflection adds latency without consistent quality gain | direct retrieval-structure counterevidence; small assisted corpus and heuristic routing limit transfer |
 | H-C | SCOPE `2608.03501` FULL | 300 tasks; six OptED model evaluations | HL/LL dimensions and redline | CoT+Search, stage-only, T-A-O, full | stage isolation consistent; T-A-O and norms add model-dependent gains | component ablation directly motivates interaction |
 | H-C | Arbor `2606.11926` FULL | 6 AO tasks + MLE-Bench Lite; stochastic methods Avg@3 | held-out task metrics / Any Medal | flat queue; tree without insight | full 81.82% vs 63.64% no-tree and 54.54% no-insight on MLE Lite | matched access/budget; tests structure+insight complementarity |
 | H-C | EviGraph `2608.04738` FULL | ARC-Bench-ML and NanoResearch-20 | claim support and data consistency | end-to-end research-agent baselines | +40.19% claim support over strongest baseline; 87.73% data consistency | exact task N/statistical uncertainty not used for local power |
 | H-D | Arbor `2606.11926` FULL | 6 AO tasks, Avg@3 where stochastic | held-out gain/transfer | coding-agent baselines and tree ablations | >2.5× average relative gain; direct ablation above | principal deferred analogue |
 | H-D | AHE `2604.25850` FULL | 10 evolution iterations + transfer benchmarks | pass@1, tokens, transfer | seed, human-designed, self-evolving baselines | 69.7→77.0 and reported transfer/ablation effects | observability/evolution precedent; not current-cycle effect |
 | H-D | HarnessOpt-Bench `2608.06301` FULL | benchmark-native harness tasks | held-out target score and resource use | optimizer candidates under fixed budget | prior benchmark effects retained but not local | supplies trusted boundary/budget method |
+| H-E | LLMRouter `2608.06867` FULL | 4,767 queries, 8 test sets, 5 tracks | task quality, inference cost, weighted reward | fixed smallest/largest models and 16+ router implementations | no router dominates all tasks or budgets; multi-round routing gives no consistent gain | common candidate matrix and frontier evaluation; external pool only |
+| H-E | Resample or Reroute `2607.08665v1` FULL | 4 regenerated benchmark pools; budget sweep | expected correctness, spent cost, sequential rounds | single route, one-commit, best-of-K, cascade, random allocation | favorable frontier in tested regimes; gains shrink or invert with weak verifier | reviewed v1; cost proxies and verifier regimes bound transfer |
+| H-E | Controlled orchestration `2608.00685` FULL | 5 backbones × 3 domains, paired difficulty-stratified items | accuracy, weighted tokens, workflow–backbone interactions | task-only and optimized CoT vs Self-Refine, best-of-N, debate | moderate benchmark-dependent gains at about 2–4× token use; difficulty alone does not predict benefit | equal optimization budget and paired bootstrap; model/workflow-specific |
+| H-E | Agora `2607.09600v2` FULL | 5 main benchmarks, matched candidate pools | accuracy, calibrated confidence, cost/latency-sensitive bids | strong/weak fixed models, random, cascades, learned routers | improves or remains competitive; calibration failure and distribution shift delimit gains | candidate mechanism for subtask routing, not current-cycle evidence |
 
-H-B's third row is indirect and is a declared design gap. The design is not marked complete until a direct retrieval-structure experiment from the RAG/deep-research stream replaces or justifies it.
+The active H-A–H-C hypotheses and deferred H-D each have at least three comparable full-read experiments. H-B now includes a direct retrieval-structure comparison with negative and mixed effects. H-E is deferred but its routing rationale is supported by the three comparable studies below; none supplies a transportable local effect size.
 
 ## 12. Reference mapping
 
@@ -220,8 +228,10 @@ H-B's third row is indirect and is a declared design gap. The design is not mark
 | retrieval/utilization/stopping diagnostics | `2608.01913` — FULL |
 | tree and insight propagation | `2606.11926` — FULL |
 | deterministic held-out evaluation | `2608.09096`, `2608.06301`, `2608.25336` — FULL |
-| dynamic model routing | anchor search pending; no method/result claim permitted |
-| MCP, vector DB products, personalized memory | anchor gaps; design-only/follow-up |
+| dynamic model and workflow routing | `2608.06867`, `2607.08665v1`, `2608.00685`, `2607.09600v2` — FULL; deferred from Study A |
+| agent/tool/human protocol layers | `2606.19135`, `2606.09751`, `2308.08155` — FULL; official evolving specifications still require version pins |
+| RAG chunking, hybrid retrieval, reranking, adaptive orchestration | `2005.11401`, `2606.01240`, `2608.03860`, `2606.05658` — FULL |
+| vector-database products and personalized memory | product/spec and privacy evidence gaps; design-only/follow-up |
 
 ## Supersession record
 

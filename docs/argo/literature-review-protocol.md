@@ -28,7 +28,8 @@ The corpus records source ID, title, authors, date, URL, retrieved artifact hash
 | Agent–user | How are intent, uncertainty, progress, steering, abstention, and release authority represented? | Mixed initiative, calibrated trust, interaction cost, interruption and resume |
 | Approval loops | Which actions require preview, confirmation, independent evidence, or human release? | Risk-tiered approval designs and authority non-bypass tests |
 | Agent–agent | How do agents delegate, communicate, discover capabilities, share state, and resolve conflict? | Supervisor, peer, blackboard, market, debate, and recursive-session designs |
-| Subagent orchestration | When should work fan out, fan in, persist, stop, or be deleted? | Topology, model routing, budget attribution, result identity, failure recovery |
+| Subagent orchestration | When should work fan out, fan in, persist, stop, or be deleted? | Topology, budget attribution, result identity, failure recovery |
+| Model routing | When should a system change model, workflow, reasoning budget, provider, role assignment, or recursion depth? | Fixed model vs query/role/depth routing; quality–cost frontier, calibration, verifier dependence, capability discovery, and fallback |
 | Evaluators/verifiers | How are open-ended outputs judged without self-grading or reward hacking? | Deterministic, process, model, human, and environment graders; independence and calibration |
 | Compression/context | What is kept in active context, variables, summaries, retrieval, or external state? | Lossy compression, programmatic context, explicit state, retrieval, and resume fidelity |
 | Observability/provenance | Which events, artifacts, causal links, costs, and decisions must be inspectable? | OpenTelemetry/W3C PROV/RO-Crate/event sourcing and claim-aware traces |

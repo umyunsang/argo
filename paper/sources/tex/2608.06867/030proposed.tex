@@ -1,0 +1,135 @@
+\section{A Unified Formulation of LLM Routing}
+\label{sec:formulation}
+
+\subsection{Routing as a Sequential Decision Process}
+\label{sec:general-router}
+Existing routers take seemingly incompatible forms, from binary routers that arbitrate between a weak and a strong model \citep{ding2024hybrid, ong2024routellm} and cost-aware cascades \citep{chen2023frugalgpt, aggarwal2024automix} to graph-based routers \citep{feng2024graphrouter, yu2026tsrouter} and agentic routers trained with reinforcement learning \citep{zhang2025router}, yet they can all be formulated as a sequential decision process. At step $t$, the router observes a state $s_t = (q, u, h_t)$, consisting of the input query $q$, an optional user context $u$ (e.g., a user identifier with past interactions and feedback), and the interaction history $h_t$ accumulated so far, and takes an action $a_t \in \mathcal{M} \cup \{\bot\}$. The dispatch action $a_t = m$ sends the state to candidate $m$ from the pool $\mathcal{M} = \{m_1, \dots, m_K\}$ and appends its response $y_t$ to the history, $h_{t+1} = h_t \oplus y_t$, while the terminating action $a_t = \bot$ ends the episode and aggregates the collected responses into the final answer $y$; single-turn routing is the special case that terminates after one dispatch. The goal of routing is a policy $\pi$ whose trajectory $\tau = (a_1, \dots, a_T)$ produces high-quality answers at low inference cost:
+\begin{equation}
+    \pi^\star \;=\; \arg\max_{\pi}\;
+    \mathbb{E}_{q,\; \tau \sim \pi}
+    \big[\, \mathrm{perf}(y \mid q) \;-\; \lambda \cdot c(\tau) \,\big],
+    \label{eq:objective}
+\end{equation}
+where $\mathrm{perf}(y \mid q)$ aggregates task-specific quality metrics (e.g., accuracy, F1, or an LLM-judged score), $c(\tau)$ sums the monetary or token cost of every call in the routing trajectory $\tau$, and $\lambda \geq 0$ controls the performance--cost trade-off. Under this formulation, a router is characterized by the choice of a \textbf{context encoder} $E_q$ that encodes the routing state, a \textbf{model encoder} $E_m$ that encodes each LLM candidate, a \textbf{scoring function} $g$ and a \textbf{decision rule} $d$ that turn the context and model representations into a routing action, and a \textbf{learning signal} $\mathcal{L}$ that fits these components toward the optimal policy. This section elaborates on each component and demonstrates how existing routers fall into three families, namely single-turn, multi-turn (including agentic), and personalized, with specific designs of these five components (Table~\ref{tab:formulation}). We provide an overview in Figure~\ref{fig:main_arch}.
+
+\noindent\textbf{Context encoder.}
+The context encoder $E_q$ maps the routing state $s_t$ to the representation on which the routing decision is based, and its output takes one of two forms. i) \textbf{Embedding-based}: the state is represented as a vector. Rating-based routers degenerate to a constant that ignores the query and routes by global model quality, $k$NN-style routers use an off-the-shelf sentence embedding \citep{hu2024routerbench, shnitzer2023large}, discriminative routers train a lightweight encoder over frozen embeddings \citep{ding2024hybrid, stripelis2024tensoropera}, and personalized routers condition the representation on user and session nodes of a heterogeneous interaction graph \citep{xie2025gmtrouter, dai2025personalizedrouter}. ii) \textbf{Text-based}: the state is kept in natural language. Cascades append the draft response and a verification confidence to the query \citep{chen2023frugalgpt, aggarwal2024automix}, and fine-tuned LM routers, exemplified by Router-R1, verbalize the whole state directly in the prompt, leaving its representation to the model's forward pass \citep{ong2024routellm, zhang2025router}. Which portion of the state $E_q$ reads is precisely what separates the three router families, and any router is personalized by swapping in a user-conditioned $E_q$ while inheriting the remaining components.
+\begin{figure*}[t]
+\centering
+\includegraphics[width=1.0\textwidth]{figs/unified.pdf}
+\caption{\textbf{Overview of LLM routing.} Routing is driven by three needs (left), namely cost efficiency, capability matching, and user preference. Our unified formulation (right) casts all of them as one decision process: a context encoder $E_q$ represents the routing state of query, persona, and interaction history, a model encoder $E_m$ represents each candidate, and the router dispatches the query or its sub-queries to selected models and aggregates their responses into the answer. The single-turn, multi-turn, and personalized families differ only in which part of the state they observe.}
+\label{fig:main_arch}
+\vspace{-10pt}
+\end{figure*}
+
+\noindent\textbf{Model encoder.}
+The model encoder $E_m$ encodes each candidate in the pool. i) \textbf{Static metadata}: the simplest choice describes a candidate by its model size, capability description, and pricing. ii) \textbf{Historical profiles}: most routers instead profile candidates by their past behavior, representing a model by the set of embedded queries it has previously solved ($k$NN), a scalar rating (Elo), or a latent factor fit by matrix factorization. iii) \textbf{Learned embeddings}: stronger routers learn model embeddings jointly with the context encoder \citep{chen2024routerdc, feng2024graphrouter, zhuang2025embedllm}. iv) \textbf{Verbalized description}: fine-tuned LM routers instead name the candidates directly in the prompt \citep{ong2024routellm, zhang2025router}.
+
+\noindent\textbf{Scoring function and decision rule.}
+The scoring function $g$ measures the compatibility between the encoded state and each candidate, and the decision rule $d$ converts the resulting scores into a routing action. Instantiations of $g$ track the encoders, from embedding similarity in $k$NN-style routers and a bilinear product in factorization-based ones, to a classification head \citep{ding2024hybrid, stripelis2024tensoropera}, message passing over a query--model graph \citep{feng2024graphrouter}, and next-token logits in fine-tuned LM routers that fold $E_q$, $E_m$, and $g$ into one forward pass \citep{ong2024routellm}. For $d$, greedy $\arg\max$ is the default choice, yet it is optimal for Eq.~\ref{eq:objective} only when $\lambda = 0$. Cost-aware rules instead threshold the predicted quality gap between a cheap and an expensive model \citep{ding2024hybrid}, accept or escalate in cascades \citep{chen2023frugalgpt, aggarwal2024automix}, or sample for exploration in online settings \citep{dai2024cost}, and multi-turn routers further equip $d$ with the terminating action $\bot$ \citep{zhang2025router}.
+
+\noindent\textbf{Learning signal.}
+The learning signal $\mathcal{L}$ specifies how the components above are fit toward Eq.~\ref{eq:objective}. Non-parametric routers require no training and rely purely on stored interactions. Supervised routers fit pointwise correctness labels harvested by running the candidate pool over benchmark queries, preference-based routers learn from pairwise comparisons such as human votes from Chatbot Arena \citep{ong2024routellm} or contrastive objectives that pull queries toward the models that solve them \citep{chen2024routerdc}, and agentic routers directly optimize trajectory-level rewards with reinforcement learning \citep{zhang2025router}. In every case, $\mathcal{L}$ is a surrogate for the same objective. What differs is not the goal but the form in which $\mathrm{perf}$ is observable, measured for every candidate by supervised routers, returned only at the end of a trajectory for agentic ones, and revealed only through comparisons when quality is user-specific.
+
+\begin{table}[t]
+\centering
+\caption{\textbf{Instantiation of the unified routing formulation for the three router families.} For each family, the table specifies the routing state $s$, the context and model encoders $E_q$ and $E_m$, the routing action defined by the scoring function $g$ and decision rule $d$, and the learning signal $\mathcal{L}$ used to optimize response quality and inference cost.}
+\label{tab:formulation}
+\small
+\setlength{\tabcolsep}{4pt}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{lllll}
+\toprule
+\textbf{Family} & \textbf{State} $s$ & \textbf{Encoders} $E_q, E_m$ & \textbf{Routing action} (scoring $g$, decision $d$) & \textbf{Learning signal} $\mathcal{L}$ (surrogate of Eq.~\ref{eq:objective}) \\
+\midrule
+Single-turn & $(q)$ & $E_q(q),\; E_m(m)$ & $a = \arg\max_{m \in \mathcal{M}}\, g\big(E_q(q),\, E_m(m)\big)$ & fit $g$ to per-candidate reward $\mathrm{perf}(y_m \mid q) - \lambda\, c_m$ \\
+\midrule
+Multi-turn & $(q, h_t)$ & $E_q(q, h_t),\; E_m(m)$ & $a_t \sim d\big(\{ g(E_q(q, h_t),\, E_m(m)) \}_{m}\big)$ & maximize episode return $\mathbb{E}_{\tau}\big[\mathrm{perf}(y \mid q) - \lambda\, c(\tau)\big]$ \\
+\midrule
+Personalized & $(q, u, h_t)$ & $E_q(q, u, h_t),\; E_m(m)$ & $a = \arg\max_{m \in \mathcal{M}}\, g\big(E_q(q, u, h_t),\, E_m(m)\big)$ & fit $g$ to comparisons $m^+ \!\succ_u\! m^-$ observing $\mathrm{perf}_u$ \\
+\bottomrule
+\end{tabular}%
+}
+\vspace{-10pt}
+\end{table}
+
+\subsection{Automatic Evaluation of LLM Routing}
+\label{sec:protocol}
+% Evaluating a router is fundamentally more demanding than evaluating a model. Under Eq.~\ref{eq:objective}, a router must be judged on both the quality of its answers and the cost it spends to obtain them, its supervision requires knowing how every candidate performs on every query, and each application scores quality with its own metric. In existing practice these elements are assembled by hand for one benchmark and one fixed candidate pool \citep{hu2024routerbench, huang2025routereval}, so every new task or pool demands fresh engineering.
+Evaluating a router is substantially more demanding than evaluating a single model. Under Eq.~\ref{eq:objective}, a router must be judged on both the quality of its answers and the cost spent to obtain them, and constructing its supervision requires knowing how every candidate performs on every query under task-specific metrics. In current practice, these elements are assembled manually for a single benchmark and fixed candidate pool \citep{hu2024routerbench, huang2025routereval}, requiring fresh engineering for every new task or candidate pool.
+
+
+\method\ automates this process end-to-end with a three-stage pipeline: i) \textbf{Query Curation}: queries are sampled from source benchmarks, normalized into a unified schema, and split into training and test sets; ii) \textbf{Response Collection}: each query is dispatched to every candidate in the pool, which is declared in a single configuration file, and responses are collected together with their token counts; iii) \textbf{Metric Scoring and Pricing}: every response is scored with its task metric and priced from its token counts. The product is a dense query--model matrix of performance and cost that serves at once as routing supervision and as the test bed, so a new task or candidate pool enters through a configuration change rather than a re-engineered stack.
+
+Evaluation reuses this path, except that a test query goes only to the candidate the router selects rather than to the whole pool. Every router therefore faces the same queries, candidate pool, and metrics, so measured differences reflect the routing policy rather than the surrounding stack. For the multi-turn and agentic families, every decomposition and aggregation call is priced into the trajectory cost.
+
+% \noindent\textbf{Metrics.} Task quality is scored by built-in metrics matched to common benchmark conventions, including exact and close match, multiple-choice accuracy, token-level F1, math answer checking, and execution-based code evaluation; new tasks plug in their own prompt templates and metrics through a custom task mechanism without modifying the library. Beyond task quality, \method\ exposes a weighted objective over performance, cost, and optionally an LLM judge, so routers and trainers can target performance-first, cost-sensitive, or hybrid operating points.
+\noindent\textbf{Metrics.} Task quality is assessed using built-in metrics aligned with standard benchmark conventions, including exact and close matching, multiple-choice accuracy, token-level F1, mathematical answer verification, and execution-based code evaluation. \method\ also supports optional LLM-based judging and exposes a weighted objective that balances performance and cost, allowing routers and trainers to target performance-first, cost-sensitive, or hybrid operating points.
+
+\section{xRouteBench: A Multi-Scenario Benchmark for LLM Routing}
+\label{sec:xroutebench}
+% \noindent\textbf{Why a new benchmark.} Existing routing benchmarks fall short of the formulation in \S\ref{sec:general-router}. RouterBench \citep{hu2024routerbench} precomputes candidate responses for one-shot text queries over a fixed pool, so routing is never stressed where input tokens dominate cost or where part of the pool cannot process the input. RouterEval \citep{huang2025routereval} aggregates large-scale performance records but likewise targets single-turn text tasks and treats quality in isolation from cost. Recent vision--language routing benchmarks \citep{huang2025vl, ma2026mmr} extend the candidate pool to image inputs, yet they remain single-scenario image QA and leave video, long-input, and modality-choice regimes untouched. Preference data from Chatbot Arena \citep{zheng2023judging} records population votes and thus cannot supervise user-conditioned routing. To close these gaps, we construct xRouteBench, which unifies the regimes where the routing decision itself changes, namely long inputs that dominate token cost, image and video inputs that only part of the pool can process, series that admit several modality encodings, and user-dependent quality, all under one cost-aware protocol.
+Existing routing benchmarks cover only a subset of the settings captured by the formulation in \S\ref{sec:general-router}. RouterBench \citep{hu2024routerbench} precomputes candidate responses for single-turn text queries over a fixed candidate pool, but does not cover settings in which input-token costs dominate or only a subset of candidate models can process the input. RouterEval \citep{huang2025routereval} aggregates large-scale performance records but likewise focuses on single-turn text tasks and evaluates response quality independently of inference cost. Recent vision--language routing benchmarks \citep{huang2025vl, ma2026mmr} extend routing evaluation to image inputs, but remain limited to image question answering and do not cover video, long-context, or modality-selection settings. Preference data from Chatbot Arena \citep{zheng2023judging} provides population-level signals but lacks the persistent user context needed to supervise user-conditioned routing. To close these gaps, we construct xRouteBench to evaluate, under a unified cost-aware protocol, regimes in which routing decisions fundamentally differ: long-context inputs for which input-token costs dominate, image and video inputs that only a subset of candidate models can process, time-series inputs with multiple modality encodings, and tasks with user-specific quality preferences.
+% \kunlun{maybe make a comparison table to better illustarte this in different dimensions}
+
+\begin{wrapfigure}{r}{0.5\textwidth}
+\centering
+\vspace{-15pt}
+\includegraphics[width=0.5\textwidth]{figs/xroutebench_sunburst.pdf}
+\caption{\textbf{Task composition of xRouteBench.} The benchmark covers generic LLM tasks, memory, vision, time-series, and personalized routing, with percentages indicating the proportion of test queries contributed by each dataset.}
+\label{fig: xroutebench}
+\vspace{-15pt}
+\end{wrapfigure}
+
+% \noindent\textbf{Design principle.} Built by \method's data engine, all tracks share one query schema, supervision format, and evaluation protocol, and any non-text asset is converted by a transformation script into a self-contained textual query with an optional pointer to the source image, video, or series. This isolates routing from perception, since text-only and multimodal candidates then compete on identical inputs, and keeps quality and cost on the same footing per query, exposing regimes where input pricing rather than the answer dominates. Adding an application needs only a transformation script and a registered metric.
+\noindent\textbf{Design principle.} All tasks are constructed by the \method\ data engine and share a common query schema, supervision format, and evaluation protocol. Each non-text asset is converted by a transformation script into a self-contained textual query, with an optional pointer to the source image, video, or time series. This separates routing from perception by ensuring that text-only and multimodal candidates receive the same textual input. For every query, the protocol jointly evaluates response quality and inference cost, exposing regimes in which input-token costs dominate answer-generation costs. Adding a new application requires only a transformation script and a registered metric.
+% We introduce TSRBENCH, a comprehensive benchmark comprising 4125 instances
+
+\noindent\textbf{Tracks.} xRouteBench spans five tracks comprising 4{,}767 instances. Figure~\ref{fig: xroutebench} provides an overview of task distribution. Specifically, we include: 
+(i) \textit{Generic LLM Tasks} mix established knowledge and commonsense QA (MMLU \citep{hendrycks2020measuring}, MMLU-Pro \citep{wang2024mmlupro}, ARC-Challenge \citep{allenai:arc}, OpenBookQA \citep{mihaylov2018can}, CommonsenseQA \citep{talmor2019commonsenseqa}, BoolQ \citep{clark2019boolq}, HellaSwag \citep{zellers2019hellaswag}, SQuAD \citep{rajpurkar2016squad}), mathematical reasoning (GSM8K \citep{cobbe2021training}, MATH \citep{hendrycks2021measuring}, AIME), and code generation (MBPP \citep{austin2021program}, HumanEval \citep{chen2021evaluating}), the conventional single-turn text setting.
+(ii) \textit{Memory} routes long-horizon conversational QA over hundreds of accumulated turns (LoCoMo \citep{maharana2024evaluating}, LongMemEval \citep{wu2024longmemeval}), where token cost is governed by the history rather than the answer.
+(iii) \textit{Vision} covers image-grounded mathematical reasoning (Geometry3K \citep{lu2021inter}, MathVista \citep{lu2024mathvista}) and egocentric video understanding (Charades-Ego \citep{sigurdsson2018charades}).
+(iv) \textit{TimeSeries} covers time-series reasoning (TSRBench \citep{yu2026tsrbench}), with each series rendered as both text and image so the router also selects a modality encoding.
+(v) \textit{Personalized} draws open-ended prompts from Chatbot Arena and MT-Bench~\citep{zheng2023judging}, each tied to a user persona and scored by a persona-conditioned LLM judge, so its supervision is preference feedback rather than pointwise correctness.
+
+% Zhongjie_0721: 
+%1.persona从PersonaHub里面选取，数量是200个。（文件已发给fangxu）
+%2.query只从chatbot arena和mt-bench当中获取（没有选alpacaEval），其中chatbotarena 3000条，mt-bench 80条。chatbotarena有单轮和多轮，mt-bench均为多轮。
+%3.在bench当中，对于每条query，从llm pool当中随机选取两个model进行回答。然后使用deepseek-v3.1，扮演某种persona，对两个回答进行judge。
+%4.judge的prompt已发给fangxu
+%5.除了simulated user之外，我们还做了human eval的实验。human eval选取了20个user，每个user提出query，由llm pool当中随机两个model进行回答。user需要对两个回答进行judge。（user还在增加，先写20吧）
+
+\section{The \method\ Library}
+\label{sec:library-design}
+\begin{figure*}[t]
+\centering
+\includegraphics[width=1.0\textwidth]{figs/library_overview.pdf}
+\caption{\textbf{Architecture of \method.} The system consists of six modules that support routing data construction, router implementation and training, inference, evaluation, and deployment.  
+% \kunlun{I think this figure needs improve, some terminology are truly high level like `automatic socring', some are useless like parameter optimization, I would to see it more specific, and not sure why benchmark linking to the router trainer, is this the fix pipeline? I think the system should be somehow Decoupled， maybe more refer to a system design diagram, I assume, could also  probably adding some icons to make it read more fun}
+}
+\label{fig:library}
+\vspace{-15pt}
+\end{figure*}
+\method\ ties the formulation of \S\ref{sec:general-router}, the evaluation protocol of \S\ref{sec:protocol}, and xRouteBench into one executable system organized as six modules around a single query--model matrix (Figure~\ref{fig:library}). Its organizing principle is that the five components of a router are the only thing a user writes, while data construction, training, inference, evaluation, and deployment are shared infrastructure that operates on any router unchanged. Swapping a router, a candidate pool, or a training objective is therefore a configuration change rather than a reimplementation.
+
+\noindent\textbf{Data Engine.} The data engine implements the three-stage construction pipeline of \S\ref{sec:protocol}, turning a declared task list and candidate pool into the query--model matrix that supervises and tests every router. Adding a task requires only a prompt template and a registered metric, and adding a candidate requires only its endpoint and per-token price.
+
+% \noindent\textbf{Router Library.} The router library implements more than 16 routers across the three families behind one \texttt{MetaRouter} interface, so a $k$NN router and a fine-tuned LM are invoked identically. Adding a router means subclassing \texttt{MetaRouter} and implementing a single method, \texttt{route\_single} or its batched form \texttt{route\_batch}, inside which the context encoder $E_q$, model encoder $E_m$, scoring function $g$, and decision rule $d$ turn a routing state into a selected model. A short YAML file then names the router's candidate pool and objective weights, after which it is driven by name through the same commands as every built-in method, and personalizing or otherwise ablating one component becomes a one-line substitution rather than a fork of a codebase. Figure~\ref{fig:code} shows the complete code needed to register a new router. 
+\noindent\textbf{Router Library.} The library implements more than 16 routers spanning all three families under a unified \texttt{MetaRouter} interface, which hides mechanisms as different as nearest-neighbor retrieval in a $k$NN router and autoregressive decoding in a fine-tuned LM router behind one call. Adding a new router requires subclassing \texttt{MetaRouter} and implementing either \texttt{route\_single} or its batched counterpart, \texttt{route\_batch}. Within this method, the context encoder $E_q$, model encoder $E_m$, scoring function $g$, and decision rule $d$ map a routing state to a routing action. A short YAML file specifies the router's candidate pool and objective weights, after which the router can be invoked by name using the same commands as any built-in method. Personalization and component ablations can then be performed with a one-line change, without forking the codebase. Figure~\ref{fig:code} shows the complete code needed to design a new router.
+
+% \kunlun{I think it better specifying and citing those router here}
+
+\input{figs/fig_code}
+
+% \noindent\textbf{Trainer.} Training is decoupled from routing through a \texttt{BaseTrainer} whose \texttt{loss\_func} defines the learning signal $\mathcal{L}$, be it pointwise, pairwise, or a trajectory-level reward, and whose \texttt{train} loop fits the router under the weighted objective of Eq.~\ref{eq:objective}. A router and its trainer are paired but independently swappable, so one scorer can be fit with different supervision without touching its routing code, and non-parametric routers simply skip this module. 
+\noindent\textbf{Trainer.} Training is decoupled from routing through a \texttt{BaseTrainer}. Its \texttt{loss\_func} defines the learning signal $\mathcal{L}$ as a pointwise loss, pairwise loss, or trajectory-level reward, while its \texttt{train} loop uses this signal to optimize the router for the weighted objective in Eq.~\ref{eq:objective}. A router and its trainer are paired but can be swapped independently, allowing the same scorer to be trained with different forms of supervision without modifying its routing code. Non-parametric routers bypass this module.
+% \kunlun{what kind of the training paradigm? SFT, RL, DPO, need to be more specific}
+
+
+\noindent\textbf{Route Engine.} At inference time, the route engine drives any router through the same call, dispatching the query to the selected candidate. For multi-turn policies, it repeats the decision step until a termination action is produced and aggregates the collected responses into the final answer.
+
+\noindent\textbf{Evaluation.} The evaluation module implements the evaluation protocol of \S\ref{sec:protocol}, scoring each router on the same test queries, candidate pool, and metrics, and sweeping the trade-off weight $\lambda$ to trace its performance--cost frontier.
+
+\noindent\textbf{Deployment.} In addition to training and inference commands, \method\ can expose any router as an OpenAI-compatible server that integrates with OpenClaw~\citep{openclaw2026} for deployment on messaging platforms such as Slack and Discord. A routing memory persists the interaction history $h$ across turns, while a ComfyUI-based canvas supports code-free prototyping. The same router evaluated offline can therefore serve live single-agent and multi-agent traffic without modification.
+
+

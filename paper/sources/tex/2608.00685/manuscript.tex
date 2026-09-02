@@ -1,0 +1,559 @@
+\documentclass[a4paper]{article}
+
+\usepackage{textcomp}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[round]{natbib}
+\usepackage[hyphens]{url}
+\usepackage{hyperref}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{amsmath}
+\usepackage{amsthm}
+\usepackage{mathtools}
+\usepackage{booktabs}
+\usepackage{nicefrac}
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage{microtype}
+\usepackage{array}
+\usepackage{caption}
+\usepackage{float}
+\usepackage[section]{placeins}
+\usepackage{tabularx}
+\usepackage{threeparttable}
+\usepackage{makecell}
+\usepackage{listings}
+
+\urlstyle{rm}
+\def\UrlFont{\rm}
+\frenchspacing
+
+\hoffset       0.3cm
+\voffset       -1.1cm
+\oddsidemargin -0.3cm
+\textwidth     16.5cm
+\topmargin     0.0cm
+\headheight    0.0cm
+\textheight    22.7cm
+\tolerance     1000
+
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{assumption}[theorem]{Assumption}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+\lstdefinestyle{feedbackprompt}{
+    basicstyle=\ttfamily\footnotesize,
+    backgroundcolor=\color{black!3},
+    breaklines=true,
+    columns=fullflexible,
+    frame=single,
+    framerule=0.4pt,
+    framesep=6pt,
+    keepspaces=true,
+    rulecolor=\color{black!35},
+    xleftmargin=0.04\textwidth,
+    xrightmargin=0.04\textwidth,
+}
+
+\newcommand\nl[1]{\textcolor{blue}{#1}}
+\newcommand\jg[1]{\textcolor{blue}{#1}}
+\newcommand\nicop[1]{\textcolor{green}{#1}}
+\newcommand{\workflowicon}[1]{\raisebox{-0.5\height}{\includegraphics[height=1.75em]{figures/#1.pdf}}}
+\newcommand{\smallerworkflowicon}[1]{\raisebox{-0.5\height}{\includegraphics[height=1.55em]{figures/#1.pdf}}}
+\newcommand{\largerworkflowicon}[1]{\raisebox{-0.5\height}{\includegraphics[height=2.25em]{figures/#1.pdf}}}
+
+\begin{document}
+
+\begin{center}
+{\Large When Does LLM Orchestration Pay Off? A Controlled Evaluation of Accuracy, Cost, and Task Difficulty}
+\end{center}
+
+\vspace{7mm}
+
+\noindent\textbf{Nicolas Leins}\hfill\href{mailto:leins@zib.de}{\ttfamily leins@zib.de}\\
+\emph{\small Zuse Institute Berlin \& TU Berlin, Berlin, Germany}\\
+\\
+\textbf{Nico Pelleriti}\hfill\href{mailto:pelleriti@zib.de}{\ttfamily pelleriti@zib.de}\\
+\emph{\small Zuse Institute Berlin \& TU Berlin, Berlin, Germany}\\
+\\
+\textbf{Jana Gonnermann-Müller}\hfill\href{mailto:gonnermann-mueller@zib.de}{\ttfamily gonnermann-mueller@zib.de}\\
+\emph{\small Zuse Institute Berlin \& Weizenbaum Institute Berlin, Berlin, Germany}\\
+\\
+\textbf{Sebastian Pokutta}\hfill\href{mailto:pokutta@zib.de}{\ttfamily pokutta@zib.de}\\
+\emph{\small Zuse Institute Berlin \& TU Berlin, Berlin, Germany}\\
+
+\vspace{5mm}
+
+\begin{center}
+\begin{minipage}{0.85\textwidth}
+\begin{center}
+\textbf{Abstract}
+\end{center}
+{\small
+LLM orchestration is often assumed to improve reasoning by allocating additional inference-time computation, yet its gains may not justify its cost. 
+Existing comparisons also frequently overlook differences in optimization effort, making it difficult to isolate the value of orchestration itself. 
+We conduct a controlled evaluation of Self-Refine, Best-of-$N$, and Debate against task-only and chain-of-thought (CoT) single-call baselines across five LLM backbones and three domains: competitive programming, chess puzzles, and mathematics. 
+For comparability, we optimize each method with GEPA under the same optimization budget and evaluate all methods on the same difficulty-stratified benchmark items. 
+Orchestration yields moderate but benchmark-dependent gains: averaged across backbones within each benchmark, the largest improvement is 4.6 percentage points over optimized CoT inference and 4.5 points over task-only inference, while requiring approximately 2 to 4 times the mean total tokens of task-only inference. 
+Human-derived difficulty is associated with lower absolute accuracy in all three benchmarks, but within-benchmark analyses do not indicate that orchestration effects increase with task difficulty.
+By contrast, exploratory mixed-effects analyses reveal strong interactions between orchestration method and backbone model across all three benchmarks, showing that orchestration effectiveness depends substantially on the underlying model. 
+Our results suggest that orchestration decisions should be model-specific and account for whether moderate accuracy gains justify the additional inference cost. 
+More broadly, evaluations of LLM orchestrations should control optimization effort and report model-specific accuracy–cost trade-offs rather than treating additional inference-time structure as uniformly beneficial.
+}
+\end{minipage}
+\end{center}
+
+\section{Introduction}
+\label{intro}
+
+LLMs have become increasingly capable on reasoning-intensive tasks, including mathematical problem solving and code generation~\citep{balunovic_matharena_2025, zhuo_bigcodebench_2025,zimmer_agentic_2026}.
+Their performance depends not only on their pretrained weights, but also on how computation is allocated at inference time~\citep{zhou_reasoning_2026}.
+One approach to improve performance is to increase test-time computation, for example by generating multiple candidate solutions, critiquing and revising an initial response, or allowing multiple model instances to interact~\citep{snell_scaling_2025,madaan_self-refine_2023,du_improving_2024}.
+These methods can improve a model's answer without updating its weights.
+
+In practice, however, performance is not the only objective.
+Additional test-time computation consumes more calls and tokens, increases latency, and can introduce further opportunities for failure~\citep{du_survey_2026,cemri_why_2025}.
+The central question is whether accuracy gains justify these additional resources.
+Evidence is mixed: multi-agent debate and intrinsic self-correction do not reliably outperform simpler alternatives once protocol configuration and inference resources are considered~\citep{smit_should_2024,huang_large_2023}.
+Meaningful evaluation therefore requires measuring resource use alongside correctness.
+
+Controlled, within-study evidence about the accuracy--resource trade-offs of common orchestrations remains limited~\citep{du_survey_2026,fang_comprehensive_2025,bai_mas-promptbench_2026}.
+Existing comparisons often vary backbones, prompts, stopping criteria, benchmarks, and optimization effort together with workflow structure, making it difficult to attribute observed differences to the evaluated workflows.
+Accuracy-only comparisons may also favor complex workflows whose additional components receive more optimization during development~\citep{bai_mas-promptbench_2026}.
+
+Existing difficulty-aware systems use estimated task complexity to select model capacity, allocate test-time computation, or construct query-specific workflows~\citep{bae_complexitynet_2023,cheng_adaptivellm_2025,snell_scaling_2025,su_difficulty-aware_2026,zhang_multi-agent_2025}.
+However, these results do not establish that the relative benefit of a fixed orchestration increases monotonically with human-derived task difficulty.
+We therefore ask whether fixed orchestrations improve accuracy under a common optimization protocol, what additional inference resources they require, and whether their relative benefits vary systematically with item difficulty.
+
+\subsection{Our Contributions}
+\label{sec:contributions}
+
+We address these questions through a controlled, difficulty-stratified evaluation of Self-Refine, Best-of-$N$ (BoN), and Debate against task-only and chain-of-thought (CoT) single-call baselines.
+
+Our main contributions are:
+\begin{itemize}
+\item We conduct a fully paired comparison of three LLM orchestrations and two single-call baselines across five LLMs and three benchmark domains with item-level difficulty estimates.
+We hold backbones, decoding settings, benchmarks, and grading rules fixed, and optimize each orchestration with GEPA under a common maximum optimization budget.
+\item We measure the accuracy and resource use of methods and find moderate, benchmark-dependent accuracy gains from orchestration at substantially higher token use.
+\item We distinguish the prognostic value of difficulty for predicting absolute accuracy from its potential value for selecting an orchestration.
+Although higher human-derived difficulty is associated with lower accuracy, we find no evidence that the relative benefit of the evaluated orchestrations increases systematically with difficulty.
+Instead, we find substantial method-by-backbone heterogeneity among the evaluated models.
+\end{itemize}
+
+\section{Related Work}
+\label{related-work}
+
+We relate our study to research on inference-time orchestration, controlled evaluation of compute and optimization, and difficulty-aware resource allocation.
+
+\subsection{Inference-time LLM orchestration}
+
+CoT prompting elicits intermediate reasoning within a single generation, and shows that a task-agnostic reasoning instruction can provide substantial gains without demonstrations~\citep{wei_chain--thought_2022,kojima_large_2022}.
+CoT therefore serves as a single-call reference for multi-call methods.
+Multi-call orchestrations allocate additional inference computation through parallel generation, iterative revision, or interaction among model instances.
+
+BoN generates multiple candidate solutions and uses a scorer, verifier, or ranking model to select one.
+Independent sampling and voting can improve accuracy as the number of responses increases, although such gains consume additional inference resources and do not isolate the value of coordination~\citep{li_more_2024}.
+Candidate diversity and selection can improve over greedy generation, although the gains depend on the available compute and problem difficulty~\citep{snell_scaling_2025}.
+Self-Refine orchestrations iteratively generate feedback on an initial response and revise the response using that feedback.
+This procedure has improved over one-step generation across diverse domains~\citep{madaan_self-refine_2023}.
+Debate orchestrations use multiple model instances to propose solutions, exchange critiques, and produce or select a final answer.
+Prior evaluations report improvements in mathematical and strategic reasoning and factuality~\citep{du_improving_2024}.
+
+However, additional reasoning through orchestration does not guarantee higher accuracy.
+Long reasoning can produce overthinking, self-correction can overturn correct answers, and Debate may not outperform ensemble-style baselines once accuracy, cost, and latency are considered~\citep{chen_towards_2026,huang_large_2023,smit_should_2024}.
+
+\subsection{Controlling compute, optimization, and workflow failures}
+
+Controlled comparisons address two complementary questions.
+A budget-matched design asks which workflow uses a fixed amount of inference computation most effectively, whereas a natural-execution design asks whether each fixed workflow's accuracy justifies the resources it actually consumes.
+\citet{tran_single-agent_2026} take the first approach and find that single-agent reasoning matches or outperforms several multi-agent structures under a global thinking-token budget.
+We take the second approach by fixing execution rules and measuring the resulting token and call consumption rather than matching inference-token budgets.
+
+Offline optimization effort must also be separated from per-instance inference effort.
+Debate rankings can change after protocol tuning, and prompt-optimization effects vary with task and protocol~\citep{smit_should_2024,bai_mas-promptbench_2026}.
+
+Accuracy alone also obscures execution behavior.
+OckBench shows that systems with similar reasoning accuracy can differ substantially in token use, establishing efficiency as a distinct outcome~\citep{du_ockbench_2026}.
+Listed API prices can also misrepresent realized per-query cost because reasoning-token consumption and interaction counts vary across models~\citep{chen_price_2026}.
+MAST attributes failures in multi-agent frameworks to system design, inter-agent misalignment, and task verification, indicating that workflow reliability is not reducible to backbone accuracy~\citep{cemri_why_2025}.
+Complete-workflow measurement is therefore needed to expose workflow-level inefficiency and failures.
+
+\subsection{Difficulty measurement, adaptation, and backbone dependence}
+
+Difficulty-aware systems report improvements from adapting inference decisions to estimated task complexity.
+ComplexityNet and AdaptiveLLM use complexity estimates for model selection, compute-optimal scaling varies the form and amount of test-time computation, and DAAO and MaAS construct query-specific workflows~\citep{bae_complexitynet_2023,cheng_adaptivellm_2025,snell_scaling_2025,su_difficulty-aware_2026,zhang_multi-agent_2025}.
+However, these results do not establish a general relationship between task difficulty and the relative benefit of orchestration.
+Because these systems jointly adapt models, resources, or workflow components, their gains may reflect the learned allocation policy rather than difficulty itself.
+
+Beyond item difficulty, the underlying backbone may provide another source of variation in orchestration gains.
+Effective test-time scaling strategies vary with base-model capability, and debate hyperparameters transfer only partially across GPT-3.5, GPT-4, and Mixtral~\citep{snell_scaling_2025,smit_should_2024}.
+Controlled evaluations further identify single-agent baseline capability as a strong predictor of whether multi-agent coordination helps, with benefits diminishing beyond an empirical capability-saturation threshold~\citep{kim_capable_2026}.
+Mechanistically, Self-Refine depends on self-diagnosis, BoN on diversity and selection, and Debate on critique and synthesis; these component capabilities may differ across backbones.
+Automated methods such as AFlow, MaAS, and DAAO instead search for or select workflows~\citep{zhang_multi-agent_2025,su_difficulty-aware_2026,zhang_aflow_2025}.
+Prior work, therefore, provides limited controlled evidence on how fixed workflows trade accuracy for measured resource use across task difficulty and backbones.
+
+\section{Experimental Design}
+\label{sec:experimental-design}
+
+Our experimental design evaluates whether LLM orchestration improves accuracy enough to justify its additional resource use. 
+It also tests whether orchestration effects vary with item difficulty or backbone model. 
+The following subsections describe the benchmarks, models, workflows, optimization procedure, outcome measures, and statistical analyses.
+
+\subsection{Benchmarks}
+
+We select benchmarks according to three requirements: item-level difficulty estimates, dedicated training data for prompt optimization, and automatic outcome verification.
+Easy2Hard-Bench is well suited to these requirements because it augments tasks from multiple domains with item-level difficulty estimates~\citep{ding_easy2hard-bench_2024}.
+From this suite, we select Lichess (chess puzzles), Codeforces (programming), and AMC (mathematics).
+All provide continuous, human-derived item-difficulty estimates: Lichess and Codeforces use ratings derived from player records, whereas AMC uses Item Response Theory (IRT) fit to human item statistics.
+We use dedicated training splits for GEPA and fixed 200-item subsets of the disjoint evaluation splits.
+The subsets make the fully crossed model--method evaluation computationally feasible while retaining adequate statistical power.
+For each E2H benchmark, we stratify items jointly by decile of the normalized difficulty quantile and tercile of rating uncertainty, and allocate the evaluation sample proportionally across strata.
+This preserves the source difficulty distribution; sharing each frozen subset across all models and methods prevents subset selection from confounding comparisons.
+
+\subsection{Models}
+
+We evaluate five locally hosted, open-weight LLMs: DeepSeek V4 Flash, Gemma 4, GLM 4.7 Flash, Qwen 3.6, and GPT-OSS Puzzle 88B.
+Within each experiment, all methods share a backbone and decoding settings.
+All models use the same 120{,}000-token output limit to limit inference-time computation.
+Models are served with vLLM using the recommended inference settings (temperature 1.0 and top-$p$ 0.95).
+Qwen3.6-35B-A3B-FP8 runs on two NVIDIA A100 80\,GB GPUs; GLM-4.7-Flash, Gemma 4 26B-A4B-it, and NVIDIA GPT-OSS Puzzle 88B each run on one NVIDIA H200 141\,GB GPU; and DeepSeek-V4-Flash runs on four H200 GPUs with reasoning effort set to \texttt{high}.
+For particularly long GEPA runs with DeepSeek as both task and profile model, we also use the official DeepSeek API with the same inference settings.
+
+\subsection{Orchestrations}
+\label{sec:orchestrations}
+We evaluate task-only and GEPA-optimized CoT single-call baselines together with Self-Refine, BoN, and Debate.
+We use ``orchestration'' to refer to the three multi-call methods in this comparison.
+Table~\ref{tab:orchestrations} summarizes the compared orchestrations and their control structures.
+
+\begin{table}[t]
+\centering
+\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{1.2}
+\begin{threeparttable}
+\caption{Compared orchestration variants and their high-level control structure.}
+\label{tab:orchestrations}
+\begin{tabular}{@{}l c l c@{}}
+\toprule
+\textbf{method} & \textbf{workflow} & \textbf{control structure} & \textbf{calls} \\
+\midrule
+LLM & \smallerworkflowicon{singleLLM} & task prompt only & 1 \\
+CoT LLM & \smallerworkflowicon{singleLLM} & task + CoT system prompt & 1 \\
+\addlinespace
+Self-Refine & \largerworkflowicon{self_refine} & generate $\rightarrow$ feedback $\rightarrow$ refine & $2\leq 5$ \\
+BoN & \largerworkflowicon{BoN} & 3 independent samples + selection & 4 \\
+Debate & \workflowicon{debate} & 2 samples $\rightarrow$ 1 debate round $\rightarrow$ judge synthesis & 5 \\
+\bottomrule
+\end{tabular}
+\end{threeparttable}
+\end{table}
+
+The LLM baseline uses the benchmark task prompt without an additional system prompt.
+CoT LLM adds a GEPA-optimized CoT system prompt.
+Self-Refine produces an initial solution followed by at most two feedback--refinement rounds~\citep{madaan_self-refine_2023}.
+It stops when the feedback states ''no further refinement is needed''; otherwise, it completes both rounds.
+BoN selects among three independent candidates by parsing the final recognized selector statement.
+In Debate, two agents independently answer, revise after observing each other, and pass both revisions to a judge.
+It always executes all five calls without consensus- or confidence-based early stopping.
+
+\subsection{Budget-controlled prompt optimization with GEPA}
+\label{sec:gepa}
+
+An orchestration's control structure defines which model calls are made and how information flows between them, but this structure is only a scaffold.
+Each call must also be instructed about its role, the intermediate information it should evaluate, and the output it should pass to subsequent calls.
+Making a scaffold effective can therefore require substantial prompt engineering, particularly for workflows containing several specialized calls.
+
+Manual prompt engineering introduces degrees of freedom that are difficult to standardize.
+Some methods may receive more iteration, and researchers may incorporate different amounts of task knowledge or stop tuning methods at different stages.
+A comparison of hand-crafted prompts can consequently conflate the effectiveness of an orchestration with the effort invested in configuring it.
+
+We address this confound by treating prompt development as a budgeted optimization problem.
+After fixing each method's scaffold, we use GEPA to optimize its textual prompt components~\citep{agrawal_gepa_2026}.
+GEPA automates candidate generation, evaluation, and refinement under common metric-call and weighted-token limits.
+The following abridged Codeforces CoT example illustrates how GEPA refined the seed prompt:
+
+\begin{lstlisting}[style=feedbackprompt]
+Think step by step through the competitive programming problem before giving your final answer.
+Follow the required output format.
+\end{lstlisting}
+
+The final selected candidate prompt was:
+
+\begin{lstlisting}[style=feedbackprompt]
+Before writing code, analyze the problem, identify the algorithm, and consider edge cases.
+[detailed line-by-line input requirements]
+Handle edge cases: empty input, single elements, duplicates, boundaries.
+[output-contract instructions]
+Follow these guidelines to minimize runtime errors and ensure correct output.
+\end{lstlisting}
+
+The simple seed prompt asks the model to reason step by step and follow the task's output format, but leaves the intended procedure largely unspecified.
+The selected candidate operationalizes this instruction by separating algorithm design from implementation, encoding the execution environment's input constraint, and imposing an explicit output contract.
+The corresponding validation accuracy increased from .20 for the seed to .82 for the selected candidate.
+
+Each benchmark contributes a 100-item subset of its training split for GEPA optimization.
+We split it into 50 training and 50 validation items using the same subsetting procedure described above.
+GEPA jointly optimizes all designated prompt components of each method.
+For CoT, it optimizes the generation system prompt.
+For Self-Refine, it optimizes the generation system prompt, feedback template, and refinement template.
+For BoN, it optimizes the generation system prompt, selector system prompt, and selector task template.
+For Debate, it optimizes the generation system prompt, debate template, and judge template.
+For every optimized method, GEPA receives a maximum of 750 metric calls, following the recommended 15 calls per training example.
+We additionally cap weighted token consumption at the cost of a full CoT GEPA run: 40M for Codeforces and 75M for Lichess.
+Together, these limits give every method within a benchmark the same maximum optimization budget.
+Weighted tokens $t_w$ are defined as $\text{input tokens} + w \times (\text{output} + \text{reasoning tokens})$ with $w=4$ representing an estimate of the average cost ratio of input to output tokens of common providers.
+The design therefore compares optimization under a common resource constraint rather than equalizing iterations.
+We perform one GEPA run for each method--benchmark combination, using DeepSeek V4 Flash as the task, profile, and reflection model.
+We select the candidate with the highest validation accuracy, breaking ties in favor of the earliest candidate.
+For AMC, GEPA did not improve on the near-saturated seed configuration, so we instead use a hand-crafted prompt that modestly improves on the seed.
+This manual intervention is an exception to the otherwise automated prompt-refinement protocol.
+It avoids placing AMC at a prompt-quality disadvantage relative to benchmarks where GEPA improved the configuration.
+
+\subsection{Grading and failure handling}
+All three benchmarks are graded as pass@1: each instance receives a single attempt that is scored as correct (1) or incorrect (0) under benchmark-specific rules.
+For Lichess and AMC, we parse the output and require an exact reference match; for Codeforces, the generated code must pass all provided tests from the benchmark.
+We retry transient technical and malformed-generation failures, but retain maximum-output-limit failures as score-zero outcomes.
+BoN and Debate continue after an empty intermediate response because later independent calls and selection or synthesis may still produce a valid answer.
+We estimate uncertainty for orchestration contrasts with 9,999 stratified whole-item bootstrap replicates that preserve the paired method and model observations for each sampled item.
+Descriptive model-efficiency intervals use 9,999 unstratified whole-item bootstrap replicates, while single-call baseline comparisons use paired normal-approximation intervals.
+
+\subsection{Measurements}
+For each task attempt, we log correctness, input tokens, output tokens, and reasoning tokens.
+Because monetary cost and latency vary by provider and serving configuration, we use token consumption as a reproducible proxy for inference resource use~\citep{du_ockbench_2026,huan_scaling_2025}. But to account for higher output costs than input costs, we use the weighted token $t_w$ metric described above.
+The primary effectiveness metric is accuracy, the fraction of tasks solved correctly.
+For orchestration $o$ evaluated on task set $\mathcal{T}$, we compute $\mathrm{Acc}(o)=\frac{\#\text{ correct}}{\#\mathcal{T}}$.
+To relate effectiveness to cost, we report token efficiency as $\mathrm{TokenEff}(o)=\frac{\overline{t_w}(o)}{\mathrm{Acc}(o)}$.
+We report all metrics overall and stratified by within-benchmark difficulty quartile.
+
+\subsection{Statistical analysis}
+Raw accuracy differences do not indicate whether an observed gap is systematic or could reflect finite item sampling, shared item difficulty, or repeated evaluation of the same item across methods.
+We therefore complement descriptive results with a structured inferential analysis that preserves pairing, quantifies uncertainty, accounts for item-level dependence, and corrects planned families of comparisons for multiplicity.
+This design provides a more stringent assessment of orchestration effects than unadjusted comparisons of aggregate benchmark scores.
+
+As a descriptive validity check, we compute Spearman correlations between continuous difficulty and item-level accuracy separately for each benchmark, averaging accuracy over the balanced five-method by five-LLM design.
+We obtain 95\% percentile intervals from 9,999 whole-item bootstrap replicates and apply Holm correction across the three benchmark-level tests.
+
+We fit mixed models separately by benchmark to the complete paired observations for CoT, Self-Refine, BoN, and Debate.
+We prespecified CoT as the reference because we expected it to be stronger than task-only inference.
+Task-only is therefore excluded from the mixed models but retained in descriptive comparisons.
+Let $Y=\texttt{correct}\in\{0,1\}$ denote per-attempt correctness.
+All models use a binomial family with a logit link, the fixed effects specified below, and random intercepts for item and item-by-LLM pairs.
+These random intercepts account for residual item difficulty and dependence among methods evaluated on the same item--LLM pair.
+We standardize continuous difficulty separately within each benchmark.
+
+For each benchmark, we first fit Model 0 ($M_0$) and Model 1 ($M_1$):
+
+\medskip
+{\small\noindent\(
+\begin{aligned}
+M_0:\quad &\texttt{correct} \sim \texttt{difficulty} + \texttt{LLM} + (1 \mid \texttt{item}) + (1 \mid \texttt{item}:\texttt{LLM}), \\
+M_1:\quad &\texttt{correct} \sim \texttt{method} + \texttt{difficulty} + \texttt{LLM} + (1 \mid \texttt{item}) + (1 \mid \texttt{item}:\texttt{LLM}).
+\end{aligned}
+\)\par}
+\medskip
+
+We compare $M_0$ and $M_1$ using a likelihood-ratio test to assess whether the method affects accuracy on average, after adjusting for difficulty and the five fixed LLMs.
+The three planned $M_1$ contrasts compare Self-Refine, BoN, and Debate with CoT.
+$M_2$ adds the method-by-difficulty interaction.
+
+\medskip
+{\small\noindent\(
+\begin{aligned}
+M_2:\quad &\texttt{correct} \sim \texttt{method} * \texttt{difficulty} + \texttt{LLM} + (1 \mid \texttt{item}) + (1 \mid \texttt{item}:\texttt{LLM}).
+\end{aligned}
+\)\par}
+\medskip
+
+We compare $M_1$ and $M_2$ using a likelihood ratio test to assess whether allowing method-specific difficulty slopes improves model fit.
+We apply Holm correction across these three contrasts within each benchmark.
+Difficulty quartiles are used only to preserve the stratified item-sampling design in bootstrap resampling and are not included as inferential predictors.
+
+Based on the descriptive results, we additionally fit exploratory $M_3$, which retains $M_1$'s common difficulty slope and adds a method-by-LLM interaction.
+
+\medskip
+{\small\noindent\(
+\begin{aligned}
+M_3:\quad &\texttt{correct} \sim \texttt{method} * \texttt{LLM} + \texttt{difficulty} + (1 \mid \texttt{item}) + (1 \mid \texttt{item}:\texttt{LLM}).
+\end{aligned}
+\)\par}
+\medskip
+
+Its likelihood-ratio comparison with $M_1$ tests whether average method effects vary across the five evaluated LLMs.
+
+\section{Results}
+\label{results}
+
+\subsection{GEPA optimization and single-call baselines}
+On Codeforces, the best-candidate accuracies generated by GEPA on the validation set were 82\% (+62 points over the seed) for CoT, 76\% (+28) for Self-Refine, 74\% (+22) for BoN, and 80\% (+0) for Debate.
+On Lichess, they were 56\% (+14) for CoT, 54\% (+4) for Self-Refine, 52\% (+0) for BoN, and 54\% (+6) for Debate.
+Supplementary Material provides additional details on the GEPA runs and reports full best-candidate prompts.
+
+We first assess whether the CoT prompt improves the single-call task-only baseline.
+Across the five models, CoT differed from task-only by $-0.1$ percentage points on Codeforces (paired normal-approximation 95\% CI $[-2.8, 2.6]$), $+1.5$ points on Lichess (95\% CI $[-1.0, 4.0]$), and $-1.4$ points on AMC (95\% CI $[-2.9, 0.1]$).
+These benchmark-level differences are marginal, and their intervals include zero.
+We retain both baselines in the descriptive results.
+Despite this, CoT remains the primary inferential reference because it represents the hypothesized stronger single-call reasoning baseline.
+The model-specific CoT-minus-task-only differences ranged from $-10.5$ points (GLM) to $+10.0$ (DeepSeek) on Codeforces, from $-3.5$ (GPT-OSS) to $+8.5$ (DeepSeek) on Lichess, and from $-9.0$ (Gemma) to $+3.0$ (Qwen) on AMC.
+
+\subsection{Average effects of orchestration}
+We next test whether orchestration method affects accuracy on average across the five evaluated LLMs.
+Adding method improved mixed-model fit for Codeforces ($\chi^2(3)=18.62$, $p=.0003$) and AMC ($\chi^2(3)=13.76$, $p=.0032$), but not Lichess ($\chi^2(3)=4.34$, $p=.227$).
+The corresponding AIC comparisons favored $M_1$ for Codeforces and AMC and $M_0$ for Lichess.
+The overall accuracies of task-only, CoT, Self-Refine, BoN, and Debate were 61.6\%, 61.5\%, 66.1\%, 65.7\%, and 63.7\% on Codeforces; 29.5\%, 31.0\%, 30.7\%, 33.0\%, and 31.9\% on Lichess; and 89.3\%, 87.9\%, 89.8\%, 90.5\%, and 89.1\% on AMC (see Figure~\ref{fig:overall-accuracy}).
+Relative to task-only inference, the three orchestration differences ranged from $+2.1$ points (Debate) to $+4.5$ (Self-Refine) on Codeforces, from $+1.2$ (Self-Refine) to $+3.5$ (BoN) on Lichess, and from $-0.2$ (Debate) to $+1.2$ (BoN) on AMC.
+Relative to CoT, the corresponding paired differences ranged from $+2.2$ points (Debate) to $+4.6$ (Self-Refine) on Codeforces, from $-0.3$ (Self-Refine) to $+2.0$ (BoN) on Lichess, and from $+1.2$ (Debate) to $+2.6$ (BoN) on AMC.
+The 95\% whole-item bootstrap intervals excluded zero for Codeforces Self-Refine ($+4.6$ points, $[2.1, 7.1]$) and BoN ($+4.2$, $[1.8, 6.5]$), and for AMC Self-Refine ($+1.9$ points, $[0.5, 3.3]$) and BoN ($+2.6$, $[1.3, 4.0]$); the other CoT contrasts included zero.
+Relative to CoT, $M_1$ estimated higher average odds of success for Self-Refine and BoN on Codeforces (OR $=1.90$, 95\% CI $[1.36,2.65]$, Holm-adjusted $p=.0004$; and OR $=1.79$, 95\% CI $[1.29,2.49]$, $p=.0010$) and AMC (OR $=1.99$, 95\% CI $[1.16,3.40]$, $p=.0238$; and OR $=2.68$, 95\% CI $[1.53,4.68]$, $p=.0016$).
+No method contrast was significant on Lichess, and Debate did not significantly outperform CoT on any benchmark.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.75\textwidth]{figures/results/01_overall_accuracy.pdf}
+\caption{Accuracy by method and benchmark, aggregated over the five evaluated models.
+Bars are point estimates, and error bars show 95\% confidence intervals.}
+\label{fig:overall-accuracy}
+\end{figure}
+
+\subsection{Effects across task difficulty}
+
+Difficulty and item-level accuracy were negatively correlated on Codeforces (Spearman's $\rho=-.533$, 95\% CI $[-.641,-.409]$), Lichess ($\rho=-.660$, 95\% CI $[-.734,-.571]$), and AMC ($\rho=-.485$, 95\% CI $[-.591,-.362]$); all Holm-adjusted $p<.001$.
+Thus, higher human-derived difficulty was associated with lower aggregate accuracy in all three benchmarks.
+The empirical ten-bin accuracy trajectories were not monotonic throughout, however.
+For example, task-only accuracy decreased from 92.3\% to 37.9\% between the lowest and highest Codeforces bins and from 67.3\% to 6.2\% on Lichess.
+On AMC, the corresponding bin estimates were 99.0\% and 52.0\%, with a local increase to 98.0\% in bin 9.
+The corresponding ten-bin trajectories are shown in the Supplementary Material.
+
+We next assessed whether the relative advantage of orchestration changed across difficulty levels.
+The orchestration-minus-single-LLM differences varied across descriptive difficulty quartiles without a common monotonic pattern.
+Figure~\ref{fig:difficulty-differences} shows these differences relative to both task-only and CoT.
+On Codeforces, the largest quartile differences occurred in Q3 for Self-Refine ($+10.4$ points) and BoN ($+9.2$ points), whereas their Q4 differences were $+2.0$ and $+1.6$ points.
+On Lichess, Q4 differences ranged from $-2.4$ to $-0.4$ points, while differences across the other quartiles ranged from $-2.0$ to $+4.0$ points.
+On AMC, the differences ranged from $-0.8$ to $+5.2$ points, with the largest value for BoN in Q4.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.75\textwidth]{figures/results/04_differences_by_difficulty.pdf}
+\caption{Orchestration-minus-baseline accuracy by within-benchmark difficulty quartile.
+Differences are aggregated over the five evaluated models and in each quartile.
+Panels distinguish benchmarks and task-only and CoT baselines, and confidence bands show 95\% bootstrap CI.}
+\label{fig:difficulty-differences}
+\end{figure}
+
+The additive model ($M_1$) estimated a common continuous-difficulty slope across methods, whereas the interaction model ($M_2$) allowed method-specific slopes.
+Compared with $M_1$, $M_2$ did not improve model fit for Codeforces ($\chi^2(3)=1.47$, $p=.688$), Lichess ($\chi^2(3)=0.23$, $p=.972$), or AMC ($\chi^2(3)=0.70$, $p=.874$).
+$M_1$ also had the lowest AIC across all benchmarks.
+Thus, the primary analysis did not support the hypothesis that orchestration becomes systematically more beneficial as item difficulty increases.
+The nine planned orchestration-versus-optimized-CoT slope ratios ranged from 0.82 to 1.19; every nominal 95\% interval included the null ratio of one, and every within-benchmark Holm-adjusted $p$-value was at least .887.
+The Supplementary Material gives the complete tests and contrasts.
+
+\subsection{Variation across LLMs}
+We next assess whether the average method effects were consistent across the five evaluated LLMs.
+Exploratory likelihood-ratio tests indicated method-by-LLM heterogeneity on Codeforces ($\chi^2(12)=53.82$, $p<.0001$), Lichess ($\chi^2(12)=30.68$, $p=.0022$), and AMC ($\chi^2(12)=87.68$, $p<.0001$).
+The model-specific paired differences from optimized CoT ranged from $-4.0$ points (DeepSeek, BoN) to $+18.0$ (GLM, BoN) on Codeforces, from $-6.5$ (DeepSeek, Debate) to $+12.0$ (Gemma, BoN) on Lichess, and from $-9.5$ (GLM, Debate) to $+11.0$ (Gemma, Debate) on AMC (see Figure~\ref{fig:model-heterogeneity})
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.75\textwidth]{figures/results/02_exploratory_model_specific_effects.pdf}
+\caption{Model-specific orchestration-minus-CoT paired accuracy differences by benchmark.
+Each cell averages item differences per model; labels are percentage-point differences.}
+\label{fig:model-heterogeneity}
+\end{figure}
+
+\subsection{Inference-resource trade-offs}
+Mean weighted-token ($t_w$) use for CoT was 0.92 (Codeforces), 1.24 (Lichess), and 1.16 (AMC) times that of task-only inference.
+Mean $t_w$ use for Self-Refine, BoN, and Debate was 2.12, 3.76, and 3.40 times CoT on Codeforces; 2.13, 2.65, and 3.04 times on Lichess; and 1.82, 3.25, and 3.08 times on AMC.
+In absolute terms, mean $t_w$ per evaluation ranged from 127{,}577 to 227{,}585 for the orchestrations on AMC, from 136{,}487 to 242{,}343 on Codeforces, and from 252{,}993 to 360{,}563 on Lichess.
+Figure~\ref{fig:accuracy-resource} shows the resulting relationship between accuracy and mean weighted-token use.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.75\textwidth]{figures/results/06_accuracy_resource_tradeoff.pdf}
+\caption{Accuracy against mean weighted tokens for each method and benchmark.
+Each point aggregates equally over the five evaluated models, and error bars show 95\% confidence intervals on both axes.}
+\label{fig:accuracy-resource}
+\end{figure}
+
+Across model--benchmark cells, task-only accuracy ranged from 5.0\% (GLM, Lichess) to 93.0\% (DeepSeek, AMC), and task-only weighted tokens per correct answer ranged from 26{,}027 (GPT-OSS, AMC) to 2{,}653{,}007 (GLM, Lichess).
+The orchestration-to-task-only ratios of weighted tokens per correct answer ranged from 1.41 to 5.15 on Codeforces, from 1.42 to 5.88 on Lichess, and from 1.82 to 4.97 on AMC.
+For GPT-OSS on Codeforces, task-only and Debate achieved 58.0\% and 70.0\% accuracy while using 37{,}024 and 130{,}888 weighted tokens per correct answer, respectively.
+For Gemma on Lichess, task-only and BoN achieved 33.5\% and 43.0\% accuracy with 467{,}421 and 1{,}015{,}592 weighted tokens per correct answer.
+For Gemma on AMC, task-only and Debate achieved 90.5\% and 92.5\% accuracy with 72{,}296 and 359{,}564 weighted tokens per correct answer.
+The Supplementary Material reports these and additional model--method cells with descriptive whole-item bootstrap intervals.
+
+Maximum-output-limit outcomes reflect models consuming the available completion budget without returning a valid answer, rather than transient infrastructure failures.
+They are therefore evidence of high reasoning consumption and a limitation of the evaluated models under the common output budget.
+This pattern was most pronounced for Gemma on Lichess, where 49 of 200 task-only attempts and 97 of 200 optimized-CoT attempts reached the maximum-output limit.
+These attempts remain score-zero outcomes, and their token consumption remains included in the resource totals.
+
+\section{Discussion}
+\label{discussion}
+
+Our results establish a clear accuracy--resource trade-off.
+Orchestration delivered moderate, benchmark-dependent gains while consistently consuming more inference resources, making a validated single-call method the stronger efficiency-oriented default.
+Self-Refine and BoN improved over optimized CoT on Codeforces and AMC, but no orchestration significantly improved accuracy on Lichess, and Debate did not significantly outperform CoT on any benchmark.
+More calls and richer interaction therefore did not guarantee better outcomes.
+Orchestration is justified when its incremental accuracy has sufficient application value to offset the additional token, latency, and serving costs.
+
+On AMC, high single-call accuracy left limited room for improvement. In contrast, performance on the hardest Codeforces and Lichess items suggests a different boundary: additional computation has little value when the backbone cannot generate a viable solution.
+This interpretation agrees with prior evidence that test-time computation provides limited gains on the hardest problems~\citep{snell_scaling_2025} and with our Codeforces results, where Self-Refine and BoN achieved their largest gains in the third rather than the fourth difficulty quartile.
+Together, these patterns show that neither available headroom nor difficulty alone determines the value of orchestration.
+
+Human-derived difficulty was strongly associated with lower absolute accuracy, yet the relative benefits of Self-Refine, BoN, and Debate did not increase systematically with difficulty.
+Identifying tasks that a single call is likely to miss is therefore different from identifying tasks that a particular workflow is likely to correct.
+This distinction explains why adaptive systems can benefit from difficulty signals without implying that every hard query should receive more calls.
+Such systems can jointly select model capacity, computation, and workflow structure, while learned difficulty can represent model-relative solvability more directly than human assessment~\citep{bae_complexitynet_2023,cheng_adaptivellm_2025,snell_scaling_2025,su_difficulty-aware_2026,zhang_multi-agent_2025}.
+
+Viewed against existing work, these results place orchestration within the broader problem of conditional resource allocation.
+Preference-based model routing asks when one model will outperform another, while difficulty-aware systems vary model capacity, computation, or workflow structure across queries~\citep{ong_routellm_2025}.
+Our findings show why the success of such policies does not imply a general rule that harder items benefit more from a fixed orchestration.
+Instead, the relationship between additional inference and accuracy depends on the workflow and backbone, consistent with prior evidence that effective test-time scaling strategies vary across models~\citep{snell_scaling_2025,smit_should_2024}.
+
+This dependence is also evident in the backbone analysis.
+The strong method-by-backbone interactions across all three benchmarks demonstrate that a workflow effective for one model can be neutral or harmful for another.
+Revision, selection, critique, and synthesis rely on capabilities that differ across models, so the same workflow structure can produce substantially different outcomes across backbones.
+Workflow selection and prompt optimization should therefore be treated as part of model selection, with accuracy and resource use validated for the intended model--workflow pair.
+
+Finally, equalizing the maximum optimization budget strengthens the comparison by separating orchestration structure from unequal tuning effort.
+Under this common budget, additional workflow complexity still did not produce uniformly large gains.
+Optimization is therefore part of the evaluated method rather than a background implementation detail, and orchestration claims should report both how a workflow was obtained and the inference resources it consumes.
+
+\section{Limitations}
+\label{limitations}
+
+Our conclusions are bounded by the evaluated optimization procedure and empirical scope.
+The comparison uses GEPA under a common optimization budget, but GEPA may not optimize workflows with different numbers and types of tunable components equally well.
+Topology-aware optimizers or different optimization budgets could therefore produce different accuracy--cost trade-offs, particularly for more complex workflows.
+Moreover, we evaluate three reasoning domains, five open-weight backbones, and one fixed configuration of each workflow.
+This breadth supports comparison across varied settings, while evaluations of additional domains, backbones, and orchestration configurations are needed to establish how broadly the observed trade-offs extend.
+Our difficulty analysis concerns a common linear relationship between independently estimated human difficulty and the relative benefit of three fixed workflows.
+
+\section{Conclusion}
+\label{conclusion}
+
+Under a common prompt-optimization budget, orchestration delivered moderate, benchmark-dependent accuracy gains at substantially higher inference resource use.
+Self-Refine and BoN outperformed optimized CoT on Codeforces and AMC, whereas no orchestration significantly improved over CoT on Lichess, and Debate did not significantly outperform CoT on any benchmark.
+Human-derived difficulty tracked absolute accuracy but not the relative benefit of orchestration, while exploratory analyses revealed substantial method-by-backbone heterogeneity.
+These findings show that difficulty alone does not determine when orchestration pays off and that evaluations should report workflow- and backbone-specific accuracy--resource trade-offs under controlled optimization.
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\clearpage
+\appendix
+\onecolumn
+
+\begin{center}
+{\Large Supplementary Material}
+\end{center}
+
+\input{supplementary_material}
+
+\end{document}

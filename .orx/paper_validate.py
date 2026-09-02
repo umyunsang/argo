@@ -330,6 +330,7 @@ def main():
         required_locator_ids.update(expectations.get("required_round4_locator_ids", []))
         required_locator_ids.update(expectations.get("required_round5_locator_ids", []))
         required_locator_ids.update(expectations.get("required_round6_locator_ids", []))
+        required_locator_ids.update(expectations.get("required_round7_locator_ids", []))
         required_locator_ids.update(expectations.get("required_external_code_locator_ids", []))
         missing_locator_ids = sorted(required_locator_ids - set(locator_ids))
         duplicate_locator_ids = sorted(k for k, v in collections.Counter(locator_ids).items() if v > 1)
@@ -380,6 +381,15 @@ def main():
             for source_id, expected in expected_round6_locator_counts.items()
             if actual_round6_locator_counts.get(source_id, 0) != expected
         }
+        expected_round7_locator_counts = expectations.get("required_round7_locator_counts", {})
+        actual_round7_locator_counts = collections.Counter(
+            x.get("source_id") for x in locators if x.get("source_id") in expected_round7_locator_counts
+        )
+        round7_locator_count_failures = {
+            source_id: {"expected": expected, "actual": actual_round7_locator_counts.get(source_id, 0)}
+            for source_id, expected in expected_round7_locator_counts.items()
+            if actual_round7_locator_counts.get(source_id, 0) != expected
+        }
         expected_external_code_locator_counts = expectations.get("required_external_code_locator_counts", {})
         actual_external_code_locator_counts = collections.Counter(
             x.get("source_id") for x in locators if x.get("source_id") in expected_external_code_locator_counts
@@ -395,6 +405,7 @@ def main():
         expected_locator_sources.update(expectations.get("required_round4_locator_sources", {}))
         expected_locator_sources.update(expectations.get("required_round5_locator_sources", {}))
         expected_locator_sources.update(expectations.get("required_round6_locator_sources", {}))
+        expected_locator_sources.update(expectations.get("required_round7_locator_sources", {}))
         expected_locator_sources.update(expectations.get("required_external_code_locator_sources", {}))
         actual_locator_sources = {x.get("claim_locator_id"): x.get("source_id") for x in locators}
         locator_source_failures = {
@@ -412,6 +423,7 @@ def main():
         structured_evidence["round4_locator_count_failures"] = round4_locator_count_failures
         structured_evidence["round5_locator_count_failures"] = round5_locator_count_failures
         structured_evidence["round6_locator_count_failures"] = round6_locator_count_failures
+        structured_evidence["round7_locator_count_failures"] = round7_locator_count_failures
         structured_evidence["external_code_locator_count_failures"] = external_code_locator_count_failures
         structured_evidence["locator_source_failures"] = locator_source_failures
         if (
@@ -425,6 +437,7 @@ def main():
             or round4_locator_count_failures
             or round5_locator_count_failures
             or round6_locator_count_failures
+            or round7_locator_count_failures
             or external_code_locator_count_failures
             or locator_source_failures
         ):
@@ -511,10 +524,47 @@ def main():
         ):
             errors.append("round-6 bibliography metadata identity mismatch")
 
+        round7_metadata_obj = json.loads(
+            (ROOT / "paper/sources/arxiv-metadata-literature-round7-receipt.json").read_text(encoding="utf-8")
+        )
+        round7_metadata_records = round7_metadata_obj.get("records", [])
+        round7_metadata_count = len(round7_metadata_records)
+        round7_metadata_source_ids = {x.get("source_id") for x in round7_metadata_records}
+        required_round7_source_ids = set(expectations.get("required_round7_source_ids", []))
+        version_boundary = round7_metadata_obj.get("version_boundary", {})
+        latest_response_path = ROOT / version_boundary.get("latest_response_path", "")
+        version_boundary_failures = []
+        if (
+            version_boundary.get("source_id") != "2607.08665"
+            or version_boundary.get("bound_version") != "v1"
+            or version_boundary.get("latest_version_at_retrieval") != "v2"
+            or not latest_response_path.is_file()
+            or latest_response_path.stat().st_size != version_boundary.get("latest_response_bytes")
+            or sha256_path(latest_response_path) != version_boundary.get("latest_response_sha256")
+        ):
+            version_boundary_failures.append("identity_or_bytes")
+        else:
+            try:
+                latest_records = parse_arxiv_atom(latest_response_path)
+            except (ET.ParseError, ValueError):
+                latest_records = {}
+                version_boundary_failures.append("latest_atom_parse")
+            if latest_records.get("2607.08665", {}).get("version") != "v2":
+                version_boundary_failures.append("latest_version_not_rederived")
+        structured_evidence["round7_bibliography_metadata_record_count"] = round7_metadata_count
+        structured_evidence["round7_metadata_source_ids"] = sorted(round7_metadata_source_ids)
+        structured_evidence["round7_version_boundary_failures"] = version_boundary_failures
+        if (
+            round7_metadata_count != expectations["round7_bibliography_metadata_record_count"]
+            or round7_metadata_source_ids != required_round7_source_ids
+            or version_boundary_failures
+        ):
+            errors.append("round-7 bibliography metadata identity or explicit version boundary mismatch")
+
         combined_metadata_records = (
             metadata_obj.get("records", []) + round2_metadata_records
             + round3_metadata_records + round4_metadata_records + round5_metadata_records
-            + round6_metadata_records
+            + round6_metadata_records + round7_metadata_records
         )
         combined_metadata_ids = [x.get("source_id") for x in combined_metadata_records]
         duplicate_metadata_ids = sorted(k for k, v in collections.Counter(combined_metadata_ids).items() if v > 1)
@@ -555,6 +605,7 @@ def main():
             ("round4", round4_metadata_obj),
             ("round5", round5_metadata_obj),
             ("round6", round6_metadata_obj),
+            ("round7", round7_metadata_obj),
         ):
             response_path = ROOT / receipt_obj.get("response_path", "")
             receipt_errors = []
@@ -840,6 +891,88 @@ def main():
         ):
             errors.append("round-6 full-read receipt, version, URL, report, or full-text mismatch")
 
+        round7_source_receipts = json.loads(
+            (ROOT / "paper/sources/literature-round7-source-receipts.json").read_text(encoding="utf-8")
+        )
+        round7_source_receipt_ids = {x.get("source_id") for x in round7_source_receipts}
+        round7_report_failures = []
+        round7_fulltext_failures = []
+        round7_version_failures = {}
+        round7_tex_manifest_failures = []
+        round7_locator_manifest_failures = []
+        expected_round7_locator_counts = expectations.get("required_round7_locator_counts", {})
+        for receipt in round7_source_receipts:
+            source_id = receipt.get("source_id")
+            report_path = ROOT / receipt.get("report_path", "")
+            fulltext_path = ROOT / receipt.get("fulltext_path", "")
+            expected_version = expectations.get("required_bibliography_metadata_versions", {}).get(source_id)
+            expected_abs_url = "https://arxiv.org/abs/%s%s" % (source_id, expected_version)
+            expected_src_url = "https://arxiv.org/src/%s%s" % (source_id, expected_version)
+            if (
+                receipt.get("reading_level") != "FULL_PAPER_READ"
+                or not report_path.is_file()
+                or report_path.stat().st_size != receipt.get("report_bytes")
+                or sha256_path(report_path) != receipt.get("report_sha256")
+            ):
+                round7_report_failures.append(source_id)
+            fulltext_has_version = False
+            if fulltext_path.is_file():
+                fulltext_text = fulltext_path.read_text(encoding="utf-8", errors="replace")
+                fulltext_has_version = bool(
+                    re.search(r"arXiv:%s%s\b" % (re.escape(source_id), re.escape(expected_version or "")), fulltext_text, re.I)
+                )
+            if (
+                not fulltext_path.is_file()
+                or fulltext_path.stat().st_size != receipt.get("fulltext_bytes")
+                or sha256_path(fulltext_path) != receipt.get("fulltext_sha256")
+                or not fulltext_has_version
+            ):
+                round7_fulltext_failures.append(source_id)
+            if (
+                receipt.get("version") != expected_version
+                or receipt.get("url") != expected_abs_url
+                or receipt.get("artifact_url") != expected_src_url
+            ):
+                round7_version_failures[source_id] = {
+                    "expected": expected_version,
+                    "actual": receipt.get("version"),
+                }
+            tex_root = ROOT / receipt.get("extracted_path", "")
+            tex_files = receipt.get("tex_files", [])
+            if (
+                receipt.get("tex_file_count") != len(tex_files)
+                or not tex_files
+                or any(not (tex_root / relpath).is_file() for relpath in tex_files)
+            ):
+                round7_tex_manifest_failures.append(source_id)
+            if (
+                len(receipt.get("claim_locator_ids", [])) != expected_round7_locator_counts.get(source_id)
+                or set(receipt.get("claim_locator_ids", []))
+                != {
+                    x.get("claim_locator_id")
+                    for x in locators
+                    if x.get("source_id") == source_id
+                }
+            ):
+                round7_locator_manifest_failures.append(source_id)
+        structured_evidence["round7_source_receipt_count"] = len(round7_source_receipts)
+        structured_evidence["round7_source_receipt_ids"] = sorted(round7_source_receipt_ids)
+        structured_evidence["round7_report_failures"] = round7_report_failures
+        structured_evidence["round7_fulltext_failures"] = round7_fulltext_failures
+        structured_evidence["round7_source_version_failures"] = round7_version_failures
+        structured_evidence["round7_tex_manifest_failures"] = round7_tex_manifest_failures
+        structured_evidence["round7_locator_manifest_failures"] = round7_locator_manifest_failures
+        if (
+            len(round7_source_receipts) != expectations["round7_source_receipt_count"]
+            or round7_source_receipt_ids != required_round7_source_ids
+            or round7_report_failures
+            or round7_fulltext_failures
+            or round7_version_failures
+            or round7_tex_manifest_failures
+            or round7_locator_manifest_failures
+        ):
+            errors.append("round-7 full-read receipt, version, URL, report, full-text, TeX, or locator mismatch")
+
         round4_locator_source_failures = []
         for locator in locators:
             if locator.get("source_id") not in required_round4_source_ids:
@@ -867,7 +1000,7 @@ def main():
         if round4_locator_source_failures:
             errors.append("round-4 tracked locator source file, hash, or line slice mismatch")
 
-        adaptive_locator_source_ids = required_round5_source_ids | required_round6_source_ids | set(
+        adaptive_locator_source_ids = required_round5_source_ids | required_round6_source_ids | required_round7_source_ids | set(
             expectations.get("required_external_code_locator_counts", {})
         )
         adaptive_locator_source_failures = []
@@ -1163,6 +1296,36 @@ def main():
         if set(matrix_round6_counts) != required_round6_source_ids or matrix_round6_count_failures:
             errors.append("round-6 evidence matrix source identity, admission fields, or expected facet-link count mismatch")
 
+        all_matrix_round7_counts = collections.Counter(
+            row.get("source_id", "").removeprefix("alphaxiv:")
+            for row in matrix_rows
+            if row.get("source_id", "").removeprefix("alphaxiv:") in required_round7_source_ids
+        )
+        matrix_round7_counts = collections.Counter(
+            row.get("source_id", "").removeprefix("alphaxiv:")
+            for row in matrix_rows
+            if row.get("source_id", "").removeprefix("alphaxiv:") in required_round7_source_ids
+            and row.get("record_type") == "facet_evidence"
+            and row.get("source_kind") == "paper"
+            and row.get("screening_status") == "recorded_full_read"
+            and row.get("current_evidence_level") == "FULL_PAPER_READ"
+        )
+        expected_round7_matrix_counts = expectations.get("required_round7_matrix_counts", {})
+        matrix_round7_count_failures = {
+            source_id: {
+                "expected": expected,
+                "all_rows": all_matrix_round7_counts.get(source_id, 0),
+                "admitted_rows": matrix_round7_counts.get(source_id, 0),
+            }
+            for source_id, expected in expected_round7_matrix_counts.items()
+            if all_matrix_round7_counts.get(source_id, 0) != expected
+            or matrix_round7_counts.get(source_id, 0) != expected
+        }
+        structured_evidence["matrix_round7_source_ids"] = sorted(matrix_round7_counts)
+        structured_evidence["matrix_round7_count_failures"] = matrix_round7_count_failures
+        if set(matrix_round7_counts) != required_round7_source_ids or matrix_round7_count_failures:
+            errors.append("round-7 evidence matrix source identity, admission fields, or expected facet-link count mismatch")
+
         component_names = [row.get("component") for row in matrix_rows if row.get("component")]
         duplicate_components = sorted(k for k, v in collections.Counter(component_names).items() if v > 1)
         structured_evidence["duplicate_components"] = duplicate_components
@@ -1177,6 +1340,86 @@ def main():
         structured_evidence["component_tag_failures"] = tag_failures
         if tag_failures:
             errors.append("contribution ledger classification mismatch")
+
+        research_design_text = (ROOT / "paper/research/research-design.md").read_text(encoding="utf-8")
+        research_design_sections = re.findall(r"^## (\d+)\. ", research_design_text, re.M)
+        comparable_block_match = re.search(
+            r"### Comparable experiments by hypothesis\n(.*?)\n## 12\.",
+            research_design_text,
+            re.S,
+        )
+        comparable_counts = collections.Counter(
+            re.findall(r"^\| (H-[A-E]) \|", comparable_block_match.group(1), re.M)
+            if comparable_block_match else []
+        )
+        required_comparable_counts = expectations.get("research_design_comparable_counts", {})
+        research_design_failures = []
+        if research_design_sections != [str(i) for i in range(1, 13)]:
+            research_design_failures.append("section_order")
+        if dict(comparable_counts) != required_comparable_counts:
+            research_design_failures.append("comparable_counts")
+        if (
+            "**Status:** preregistration-ready design; unexecuted" not in research_design_text
+            or "Agent-Orchestrated Adaptive RAG `2606.05658` FULL" not in research_design_text
+            or "H-E (deferred)" not in research_design_text
+            or "R-ROUTING-DEFER" not in research_design_text
+        ):
+            research_design_failures.append("status_or_round7_decision")
+
+        capability_text = (ROOT / "paper/research/capability-map.md").read_text(encoding="utf-8")
+        capability_rows = re.findall(r"^\| ([1-9])\. [^|]+\|", capability_text, re.M)
+        area9_rows = [x for x in capability_text.splitlines() if x.startswith("| 9. Routing /")]
+        capability_failures = []
+        if len(capability_rows) != expectations["capability_map_row_count"]:
+            capability_failures.append("row_count")
+        if len(area9_rows) != expectations["capability_map_area9_row_count"]:
+            capability_failures.append("area9_row_count")
+        if not all("FULL" in row and ("design only" in row or "follow-up" in row) for row in area9_rows):
+            capability_failures.append("area9_phase_or_evidence")
+
+        differentiation_text = (
+            ROOT / "paper/research/coding-harness-differentiation-matrix.md"
+        ).read_text(encoding="utf-8")
+        differentiation_failures = []
+        for token in ("2608.06867", "2607.08665v1", "2608.00685", "2607.09600v2"):
+            if token not in differentiation_text:
+                differentiation_failures.append(token)
+
+        round7_retrieval_obj = json.loads(
+            (ROOT / "paper/research/literature-round7-retrieval-record.json").read_text(encoding="utf-8")
+        )
+        selected_round7_ids = {
+            source_id
+            for loop in round7_retrieval_obj.get("loops", [])
+            for source_id in loop.get("selected_full_reads", [])
+        }
+        round7_retrieval_failures = []
+        if len(round7_retrieval_obj.get("loops", [])) != expectations["round7_retrieval_loop_count"]:
+            round7_retrieval_failures.append("loop_count")
+        if round7_retrieval_obj.get("manual_loop_count") > round7_retrieval_obj.get("manual_loop_cap", 0):
+            round7_retrieval_failures.append("manual_loop_cap")
+        if round7_retrieval_obj.get("full_read_count") != expectations["round7_retrieval_full_read_count"]:
+            round7_retrieval_failures.append("full_read_count")
+        if selected_round7_ids != required_round7_source_ids:
+            round7_retrieval_failures.append("selected_source_identity")
+        if "discovery snippets were not used as claims" not in round7_retrieval_obj.get("selection_rule", ""):
+            round7_retrieval_failures.append("snippet_boundary")
+
+        structured_evidence["research_design_sections"] = research_design_sections
+        structured_evidence["research_design_comparable_counts"] = dict(comparable_counts)
+        structured_evidence["research_design_failures"] = research_design_failures
+        structured_evidence["capability_map_row_count"] = len(capability_rows)
+        structured_evidence["capability_map_area9_row_count"] = len(area9_rows)
+        structured_evidence["capability_map_failures"] = capability_failures
+        structured_evidence["differentiation_round7_failures"] = differentiation_failures
+        structured_evidence["round7_retrieval_failures"] = round7_retrieval_failures
+        if (
+            research_design_failures
+            or capability_failures
+            or differentiation_failures
+            or round7_retrieval_failures
+        ):
+            errors.append("round-7 research design, capability map, differentiation, or retrieval record mismatch")
 
         context_graph_obj = json.loads((ROOT / "paper/context-graph.json").read_text(encoding="utf-8"))
         context_nodes = context_graph_obj.get("nodes", [])

@@ -1,0 +1,442 @@
+This section systematically describes the overall structure and key modules of the proposed InSemRAG.
+InSemRAG is designed to build an efficient and evidence-complete retrieval-augmented generation system using SLMs as a retriever.
+%The framework adopts "lightweight reasoning loop" as its core design principle, completing the entire process of semantic control from query construction to answer generation through integrated mechanisms hypothetical query generation, hybrid retrieval fusion, forensic completion, and coverage auditing.
+
+\subsection{Preliminary}
+\pb{Problem Definition.}
+We formulate RAG as a sequential decision-making process under a probabilistic graph model, where given a query $q$ and a parameterized generator $P_\theta$, RAG objective is to maximize the log-likelihood $\log P(y|q)$ of the answer $y$ with the assistance of a retriever $P_\phi$ that collects relevant evidence $\mathcal{E}$ from external knowledge database $\mathcal{K}$. 
+
+\begin{equation}
+  P(y|q) \approx \sum_{\mathcal{E} \in \mathcal{E}_{top}} \underbrace{P_{\theta}(y|q, \mathcal{E})}_{\text{Generator}} \cdot \underbrace{P_{\phi}(\mathcal{E}|q, \mathcal{K})}_{\text{Retriever}}
+\end{equation}
+
+\noindent
+Marginalization over all information in the external knowledge base $\mathcal{K}$ is computationally infeasible due to its size; therefore, latent evidence $\mathcal{E}$ is used to approximate $\mathcal{K}$.
+Let $\mathcal{K} = \{d_1, \dots, d_m\}$ where each document $d_i$ is partitioned into $n$ set of information chunks $\{c_{1}, \dots, c_{n}\}$.
+All possible combinations of these chunks are defined as the evidence space $\mathbb{E}$.
+The optimal subset $\mathcal{E}^* \subset \mathbb{E}$ satisfies the following constraints:
+
+\begin{equation}\label{eq:optimal}
+\mathcal{E}^* = \underset{\mathcal{E} \in \mathbb{E}}{\arg\max} \left[ \underbrace{\mathcal{S}_{rel}(q, \mathcal{E})}_{\text{Semantic}} + \lambda \cdot \underbrace{\mathcal{C}_{int}(\mathcal{E})}_{\text{Context}} \right]
+\end{equation}
+
+\noindent
+where $S_{rel}$, $C_{int}$, and $\lambda$ measure semantic alignment, contextual integrity, and the weight that determines the tradeoff between the two, respectively.
+
+
+
+\pb{Motivation.}
+Conventional RAGs entail several limitations that we illustrate in Figure~\ref{fig:motivation}:
+\begin{itemize}
+    \item Utilize a fixed (e.g., dense or sparse) retrieval function $R_\phi:\mathcal{Q}\xrightarrow{}S^k$ which returns top-$k$ slices $\mathcal{E}=R_\phi(q)$, where $R_\phi$ is independent of query structure.
+    This may create a gap between what the generator expects and what the retriever produces, which becomes larger as the query complexity increases.
+    \item Combine the evidence chunks with mechanical chunking $\Gamma:d\xrightarrow{}\{c_1, \dots, c_n\}$ that merges all chunks at a fixed-length $l$, thus truncating long chunks. 
+    This risks discarding essential information that may exist in the truncated part, breaking the logical dependencies across chunks.
+    %\item 
+\end{itemize}
+
+\noindent
+Our work addresses these limitations by reformulating the RAG mechanisms as adaptive-corrective mechanisms.
+
+%assume that $q$ lives in the same semantic space as $\mathcal{E}$, simplifying the retrieval objective.
+%Nevertheless, queries are often imperfect.
+%They can be too short, thus lacking information, or too long, thus containing irrelevant content.
+%These characteristics create a distribution shift that jeopardizes the distance between true question and the evidence candidates.
+%To alleviate the issue of distribution shift, we propose query-evidence matching task as routing problem instead of direct retrieval.
+
+\subsection{Technical Framework}
+We propose an intent-aware retrieval and semantics-preserving chunking in the RAG system that utilizes SLM as retriever.
+%SLM enables us to perform complex operations without being constrained on the computational cost and memory requirement.
+Our proposed system consists of two core modules: intent-aware retrieval (IAR) and semantics-preserving chunking (SPC).
+Figure~\ref{fig:framework} illustrates our framework.
+
+
+\begin{figure*}
+    \centering
+    \includegraphics[width=\linewidth]{figures/framework.png}
+    \caption{Illustration of InSemRAG framework. 
+    In a high-level view, we first enrich the input query from multiple views, from which we retrieve the evidence through weighted multi-channel retrieval. After reranking, we perform detection on damaged evidence chunks and repair via semantic stitching. We implement our method iteratively using SLM (yellow module in the figure) for efficient computation.}
+    \label{fig:framework}
+\end{figure*}
+
+\subsubsection{Query Intent-Adaptive Retrieval}
+We propose IAR to address the problem of fixed retrieval that tends to ignore the characteristics of query.
+We perform this retrieval through three mechanisms: query enriching, dynamic channel weighting, and hybrid-weighted retrieval.
+%We term this module as \say{QAR}.
+
+\pb{Query Enrichment.}
+User queries are often imperfect.
+They can be too short, thus lacking information, or too long, thus containing irrelevant content.
+These characteristics create a distribution shift that jeopardizes the distance between true requirement implied in the question and the evidence candidates.
+To alleviate the issue, we propose to project query $q$ into a richer form $p$ that has the highest distribution similarity with $\mathcal{E}$ with SLM as the projector $\mathcal{P}$.
+\begin{equation}
+p = \mathcal{P}(q), \hspace{10pt} \mathcal{P}:\mathcal{Q} \xrightarrow{}\mathcal{P}
+\end{equation}
+%\noindent
+%We perform this routing through two sub-operations: query projection and channel weighting.
+%\pb{Orthogonal Query Projection.}
+where $p$ consists of two orthogonal vectors $p_d\perp p_s$.
+%The intermediary space $\mathcal{R}$ consists of two orthogonal subspaces $\mathcal{R}_d\perp\mathcal{R}_s$, generated via a single SLM inference.
+This decomposition aims to balance between the semantic coverage and lexical fidelity.
+The $\{p^{d}_i\}_{i=1}^m \in P_d$ defines a \textit{dense intermediary subspace} that captures semantic intent.
+SLM generates the subspace by performing semantic completion through query paraphrasing to project $q$ to the clustering center.
+On the other hand, $\{p^{s}_j\}_{j=1}^n \in P_s$ defines a \textit{sparse intermediary subspace} that captures entity constraints.
+To generate $P_s$, SLM extracts keywords, named entities, and rare terms to match long-tail low-frequency words.
+
+
+\begin{equation}
+P = SLM(Q), \hspace{10pt} \text{where} \hspace{5pt} \{P_s,P_d\} \in P
+\end{equation}
+
+\pb{Dynamic Channel Weighting.}
+Different queries $q$ may have different characteristics that influence how the retrieval should be performed.
+Some queries are more specific, such as \say{Where does SpongeBob live?}, or more abstract \say{How to avoid rejection on conference submission?}, or require reasoning \say{Why the work-from-home trend started to boom in 2020?}, or a combination of them.
+We argue that retrieval mechanisms shall adapt to these variations. 
+To this end, we propose to condition retrieval channels on the query $q$, by performing soft weighting that dynamically control the contribution of each retrieval channel.
+Specifically, we derive the weight $\textbf{w}$ from SLM through the following operation.
+
+\begin{equation}
+\textbf{w}=\text{Softmax}\left(\text{MLP}\left(\text{SLM}\left(q\right)\right)\right)
+\end{equation}
+
+\noindent
+where $\textbf{w}=\left[\alpha,\beta,\gamma\right]^T$ and $\alpha +\beta+\gamma=1$. 
+These weights control the contributions of dense, sparse, and extended retrievals, respectively.
+We provide more analysis on these weight factors in Appendix~\ref{sec:weight}.
+
+
+\pb{Hybrid Retrieval with Weighted Fusion.}
+Using two forms of enrich query $p_d$ and $p_s$, we perform both dense and sparse retrieval in parallel.
+In dense retrieval, we embed both dense query $p_d$ and the document $d$ using the same encoder $\phi(\cdot)$ to compute the cosine similarity between the two.
+Thus, the score of candidate evidence from dense $S_d$ and extended retrieval is obtained through the following formula.
+
+\begin{equation}
+S_d=\underset{p_d \in P_d}{\max} \hspace{5pt} \cos \left(\phi\left(p_d\right), \phi\left(d\right)\right)
+\end{equation}
+
+\noindent
+Meanwhile, the sparse retrieval process utilizes the BM25~\cite{robertson2009probabilistic} algorithm and the score $S_s$ aggregates the contribution of all keywords as follow.
+
+\begin{equation}
+S_s=\underset{p_s \in P_s}{\max} \hspace{5pt} \text{BM25} \left(p_s, d\right)
+\end{equation}
+
+\noindent
+We merge and normalize all scores $\{\hat{S}_d, \hat{S}_s, \hat{S}_e\} \in \hat{S}$, then apply the weight $\textbf{w}$ to get final score for ranking $S$. 
+
+\begin{equation}
+S=\textbf{w}^\text{T} \cdot \left[\hat{S_d}, \hat{S_s}, \hat{S}_e\right]
+\end{equation}
+
+\noindent
+We then retrieve top-$m$ slices as the initial evidence set $\mathcal{E}_0=\{c_1, \dots, c_m\}$.
+
+
+
+\subsubsection{Semantic-Preserving Chunking}\label{sec:SPC}
+To address the problem of evidence truncation, we propose a chunk stitching mechanism that preserves the semantic of the chunks, termed SPC.
+
+\pb{Candidate Refinement.}
+The defined $m$ of the initial evidence set $\mathcal{E}_0$ is large to allow more evidence to be retrieved.
+We further refine this retrieval using SLM and the original query $q$ as the input.
+Specifically, the SLM analyzes each chunk and outputs a new score based on the original query.
+We utilize the new score to rerank the chunks and retrieve top-$k$ where $k < m$ as the refined evidence set $\mathcal{E}_r=\{c_1, \dots, c_k\}$.
+
+\pb{Damage Detection.}
+Given the refined evidence set $\mathcal{E}_r$, we indicate the semantic completeness of each slice using SLM as follow.
+
+\begin{equation}
+    \mathcal{I}(c) = \mathbb{I}\left[\text{SLM}(c) < \delta\right]
+\end{equation}
+
+\noindent
+where $\mathbb{I}(\cdot)$ is a binary function that classifies the chunk $c$ with respect to the completeness threshold $\delta$.
+The SLM determines the chunk completeness based on several factors such as syntactic cut-off, unresolved co-reference, and broken logic.
+This process partitions the refined query into intact and damaged subsets $\mathcal{E}_r=\mathcal{E}_{int} \cup\mathcal{E}_{dam}$. 
+
+\pb{Chunk Repair.}
+For each chunk $c$ in $\mathcal{E}_{dam}$, we repair its semantic integrity by backtracking to the original document $d$ from which the chunk is retrieved.
+We then retrieve chunks preceding $c_{pre}$ and succeeding $c_{post}$ the chunk $c$, and stitch them together.
+Instead of plain expansion, we perform stitching by compression using SLM.
+This is to avoid unintentional truncation due to limited LLM context window.
+We maximize the information density of the compressed chunk to preserve the original semantic content from the combined chunks.
+Specifically, we define this operation as follow.
+
+\begin{equation}
+    c^* = \text{SLM}_{compress}(c_{pre} \oplus c \oplus c_{post}, q)
+\end{equation} 
+
+\noindent
+where $c^*$ defines the repaired chunk.
+
+\pb{Coverage Auditing.}
+The chunk repair process produces a repaired evidence set $\mathcal{E}_{rep}$.
+We further combine this repaired set with the intact set as a new evidence set $\mathcal{E}_t =\mathcal{E}_{int} \cup\mathcal{E}_{rep}$.
+We use this set and perform auditing to check whether this new evidence set is semantically sufficient to answer the query.
+Specifically, we identify the discrepancy in the semantic completeness $\Delta_t$ by first extracting key information elements $e$ from the query $\text{KIE}(q)$, and measure the entailment score $\text{Ent}(\cdot)$ between each element $e$ and the evidence set $\mathcal{E}_t$.
+
+\begin{equation}\label{eq:kie}
+    \Delta_t = \{e \in \text{KIE}(q) \mid \text{Ent}(\mathcal{E}_t, e) < \epsilon\}
+\end{equation}
+
+\noindent
+If $\Delta_t \neq \emptyset$, we convert the corresponding $e$ into a new query $q_{t+1}$ that will trigger a new round of RAG, repeating the process of IAR and SPC iteratively.
+We provide analysis on this iterative behavior in Appendix~\ref{sec:iter}.
+
+
+\begin{table*}[!htb]
+\small
+    \centering
+    \begin{threeparttable}
+    \begin{tabular}{|p{45pt}|c|c|c|c|c|c|c|c|p{30pt}|p{30pt}|}
+    \hline
+        \multirow{2}*{\raisebox{-0.5\height}{\textbf{Method}}} & \multirow{2}*{\raisebox{-0.5\height}{\textbf{LLM}}} & \textbf{NQ-open} & \multicolumn{2}{c|} {\textbf{TriviaQA}} & \multicolumn{2}{c|}{\textbf{WebQuestions}} & \multicolumn{2}{c|}{\textbf{HotpotQA}} & \multicolumn{2}{c|}{\textbf{2WikiMultiHopQA}} \\
+        %&& \textbf{open} & \multicolumn{2}{c|} {\textbf{QA}} & \multicolumn{2}{c|}{\textbf{Questions}} & \multicolumn{2}{c|}{\textbf{QA}} & \multicolumn{2}{c|}{\centering{\textbf{HopQA}}} \\
+        %& & \centering{\textbf{NQ-open}} & \multicolumn{2}{c|}{\raisebox{-0.5\height}{\textbf{TriviaQA}}} & \multicolumn{2}{c|}{\raisebox{-0.5\height}{\textbf{WebQuestions}}} & \multicolumn{2}{c|}{\raisebox{-0.5\height}{\textbf{HotpotQA}}} & \multicolumn{2}{p{50pt}|}{\centering{\textbf{2WikiMulti HopQA}}} \\
+        \cline{3-11}
+        && EM & EM & F1 & EM & F1 & EM & F1 & EM & F1 \\
+        \hline
+        \multirow{3}{40pt}{w/o RAG} & GPT & 35.06 & 44.38 & 48.15 & 37.43 & 45.81 & 28.41 & 34.68 & 41.63 & 49.13 \\
+        & Qwen & 33.31 & 42.16 & 45.74 & 35.56 & 43.52 & 25.57 & 31.21 & 37.47 & 44.22 \\
+        & DeeepSeek & 36.11 & 45.71 & 49.59 & 38.55 & 47.18 & 29.83 & 36.41 & 43.71 & 51.59 \\
+        \hline
+        \multirow{3}{40pt}{Na\"ive RAG} & GPT & 48.35 & 58.31 & 63.52 & 44.52 & 57.63 & 39.14 & 44.85 & 52.33 & 57.71 \\
+        & Qwen & 39.78 & 55.39 & 60.34 & 42.29 & 54.75 & 35.23 & 40.36 & 47.1 & 51.94 \\
+        & DeeepSeek & 43.13 & 60.06 & 65.43 & 45.86 & 59.36 & 41.1 & 47.09 & 54.95 & 60.6 \\
+        \hline
+        \multirow{3}{40pt}{CoT-on-Concat} & GPT & 49.25 & 60.57 & 67.38 & 44.91 & 56.42 & 39.36 & 45.38 & 52.55 & 58.24\\
+        & Qwen & 41.96 & 57.54 & 64.01 & 42.66 & 53.6 & 35.42 & 40.84 & 47.3 & 52.42\\
+        & DeeepSeek & 45.5 & 62.39 & 69.4 & 46.26 & 58.11 & 41.33 & 47.65 & 55.18 & 61.15\\
+        \hline
+        \multirow{3}{40pt}{Wikipedia Graph} & GPT & 49.68 & 54.81 & 59.71 & 42.37 & 55.88 & 51.76 & 60.14 & 55.52 & 64.51\\
+        & Qwen & 42.17 & 52.07 & 56.72 & 40.25 & 53.09 & 46.58 & 54.13 & 49.97 & 58.06\\
+        & DeeepSeek & 45.72 & 56.45 & 61.5 & 43.64 & 57.56 & 54.35 & 63.15 & 58.3 & 67.74\\
+        \hline
+        \multirow{3}{40pt}{FiD} & GPT & 53.62 & 72.61 & 76.51 & 49.30 & 62.81 & 56.10 & 62.51 & 56.14 & 65.62\\
+        & Qwen & 50.94 & 68.98 & 72.68 & 46.83 & 59.67 & 50.49 & 56.26 & 50.53 & 59.06\\
+        & DeeepSeek & 55.23 & 74.79 & 78.81 & 50.78 & 64.69 & 58.9 & 65.64 & 58.95 & 68.9\\
+        \hline
+        \multirow{3}{40pt}{ReAct} & GPT & 51.45 & 63.97 & 74.24 & 42.91 & 55.14 & 56.27 & 64.20 & 56.52 & 66.52\\
+        & Qwen & 47.51 & 60.77 & 70.53 & 40.76 & 52.38 & 50.64 & 57.78 & 50.87 & 59.87\\
+        & DeeepSeek & 51.51 & 65.89 & 76.47 & 44.2 & 56.79 & 59.08 & 67.41 & 59.35 & 69.85\\
+        \hline
+        \multirow{3}{40pt}{IRCoT} & GPT & 52.3 & 69.21 & 75.04 & 46.36 & 59.62 & 44.51 & 55.14 & 57.07 & 68.32\\
+        & Qwen & 49.68 & 65.75 & 71.29 & 44.04 & 56.64 & 40.06 & 49.63 & 51.36 & 61.49\\
+        & DeeepSeek & 53.87 & 71.29 & 77.29 & 47.75 & 61.41 & 46.74 & 57.9 & 59.92 & 71.74\\
+        \hline
+        \multirow{3}{40pt}{SELF-RAG} & GPT & 53.14 & 70.38 & 78.88 & 48.96 & 61.58 & 43.61 & 51.79 & 58.71 & 69.50\\
+        & Qwen & 50.48 & 66.86 & 74.94 & 46.51 & 58.5 & 39.25 & 46.61 & 52.84 & 62.55\\
+        & DeeepSeek & 54.73 & 72.49 & 81.25 & 50.43 & 63.43 & 45.79 & 54.38 & 61.65 & 72.98\\
+        \hline
+        \multirow{3}{40pt}{Multi-Hop RAG} & GPT & 50.15 & 68.76 & 74.81 & 43.12 & 56.97 & 54.17 & 63.42 & 56.91 & 66.35\\
+        & Qwen & 45.89 & 65.32 & 71.07 & 40.96 & 54.12 & 48.75 & 57.08 & 51.22 & 59.72\\
+        & DeeepSeek & 49.76 & 70.82 & 77.05 & 44.41 & 58.68 & 56.88 & 66.59 & 59.76 & 69.67\\
+        \hline
+        \multirow{3}{40pt}{\textbf{InSemRAG (Ours)}} & GPT & \textbf{53.85} & \textbf{71.12} & \textbf{79.45} & \textbf{50.15} & \textbf{63.24} & \textbf{57.42} & \textbf{66.85} & \textbf{59.85} & \textbf{70.65}\\
+        & Qwen & \textbf{51.25} & \textbf{67.95} & \textbf{75.82} & \textbf{47.65} & \textbf{59.85} & \textbf{52.15} & \textbf{59.45} & \textbf{53.45} & \textbf{63.85}\\
+        & DeeepSeek & \textbf{55.65} & \textbf{73.15} & \textbf{81.85} & \textbf{51.55} & \textbf{65.15} & \textbf{60.45} & \textbf{68.95} & \textbf{62.85} & \textbf{74.15}\\
+        \hline
+    \end{tabular}
+    %\begin{tablenotes}
+    %    \small
+    %    \item *\textit{GPT}, \textit{Q}, and \textit{DS} refer to GPT-4o-mini, Qwen-turbo, and DeepSeek-V3, respectively. 
+    %\end{tablenotes}
+    \caption{RAG evaluation on question-answering benchmark dataset.}
+    \label{tab:main1}
+    \end{threeparttable}
+\end{table*}
+
+\begin{comment}
+\begin{table*}[!htb]
+    \centering
+    \begin{threeparttable}
+    \begin{tabular}{|p{50pt}|c|c|c|c|c|c|c|}
+    \hline
+        \multirow{2}*{\raisebox{-0.5\height}{\textbf{Method}}} & \multirow{2}*{\raisebox{-0.5\height}{\textbf{LLM}}} & \multicolumn{3}{c|} {\textbf{ELI5}} & \multicolumn{3}{c|}{\textbf{FEVER}} \\
+        %& & \centering{\textbf{NQ-open}} & \multicolumn{2}{c|}{\raisebox{-0.5\height}{\textbf{TriviaQA}}} & \multicolumn{2}{c|}{\raisebox{-0.5\height}{\textbf{WebQuestions}}} & \multicolumn{2}{c|}{\raisebox{-0.5\height}{\textbf{HotpotQA}}} & \multicolumn{2}{p{50pt}|}{\centering{\textbf{2WikiMulti HopQA}}} \\
+        \cline{3-8}
+        && ROUGE-1 & ROUGE-2 & ROUGE-L & Acc & FEVER Score & F1 \\
+        \hline
+        \multirow{3}{50pt}{No-Retrieval LLM} & GPT & 23.62 & 4.25 & 20.51 & 61.97 & 50.87 & 64.52\\
+        & Q & 21.73 & 3.91 & 18.87 & 58.87 & 48.33 & 61.29 \\
+        & DS & 23.15 & 4.16 & 20.1 & 63.83 & 52.4 & 66.46 \\
+        \hline
+        \multirow{3}{40pt}{Vanilla RAG} & GPT & 30.21 & 6.77 & 24.32 & 66.82 & 62.39 & 77.17 \\
+        & Q & 27.79 & 6.23 & 22.37 & 63.48 & 59.27 & 73.31 \\
+        & DS & 29.61 & 6.63 & 23.83 & 68.82 & 64.26 & 79.49 \\
+        \hline
+        \multirow{3}{40pt}{CoT-on-Concat} & GPT & 31.20 & 8.39 & 25.31 & 68.91 & 66.34 & 78.35 \\
+        & Q & 28.7 & 7.72 & 23.29 & 65.46 & 63.02 & 74.43 \\
+        & DS & 30.58 & 8.22 & 24.8 & 70.98 & 68.33 & 80.7 \\
+        \hline
+        \multirow{3}{40pt}{Wikipedia Graph} & GPT & 32.01 & 9.15 & 26.91 & 74.39 & 67.31 & 80.76\\
+        & Q & 29.45 & 8.42 & 24.76 & 70.67 & 63.94 & 76.72\\
+        & DS & 31.37 & 8.97 & 26.37 & 76.62 & 69.33 & 83.18\\
+        \hline
+        \multirow{3}{40pt}{FiD} & GPT & 34.72 & 10.52 & 27.37 & 80.09 & 71.39 & 86.31\\
+        & Q & 31.94 & 9.68 & 25.18 & 76.09 & 67.82 & 81.99\\
+        & DS & 34.03 & 10.31 & 26.82 & 82.49 & 73.53 & 88.9\\
+        \hline
+        \multirow{3}{40pt}{ReAct} & GPT & 30.21 & 7.26 & 24.81 & 77.52 & 69.37 & 83.03\\
+        & Q & 27.79 & 6.68 & 22.83 & 73.64 & 65.9 & 78.88\\
+        & DS & 29.61 & 7.11 & 24.31 & 79.85 & 71.45 & 85.52\\
+        \hline
+        \multirow{3}{40pt}{IRCoT} & GPT & 31.28 & 9.63 & 27.34 & 82.61 & 74.28 & 87.01\\
+        & Q & 28.78 & 8.86 & 25.15 & 78.48 & 70.57 & 82.66\\
+        & DS & 30.65 & 9.44 & 26.79 & 85.09 & 76.51 & 89.62\\
+        \hline
+        \multirow{3}{40pt}{SELF-RAG} & GPT & 34.09 & 12.83 & 30.20 & 83.62 & 79.68 & 89.92\\
+        & Q & 31.36 & 11.8 & 27.78 & 79.44 & 75.7 & 85.42\\
+        & DS & 33.41 & 12.57 & 29.6 & 86.13 & 82.07 & 92.62\\
+        \hline
+        \multirow{3}{40pt}{Multi-Hop RAG} & GPT & 27.86 & 6.32 & 23.61 & 73.62 & 68.67 & 82.00\\
+        & Q & 25.63 & 5.81 & 21.72 & 69.94 & 65.24 & 77.9\\
+        & DS & 27.3 & 6.19 & 23.14 & 75.83 & 70.73 & 84.46\\
+        \hline
+        \multirow{3}{40pt}{\textbf{Ours}} & GPT & \textbf{35.42} & \textbf{13.45} & \textbf{31.15} & \textbf{85.12} & \textbf{81.25} & \textbf{91.05}\\
+        & Q & \textbf{32.85} & \textbf{12.45} & \textbf{28.95} & \textbf{81.15} & \textbf{77.25} & \textbf{86.85}\\
+        & DS & \textbf{34.85} & \textbf{13.15} & \textbf{30.85} & \textbf{87.45} & \textbf{83.65} & \textbf{93.55}\\
+        \hline
+    \end{tabular}
+    \begin{tablenotes}
+        \small
+        \item *\textit{GPT}, \textit{Q}, and \textit{DS} refer to GPT-4o-mini, Qwen-turbo, and DeepSeek-V3, respectively. 
+    \end{tablenotes}
+    \caption{RAG evaluation on long-form generation and fact verification benchmarks.}
+    \label{tab:main2}
+    \end{threeparttable}
+\end{table*}
+
+
+
+%%% Work on this section when the architectural diagram is ready %%% 
+\subsection{Overview of the overall architecture}
+The SLM-RAG framework adopts a hierarchical collaboration structure (as shown in Figure 1) and consists of the following five functional layers:
+\begin{itemize}
+    \item SLM-1: Hypothetical Query Reasoning
+    \item Retrieval layer: BM25 Hybrid Retrieval Fusion
+    \item SLM-2: Evidence Stitching \& Reranking
+    \item SLM-X: Coverage Auditing \& Re-querying
+    \item SLM-3: Evidence-based Answer Generation
+\end{itemize}
+
+Each layer interacts with structured semantic messages instead of simple text splicing, realizing the interpretable and traceable information flow between modules.
+ Under the multi-role collaboration of lightweight SLM, the system forms a self-perceptive and self-healing retrieval and inference closed loop.
+
+\subsection{Hypothetical Query Reasoning}
+% Traditional RAGs often feed user issues directly into the retriever, making it difficult to override potential semantic angles or implicit subtasks in the issue, leading to limited recall.
+%  To this end, SLM-RAG introduces the SLM-1 module to perform what-if query reasoning (HQ Reasoning), transforming the original problem into a set of semantically diverse high-quality subqueries (HQs).
+% Model Responsibilities
+% SLM-1 inputs natural language questions (Q) and outputs structured query plans:
+%  $P = {hq_1, hq_2, \dots, hq_n}, \quad n \leq 5$
+%  Each subquery corresponds to a latent semantic perspective (such as time, causation, definition, or instance).
+% Theoretical motivation
+% HQ inference is equivalent to establishing a retrieval hypothesis space for the model.
+%  Compared with passive keyword retrieval, it can expand the coverage radius in the low-dimensional embedding space, so that the subsequent BM25 and vector recall stages can achieve higher diversity and semantic robility.
+
+Traditional RAG systems feed user queries directly into retrievers, making it difficult to uncover potential semantic angles or implicit subtasks within a question. This limitation results in incomplete recall and missed relevant information. To address this, SLM-RAG introduces SLM-1, which performs what-if query reasoning (HQ Reasoning) to transform an original question into a set of semantically diverse, high-quality subqueries (HQs).
+SLM-1 takes a natural language question $Q$ as input and outputs a structured query plan:
+$P = \{hq_1, hq_2, \ldots, hq_n\}$ where $n \leq 5$.
+Each subquery $hq_i$ corresponds to a latent semantic perspective. These perspectives may represent different dimensions such as temporal aspects (when), causation (why), definitions (what is), or specific instances (examples).
+HQ Reasoning is equivalent to establishing a retrieval hypothesis space for the model. Compared with passive keyword-based retrieval that processes only the original query, this approach expands the coverage radius in the embedding space. By exploring multiple semantic angles before retrieval, both BM25 sparse retrieval and dense vector retrieval stages can achieve higher diversity and semantic robustness while maintaining computational efficiency.
+
+
+
+\subsection{Hybrid Retrieval Fusion}
+% After the HQ is generated, the system enters the two-channel hybrid retrieval phase.
+%  For each (hq\_i), do the following:
+%  \begin{itemize}
+%      \item BM25 Sparse Retrieval: Based on keyword matching and inverse document frequency weighting, ensuring sensitive recall of precise entities, numbers, and symbols;
+%      \item Dense vector retrieval: Based on semantic embedding similarity calculations, supplementing semantic expansion and rewriting recall.
+%  \end{itemize}
+
+% The search results were deduplicated and layered fusion to form a candidate set ( $C = {c_1, c_2, \dots, c_k}$).
+%  This sparse + dense multi-granularity retrieval method takes into account the ability of exact matching and semantic generalization, and improves the breadth of recall while maintaining controllable computation.
+
+After SLM-1 generates hypothetical queries, the system proceeds to a two-channel hybrid retrieval phase. For each hypothetical query $hq_i$, the system performs parallel retrieval using two complementary methods.
+\begin{itemize}
+\item \textbf{BM25 Sparse Retrieval}: Uses keyword matching and inverse document frequency weighting to retrieve documents based on precise term matches and keyword relevance.
+\item \textbf{Dense Vector Retrieval}: Uses semantic embedding similarity calculations to retrieve documents based on semantic relevance and generalizes across different phrasings.
+\end{itemize}
+The search results from both methods are deduplicated and fused to form a candidate evidence set: $C = \{c_1, c_2, \ldots, c_k\}$. This sparse-plus-dense multi-granularity retrieval combines both retrieval pathways to improve recall breadth while maintaining computational efficiency.
+
+
+
+\subsection{Forensic Evidence Stitching \& Compression}
+% Traditional RAG systems generally rely on fixed-length document chunking strategies, which can easily lead to semantic truncation or lack of context.
+%  SLM-RAG designed a forensic completion mechanism driven by SLM-2a to enable the model to self-check evidence integrity.
+
+% \subsubsection{Integrity Inspection}
+% SLM-2a first determines the syntactic and semantic integrity of the candidate fragments:
+% \begin{itemize}
+%     \item Whether it ends with a non-terminator (e.g., comma, colon);
+%     \item Whether the semantic trunk at the beginning of the sentence is missing;
+%     \item Whether it is the middle part of structured content such as tables and code.
+% \end{itemize}
+
+% \subsubsection{Forensic completion and extraction compression}
+% If the detection result shows that the fragment is truncated, it will automatically extract 1 segment of each adjacent block before and after it from the source document for splicing to form a local context.
+%  SLM then performs extractive compression, leaving only the sentences or table lines relevant to the query semantics.
+%  This process guarantees contextual coherence without introducing generative hallucinations, forming traceable "forensic evidence."
+
+Retrieved passages often suffer from fragmentation due to fixed-length document chunking. SLM-2 addresses this through two coordinated sub-components: forensic evidence completion (SLM-2a) and semantic reranking (SLM-2b).
+
+\subsubsection{Integrity Inspection}
+SLM-2a examines each candidate fragment for three types of truncation:
+
+\begin{itemize}
+    \item Whether it ends with a non-terminator (e.g., comma, colon);
+    \item Whether the semantic core at the sentence beginning is missing;
+    \item Whether it is the middle part of structured content such as tables and code.
+\end{itemize}
+
+\subsubsection{Forensic completion and extraction compression}
+If truncation is detected, SLM-2a automatically retrieves one adjacent segment before and after the truncated passage from the source document and stitches them together. SLM-2a then performs extractive compression, retaining only sentences or table rows semantically relevant to the query. This process guarantees contextual coherence without introducing generative hallucinations, forming traceable "forensic evidence."
+
+
+
+\subsection{Reranking and Coverage Auditing}
+% In the completed evidence pool, SLM-2b performs semantic rearrangement, sorting candidate fragments by issue relevance and content credibility.
+%  The rearrangement model uses SLM as the core and optimizes the scoring function through contrastive learning, allowing the system to distinguish between semantically similar but logically conflicting candidates.
+% Immediately afterwards, SLM-X performs a coverage auditing to detect semantic gaps between questions and evidence through entity, relationship, and time triple alignment analysis:
+%  $\Delta = {missing_entities, missing_facts, missing_temporal_links}$
+%  If there is a gap, SLM-X converts the missing term into a new HQ to trigger reretrieval and rearrangement, so as to gradually make up for the missing knowledge within a limited number of iterations and achieve closed-loop enhancement.
+
+In the completed evidence pool, SLM-2b performs semantic rearrangement, sorting candidate fragments by relevance to the query and content credibility. The reranking model uses an SLM as the core and optimizes the scoring function through contrastive learning, allowing the system to distinguish between semantically similar but logically conflicting candidates.
+Immediately afterwards, SLM-X performs coverage auditing to detect semantic gaps between questions and evidence through entity, relationship, and time triple alignment analysis: 
+$\Delta = \{\texttt{missing\_entities}, \texttt{missing\_facts}, \allowbreak\ \texttt{missing\_temporal\_links}\}$.
+If there is a gap (i.e., $\Delta \neq \emptyset$), SLM-X converts the missing term into a new HQ to trigger re-retrieval and re-ranking. This process gradually fills knowledge gaps within a limited number of iterations, achieving closed-loop enhancement.
+
+% continue from here...
+
+\subsection{Knowledge Aggregation and Contextual Integration}
+In the previous stage, SLM-2b has completed the screening and sorting of evidence to obtain a set of text blocks that are most relevant to the query.
+SLM-3's task is to integrate and organize these fragments at a semantic level so that the search results have a structured, consistent contextual form that provides a clear, ready-to-use unit of knowledge for the final RAG output.
+
+ % Integrate processes
+The integration process of SLM-3 involves the following three main steps:
+% \begin{itemize}
+%     \item Entity Alignment
+%  standardize and merge the core terms and proprietary entities in each evidence to ensure that the same entity is uniformly identified in different fragments;
+%  \item $Entity_Set=normalize(∪ientities(ei))\text{Entity\_Set} = \text{normalize}(\cup_i \text{entities}(e_i))Entity_Set=normalize(∪ientities(ei))$
+%  \item Context Fusion
+%  Perform semantic merging and sequential collation of evidence fragments on the same topic or in a continuous context. If explicit connections between fragments are found (such as temporal evolution or conditional logic), SLM-3 automatically stitches them into continuous units of knowledge.
+%  \item Multi-hop linking
+%  For content that is associated through intermediary entities in different fragments, SLM-3 is responsible for discovering and concatenating these implicit links,
+%  Output a coherent view of knowledge across documents and paragraphs.
+% \end{itemize}
+
+\begin{itemize}
+    \item \textbf{Entity Alignment:} Standardize and merge the core terms and proprietary entities in each evidence to ensure that the same entity is uniformly identified in different fragments. The normalized entity set is: $\text{Entity\_Set} = \text{normalize}(\bigcup_i \text{entities}(e_i))$.
+    
+    \item \textbf{Context Fusion:} Perform semantic merging and sequential collation of evidence fragments on the same topic or in a continuous context. If explicit connections between fragments are found (such as temporal evolution or conditional logic), SLM-3 automatically stitches them into continuous units of knowledge.
+    
+    \item \textbf{Multi-hop Linking:} For content that is associated through intermediary entities in different fragments, SLM-3 is responsible for discovering and concatenating these implicit links, outputting a coherent view of knowledge across documents and paragraphs.
+\end{itemize}
+
+\subsection{Module synergy and lightweight design}
+% Each SLM module (SLM-1, SLM-2a, SLM-2b, SLM-X, SLM-3) of SLM-RAG shares a unified base model weight, and the role differentiation is realized through task instructions and context control.
+% This multi-task sharing mechanism not only reduces deployment overhead, but also ensures semantic consistency at different stages. The entire system achieves end-to-end semantic autonomous reasoning and knowledge enhancement without relying on large-scale LLMs.
+
+All SLM modules (SLM-1, SLM-2a, SLM-2b, SLM-X, SLM-3) in SLM-RAG share a unified base model with identical weights. Role differentiation among modules is achieved through task-specific instructions and context control rather than separate model instances. This multi-task sharing mechanism provides two key benefits: it reduces deployment overhead by requiring only a single lightweight model instead of multiple large models, and it ensures semantic consistency across different processing stages since all modules use the same underlying semantic understanding. The entire system achieves end-to-end semantic autonomous reasoning and knowledge enhancement without relying on large-scale language models, enabling practical deployment in resource-constrained environments.
+\end{comment}
