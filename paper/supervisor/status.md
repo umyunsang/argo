@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** collect the 25-label human-anchored calibration set under `paper/research/human-label-protocol.md`, sampling only from the 32 retained confirmation-task artifacts.
+- **next_first_action:** implement element verification over candidate spans behind the selective evaluator, then rescore the 32 retained artifacts and recompute variance components on the verified endpoint.
 
-- **last_updated:** 2026-09-02T23:01:46+09:00
+- **last_updated:** 2026-09-02T23:05:52+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 5 closed — 32-episode variance block EXECUTED; measured components reversed the repeat allocation; label protocol frozen
+- **current_phase:** cycle 6 closed — adversarial test falsified the cue-matching endpoint; endpoint redesigned to filter-plus-verification; calibration labels now load-bearing
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 6 — my primary endpoint failed its own falsifier
+
+- **Gap picked:** `RD-2026-09-02-11A` carried the falsifier "if coverage does not separate artifacts a reader would rank differently, it measures vocabulary". That was untested.
+- **Literature loop:** 9 discovery calls, 5 new `FULL_PAPER_READ` records, 6 locators. Planted-shortcut evaluation, solution hacking, and grounded checklist partial credit supplied the audit method.
+- **Executed:** an adversarial probe suite over all eight anchor checklists. Cue matching counted negated sentences containing the cue as satisfied at **0.969**, and missed genuine paraphrases at **0.909**.
+- **Ablation:** a negation guard drove false positives to **0.000** but raised misses to **1.000**. The failure is structural: matching cannot decide satisfaction.
+- **Verdict: falsifier fired.** Cue matching is rejected as the primary endpoint and demoted to a high-recall candidate filter; element satisfaction becomes a verified judgement admitted through the selective evaluator (`RD-2026-09-02-14A`).
+- **Two consequences recorded rather than hidden.** The 25-label calibration set moves from optional to load-bearing for the primary endpoint. The variance components from cycle 5 were computed on the falsified endpoint, so the numeric allocation is void while the algebra stands; the 32 episodes are retained and rescorable, so no episode is wasted (`RD-2026-09-02-14B`).
 
 ### Cycle 5 — variance block EXECUTED, allocation reversed by measurement
 

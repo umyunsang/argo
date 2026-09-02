@@ -1,0 +1,1095 @@
+
+Warning: orx 0.1.117 is outdated (latest 0.1.118). A newer release is available; upgrade to stay compatible with the API. Run `orx update` to upgrade.
+
+alphaXiv: https://www.alphaxiv.org/abs/2608.27487
+
+Grounded Checklist Partial Credit for Agent Skill Trajectories
+Suliu Qin
+Xi’an Jiaotong-Liverpool University
+Suliu.Qin22@student.xjtlu.edu.cn
+Lu Yin
+University of Surrey
+l.yin@surrey.ac.uk
+Xilu Wang
+University of Surrey
+wangxilu@surrey.ac.uk
+Abstract
+Language-model agents increasingly tackle long-horizon tasks in
+interactive environments, yet their evaluation commonly relies on
+task-level success rates by reducing an entire execution trajectory
+to whether the task passes an official verifier. This binary score
+hides partial progress and is particularly limited for procedural
+agent skill evaluations, since a skill can alter execution without
+changing the final outcome. While checklists provide finer-grained
+evaluation by scoring individual task requirements, costly manual
+authoring and unreliable automatic generation make trustworthy
+evaluation difficult to scale. To address these challenges, we intro-
+duce Grounded Checklist Partial Credit (GCPC), a human-governed
+and LLM-instantiated partial-credit evaluation of agent trajectories.
+Humans define reusable rules once, from which an LLM instantiates
+a task-specific checklist grounded in the task instruction and official
+verifier. To keep judgment tied to evidence, a judge scores each
+item from execution log evidence alone and abstains when evidence
+is missing. A separate scripted step then applies the official veri-
+fier outcome to the score. Across a 4,455-trajectory, deduplicated
+SkillsBench evaluation population, GCPC better discriminates offi-
+cial PASS and FAIL outcomes than holistic judging on the shared
+subset (AUC 0.689 vs. 0.619). Human evaluation on 96 trajectories
+from 12 tasks shows that GCPC aligns more closely with human
+assessments of progress. Applied to 1,946 matched with/without-
+skill pairs, GCPC exposes the effects hidden by pass@1: among
+879 pairs whose binary outcome does not change, 20.9% improve
+by more than 0.10 while 18.7% regress by the same margin. The
+GCPC pipeline also transfers to Terminal-Bench and SWE-bench,
+demonstrating applicability beyond skill-conditioned evaluation.
+Keywords
+agent evaluation, checklist, partial credit, LLM-as-a-judge, agent
+skills
+1 Introduction
+Recently, large language model (LLM) agents have drawn signif-
+icant attention and been applied to real-world problem-solving,
+including software engineering, web browsing, mathematics, and
+scientific discovery [14, 23]. Solving these tasks typically requires a
+long sequence of interdependent actions, where each step produces
+intermediate results, such as tool outputs, partial file edits, or re-
+trieved evidence. Despite these achievements, evaluation of LLM
+agents remains challenging, limiting the reliability required for
+real-world deployment. Long-horizon tool-using agents are com-
+monly evaluated through task-level success rates: an execution is
+marked as successful if it satisfies an environment or verifier, and
+as failed otherwise [17, 21, 37]. This evaluation compresses the en-
+tire trajectory into a binary score, which provides limited insights
+into these intricate processes. This limitation is particularly severe
+when evaluating agents with procedural skills, because a skill is
+designed to change how an agent interacts with the environment,
+even when the final task outcome remains unchanged. As illus-
+trated in Figure 1, binary task-level evaluation can hide substantial
+differences in agent execution. Figure 1 (a) shows three runs of
+the same task that all receive a FAIL outcome and therefore the
+same pass@1 score, despite satisfying three, five, and nine of the
+nine task requirements, respectively. Figures 1(b) and 1(c) further
+illustrate this limitation for procedural skills. Introducing a skill
+leads to more satisfied requirements in one case and fewer in the
+other, while the task-level outcome remains FAIL in both. These
+examples show that binary evaluation captures neither partial task
+progress nor how a skill changes the execution process, motivating
+a finer-grained evaluation of agent trajectories.
+Fine-grained evaluation offers a natural alternative by decompos-
+ing a task into requirements and scoring them separately [8, 11, 21].
+Rather than reporting only the final outcome, it reveals which parts
+of the task are completed and how the execution changes across
+runs. The unresolved problem is how to obtain trustworthy require-
+ments at scale. Human-authored rubrics can provide precise evalu-
+ation criteria, but require repeated task-specific construction and
+validation [11]. LLM-generated checklists reduce this authoring cost
+[4, 34, 41], but may omit important requirements, duplicate them
+at inconsistent granularity, or prioritize details that do not reflect
+human evaluation standards [39]. A separate risk arises at scoring
+time, as an LLM judge may then reward a plausible-looking log even
+when the required artifact state is absent, inheriting known holis-
+tic and positive biases in process judgment [8, 29, 38–40]. Hence,
+the central challenge is not decomposition alone, but a scalability–
+trustworthiness dilemma: an evaluation instrument must scale across
+tasks while keeping every item and every score auditable.
+To make fine-grained evaluation scalable without sacrificing
+trustworthiness, we introduce Grounded Checklist Partial Credit
+(GCPC), a human-governed and model-instantiated pipeline for
+effectively synthesizing verified task-specific checklists and scoring
+agent trajectories. To achieve this, human experts define a small
+set of reusable rules once, specifying how items should be writ-
+ten, how they must be grounded in the task instruction, how this
+grounding is automatically validated, and a five-category scheme
+to audit checklist coverage and diagnose execution failures. An
+LLM then applies these rules to each task’s instruction and official
+verifier [17, 37] to generate a task-specific checklist, without seeing
+any trajectory, outcome, or reference solution. A separate judge
+scores each item in the checklist using evidence from the execution
+log, and summarizes these scores as the GCPC score, the fraction
+of decidable requirements that are satisfied. The official verifier
+outcome is incorporated only after log-based scoring through fixed
+postprocessing, keeping trajectory evidence separate from infor-
+mation available only to the verifier. The central contribution is
+an auditable synthesis-and-scoring pipeline for partial credit on
+checklists, rather than a new aggregation formula. The pipeline
+arXiv:2608.27487v1 [cs.SE] 26 Aug 2026
+
+Figure 1: Checklist partial credit reveals execution differences hidden by binary outcomes on the SkillsBench task
+sales-pivot-analysis. (a) Three runs all receive an official FAIL outcome and are therefore indistinguishable under pass@1,
+but satisfy different numbers of checklist requirements, yielding partial-credit scores of 0.300, 0.500, and 0.900. In the last run,
+the execution log supports all nine checklist items, but the official verifier rejects the saved artifact. The verifier outcome is
+therefore included as a tenth violated endpoint item, giving 9/10 = 0.900. (b, c) Matched runs with and without skill access
+remain failed under binary evaluation, while partial credit reveals substantial improvement in one pair (Δ = +0.478) and
+regression in the other (Δ = −0.278).
+allows humans to govern how items are derived, validated, judged,
+and combined with the official outcome. Our main contributions
+are summarized below:
+• 
+We introduce Grounded Checklist Partial Credit (GCPC) for
+fine-grained evaluation of agent skill trajectories beyond
+binary task outcomes. Instead of reducing an execution to
+PASS or FAIL, GCPC measures which task requirements
+are satisfied and how much progress an agent makes to-
+ward task completion. The GCPC score therefore captures
+execution differences that remain invisible under task-level
+success rates, including changes between runs with the
+same final outcome.
+• GCPC makes such partial-credit evaluation scalable and
+auditable through a human-governed and LLM-instantiated
+checklist synthesis procedure. Humans define reusable rules
+for item synthesis, provenance, and validation once, while
+an LLM applies them to each task’s instruction and official
+verifier. Each item is grounded in the task specification,
+assigned an explicit verification route, and mechanically
+validated before scoring.
+• We validate GCPC against holistic trajectory scoring and
+independent human judgments on SkillsBench, showing
+that it achieves a higher AUC (0.689 versus 0.619) and closer
+agreement with human assessments than holistic scoring.
+Applied to 1,946 matched executions with and without
+procedural skills, GCPC reveals substantial improvements
+and regressions hidden by unchanged binary outcomes.
+GCPC further transfers to Terminal-Bench and SWE-bench,
+demonstrating applicability beyond skill-conditioned eval-
+uation.
+2 Related Work
+Our work lies at the intersection of fine-grained agent evaluation,
+rubric- and checklist-based judging, and the evaluation of agent
+skills. Table 1 positions representative systems using design prop-
+erties that can be stated consistently across these research threads.
+2.1 Agent Evaluation Beyond Task Success
+Agent benchmarks commonly summarize an execution through
+final-state success, which supports reproducible comparison but
+reveals little about partial progress. Several benchmarks therefore
+introduce intermediate evaluation structures. AgentBoard supple-
+ments success rate with manually specified subgoals and a progress-
+rate metric [21], while WebCanvas scores key states reached during
+web interaction [24]. Mind2Web 2 constructs task-specific rubric
+trees and judge agents to evaluate long-horizon search results [10].
+Odysseys similarly decomposes long-horizon web tasks into graded
+rubric checkpoints and reports closer agreement with humans than
+holistic trajectory judging [11]. These works demonstrate the value
+of measuring intermediate accomplishments, but their evaluation
+structures are generally created together with the benchmark. We
+study the complementary setting in which task instructions, exe-
+cutable verifiers, and trajectory corpora already exist and a fine-
+grained instrument must be constructed retrospectively. Work on
+process-level judging further shows that direct judgments of agent
+steps can be sensitive to label definitions and judge bias [8, 18, 28];
+our items instead describe task requirements and permit abstention
+when the saved trajectory does not expose sufficient evidence.
+2
+
+Table 1: Positioning against representative structured-evaluation methods (✓ = explicitly uses the design, not a preference
+judgment). Source quote: item-level task-text quotation; verifier link: explicit connection to executable benchmark checks.
+Method Auto-built Per-task Source quote Verifier link Item verdict Abstain Partial credit Trajectory
+Rubric- and checklist-based evaluation
+TICK [4] ✓ ✓ × × ✓ × ✓ ×
+CheckEval [15] ✓ × × × ✓ × ✓ ×
+RocketEval [34] ✓ ✓ × × ✓ × ✓ ×
+AutoChecklist [41] ✓ ✓ × × ✓ × ✓ ×
+Fine-grained agent evaluation
+AgentBoard [21] × ✓ × ✓ ✓ × ✓ ✓
+WebCanvas [24] × ✓ × ✓ ✓ × ✓ ✓
+Mind2Web 2 [10] ✓ ✓ × × ✓ × ✓ ×
+Odysseys [11] ✓ ✓ × × ✓ × ✓ ✓
+Agent-skill evaluation
+SkillsBench [17] × ✓ × ✓ × × × ✓
+SkillJuror [2] × ✓ × ✓ × × × ✓
+Checklist partial credit (ours) ✓ ✓ ✓ ✓ ✓ ✓ ✓ ✓
+2.2 Rubric- and Checklist-Based Evaluation
+Rubrics and checklists have emerged as alternatives to a single holis-
+tic judgment with decisions over explicit items by decomposing
+agent trajectories into explicit items and assessing each item sepa-
+rately. Human-authored requirements provide strong semantic con-
+trol, as in InFoBench, WildBench, and HealthBench [1, 19, 25], but
+require substantial task-specific labor. Alternatively, automated ap-
+proaches derive items from instructions, candidate responses, qual-
+ity dimensions, or feedback. TICK generates instruction-specific
+yes/no questions [4]; CheckEval decomposes human-selected qual-
+ity dimensions into Boolean questions [15]; and RocketEval uses
+instance-specific checklists with lightweight evaluators [34]. Au-
+toChecklist organizes such methods as composable generator–
+refiner–scorer pipelines [41]. However, automatically generated
+items can omit important requirements, vary in granularity, or
+include items that are difficult to verify [3, 5, 26, 27, 30].
+Decomposition alone does not guarantee a trustworthy instru-
+ment. RubricBench reports a substantial performance gap between
+model-generated and human-authored rubrics [39], while inserting
+checklists as soft guidance does not necessarily improve holistic
+judging [7, 9, 20, 31, 32]. These findings motivate our emphasis
+on item provenance. Our method constrains every generated item
+with a verbatim task quotation, links assertion-route items to exe-
+cutable verifier checks, freezes the checklist before any trajectory
+is observed, and separates item judgment from deterministic aggre-
+gation and the official-outcome step.
+2.3 Evaluation of Agent Skills
+Agent skills package procedural knowledge for use at inference time
+[6, 12, 16, 33, 35]. SkillsBench evaluates their marginal utility under
+conditions without skills, curated skills, and self-generated skills,
+with deterministic task verifiers as the primary outcome [17, 36].
+SkillJuror further studies how skill organization changes resource
+access and runtime behavior while keeping task knowledge fixed
+[2]. These studies show that skills can affect both task outcomes
+and execution behavior, but their comparative signal remains either
+the verifier’s final result or diagnostics computed over the whole
+trajectory. As a result, they provide limited insights into partial
+progress when a skill changes which task requirements are satisfied
+without changing the final PASS or FAIL outcome. Therefore, we
+do not introduce another skill benchmark. Instead, we construct
+a verifier-grounded checklist partial credit score to analyze the
+trajectories that existing agent-skill benchmarks already produce.
+3 Method: Grounded Checklist Partial Credit
+3.1 Setting and Pipeline Overview
+Fine-grained trajectory evaluation faces a scalability–trustworthiness
+dilemma. Expert-written checklists can closely reflect individual
+tasks, but lack scalability and transferability due to the high author-
+ing cost. Automatically generated checklists scale more easily, but
+their coverage, granularity, and grounding may be unreliable. To
+address this issue, GCPC separates the parts that require human
+governance from those that benefit from model-scale instantia-
+tion. This separation provides task-specific items without manual
+per-task checklist authoring, while preventing trajectory-specific
+adaptation and keeping both checklist synthesis and scoring au-
+ditable. Specifically, GCPC organizes evaluation into two stages:
+checklist synthesis and trajectory scoring. The overall pipeline
+is illustrated in Figure 2.
+A task 𝑡 provides a natural-language instruction 𝐼
+𝑡 
+and an official
+verifier 𝑉
+𝑡 
+whose executable assertions define what the benchmark
+accepts. A public corpus provides trajectories 𝜏 with execution logs
+and official PASS/FAIL outcomes. For Checklist synthesis, human
+experts define a five-category scheme for auditing requirement
+coverage, an item contract specifying how each item should be
+written, provenance rules specifying where each item comes from
+and how it can be verified, and mechanical gates that automatically
+reject invalid items. An LLM then applies these fixed rules to (𝐼
+𝑡 
+, 𝑉
+𝑡 
+)
+to generate a task-specific checklist 𝐶
+𝑡 
+= {𝑐
+1
+, . . . , 𝑐
+𝑚 
+} (§3.2). Note
+that checklist synthesis is performed once per task and generates
+a frozen checklist with auditable provenance.
+3
+
+Trajectory scoring applies the obtained checklist 𝐶
+𝑡 
+to each
+trajectory 𝜏 of the task, judging each item only from evidence visible
+in the execution log, before incorporating the official outcome at
+one scripted step (§3.3). The judged items are finally aggregated
+into the evaluation metrics, i.e., the GCPC score §3.4. Throughout
+this paper, GCPC names both the synthesis-and-scoring pipeline
+shown in Figure 2 and its obtained metric in Equation 1. GCPC is
+always computed from the execution log alone without the official
+outcome, while GCPC with official outcome denotes the variant that
+additionally applies the official-outcome step of Section 3.3.
+3.2 Checklist Synthesis
+The top panel of Figure 2 shows the one-time checklist synthesis
+stage. Synthesis uses only the task instruction and official veri-
+fier, without access to any evaluated trajectory, official outcome,
+or oracle solution. Excluding the oracle avoids privileging a sin-
+gle reference solution, while freezing the checklist before scoring
+prevents trajectory-specific adaptation.
+Reusable human-governed rules. Rather than asking experts to
+write a checklist for every task, checklist synthesis of GCPC de-
+fines once the rules that a valid item should follow. These reusable
+rules include an item contract specifying how each item should
+be written, provenance requirements specifying how it must be
+grounded in the task, and mechanical validation gates for rejecting
+invalid items. An LLM then applies the same rules to each task
+instruction and official verifier to generate a task-specific checklist.
+Separately, we use a five-category scheme covering comprehen-
+sion, acquisition, computation, construction, and validation to audit
+whether the resulting checklist captures the main types of task
+requirements. This scheme is used only for coverage and failure
+analysis and does not guide checklist synthesis.
+Grounded instantiation and validation. A generator model (Claude
+Sonnet 4.6) applies the fixed rules to the task instruction and official
+verifier to produce a task-specific checklist. Each checklist consists
+of self-contained, non-redundant items that apply across valid solu-
+tion paths, with each item carrying a verbatim quote from the task
+instruction. Each item is assigned one of three verification routes:
+assertion when a published verifier test covers it, generated when a
+deterministic check could be written but is absent and requires a
+newly generated deterministic check, and judge when judgment is
+unavoidable. Across 87 tasks, the resulting checklists contain 713
+items (4–15 per task; median 8), of which 82.3%, 14.9%, and 2.8% fol-
+low the assertion, generated, and judge routes, respectively. Figure 3
+shows complete five-item checklists for two tasks from different do-
+mains, illustrating how the same rules produce task-specific items
+across all three verification routes.
+A deterministic validator then checks each item to ensure that its
+quoted text appears verbatim in the task instruction, any assertion
+reference resolves to an actual verifier test, and the item expresses a
+task requirement rather than merely reproducing test code. All 713
+production items pass these gates. Failed generations are explicitly
+reviewed and regenerated rather than repaired through an unlogged
+retry loop. Targeted author review is reserved for human-evaluation
+tasks and items flagged by the enforceability analysis in §4.6.
+3.3 Trajectory Scoring
+The lower subfigure of Figure 2 shows how the checklist is applied
+to an execution trajectory, while keeping trajectory-visible evidence
+separate from information available only to the official verifier.
+Evidence-grounded item judgment. A judge model (GPT-5.4-mini,
+from a different model family than the generator) receives the
+checklist and one execution log, and independently labels each
+item Yes, No, or Abstain. Only displayed tool outputs and file
+contents count as evidence; agent claims and unobserved state do
+not. Abstain means that the log does not contain enough evidence
+to decide whether the item is satisfied or not, rather than that the
+requirement has failed. This item-level judgment keeps scoring tied
+to observable evidence and makes missing evidence explicit.
+Applying the official outcome. Only after every item has been
+judged does a deterministic script incorporate the official outcome.
+On an official PASS, PASS propagation overwrites assertion-route
+items as Yes, because the verifier has executed the referenced tests
+against the saved artifact. On an official FAIL, the item judgments
+remain unchanged because the endpoint does not reveal which
+individual requirements failed. The script then appends one vir-
+tual official-outcome endpoint item, labeled Yes for PASS and No
+for FAIL. This endpoint contributes to GCPC with official outcome,
+ensuring that the partial-credit score remains consistent with final
+task success, but is excluded from Perfect. For example, suppose
+all nine checklist items are judged Yes from the execution log,
+but the official verifier returns FAIL. Plain GCPC, which uses only
+log evidence, assigns a score of 9/9 = 1.0. GCPC with official out-
+come additionally includes a No endpoint for the failed task, giving
+9/(9 + 1) = 0.900. Thus, a failed trajectory may still receive high
+partial credit when the log shows substantial progress, but it cannot
+receive a perfect score once the official outcome is incorporated.
+Plain GCPC uses only trajectory evidence and does not incorpo-
+rate the official PASS/FAIL outcome. In particular, it applies neither
+PASS propagation nor the official-outcome endpoint item. We use
+this log-only score for the equal-information comparisons in §4,
+while later ablations separately measure the effects of these two
+official-outcome mechanisms.
+3.4 Evaluation Metrics
+For a trajectory 𝜏, the judgment stage assigns every item 𝑐
+𝑖 
+∈ 𝐶
+𝑡
+one of Yes, No, or Abstain. Let 𝐷
+𝜏 
+denote the items decided after
+the official-outcome step (§3.3). The GCPC pipeline reports three
+complementary metrics.
+Checklist Partial Credit. The primary checklist partial credit score
+measures the fraction of criteria that are satisfied:
+GCPC (𝜏) = 
+|{𝑐 ∈ 𝐷
+𝜏 
+: label(𝑐) = Yes}|
+|𝐷
+𝜏 
+| 
+. (1)
+Criteria labeled Abstain are excluded from the denominator, so
+insufficient evidence is not treated as failure. The amount of check-
+list evidence supporting the score is reported separately through
+evidence coverage.
+Zero-violation companion. A high partial-credit score can still
+hide one fatal violation among many satisfied items. We therefore
+4
+
+Figure 2: Overview of the GCPC pipeline. Checklist synthesis runs once per task: human-written rules govern LLM synthesis,
+provenance gates reject unverifiable items, and the checklist is frozen before any trajectory is read. During per-trajectory
+scoring, a judge labels each item from the execution log alone; the official outcome is applied only afterwards, at one scripted
+step. Aggregation produces the three evaluation metrics: checklist partial credit, Perfect, and evidence coverage.
+Task:Lake Mendota simulation
+glm-lake-mendota · 5 items · 5/5 mechanically valid
+ID Generated item Route
+GLM-01 Run GLM successfully to simulate Lake Mendota’s
+vertical water temperature.
+assertion
+GLM-02 Achieve temperature RMSE below 2.0
+◦
+C against the
+observations.
+assertion
+GLM-03 Produce the simulation output as
+/root/output/output.nc.
+assertion
+GLM-04 Cover the complete requested period, 2009-01-01
+through 2015-12-30.
+generated
+GLM-05 Save the calibrated parameters to /root/glm3.nml
+so that GLM can be rerun standalone.
+assertion
+Task:Diagnose and repair a failed build
+fix-build-google-auto · 5 items · 5/5 mechanically valid
+ID Generated item Route
+S-01 Save a non-empty analysis of the build failure to
+failed_reasons.txt.
+assertion
+S-02 Name the concrete errors and classify each as
+originating in application code or build configuration.
+judge
+S-03 Produce one or more patch_{i}.diff files in
+standard unified-diff format.
+assertion
+S-04 Ensure that the proposed patches address the errors
+identified in the failure analysis.
+judge
+S-05 Apply the patches so that the official build script
+subsequently exits with code 0.
+assertion
+Figure 3: Examples of frozen task-specific checklists. All items are shown (wording shortened for layout). Routes mark
+requirements covered by an existing verifier test (assertion), admitting a new deterministic check (generated), or requiring
+model judgment (judge). Each checklist is synthesized once per task, validated, and reused across trajectories, without seeing
+any trajectory or outcome.
+report a complementary binary metric
+Perfect(𝜏) = 1
+
+𝑐 ∈ 𝐶
+𝑡 
+: label(𝑐) = No
+ 
+. (2)
+The Perfect score equals one if no checklist item is judged No, and
+zero otherwise. Items labeled Abstain do not count as violations.
+The metric is computed only over the task checklist and excludes
+the virtual official-outcome endpoint introduced in §3.3. Including
+this endpoint would make the results largely duplicate the official
+PASS/FAIL outcome: On the deduplicated 𝑛=4,455 population, Per-
+fect agrees with the official outcome on 97.6% of trajectories when
+the endpoint is included, but on only 66.4% when it is excluded.
+Evidence coverage. We report |𝐷
+𝜏 
+|/|𝐶
+𝑡 
+| as the fraction of checklist
+criteria for which the execution log provides sufficient evidence to
+determine whether the corresponding checklist is satisfied. If all
+5
+
+criteria receive Abstain, the trajectory is marked as zero-evidence
+and handled separately in the experimental protocol (§4).
+4 Experiments
+We organize our experiments to validate the proposed evaluation
+pipeline around five research questions (RQs). RQ1 tests whether
+checklist partial credit extracts more signal from a trajectory than
+existing scoring methods under equal information. RQ2 evaluates
+whether that signal agrees with independent human judgments of
+execution progress. RQ3 asks what the score reveals about skills
+when the official outcome does not change. RQ4 asks which con-
+straints are needed to make scalable checklist evaluation trust-
+worthy, isolating task grounding, the official-outcome step, and
+abstention. Finally, RQ5 tests whether the instrument is repeatable,
+enforceable, robust to judge substitution, and applicable beyond
+the tasks used to develop it.
+4.1 Experimental Setup
+Benchmark. We study SkillsBench v1.1, which contains 87 tool-
+using tasks from eight domains and 20,818 labeled public trajec-
+tories produced by 234 harness–model–condition configurations.
+Each trajectory consists of an execution log and an official PASS/-
+FAIL outcome. Our data collection covers all tasks with 713 items
+(4–15 per task; median 8), all of which pass the mechanical prove-
+nance checks of §3.2. The evaluation population contains 4,455
+unique trajectories with binary official outcomes; self-generated-
+skill configurations and non-binary rewards are excluded wherever
+a matched binary comparison is required. Answering the above
+different RQs requires different stored judgments or matching con-
+straints. Each population is the largest or most appropriate subset
+for a particular analysis, depending on whether the analysis requires
+the same trajectories to be scored by both methods, repeated crite-
+rion judgments, item-level judgments for the official-outcome-step
+ablation, matched with/without-skill pairs, or human annotations.
+Compared scoring methods and settings. We compare five log-
+only scoring methods: GCPC (plain GCPC without the official-
+outcome step in this comparison), a Generic checklist, TICK as pub-
+lished [4], an adapted TICK, and a Holistic judge. All five methods
+receive the same trajectory information and do not see the offi-
+cial PASS/FAIL outcome. All methods that require model-based
+judgment use the same judge model, so the comparison varies the
+scoring procedure while controlling for judge identity.
+The Generic checklist uses the same five fixed questions for all
+tasks, without adaptation to the task instruction or verifier. This
+baseline tests whether using multiple criteria alone improves trajec-
+tory evaluation. TICK follows the original checklist generation and
+scoring procedure of Cook et al. [4]. Since TICK was designed for
+evaluating responses, we also test an adapted TICK that replaces
+the word response with agent execution trajectory while leaving
+the rest of the procedure unchanged. The Holistic judge evaluates
+the entire execution trajectory with a single score from 0 to 10,
+which is rescaled to [0, 1]. It serves as a baseline for comparing
+criterion-level scoring with overall trajectory-level scoring.
+Metrics that use the official outcome, including GCPC with offi-
+cial outcome, Perfect, and Pass Rate, are analyzed separately because
+they incorporate the same PASS/FAIL outcome against which dis-
+crimination is measured.
+Metrics and uncertainty. For agreement with the official outcome,
+we report area under the ROC curve (AUC), with ties counted as
+one half, and PASS–FAIL mean separation where a mechanism
+analysis requires an additive scale. Confidence intervals use 2,000
+task-clustered bootstrap resamples with fixed seeds. These mea-
+sures assess agreement with the official binary outcome, but do
+not establish agreement with human judgments. Human validity
+is evaluated separately using pairwise preference agreement and
+Spearman correlation with mean progress ratings. For outcome-
+free analyses, trajectories for which all criteria receive Abstain are
+excluded, while individual abstained criteria are excluded from the
+GCPC denominator.
+4.2 RQ1: Does GCPC improve trajectory
+discrimination?
+To isolate the effect of the scoring method from differences in
+population coverage, our primary comparison uses the trajectories
+scored by both GCPC and the holistic judge, and the corresponding
+results are presented in Table 4. On these identical trajectories,
+GCPC achieves an AUC of 0.689, compared with 0.619 for the
+holistic judge. The corresponding paired ΔAUC is +0.056 with a
+task-clustered 95% confidence interval of [−0.002, 0.118]; 97.1% of
+the 2,000 bootstrap draws are positive. Thus, item- level scoring
+discriminates official outcomes more reliably than asking the same
+judge model for one trajectory-level score.
+The remaining arms probe rival explanations descriptively. The
+fixed Generic checklist reaches AUC 0.613, showing that merely
+replacing one holistic question with several fixed questions does
+not recover GCPC’s signal. TICK reaches 0.598 as published and
+0.610 after the minimal trajectory-domain adaptation; the tested
+adaptation narrows but does not close the gap. Because these rows
+have different coverage and differ in more than one design choice,
+they identify which broad explanations are insufficient rather than
+assigning the entire gain to a single component. GCPC is also stable
+across skill condition (AUC 0.681 with skills and 0.688 without),
+indicating that the result is not carried by only one condition.
+Under equal information and on identical trajectories, GCPC
+provides more outcome-discriminative signal than holistic judging.
+This is a mechanism check against the benchmark label, not yet
+evidence that GCPC matches how people perceive partial progress;
+RQ2 supplies that independent target.
+4.3 
+RQ2: Does checklist partial credit agree with
+human judgments?
+We evaluate GCPC against human judgments at three levels by
+answering three questions, Q1–Q3. Q1 asks humans to rate the
+overall progress of each trajectory and tests whether higher GCPC
+scores correspond to greater perceived progress. Q2 asks humans to
+compare trajectories from the same task and tests whether GCPC
+ranks better and worse executions in the same way as humans.
+Q3 asks humans to judge individual checklist criteria and tests
+whether the criterion-level judgments produced by GCPC agree
+with human judgments. Q1 and Q2 are completed before annotators
+6
+
+Panel A – paired comparison
+Δ +0.056
+positive in 97.1%
+Checklist partial
+credit (ours) 
+0.689
+Holistic judge 
+0.619
+0.55 0.65 0.75
+AUC
+Panel B – descriptive AUC
+Checklist partial
+credit (ours) 
+0.689
+Holistic judge 
+0.619
+Generic checklist 
+0.613
+TICK, adapted 
+0.610
+TICK, as
+published 
+0.598
+0.55 0.65 0.75
+AUC
+Figure 4: Checklist partial credit vs. baseline methods (𝑛=4,455). Panel A: paired comparison with the holistic judge on identical
+trajectories (paired ΔAUC +0.056, 95% CI [−0.002, 0.118], positive in 97.1% of resamples). Panel B: descriptive AUC (95% CI) on
+each method’s own available sample.
+Table 2: Agreement with human judgments (pairwise
+agreement with Q2 preferences; 𝜌 with mean Q1 ratings).
+Comparable-pair counts vary by method due to ties and miss-
+ing scores.
+Method Pairwise agr. 𝜌 vs. Q1 [95% CI]
+GCPC (ours) 0.730 0.382 [0.114, 0.628]
+GCPC with official outcome (ours) 0.656 0.384 [0.111, 0.642]
+Holistic judge 0.613 0.218 [0.067, 0.390]
+TICK 0.691 0.162 (n.s.)
+Generic checklist 0.569 0.132 (n.s.)
+see the checklist, providing independent validation of the GCPC
+score. Q3 is conducted after the checklist is revealed and directly
+evaluates agreement on individual criteria.
+We collected annotations for a prespecified subset of 96 trajecto-
+ries from 12 tasks spanning all eight SkillsBench task domains. Five
+annotators completed 25 task assignments, with every task assigned
+to at least two annotators. For each assignment, an annotator first
+evaluated all eight same-task trajectories under Q1/Q1b and Q2. Q3
+was then conducted on five selected trajectories, each evaluated by
+two annotators, providing criterion-level audit. Annotators were
+not given official outcomes, automated scores, or configuration
+metadata, although some logs revealed the harness used.
+Among the continuous outcome-free methods, GCPC achieves
+the highest agreement with human pairwise preferences, reaching
+0.730 compared with 0.613 for the holistic judge, 0.691 for TICK,
+and 0.569 for the Generic checklist. GCPC also shows a stronger
+correlation with human progress ratings than the holistic judge
+(𝜌 = 0.382 versus 0.218).
+Human annotations further reveal two challenges in trajectory
+evaluation. First, holistic progress ratings show only moderate inter-
+annotator agreement (𝛼 = 0.466), whereas criterion-level judgments
+reach 𝛼 = 1.00 on the small doubly rated subset of 12 criteria.
+Although the latter result is based on a limited sample, it suggests
+that individual requirements may be easier to judge consistently
+than overall execution progress. Second, when annotators see only
+the execution log, they assign similar progress scores to officially
+passing and failing trajectories (8.86/10 versus 7.88/10 on average).
+This indicates that the log does not always reveal the final artifact
+state available to the official verifier, motivating the separate official-
+outcome step. Because this step directly uses the official outcome,
+GCPC with official outcome is not treated as independent evidence
+of human validity.
+4.4 RQ3: What skill effects does binary
+evaluation hide?
+To measure skill-associated changes, we construct matched pairs
+that share the same task, harness, and model-and-source config-
+uration, and differ only in whether a skill is provided. After ex-
+cluding self-generated-skill configurations and non-binary out-
+comes, we obtain 1,946 matched pairs. For each pair, we compute
+Δ GCPC = GCPC 
+with 
+− GCPC 
+without
+, where a positive value indi-
+cates higher checklist partial credit with the skill. We then group the
+pairs by how the official PASS/FAIL outcome changes after adding
+the skill: FAIL→FAIL, FAIL→PASS, PASS→FAIL, or PASS→PASS.
+The matching rule, the 0.037 test–retest noise floor, the 0.10 thresh-
+old for a material change, and the statistical tests were fixed before
+computing the results.
+Figure 5 compares changes in the official PASS/FAIL outcome
+with changes in checklist partial credit. When adding a skill changes
+the official outcome, GCPC moves in the expected direction. For
+FAIL→PASS pairs, the median GCPC increases by 0.227, whereas
+for PASS→FAIL pairs, it decreases by 0.222.
+The largest group consists of 879 FAIL→FAIL pairs, for which
+binary evaluation reports no change. Notably, 20.9% of pairs im-
+prove by more than 0.10, while 18.7% regress by more than 0.10.
+Thus, even when the official outcome remains unchanged, GCPC
+reveals substantial skill-associated improvements and regressions
+and identifies which checklist criteria changed.
+7
+
+Official outcome with skill
+FAIL (0) PASS (1)
+Official outcome without skill
+FAIL
+(0)
+PASS
+(1)
+0 → 0
+𝑛 = 879
+median Δ = 0.000
+20.9% improve > 0.10
+18.7% regress > 0.10
+0 → 1
+𝑛 = 436
+median Δ = +0.227
+88.8% improve > 0.10
+1 → 0
+𝑛 = 123
+median Δ = −0.222
+only 0.8% move upward
+1 → 1
+𝑛 = 508
+median Δ = 0.000
+4.3% improve > 0.10
+Figure 5: Matched skill effects by official-outcome transition
+(without → with skill).
+4.5 RQ4: Which design choices make GCPC
+trustworthy?
+We next examine which design choices are important for reliable
+GCPC evaluation. Specifically, we test whether the checklist should
+be task-specific, how the official PASS/FAIL outcome should be
+incorporated, how insufficient evidence should be handled, and
+whether criterion judgments actually respond to the evidence they
+are intended to assess. We also evaluate the five-category require-
+ment scheme used to audit checklist coverage. Table 3 summarizes
+these analyses.
+Checklist construction. Panel A tests whether task-specific check-
+list construction is necessary. GCPC achieves the best performance
+with an AUC of 0.689. Replacing its task-specific checklist with
+the same five fixed questions for every task reduces AUC to 0.613.
+TICK reaches 0.598 using its published procedure and 0.610 after
+adapting its prompt to agent trajectories. Because score availability
+differs across these methods, Panel A provides descriptive compar-
+isons, and the direct paired comparisons on identical trajectories
+are reported separately in Table 4.
+Official-outcome step. Panel B isolates the two operations in the
+official-outcome step, recomputed at board scale (3,811 trajectories
+with recovered item-level judgments; 110-trajectory directed-set
+numbers, 0.088/0.222/0.121/0.249, replicate the same ordering and
+are retained as the original replication point). The official endpoint
+supplies the larger increment in PASS–FAIL separation (+0.194),
+while PASS propagation alone contributes +0.034; combining them
+yields 0.338. These values explain how the official outcome affects
+the outcome-inclusive score and are not independent validity evi-
+dence. Accordingly, the primary equal-information comparison in
+Table 4 uses plain GCPC.
+Abstention and evidence sensitivity. Panel C examines whether
+criterion judgments are appropriately tied to the available evidence.
+We first test how missing evidence should be handled. If every
+Abstain is recoded as No, PASS–FAIL separation increases from
+0.338 to 0.445. However, this improvement comes from treating
+insufficient evidence as evidence of failure. We therefore retain the
+original rule, under which Abstain indicates that the requirement
+cannot be determined from the log and is excluded from the GCPC
+denominator.
+We next test whether a criterion judgment changes when its
+supporting evidence changes. For criteria initially judged Yes, we
+replace the decisive evidence with a plausible but incorrect value
+and score the criterion again. After replacement, 73.5% of judgments
+change to No, and 78.1% change to either No or Abstain. This
+shows that most criterion judgments are sensitive to the evidence
+in the execution log rather than remaining unchanged when that
+evidence becomes incorrect.
+Audit-layer falsification. The five-category requirement scheme
+is used only to audit checklist coverage. We compare the original
+scheme with three controls: an incomplete version with some cat-
+egory definitions removed, an irrelevant version with unrelated
+definitions, and a name-permuted version that changes category
+names while preserving their definitions. Coverage decreases from
+99.4% with the original scheme to 79.6% with the incomplete scheme
+and 0.0% with the irrelevant scheme, while the name-permuted
+version retains 98.7% coverage. These results show that the audit
+depends on the completeness and semantic content of the category
+definitions rather than their names.
+4.6 RQ5: Is GCPC reliable and transferable?
+We finally examine whether GCPC produces stable scores and
+whether the same pipeline can be applied beyond skill-conditioned
+evaluation.
+Reliability. The scoring pipeline runs three times over the 116-
+trajectory directed set, yielding Krippendorff’s 𝛼 = 0.905 (95% CI
+[0.811, 0.963]). To check whether this reliability result generalizes
+beyond the directed set’s composition, we repeated the same three-
+pass procedure on an independently sampled set of 60 tasks drawn
+from a population with much higher skill usage, obtaining 𝛼 = 0.937
+[0.875, 0.981]. Replacing the judge with Claude Haiku 4.5 gives
+Spearman 𝜌 = 0.615 for GCPC and 𝜌 = 0.916 for outcome-inclusive
+scores, although the latter partly reflects the official signal shared by
+both judges. Detailed stability strata and judge-specific abstention
+behavior are reported in the supplementary material.
+Zero-adaptation transfer. Terminal-Bench 2.0 [22] and SWE-bench
+Verified [13] contain no skill condition. We therefore use them to
+test whether GCPC can evaluate general agent trajectories without
+changing the generation prompt, item contract, judge prompts, or
+scoring rules. We apply the GCPC to one successful and one un-
+successful trajectory for each of 86 Terminal-Bench tasks and 100
+SWE-bench Verified instances, and present the results in Table 4.
+The same checklist-synthesis procedure can be applied across
+SkillsBench, Terminal-Bench, and SWE-bench without changing
+its rules. On 20 unseen SkillsBench tasks, the frozen five-category
+requirement scheme covers 355 of 357 stated requirements, and
+all 214 generated criteria pass the mechanical validation checks.
+These results show that the checklist-synthesis procedure transfers
+to unseen tasks and benchmarks. We next examine whether the
+GCPC scores provide useful information about execution progress.
+General-task diagnosis. On Terminal-Bench, GCPC assigns a
+higher score to the passing trajectory in 40 of 69 decidable same-
+task pairs, a lower score in only two pairs, and the same score in
+27 pairs (median Δ = +0.25; 𝑝 < 10
+−9
+). This suggests that GCPC
+8
+
+Table 3: Ablations and falsification checks. Panel A reports descriptive AUCs on each arm’s own available sample within the
+n=4,455 deduplicated population; Panel B compares the same 3,811 board trajectories with recovered item-level judgments.
+Panel C reports separate quality-control checks.
+Variant or test Design change Sample Result
+A Checklist construction descriptive AUC
+Task-specific GCPC (ours) Grounded checklist generated separately for each task 0.689
+Generic checklist Replace task-specific items with five fixed questions 0.613
+TICK Replace checklist synthesis with an external pipeline 0.598
+TICK, adapted Add trajectory-domain wording to the TICK prompt 0.610
+B The official-outcome step PASS–FAIL separation
+GCPC (no official outcome) Endpoint off; PASS propagation off 0.121
+Endpoint only Endpoint on; PASS propagation off 0.315 (+0.194)
+Propagation only Endpoint off; PASS propagation on 0.155 (+0.034)
+Both operations Endpoint on; PASS propagation on 
+0.338 (+0.217)
+C Stress and falsification checks separate QC checks
+Primary abstention rule Exclude Abstain from the GCPC denominator 3,811 board traj. Separation 0.338
+Forced-verdict sensitivity Recode every Abstain as No 3,811 board traj. 
+Separation 0.445
+Evidence replacement Replace every occurrence of the decisive evidence 218 item pairs 
+73.5% strict; 78.1% incl. Abstain
+Idle-agent floor Score trajectories with no substantive task execution 4 traj. 4/4: GCPC = 0
+Schema falsification Real / reduced / irrelevant / name-permuted schema Requirement sets 99.4 / 79.6 / 0.0 / 98.7%
+Table 4: Zero-adaptation checklist synthesis across bench-
+marks.
+Benchmark Tasks Checklist Items Validity
+SkillsBench v1.1 87 713 100%
+Terminal-Bench 2.0 86 585 98.8%
+SWE-bench Verified 100 336 94.9%
+generally reflects differences between successful and unsuccessful
+executions while providing finer-grained information than pass
+rate. For example, on pypi-server, the failing trajectory satisfies
+four of six criteria: the package name, version, import, and function
+are correct, but the agent does not build a distributable artifact or
+start the package-index server. Pass rate records only that the task
+failed, whereas GCPC shows that substantial progress was made
+and identifies the remaining failures, assigning 0.67 compared with
+1.00 for the passing trajectory.
+Evidence boundary. SWE-bench reveals a limitation of log-only
+GCPC. Among 74 decidable resolved/unresolved pairs, 58 receive
+the same GCPC score and 42.1% of criteria receive Abstain, indi-
+cating that many execution logs lack enough evidence to distin-
+guish successful from unsuccessful trajectories. For example, on
+sphinx-doc__sphinx-10435, both trajectories satisfy all three cri-
+teria derived from the issue description and receive GCPC 1.00; only
+the official tests reveal a difference, after which the scores become
+1.00 and 0.75. GCPC therefore still applies to SWE-bench, but its
+log-only informativeness is bounded by what the task instruction
+and execution log make observable.
+5 Limitations
+GCPC is limited by what the task instruction, verifier, and execu-
+tion log make observable. Provenance checks ensure that checklist
+criteria are traceable to these sources, but do not guaranty that the
+sources capture every valid task requirement. Similarly, when the
+execution log lacks sufficient evidence, GCPC may provide little
+additional information, as shown by the 58 of 74 tied SWE-bench
+pairs.
+GCPC also depends on the judge and the official verifier. Crite-
+rion judgments may vary across judge models, while GCPC with
+official outcome directly uses the benchmark outcome and therefore
+inherits any verifier errors. Its stronger agreement with PASS/FAIL
+should consequently not be interpreted as independent validity ev-
+idence. In addition, our scalability claim refers to reducing manual
+checklist authoring across tasks, rather than reducing the computa-
+tional cost of model inference.
+6 Conclusion
+We introduced GCPC, a verifier-grounded checklist evaluation
+framework that complements binary task outcomes with an au-
+ditable criterion-level view of execution progress. Rather than re-
+lying on either repeatedly authored human checklists or uncon-
+strained model-generated criteria, GCPC combines reusable human-
+defined rules with task-specific checklist synthesis, provenance
+validation, evidence-based criterion judgment, and a separate de-
+terministic official-outcome step. Experiments show that GCPC
+provides more informative trajectory evaluation than holistic scor-
+ing and reveals skill-associated improvements and regressions that
+remain hidden when the PASS/FAIL outcomes do not change. Relia-
+bility and transfer experiments further show that the same pipeline
+can be applied beyond skill-conditioned evaluation, while its in-
+formativeness remains limited by the evidence available in the
+trajectory.
+Ethical Considerations
+The main negative societal impact we identify concerns misuse and
+harm that can arise even when GCPC functions exactly as intended.
+Because GCPC assigns partial credit to individually quotable, verifi-
+able criteria rather than a single opaque score, it is more attractive
+than a holistic judge as a training reward signal for reinforcement
+9
+
+learning: an agent could be optimized directly against checklist
+wording. This is a genuine risk precisely because the instrument
+works well at the level it was designed for, criterion-level agreement
+with task requirements, and because that same granularity gives
+an optimizer many small, quotable targets to game rather than one
+coarse signal that is harder to locally exploit. An agent could learn
+to produce log evidence that satisfies the letter of a criterion, such as
+fabricated tool outputs or superficially matching phrasing, without
+completing the underlying requirement, reproducing the Good-
+hart’s Law failure mode that motivated our evidence-grounded,
+abstention-aware design in the first place, now at the level of the
+training signal rather than the evaluation signal.
+To mitigate this, we explicitly release the GCPC as an evaluation
+and audit instrument, not as a validated reward function. Every
+design choice in this paper (verbatim-quote provenance, verifier
+grounding, abstention on missing evidence, and the reliability and
+enforceability checks of §4.6) targets measurement trustworthiness
+under a fixed policy; none of it has been validated as a reward
+signal under active optimization, where an agent can adapt its
+behavior specifically to exploit the metric rather than merely being
+measured by it. We do not recommend using GCPC to shape agent
+behavior via reinforcement learning without a separate study of
+its robustness to such optimization pressure, analogous to the gap
+between static benchmark performance and behavior under active
+adversarial or reward-seeking pressure.
+We do not identify a substantial concern about fairness, physical
+safety, or security specific to this contribution.
+References
+[1] Rahul K. Arora et al. 2025. HealthBench: Evaluating Large Language Models
+Towards Improved Human Health. arXiv:2505.08775.
+[2] Zhiyu Chen, Zihan Guo, Bo Huang, Bingwei Lu, Jianghao Lin, Yuanjian Zhou,
+and Weinan Zhang. 2026. SkillJuror: Measuring How Agent Skill Organization
+Changes Runtime Behavior. arXiv:2606.11543.
+[3] 
+SeongYeub Chu, JongWoo Kim, and MunYong Yi. 2024. Think Together and Work
+Better: Combining Humans’ and LLMs’ Think-Aloud Outcomes for Effective
+Text Evaluation. arXiv:2409.07355.
+[4] 
+Jonathan Cook, Tim Rocktäschel, Jakob Foerster, Dennis Aumiller, and Alex
+Wang. 2024. TICKing All the Boxes: Generated Checklists Improve LLM Evalua-
+tion and Generation. arXiv:2410.03608.
+[5] Jacob Dineen, Aswin RRV, Qin Liu, Zhikun Xu, Xiao Ye, Ming Shen, Zhaonan Li,
+Shijie Lu, Chitta Baral, Muhao Chen, and Ben Zhou. 2025. QA-LIGN: Aligning
+LLMs through Constitutionally Decomposed QA. In Findings of the Association
+for Computational Linguistics: EMNLP 2025. 20619–20642. arXiv:2506.08123.
+[6] 
+Kexin Ding, Yang Zhou, Can Jin, Feng Tong, Mu Zhou, and Dimitris N. Metaxas.
+2026. Agent Skill Evaluation and Evolution: Frameworks and Benchmarks.
+arXiv:2606.11435.
+[7] Liang Ding. 2026. AdaRubric: Task-Adaptive Rubrics for Reliable LLM Agent
+Evaluation and Reward Learning. arXiv:2603.21362. KnowFM Workshop @ ACL
+2026.
+[8] Shengda Fan, Xuyan Ye, Yupeng Huo, Zhi-Yuan Chen, Yiju Guo, Shenzhi Yang,
+Wenkai Yang, Shuqi Ye, Jingwen Chen, Haotian Chen, Xin Cong, and Yankai Lin.
+2026. AgentProcessBench: Diagnosing Step-Level Process Quality in Tool-Using
+Agents. arXiv:2603.14465.
+[9] Momoka Furuhashi, Kouta Nakayama, Takashi Kodama, and Saku Sugawara.
+2025. Are Checklists Really Useful for Automatic Evaluation of Generative
+Tasks?. In Proceedings of the 2025 Conference on Empirical Methods in Natural
+Language Processing. arXiv:2508.15218.
+[10] 
+Boyu Gou, Zanming Huang, Yuting Ning, Yu Gu, Michael Lin, Weijian Qi, Andrei
+Kopanev, Botao Yu, Bernal Jiménez Gutiérrez, Yiheng Shu, Chan Hee Song,
+Jiaman Wu, Shijie Chen, Hanane Nour Moussa, Tianshu Zhang, Jian Xie, Yifei Li,
+Tianci Xue, Zeyi Liao, Kai Zhang, Boyuan Zheng, Zhaowei Cai, Viktor Rozgic,
+Morteza Ziyadi, Huan Sun, and Yu Su. 2025. Mind2Web 2: Evaluating Agentic
+Search with Agent-as-a-Judge. In Advances in Neural Information Processing
+Systems (NeurIPS), Datasets and Benchmarks Track. arXiv:2506.21506.
+[11] Lawrence Keunho Jang, Jing Yu Koh, Daniel Fried, and Ruslan Salakhutdinov.
+2026. Odysseys: Benchmarking Web Agents on Realistic Long Horizon Tasks.
+arXiv:2604.24964.
+[12] Yanna Jiang, Delong Li, Haiyu Deng, Baihe Ma, Xu Wang, Qin Wang, and
+Guangsheng Yu. 2026. SoK: Agentic Skills – Beyond Tool Use in LLM Agents.
+arXiv:2602.20867.
+[13] Carlos E. Jimenez, John Yang, Alexander Wettig, Shunyu Yao, Kexin Pei, Ofir
+Press, and Karthik R. Narasimhan. 2024. SWE-bench: Can Language Models
+Resolve Real-World GitHub Issues?. In International Conference on Learning
+Representations.
+[14] 
+Sayash Kapoor, Benedikt Stroebl, Peter Kirgis, Nitya Nadgir, Zachary Siegel, Boyi
+Wei, Tianci Xue, Ziru Chen, Felix Chen, Saiteja Utpala, et al. 2026. Holistic Agent
+Leaderboard: The Missing Infrastructure for AI Agent Evaluation. In International
+Conference on Learning Representations, Vol. 2026. 98778–98849.
+[15] 
+Yukyung Lee, Joonghoon Kim, Jaehee Kim, Hyowon Cho, Jaewook Kang, Pil-
+sung Kang, and Najoung Kim. 2025. CheckEval: A Reliable LLM-as-a-Judge
+Framework for Evaluating Text Generation Using Checklists. In Proceedings
+of the 2025 Conference on Empirical Methods in Natural Language Processing.
+arXiv:2403.18771.
+[16] 
+Hao Li, Chunjiang Mu, Jianhao Chen, Siyue Ren, Zhiyao Cui, Yiqun Zhang, Lei
+Bai, and Shuyue Hu. 2026. Organizing, Orchestrating, and Benchmarking Agent
+Skills at Ecosystem Scale. arXiv:2603.02176.
+[17] Xiangyi Li, Yimin Liu, Wenbo Chen, Bingran You, Zonglin Di, Yifeng He, et al.
+2026. SkillsBench: Benchmarking How Well Agent Skills Work Across Diverse
+Tasks. arXiv:2602.12670.
+[18] Hunter Lightman, Vineet Kosaraju, Yura Burda, Harri Edwards, Bowen Baker,
+Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. 2024. Let’s
+Verify Step by Step. In International Conference on Learning Representations (ICLR).
+arXiv:2305.20050.
+[19] 
+Bill Yuchen Lin, Yuntian Deng, Khyathi Chandu, Faeze Brahman, Abhilasha
+Ravichander, Valentina Pyatkin, Nouha Dziri, Ronan Le Bras, and Yejin Choi.
+2024. WildBench: Benchmarking LLMs with Challenging Tasks from Real Users
+in the Wild. arXiv:2406.04770.
+[20] 
+Tianci Liu, Ran Xu, Tony Yu, Ilgee Hong, Carl Yang, Tuo Zhao, and Haoyu Wang.
+2025. OpenRubrics: Towards Scalable Synthetic Rubric Generation for Reward
+Modeling and LLM Alignment. arXiv:2510.07743.
+[21] 
+Chang Ma, Junlei Zhang, Zhihao Zhu, Cheng Yang, Yujiu Yang, Yaohui Jin,
+Zhenzhong Lan, Lingpeng Kong, and Junxian He. 2024. AgentBoard: An An-
+alytical Evaluation Board of Multi-turn LLM Agents. In Advances in Neural
+Information Processing Systems (NeurIPS), Datasets and Benchmarks Track. Oral.
+arXiv:2401.13178.
+[22] 
+Mike A. Merrill, Alexander G. Shaw, Nicholas Carlini, et al. 2026. Terminal-Bench:
+Benchmarking Agents on Hard, Realistic Tasks in Command Line Interfaces. In
+International Conference on Learning Representations. arXiv:2601.11868.
+[23] Mahmoud Mohammadi, Yipeng Li, Jane Lo, and Wendy Yip. 2025. Evaluation
+and Benchmarking of LLM Agents: A Survey. In Proceedings of the 31st ACM
+SIGKDD Conference on Knowledge Discovery and Data Mining V. 2. 6129–6139.
+[24] 
+Yichen Pan, Dehan Kong, Sida Zhou, Cheng Cui, Yifei Leng, Bing Jiang, Hangyu
+Liu, Yanyi Shang, Shuyan Zhou, Tongshuang Wu, et al. 2024. WebCanvas:
+Benchmarking Web Agents in Online Environments. arXiv:2406.12373.
+[25] 
+Yiwei Qin, Kaiqiang Song, Yebowen Hu, Wenlin Yao, Sangwoo Cho, Xiaoyang
+Wang, Xuansheng Wu, Fei Liu, Pengfei Liu, and Dong Yu. 2024. InFoBench:
+Evaluating Instruction Following Ability in Large Language Models. In Find-
+ings of the Association for Computational Linguistics: ACL 2024. 13025–13048.
+arXiv:2401.03601.
+[26] 
+Haoran Que, Feiyu Duan, Liqun He, Yutao Mou, Wangchunshu Zhou, Jiaheng Liu,
+Wenge Rong, Zekun Moore Wang, Jian Yang, Ge Zhang, Junran Peng, Zhaoxiang
+Zhang, Songyang Zhang, and Kai Chen. 2024. HelloBench: Evaluating Long Text
+Generation Capabilities of Large Language Models. arXiv:2409.16191.
+[27] Jon Saad-Falcon, Rajan Vivek, William Berrios, Nandita Shankar Naik, Matija
+Franklin, Bertie Vidgen, Amanpreet Singh, Douwe Kiela, and Shikib Mehri.
+2025. LMUnit: Fine-grained Evaluation with Natural Language Unit Tests. In
+Findings of the Association for Computational Linguistics: EMNLP 2025. 3303–3324.
+arXiv:2412.13091.
+[28] Reshabh K. Sharma, Shraddha Barke, and Benjamin Zorn. 2026. Willful Dis-
+obedience: Automatically Detecting Failures in Agentic Traces. In Proceedings
+of the ACM Conference on AI and Agentic Systems (CAIS). arXiv:2603.23806.
+doi:10.1145/3786335.3813153
+[29] Clemencia Siro, Pourya Aliannejadi, and Mohammad Aliannejadi. 2026. Learning
+to Judge: LLMs Designing and Applying Evaluation Rubrics. In Findings of the
+Association for Computational Linguistics: EACL 2026. 6371–6389.
+[30] 
+Hwanjun Song, Hang Su, Igor Shalyminov, Jason Cai, and Saab Mansour. 2024.
+FineSurE: Fine-grained Summarization Evaluation using LLMs. In Proceedings of
+the 62nd Annual Meeting of the Association for Computational Linguistics.
+[31] 
+Vijay Viswanathan, Yanchao Sun, Shuang Ma, Xiang Kong, Meng Cao, Graham
+Neubig, and Tongshuang Wu. 2025. Checklists Are Better Than Reward Models
+For Aligning Language Models. In Advances in Neural Information Processing
+Systems (NeurIPS). arXiv:2507.18624.
+10
+
+[32] Yuxuan Wan, Tianqing Fang, Zaitang Li, Yintong Huo, Wenxuan Wang, Haitao
+Mi, Dong Yu, and Michael R. Lyu. 2026. Inference-Time Scaling of Verifica-
+tion: Self-Evolving Deep Research Agents via Test-Time Rubric-Guided Verifi-
+cation. In Findings of the Association for Computational Linguistics: ACL 2026.
+arXiv:2601.15808.
+[33] Guanzhi Wang, Yuqi Xie, Yunfan Jiang, Ajay Mandlekar, Chaowei Xiao, Yuke Zhu,
+Linxi Fan, and Anima Anandkumar. 2024. Voyager: An Open-Ended Embodied
+Agent with Large Language Models. Transactions on Machine Learning Research
+(2024). arXiv:2305.16291.
+[34] Tianjun Wei, Wei Wen, Ruizhi Qiao, Xing Sun, and Jianghong Ma. 2025. Rockete-
+val: Efficient automated LLM evaluation via grading checklist. In International
+Conference on Learning Representations, Vol. 2025. 58593–58619.
+[35] 
+Renjun Xu and Yang Yan. 2026. Agent Skills for Large Language Models: Archi-
+tecture, Acquisition, Security, and the Path Forward. In Agent Skills ’26 Workshop
+@ ACM Conference on AI and Agentic Systems (CAIS). arXiv:2602.12430.
+[36] Xiaonan Xu and Wenjing Wu. 2026. Skill Availability and Presentation Gran-
+ularity in Large-Language-Model Agents: A Controlled SkillsBench Study.
+arXiv:2605.31408.
+[37] Shunyu Yao, Noah Shinn, Pedram Razavi, and Karthik Narasimhan. 2025. 𝜏-
+bench: A Benchmark for Tool-Agent-User Interaction in Real-World Domains. In
+International Conference on Learning Representations (ICLR). arXiv:2406.12045.
+[38] 
+Jiayi Ye, Yanbo Wang, Yue Huang, Dongping Chen, Qihui Zhang, Nuno Moniz,
+Tian Gao, Werner Geyer, Chao Huang, Pin-Yu Chen, Nitesh V. Chawla, and
+Xiangliang Zhang. 2024. Justice or Prejudice? Quantifying Biases in LLM-as-a-
+Judge. arXiv:2410.02736.
+[39] Qiyuan Zhang, Junyi Zhou, Yufei Wang, Fuyuan Lyu, Yidong Ming, Can Xu,
+Qingfeng Sun, Kai Zheng, Peng Kang, Xue Liu, and Chen Ma. 2026. RubricBench:
+Aligning Model-Generated Rubrics with Human Standards. arXiv:2603.01562.
+[40] Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu,
+Yonghao Zhuang, Zi Lin, Zhuohan Li, Dacheng Li, Eric P. Xing, Hao Zhang,
+Joseph E. Gonzalez, and Ion Stoica. 2023. Judging LLM-as-a-Judge with MT-
+Bench and Chatbot Arena. In Advances in Neural Information Processing Systems
+(NeurIPS), Datasets and Benchmarks Track. arXiv:2306.05685.
+[41] Karen Zhou and Chenhao Tan. 2026. AutoChecklist: Composable Pipelines for
+Checklist Generation and Scoring with LLM-as-a-Judge. In Proceedings of the
+64th Annual Meeting of the Association for Computational Linguistics (Volume 3:
+System Demonstrations). 515–525.
+11

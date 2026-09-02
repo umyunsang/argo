@@ -1,0 +1,119 @@
+This appendix provides the evaluation and implementation details omitted from the main paper. It specifies the fold construction, statistical tests, judge configurations, probe features, and diagnostic controls underlying the results in Table~\ref{tab:main}.
+
+\section{Evaluation Protocol}
+\label{app:evaluation}
+
+\paragraph{Data and folds.}
+We apply shuffled five-fold \texttt{KFold} (seed 42) to each complete dataset \emph{before} removing ``same'' labels, so all judges and probes share held-out members. V1 contains 574 unanimous three-annotator pairs; V2 contains 2,096 individually labeled pairs. Removing 471 V2 ``same'' labels leaves 1,625 binary pairs. Neither release contains same-generator pairs, and V1 has only one length-matched pair (Table~\ref{tab:taxonomy}).
+
+On V1's 563 binary pairs, five-fold out-of-fold length-only and generator-only logistic probes both score 79.7 \waf (95\% CIs [76.4, 83.1] and [76.3, 83.3]); combining the cues also gives 79.7. Equal aggregate scores do not imply identical predictions. Because V1 has only two generators, every pair is cross-generator, and only one pair is length-matched, the release cannot separate source identity from length through these slices. We therefore use V1 as a confounding check, not as evidence from a deconfounded subset. Adding its 563 pairs enlarges text-judge training by 34.6\%, but evaluation remains on held-out V2 length-matched pairs: combined V1+V2 training scores 65.2 versus 65.6 for V2-only training.
+
+\begin{table}[t]
+  \centering
+  \caption{Pair taxonomy. Counts except \emph{All} exclude ``same'' labels.}
+  \label{tab:taxonomy}
+  \begin{tabular}{lrrrrr}
+    \toprule
+    Data & All & Binary & Same-gen. & Length-m. & Counter \\
+    \midrule
+    V1 & 574 & 563 & 0 & 1 & 114 \\
+    V2 & 2,096 & 1,625 & 0 & 310 & 552 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Prior and slices.}
+For generator $g$, its training-fold win rate $\pi(g)$ is the number of preferred appearances divided by all appearances in binary training pairs. The prior selects the test candidate with larger $\pi(g)$; ties abstain. We recompute $\pi$ from four folds, so test labels never enter the prior or slice definitions. The \emph{length-matched} slice satisfies $\lvert |d_1|-|d_2|\rvert/\max(|d_1|,|d_2|)<0.15$, using character counts; it removes gross verbosity differences, not semantic differences. The \emph{counter-stereotypical} slice contains labels opposing the fold-exclusive prior, so a prior-only rule scores zero there by construction.
+On V2, the prior agrees with 1,073 of 1,625 labels (66.0\%), leaving 552 counter-stereotypical pairs. Generator win rates span 32--79\%; the generator with the longest mean output wins 63\%, so source identity is not merely another name for length.
+
+\paragraph{Metric and bootstrap.}
+For $c\in\{d_1,d_2\}$, let $F1_c=2P_cR_c/(P_c+R_c)$ and $n_c$ be its support. Following the challenge, we exclude ``same'' labels and report
+\begin{equation*}
+  \mathrm{WAF}=100\sum_c \frac{n_c}{N}F1_c.
+\end{equation*}
+This support weighting accommodates the 1,000/625 position-label imbalance; WAF is not accuracy, and its random reference need not equal 50. We concatenate out-of-fold predictions, resample pairs with replacement within each slice, and recompute WAF. The 2.5th/97.5th percentiles of 2,000 resamples (seed 0; one-class resamples skipped) form the CI. It measures finite-pair uncertainty, not training-seed variation; overlapping marginal CIs are not a paired test.
+
+\paragraph{Exact McNemar tests.}
+Media configurations predict the same 310 length-matched pairs. Let $b$ count items only judge $A$ gets correct and $c$ those only $B$ gets correct. The two-sided exact test is
+\begin{equation*}
+  p=\min\!\left\{1,\;2\Pr\!\left[X\leq \min(b,c)\right]\right\},
+  \qquad X\sim\mathrm{Binomial}(b+c,0.5).
+\end{equation*}
+Agreements do not distinguish the judges and therefore do not enter the test. Thus $38/37$ gives $p=1.00$: gains and losses are balanced, providing no detectable improvement at this sample size, not proof of equivalence.
+
+\begin{table}[t]
+  \centering
+  \caption{Paired tests on the length-matched V2 slice ($n=310$). ``Discordant'' gives the two configurations' exclusive-correct counts.}
+  \label{tab:mcnemar}
+  \begin{tabular}{lcc}
+    \toprule
+    Comparison & Discordant & Exact $p$ \\
+    \midrule
+    Text / 12 frames+audio & 38 / 37 & 1.00 \\
+    12 / 16 frames+audio & 14 / 13 & 1.00 \\
+    12 frames+audio / 8 frames, no audio & 18 / 17 & 1.00 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Scope of the media comparisons.}
+Text versus 12-frame Omni compares complete judges, not a within-model removal of media. The 12-versus-16-frame row isolates frame budget; the final row changes both frame count and audio. The tests therefore show no detectable gain among these \emph{configurations}, not that media can never help another judge.
+
+\section{Judge and Probe Implementation}
+\label{app:implementation}
+
+\paragraph{Shared training choices.}
+All finetuned judges use bfloat16 LoRA (rank 16, scale 32, dropout 0.05, learning rate $10^{-4}$) on attention and MLP projections. Text and pairwise Omni checkpoints maximize held-out-fold \waf; ODIN diagnostics use epoch four. This favors neural judges, although it is not nested model selection. Table~\ref{tab:repro} reports the remaining settings; batch entries are microbatch/gradient-accumulation counts.
+
+\begin{table*}[t]
+  \centering
+  \caption{Training configurations. The Omni single-head control directly optimizes $r_C$ with Bradley--Terry loss; it is not an experiment with fixed auxiliary heads.}
+  \label{tab:repro}
+  \begin{tabular}{llllccc}
+    \toprule
+    Configuration & Candidate input & Objective / output & Epochs & Batch/accum. & Context or media \\
+    \midrule
+    Text judge & $d_1,d_2$ & two-class cross-entropy & 3 & 8/2 & 640 tokens \\
+    Omni judge & $v,a,d_1,d_2$ & next-token A/B & 2 & 1/8 & 8, 12, or 16 frames at 1 fps \\
+    CoT judge & $v,d_1,d_2$ & rationale then A/B & 2 & 1/8 & 8 frames, no audio \\
+    Text, no decorrelation & one $d$ & three-head BT, $\lambda=0,\lambda_o=1$ & 4 & 8/1 & 400 tokens \\
+    Text, ODIN & one $d$ & three-head BT, $\lambda=\lambda_o=1$ & 4 & 8/1 & 400 tokens \\
+    Omni, no decorrelation & $(v,a,d)$ & single-head BT on $r_C$ & 4 & 2/4 & 12 frames at 1 fps \\
+    Omni, ODIN & $(v,a,d)$ & three-head BT, $\lambda=\lambda_o=1$ & 4 & 2/4 & 12 frames at 1 fps \\
+    \bottomrule
+  \end{tabular}
+\end{table*}
+
+\paragraph{Pairwise prompts and order symmetrization.}
+Prompts ask which description is more faithful, grounded in what is seen/heard, and human-preferred, returning A/B. Each binary training pair appears in both orders with reversed target. At inference we average $p_A(d_1,d_2)$ and $1-p_A(d_2,d_1)$, mapping both orders to $p(d_1\succ d_2)$. Without symmetric training, the V1 ablation scores 30.9 versus 79.7 \waf in opposite orders, exposing position bias.
+
+\paragraph{Decision extraction.}
+The text judge uses a two-class softmax head, whereas Omni compares next-token ``A''/``B'' logits. Both outputs are mapped to $p(d_1\succ d_2)$, averaged across orders, and thresholded at 0.5. ``Same'' items participate only in fold assignment and are masked before binary training and scoring.
+
+Official challenge baseline scores cited in the main text come from the challenge report. The zero-shot rows in Table~\ref{tab:main} are our public-V2 runs with the same dual-order grounding prompt but no EmoPrefer preference finetuning, enabling our diagnostic slices. Their prior-following therefore cannot arise from fitting public preference labels in our run, but does not identify a shared internal mechanism.
+
+Here, a \emph{generative verifier} is the same 8-frame, no-audio Omni backbone trained to generate a rationale before its A/B verdict, rather than predicting A/B directly. In STaR-style rejection sampling, the prompt first requests two or three sentences comparing facial expression, voice, and visible events. We sample up to four rationale--answer sequences per order at temperature 0.7 and retain the first whose final answer matches the training label, yielding 2,633 sequences. The retained rationale and answer become the finetuning target. At test time the model receives no label, generates greedily in both orders, and is scored from its final A/B answer. Thus 58.9 versus 65.0 \waf compares rationale-first and direct-answer training under the same media setting, not different backbone sizes.
+
+\paragraph{Content-blind preference probes.}
+These probes predict preference without text or media. For $l_i=|d_i|$, length features are
+\begin{equation*}
+ [l_1/1000,\;l_2/1000,\;(l_1-l_2)/1000,\;\log((l_1+1)/(l_2+1))].
+\end{equation*}
+The generator probe concatenates two seven-way one-hot source vectors; adding length gives 18 features. Each is $\ell_2$-regularized logistic regression ($C=1$, 2,000 iterations) fit on four folds. Identity is an audit oracle never given to judges: it measures dataset leakage, not a valid submission.
+
+\paragraph{TF--IDF source classifier.}
+This classifier asks whether words reveal \emph{which generator wrote a description}, not which description wins. Each description is a document; its seven-way source is the target. TF--IDF uses at most 20,000 word unigrams/bigrams. Positive term counts become $1+\log \mathrm{count}$; inverse document frequency downweights common phrases; vectors are $\ell_2$ normalized. Logistic regression (2,000 iterations), vocabulary, and IDF are fitted only on training folds. Splitting occurs at the \emph{pair} level before unpacking, so paired descriptions cannot leak across folds. Mean held-out accuracy is $99.5\mathbin{\pm}0.3$\% versus 14.3\% random accuracy. No preference label or media is used: the result shows source recoverability from surface text, not which tokens cause preference.
+
+\paragraph{ODIN-style diagnostic.}
+Text encodes one description; Omni encodes video, audio, and one description. Their shared LoRA trunk feeds content, length, and generator heads $(r_C,r_L,r_G)$, whose sum enters Bradley--Terry loss $-\log\sigma(r(d^+)-r(d^-))$. Batch Pearson correlations concatenate both candidates' scores. Decorrelation penalizes $r_C$'s absolute correlation with character length and training-fold prior while assigning those signals to $r_L,r_G$; orthogonality penalizes absolute dot products among head weights. Only $r_C$ is kept at test time. ``Content head'' denotes its intended role, not semantic supervision or proof of grounding.
+
+The text no-decorrelation control retains three heads and orthogonality but sets $(\lambda,\lambda_o)=(0,1)$; Omni instead uses a directly trained single $r_C$. Full diagnostics use $(1,1)$. These controls ask whether decorrelation removes the text shortcut and whether multimodal preference signal exists before decomposition.
+
+\section{Additional Diagnostics}
+\label{app:diagnostics}
+
+\paragraph{Permutation and counterfactual controls.}
+We jointly permute each pair's $(g_1,g_2)$ relative to labels and refit within every fold. This preserves global source-pair frequencies but breaks identity--preference alignment; across seeds 0--4, generator-only \waf falls from 65.5 to $47.3\mathbin{\pm}0.8$, an empirical label-blind floor rather than theoretical chance. Separately, with the combined probe fixed, swapping only test-time identity vectors flips 45\% of decisions; swapping only length assignments flips 32\%. Paired McNemar comparison of these flip indicators gives $p<.001$. This establishes greater identity control over the \emph{probe}, not how annotators causally formed labels.
+
+\paragraph{Direction of errors.}
+``Prior-following'' is the fraction of counter-stereotypical decisions equal to the fold-exclusive prior; the label is opposite by construction. Rates are 79.7\% (text), 73.0\% (12-frame Omni), 69.0\% (16-frame), 73.4\% (8-frame/no-audio), and 59.4\% (CoT), but 48.2\% and 42.4\% for decorrelated text and Omni content heads. The Omni head's higher counter-slice WAF therefore reflects reversal away from the prior, not stable video-grounded recovery.

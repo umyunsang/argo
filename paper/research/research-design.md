@@ -87,9 +87,13 @@ Execution-graded closed-loop replication is not part of this cycle. It is deferr
 
 Every pairwise contrast is reported against a pre-registered resolution target, and a contrast that cannot meet it is marked unresolved rather than null (`RD-2026-09-02-09B`). A non-significant structured-state contrast is additionally tested against a pre-registered equivalence margin with TOST on a task-clustered bootstrap, so absence of effect is a bounded claim rather than an absence of power.
 
-### Reference-anchored analytic scoring
+### Reference-anchored analytic scoring, and why matching is not enough
 
-The primary deterministic score is coverage of an evaluator-owned element checklist derived from the withheld target design of each task, with every element scored separately rather than in one holistic judgement (`RD-2026-09-02-11A`). On the retained pilot artifacts this produced a graded range of 0.667 to 1.000 where fabrication redlines produced no signal at all.
+The score is coverage of an evaluator-owned element checklist derived from the withheld target design of each task, with every element judged separately rather than in one holistic call.
+
+The first implementation decided coverage by cue matching. An adversarial probe set built in the planted-shortcut style falsified it: negated sentences containing a cue were counted as satisfied at a rate of `0.969`, and genuine paraphrases without the cue were missed at `0.909`. A negation guard drove false positives to `0.000` but raised misses to `1.000`, so the failure is structural rather than cosmetic (`RD-2026-09-02-14A`, receipt `paper/experiments/adversarial-validity-receipt.json`).
+
+Matching is therefore demoted to a high-recall candidate filter, and element satisfaction is a verified judgement over the candidate span, admitted only through the selective evaluator. Two consequences follow and are recorded rather than hidden: the human-anchored calibration set becomes load-bearing for the primary endpoint, and the variance components measured on the matched endpoint are void as an allocation basis until recomputed on the verified one (`RD-2026-09-02-14B`).
 
 ### Judge admission
 
@@ -116,7 +120,7 @@ Following `2608.01913`, search volume is not capability. Each episode is product
 
 No effect size is borrowed as if transportable. SCOPE, HEP, Arbor, and long-horizon studies use different tasks and endpoints. The development pilot estimates paired score SD, FEC discordance, task-family ICC, repeat variance, and judge–human disagreement. Confirmatory N is simulated from those values with family-level resampling.
 
-Resource planning uses a `192 episode` ceiling. The split between tasks and repeats is no longer assumed: a measured variance decomposition on 32 executed episodes puts the repeat residual at 64.3 percent and the task component at 0.0 percent, and at a fixed episode budget the standard error of a condition mean equals `(repeats x interaction variance + residual) / (budget / conditions)`, which increases monotonically with repeats. The block is therefore allocated to the maximum number of tasks at one repeat, with a small repeated subset retained only to re-estimate residual variance and detect flaky execution (`RD-2026-09-02-13A`, superseding `RD-2026-09-02-09D`). The projected paired minimum detectable effect on the coverage endpoint is about `0.045` at 48 tasks and one repeat, against about `0.049` at 24 tasks and two repeats. With two-sided familywise alpha 0.05 across two co-primary endpoints and 80% power:
+Resource planning uses a `192 episode` ceiling. The split between tasks and repeats is no longer assumed: a measured variance decomposition on 32 executed episodes puts the repeat residual at 64.3 percent and the task component at 0.0 percent, and at a fixed episode budget the standard error of a condition mean equals `(repeats x interaction variance + residual) / (budget / conditions)`, which increases monotonically with repeats. The algebra stands, but its numeric inputs came from the matched endpoint that was later falsified, so the specific split is void until variance is recomputed on the verified endpoint (`RD-2026-09-02-14B`). The 32 executed episodes are retained and can be rescored, so no episode is wasted. With two-sided familywise alpha 0.05 across two co-primary endpoints and 80% power:
 
 - at 24 paired tasks, the approximate continuous paired-score MDE is about `0.63 SD` before cluster/design inflation;
 - the 95% CI half-width for a standardized paired mean is about `0.42 SD` before inflation;

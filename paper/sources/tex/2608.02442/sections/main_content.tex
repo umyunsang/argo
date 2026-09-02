@@ -1,0 +1,504 @@
+\section{Introduction}
+\label{sec:intro}
+Scientific reasoning has become a central capability for large language models (LLMs), driving the emergence of increasingly difficult frontier benchmarks\citep{phan2025humanity,he2024olympiadbench,gao2024omni,qiu2025phybench}. These benchmarks typically treat final-answer accuracy as the gold standard for evaluating model performance, with higher scores widely regarded as evidence of stronger reasoning ability. Yet the reasoning process is equally important, as it determines whether the final answer is supported by a valid step-by-step reasoning process. However, evaluating a solution is far more difficult, especially for challenging frontier scientific problems. There are methods that attempt to verify the reasoning process of a solution, but they often overlook a key fact: whether the solution actually puts the target reasoning ability into practice.
+
+Unfortunately, overlooking this fact will mislead the evaluation of the true reasoning capabilities of frontier LLMs. To better understand this concern, we conduct a motivating analysis using problems sampled from three benchmark tiers of increasing difficulty: common mathematical reasoning, Olympiad-level problems, and HLE. We then ask frontier LLMs to solve each problem independently. Surprisingly, we find that LLMs often bypass the target reasoning ability by adopting a cheaper but invalid shortcut that may recover the correct answer without providing a valid, task-targeted solution process. Here, take solving a quadratic equation for example, as shown in Figure \ref{fig:solution_hacking_paths}. We expect an LLM to derive the exact roots using the quadratic formula. In practice, however, it may simply enumerate numerical values until it identifies candidate roots that satisfy the equation. More importantly, this behavior occurs more frequently as benchmark difficulty increases.
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width=0.75\textwidth]
+    {figures/fig1_solution_hacking_roads.drawio.pdf}
+    \caption{
+    Three solution paths for the same quadratic-equation problem.
+    The upper path represents the expected reasoning process, in which the LLM
+    exercises the targeted reasoning capability and derives the correct answer.
+    The middle path represents a reasoning error, where an invalid derivation
+    leads to an incorrect answer. The lower path represents Solution
+    Hacking, where the LLM obtains the correct answer through enumeration,
+    guessing, search, or answer-first verification without completing the
+    targeted derivation. Traditional evaluation can distinguish the upper and
+    middle paths, but may fail to distinguish the upper and lower paths because
+    both yield the correct final answer.
+    }
+    \label{fig:solution_hacking_paths}
+\end{figure}
+\FloatBarrier
+
+To further illustrate this phenomenon, we define this phenomenon as \emph{solution hacking}, in which an LLM produces a correct answer through an invalid solution process that bypasses the targeted reasoning capability. Unlike reasoning errors, solution hacking does not simply refer to the use of a method that differs from the reference solution. Rather, it occurs when a model relies on search, enumeration, guessing, or answer-first verification to obtain or confirm the correct answer without providing a valid derivation that independently establishes its correctness. In addition, we conduct a detailed analysis of solution hacking across problem difficulties, scientific domains, and frontier models. First, solution hacking becomes more frequent as problem difficulty increases, rising from 2.2\% on common problems to 28.3\% on Olympiad-level problems and 37.4\% on HLE. Second, it increases the reported final-answer accuracy of LLMs. Across many frontier models evaluated, such as Claude Opus 4.7, between 8.2\% and 44.1\% of the answers credited as correct are identified as hacked solutions. Third, weaker models are more likely to choose to solution hacking when they cannot solve a problem accurately, while problems with short and easily verifiable answers are particularly hacking.
+
+Finally, to decrease solution hacking, we further develop anti-hacking strategies based on expert judgment and expert-designed principles. Specifically, we distill how domain experts determine whether a solution genuinely exercises the targeted reasoning capability or instead relies on shortcuts such as search, enumeration, guessing, or answer-first verification. We then translate these principles into two practical tools: an automatic judge for identifying hacked solutions and a test-time instruction that discourages shortcut behavior while allowing the model to abstain when it cannot provide a valid derivation. On a challenging mathematics subset, the strongest anti-hacking instruction reduces reported final-answer accuracy from 50.6\% to 37.3\% and increases the abstention rate from 0\% to 27.3\%. In contrast, the accuracy of answers judged to be both correct and non-hacked decreases more modestly, from 41.2\% to 35.2\%. This result suggests that much of the removed score was previously supported by shortcut strategies rather than successful reasoning, demonstrating that anti-hacking strategies can provide a more faithful evaluation of the scientific reasoning capabilities of frontier LLMs.
+
+Our contributions are summarized as follows:
+\begin{itemize}
+\item We identify and carefully define Solution Hacking, a failure mode in which an LLM reaches a correct answer through an invalid shortcut that bypasses the targeted reasoning capability, and show how this phenomenon can mislead the evaluation of frontier LLMs.
+\item We systematically analyze solution hacking across benchmark difficulties, scientific domains, and frontier models, revealing its prevalence, its inflation of reported final-answer accuracy, and the model- and problem-level factors associated with its occurrence.
+\item We develop expert-inspired anti-hacking strategies, including an automatic judge and a test-time instruction, and show that suppressing shortcut behavior enables a more faithful evaluation of frontier LLM reasoning capabilities.
+\end{itemize}
+
+
+
+% =====================================================================
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Benchmark Evaluation and Shortcut Exploitation.}
+That optimizers exploit misspecified objectives is classical \citep{krakovna2020specification,skalse2022defining,gao2023scaling}, and related gaming behaviors are now studied in LLMs \citep{denison2024sycophancy,baker2025monitoring}. The reliability of benchmark evaluation may also be affected by score inflation from contamination \citep{zhou2023dont,zhang2024careful}, performance collapse under problem perturbations \citep{mirzadeh2025gsm,huang2025mathperturb}, and leaderboard distortions \citep{singh2025leaderboard}. Shortcut learning provides a broader account of models relying on unintended patterns or strategies rather than the targeted capability \citep{geirhos2020shortcut}. Within scientific reasoning, shortcut-like behaviors have appeared in prior studies, but mostly as isolated symptoms or benchmark-specific concerns. Trial-and-error and proof-by-example are included in taxonomies of proof fallacies \citep{mahdavi2025brains}; pattern recognition and brute-force enumeration are discussed as motivations for proof grading \citep{balunovic2025matharena}; and OlymMATH reports heuristic guessing in case studies while explicitly declining to quantify its prevalence \citep{sun2025challenging}. Benchmark designers have also attempted to defend against individual strategies through guess-resistant answer spaces \citep{glazer2024frontiermath}, brute-force-defeating perturbations \citep{huang2025mathperturb}, and Lean-verified subsets \citep{sun2025challenging}. In contrast, we study a general evaluation-time failure mode in which an answer-correct solution bypasses the targeted reasoning capability through search, enumeration, guessing, or answer-first verification. We define this behavior as \emph{solution hacking} and systematically quantify it across scientific domains, benchmark difficulties, and frontier LLMs.
+
+\paragraph{Reasoning Process Evaluation and Capability Verification.}
+Process supervision and step-level evaluation examine whether intermediate reasoning steps are correct, useful, or suitable as training signals \citep{uesato2022solving,lightman2023lets,zheng2025processbench}. Related work further grades complete derivations rather than final answers and documents a substantial answer--rigor gap. Expert grading of contest proofs shows that models with strong final-answer performance may still produce invalid proofs containing broken logic, unjustified assumptions, or fallacious steps \citep{petrov2025proof,balunovic2025matharena,mahdavi2025brains}. IneqMath reports that top-model accuracy drops substantially when every reasoning step is scrutinized \citep{sheng2025ineqmath}, while correct answers in knowledge-graph question answering may rely on unfaithful reasoning chains \citep{nguyen2024direct}. These studies primarily ask whether a reasoning process is locally or globally valid. Our work instead asks whether the solution actually exercises the reasoning capability targeted by the benchmark. A hacked solution may contain plausible or locally valid steps, for example, the enumerated candidates may be correctly checked against the stated conditions, and may therefore evade conventional step-level error detection, even though the overall strategy bypasses the targeted capability. To our knowledge, prior work has not jointly defined this behavior, anchored its detection in blinded expert judgments across multiple scientific domains, quantified its impact on reported performance, and investigated practical mitigation strategies. We also differ from general LLM-as-a-judge methods \citep{zheng2023judging,stephan2024calculation,chandak2025answer}: our judge evaluates how a correct answer was obtained rather than whether the answer itself is correct.
+
+
+
+
+% \paragraph{Reward hacking, process supervision, and CoT faithfulness.}
+% That optimizers exploit misspecified objectives is classical \citep{krakovna2020specification,skalse2022defining,gao2023scaling}, and related gaming behaviors are now studied in LLMs \citep{denison2024sycophancy,baker2025monitoring}. We study a distinct evaluation-time failure mode: on hard reasoning problems, answer-only benchmark grading can reward solutions that obtain the correct answer by substituting shortcut methods for the intended derivation. This is related to process-supervision and step-level evaluation work \citep{uesato2022solving,lightman2023lets,zheng2025processbench}, but the target is different. Those works primarily ask whether intermediate steps are correct, useful, or rewardable as training signals; we ask whether the benchmarked capability was actually exercised. A hacked step may contain no obvious local logical or computational error and may still help produce the correct answer, so if shortcut substitution is ignored it can be treated as a correct step by step-based supervision or error-checking frameworks.
+
+
+% \paragraph{Benchmark validity and the answer--derivation gap.}
+% Score inflation from contamination \citep{zhou2023dont,zhang2024careful}, perturbation collapses \citep{mirzadeh2025gsm,huang2025mathperturb}, and leaderboard distortions \citep{singh2025leaderboard} are documented; shortcut learning \citep{geirhos2020shortcut} is the umbrella term. Closer to us is the line that grades derivations instead of answers and documents an answer--rigor gap: expert grading of contest proofs finds that models scoring well on final answers produce largely invalid proofs---broken logic, unjustified assumptions, fallacious steps \citep{petrov2025proof,balunovic2025matharena,mahdavi2025brains}; IneqMath's step-wise judges collapse top-model accuracy by up to $65$ points once every step is scrutinized \citep{sheng2025ineqmath}; and in knowledge-graph QA, correct answers frequently ride on unfaithful reasoning chains \citep{nguyen2024direct}. Within this line, shortcut-like behaviors appear only as symptoms of broken proofs: trial-and-error and proof-by-example are two entries in a taxonomy of proof fallacies---guesswork that is itself unsound \citep{mahdavi2025brains}; pattern recognition and brute-force enumeration are named as motivation for proof grading but not studied \citep{balunovic2025matharena}; and OlymMATH reports heuristic ``guessing'' in case studies while explicitly declining to measure its prevalence \citep{sun2025challenging}. Benchmark designers, in turn, engineer against individual strategies---guess-proof answer spaces \citep{glazer2024frontiermath}, brute-force-defeating perturbations \citep{huang2025mathperturb}, Lean-verified subsets \citep{sun2025challenging}.
+
+% \paragraph{Our novelty.}
+% Prior work asks whether the derivation is \emph{valid}: the failure it documents is a broken chain from problem to answer, and credit is undeserved because the reasoning is wrong. Solution hacking is a different object. In a hacked solution the local reasoning is typically sound---the enumeration really is exhaustive, the guessed candidate really is verified against every stated condition---and each step would pass a step checker. What is illegitimate is the strategy: at exactly the step the problem was designed to test, the model swaps the intended derivation for search, enumeration, or guess-and-verify, so the tested capability is never exercised even though the transcript is locally flawless. The behavior is therefore doubly invisible: answer grading awards it full credit, and step-level validity checking finds nothing to flag. No prior work names and taxonomizes this behavior, anchors a detector to blinded expert labels across three sciences, quantifies its prevalence as an explicit lower bound, and pairs it with a mitigation study and a released dataset. We also differ from LLM-as-judge work on answer grading \citep{zheng2023judging,stephan2024calculation,chandak2025answer}: our judge audits how the solution was obtained, not whether the answer is right.
+% =====================================================================
+
+\section{Solution Hacking}
+\label{sec:taxonomy}
+
+To precisely characterize the evaluation gap introduced above, we first
+formalize what it means for an answer-correct solution to bypass the reasoning
+capability targeted by a benchmark. Consider a benchmark item
+$(q,a^{*})$, where $q$ is a problem and $a^{*}$ is its reference answer.
+Given $q$, an LLM generates a solution $s$ with an extractable final answer
+$\hat a(s)$, which is typically scored by
+$\mathbb{1}[\hat a(s)\equiv a^{*}]$. Interpreting this score as evidence of
+scientific reasoning implicitly assumes that an answer-correct solution
+actually exercises the capability that the item is designed to assess.
+
+Let $\mathcal{C}(q)$ denote the targeted reasoning capability of item $q$,
+and let $M(q)$ denote the set of task-appropriate strategies that domain
+experts accept as legitimate ways of exercising this capability. Importantly,
+$M(q)$ may contain multiple valid approaches and is not restricted to the
+reference solution.
+
+\begin{definition}[Solution hacking]
+\label{def:hack}
+A solution $s$ to an item $(q,a^{*})$ is a \emph{solution hack} if
+$\hat a(s)\equiv a^{*}$, but at an essential step, the solution substitutes
+a shortcut strategy outside $M(q)$ for the targeted reasoning capability
+$\mathcal{C}(q)$. Although the shortcut may recover or verify the correct
+answer, it does not provide a valid, task-appropriate derivation that
+independently establishes the answer.
+\end{definition}
+
+Definition~\ref{def:hack} distinguishes solution hacking from both ordinary
+reasoning errors and valid alternative solutions. We operationalize the
+definition through three questions. \textbf{(T1) Targeted crux:} does the
+shortcut replace an essential step that the item is intended to test?
+Guessing an incidental intermediate value is not sufficient.
+\textbf{(T2) Capability bypass:} does the strategy replace, rather than
+legitimately exercise, the targeted reasoning capability? A method is not a
+hack merely because it differs from the reference solution.
+\textbf{(T3) Derivational support:} does the reasoning independently establish
+the answer, rather than merely show that a generated candidate is compatible
+with some of the problem constraints?
+
+These criteria make the distinction role-based rather than technique-based.
+The same surface strategy may be legitimate in one problem but constitute
+hacking in another, depending on the role it plays in the solution. For
+example, testing candidate roots is legitimate when trial is an accepted
+method and the search space is exhaustively covered. In contrast, recalling
+a candidate answer and checking only that it satisfies one observed condition
+is a hack when the problem requires that answer to be derived and competing
+candidates are never ruled out. The definition therefore excludes benign
+uses of similar techniques, such as checking an already-derived numerical
+result, citing an accepted theorem as an input, eliminating explicit answer
+choices, or conducting exhaustive case analysis with justified coverage.
+
+\begin{table}[!htbp]
+\centering
+\footnotesize
+\begin{tabular}{p{0.44\columnwidth} p{0.44\columnwidth}}
+\toprule
+\textbf{Hack: substitutes the targeted step}
+&
+\textbf{Clean: the same technique in a legitimate role}
+\\
+\midrule
+An answer is recalled or guessed and checked against constraints that merely
+admit it; competing candidates are not ruled out
+&
+Candidate testing is the accepted method and the check is conclusive, such as
+trial roots or undetermined coefficients
+\\
+
+A formula is asserted as ``known'' at the step where it should be derived
+&
+An established theorem is cited as an allowed input and then correctly applied
+\\
+
+A general conclusion is inferred from a few observed cases
+&
+All relevant cases are covered, or the general claim is formally proved
+\\
+
+Numerical search replaces an expected analytical derivation
+&
+Numerical computation is used only to verify an already-derived result
+\\
+
+A stated constraint is silently removed and a simpler problem is solved
+&
+An approximation is explicitly stated, justified, and permitted by the task
+\\
+\midrule
+\multicolumn{2}{p{0.92\columnwidth}}{
+\emph{Orthogonal distinction:} an incorrect answer produced by an honest,
+complete derivation is a reasoning error, whereas a correct answer produced
+by a substituted shortcut may constitute solution hacking.
+}
+\\
+\bottomrule
+\end{tabular}
+\caption{
+Boundary between solution hacking and legitimate reasoning. Classification
+depends on the role of a strategy relative to the targeted reasoning step,
+rather than on the surface technique or final-answer correctness.
+}
+\label{tab:boundary}
+\end{table}
+\FloatBarrier
+
+\subsection{A Taxonomy of Hacking Strategies}
+\label{sec:cats}
+
+With the construct defined, we next examine how solution hacking appears in
+practice. Through manual analysis of audited frontier-model solutions, we
+identify five recurring strategies and one residual category:
+
+\begin{itemize}
+\itemsep2pt
+
+\item \textbf{Numerical search} ($\mathcal H_{\mathrm{num}}$):
+locating an answer through bisection, Newton iteration, or repeated numerical
+evaluation when an analytical derivation is expected.
+
+\item \textbf{Enumeration} ($\mathcal H_{\mathrm{enum}}$):
+searching over a candidate space, including partial enumeration that stops
+once the first compatible answer is found without establishing completeness.
+
+\item \textbf{Pattern guessing} ($\mathcal H_{\mathrm{pat}}$):
+extrapolating a general result from a small number of observed cases without
+justifying the generalization.
+
+\item \textbf{Formula guessing} ($\mathcal H_{\mathrm{form}}$):
+postulating a functional form from memory, plausibility, or dimensional
+considerations and then fitting or checking its constants instead of deriving
+the form.
+
+\item \textbf{Answer guessing} ($\mathcal H_{\mathrm{ans}}$):
+proposing a plausible answer, often from memory, and checking only that it is
+consistent with the given constraints without ruling out alternatives.
+
+\item \textbf{Other shortcuts} ($\mathcal H_{\mathrm{oth}}$):
+other forms of substitution at the targeted step, such as asserting a decisive
+result without support or silently replacing the original problem with a
+simpler one.
+\end{itemize}
+
+\paragraph{Manifestations across subjects.}
+Although this taxonomy is initially distilled from mathematical solutions,
+the underlying construct---substitution at the targeted reasoning
+step---extends across scientific domains. What changes across subjects is the
+form of the shortcut. In physics and chemistry, two patterns occur frequently.
+
+The first is \emph{memory retrieval followed by consistency checking}: the
+model recalls the crucial formula, object, or compound instead of deriving it,
+and then uses the provided information only to verify the recalled candidate.
+Accordingly, $66\%$ of physics hacks are categorized as formula guessing,
+whereas $60\%$ of chemistry hacks are categorized as answer guessing. The
+second pattern is \emph{problem substitution}, in which the model removes a
+stated constraint or ignores an essential feature before solving the resulting
+simpler problem. Such cases are included in the residual category and occur
+more frequently in physics and chemistry than in mathematics
+($18.7\%$ and $14.5\%$, compared with $6.7\%$).
+We therefore retain the common taxonomy for reporting while interpreting each
+category according to its domain-specific manifestation
+(App.~\ref{app:catsdomain}).
+
+\subsection{Case Study}
+\label{sec:casestudy}
+
+The following example illustrates how an answer can be correct even though the
+reasoning capability targeted by the problem is never exercised.
+
+\begin{tcolorbox}[
+title={Mathematics: numerical search for six consecutive primes},
+colback=white,
+colframe=black!60,
+fonttitle=\footnotesize\bfseries,
+left=4pt,
+right=4pt,
+top=2pt,
+bottom=2pt
+]
+\footnotesize
+The problem asks the model to identify six consecutive primes whose product
+equals a given 32-digit integer $N$. The model first estimates their scale by
+computing
+\emph{``$x^{6}\approx N\Rightarrow x\approx 200162.3$; the primes must be
+near $200162$''}.
+It then tests odd integers in $[200130,200200]$ for primality and multiplies
+candidate sequences until one matches $N$. This process returns the correct
+six primes, but it replaces the intended number-theoretic derivation with a
+localized numerical search.
+\end{tcolorbox}
+
+This example satisfies all three criteria in
+Definition~\ref{def:hack}. The numerical search replaces the central reasoning
+step of the problem, does not exercise the targeted number-theoretic
+capability, and verifies only that the discovered candidate matches the given
+product. Nevertheless, because the final answer is correct, conventional
+answer-only evaluation awards the solution full credit.
+
+Solution hacking may also appear as an explicit fallback policy rather than an
+accidental mistake. For example, one audited model states,
+\emph{``I will bet on a small solution I missed''}, before proposing and
+checking a candidate answer. Additional cases from physics, chemistry, and
+mathematics are provided in Appendix~\ref{app:cases}, together with a
+clean-versus-hacked mirror pair in Appendix~\ref{app:mirror}.
+
+\section{Method}
+  \label{sec:method}
+     
+  We use blinded expert annotations to build two instruments for solution hacking: a \emph{judge} that measures whether a completed solution
+  is hacked (our measurement instrument), and an \emph{anti-hack answering prompt} that discourages such shortcuts at generation time (our
+  mitigation instrument). Both are anchored to the same expert-labeled solutions and to the construct boundary in Table~\ref{tab:boundary}.
+
+  Throughout, correctness and hacking are evaluated separately. Correctness is a lightweight final-answer equivalence check against the
+  reference answer (numeric answers within $5\%$ relative tolerance; symbolic answers up to algebraic equivalence), computed once and shared
+  across all judges. The hack judge sees only the problem and the model's solution---never the reference answer or the correctness
+  verdict---so wrong answers are not automatically treated as hacks.
+
+  \subsection{Metrics}
+  \label{sec:metrics}
+
+  For model $M$ on benchmark $B$, let $C_i\in\{0,1\}$ denote final-answer correctness and $H_i\in\{0,1\}$ a hack (Def.~\ref{def:hack}):
+  \begin{align*}
+  \mathrm{Acc}=\mathbb E_i[C_i],\quad &\hr=\mathbb E_i[H_i],\quad \hr_{\mid\mathrm{corr}}=\mathbb E_i[H_i\mid C_i{=}1],\\
+  \daa &= \mathbb E_i[C_i(1-H_i)].
+  \end{align*}
+  \daa{} (\emph{derivation-adjusted accuracy}) credits only solutions that are both correct and non-hacked; the score inflation
+  $\Delta_{\mathrm{infl}}=(\mathrm{Acc}-\daa)/\mathrm{Acc}=\hr_{\mid\mathrm{corr}}$ is the fraction of credited answers that did not
+  demonstrate the intended derivation. To validate the judge, we use agreement with expert hack/clean labels as the primary reliability
+  metric, with Cohen's $\kappa$ secondary.
+
+  \subsection{Build Expert-Anchored Judge}
+  \label{sec:judge}
+
+  \paragraph{Stage 1: Seed auditor and stratified corpus.}
+  \label{sec:stage1}
+  We first built a hack-audit \emph{prompt} with Claude Code (Opus 4.7), iteratively refined by a computer scientist against manually
+  reviewed examples. Given a problem--solution pair, an auditor running this prompt outputs structured JSON: an analysis of the essential
+  steps, a binary hack/clean verdict, a strategy label from our taxonomy (\S\ref{sec:cats}), and quoted decisive evidence. For corpus
+  auditing we deployed it on Gemini-3.1-Pro-Preview (\emph{auditor v2}; Table~\ref{tab:calib}, ``Stage 1''), already under a no-self-audit rule:
+  Gemini-authored solutions were audited by Claude Opus 4.7 instead. We then had GPT-5.2 \citep{openai2025gpt52}, Claude Opus 4.7 \citep{anthropic2025opus47}, and Gemini-3.1-Pro-Preview \citep{google2025gemini3} answer hard
+  mathematics, physics, and chemistry problems from HLE \citep{phan2025humanity} and olympiad-level sources, and used the auditor's verdicts to build a
+  \emph{judge-stratified} annotation pool containing both flagged and clean solutions---natural hack prevalence is sparse and uneven, and
+  unstratified annotation would yield too few positive cases for calibration.
+  
+  \paragraph{Stage 2: Blinded expert annotation.}
+  \label{sec:stage2}
+  From this pool we sampled 300 solutions (101 mathematics, 100 physics, 99 chemistry), spread across the three answering models and
+  stratified by the Stage-1 verdict (107 flagged, 193 clean), then shuffled and blinded. Solutions were labeled by pools of PhD experts in the corresponding field (8 annotators in mathematics, 7 in physics, 6 in chemistry): each solution received a hack/clean label and a strategy category from one expert, following written guidelines (released) that operationalize Table~\ref{tab:boundary}, and annotators then performed a second self-review pass over their own labels to catch and correct errors. These 300 labels form the common anchor set (Table~\ref{tab:gold} in App.~\ref{app:humaneval}); we split it into 180 development examples for prompt refinement and detector selection
+  and 120 held-out test examples used exactly once. Two findings drive the rest of the paper: experts confirm substantial hacking on frontier
+  items ($35.2\%$ overall: $45.9\%$ math, $26.5\%$ physics, $33.0\%$ chemistry), and the Stage-1 auditor already \emph{under}-counts
+  relative to experts, motivating both calibration and the lower-bound framing.
+
+  
+
+  % ---- tables (inlined from tables_gen.tex; AAAI single-source-file rule) ----
+% ============================================================
+%  tables_gen.tex  --  all tables for the paper.
+%  All numbers are measured: gold anchoring + detector accuracy +
+%  easy-probe (REAL), and the full Stage-3 corpus re-audit +
+%  anti-hack prompt runs, judged by the locked panel (v3c/v3b).
+% ============================================================
+
+% ---------- Table 1: expert-anchor gold set (REAL) ----------
+
+
+% ---------- Table 2: detector calibration vs human gold (REAL) ----------
+\begin{table}[!htbp]
+\centering\small
+\begin{tabular}{l cccc}
+\toprule
+Detector & Overall & Math & Phys & Chem \\
+\midrule
+Single auditor (Gemini)   & 71.6 & 76.5 & 76.8 & 61.6 \\
+Panel, self-inclusive     & 77.7 & 82.2 & 82.0 & 68.7 \\
+\textbf{Panel, no-self-audit} & \textbf{75.4} & \textbf{79.6} & \textbf{81.6} & \textbf{64.9} \\
+\bottomrule
+\end{tabular}
+\caption{Detector--expert agreement (\%, pooled dev+test). Bold = deployed detector. Dev 75.7\%, test 75.0\% (App.~\ref{app:reliability}).}
+\label{tab:calib}
+\end{table}
+\FloatBarrier
+
+% ---------- Table 3: detector is a lower bound (REAL) ----------
+\begin{table}[!htbp]
+\centering\small
+\begin{tabular}{l ccc}
+\toprule
+Subject & Human \hr & Detector \hr & Recall \\
+\midrule
+Mathematics & 45.9 & 43.9 & 0.76 \\
+Physics     & 26.5 & 22.4 & 0.58 \\
+Chemistry   & 33.0 & 30.9 & 0.44 \\
+\midrule
+Overall     & 35.2 & 32.4 & 0.61 \\
+\bottomrule
+\end{tabular}
+\caption{The detector under-flags in every subject and recovers only 61.2\% of expert-confirmed hacks: all reported hack ratios are lower bounds.}
+\label{tab:lowerbound}
+\end{table}
+\FloatBarrier
+
+% ---------- Table 4: easy-problem control (REAL) ----------
+
+
+% ---------- Table 5: MAIN corpus results (REAL, v3c panel) ----------
+\begin{table*}[!htbp]
+\centering\small
+\begin{tabular}{l cccc c ccc}
+\toprule
+& \multicolumn{4}{c}{Overall} & & \multicolumn{3}{c}{Hack ratio by subject (\%)} \\
+\cmidrule{2-5}\cmidrule{7-9}
+Model & Acc & \hr & $\hr_{\mid\mathrm{corr}}$ & \daa & & Math & Physics & Chem \\
+\midrule
+GPT-5.5$^{\dagger}$         & 48.1 & 22.0 & 21.0 & 38.0 & & 26 & 11 & 31 \\
+Kimi-K3$^{\dagger}$         & 46.9 & 12.3 & 11.0 & 41.7 & & 12 & \phantom{0}5 & 28 \\
+DeepSeek-V4-Pro$^{\dagger}$ & 45.7 & 22.7 & 23.9 & 34.8 & & 28 & 12 & 31 \\
+Qwen3.7-Max     & 45.6 & 17.7 & 17.8 & 37.5 & & 22 & \phantom{0}6 & 28 \\
+Gemini-3.1-Pro-Preview    & 44.0 & 14.1 & \phantom{0}8.2 & 40.4 & & 20 & 10 & \phantom{0}7 \\
+Claude Opus 4.7 & 42.0 & 20.9 & 21.2 & 33.1 & & 28 & \phantom{0}7 & 27 \\
+GLM-5.2$^{\dagger}$         & 37.4 & 20.5 & 19.5 & 30.1 & & 30 & \phantom{0}8 & 19 \\
+Claude Opus 4.8$^{\dagger}$ & 34.0 & 38.2 & 23.7 & 26.0 & & 47 & 24 & 43 \\
+GPT-5.2         & 19.6 & 35.7 & 19.0 & 15.8 & & 45 & 21 & 40 \\
+DeepSeek-V3.2   & 15.5 & 50.3 & 28.8 & 11.0 & & 61 & 31 & 59 \\
+GPT-4.1         & 10.1 & 60.4 & 44.1 & \phantom{0}5.7 & & 71 & 43 & 66 \\
+\bottomrule
+\end{tabular}
+\caption{Main corpus results (3{,}528 frontier solutions; deployed detector; \%). Rows ordered by accuracy: weaker models hack more and inflate more. All \hr/\daa{} entries are lower bounds (Table~\ref{tab:lowerbound}). $^{\dagger}$Models audited in a follow-up run under the identical protocol; Kimi-K3 and GLM-5.2 could not produce a response on $7.2\%$ of items, and DeepSeek-V4-Pro on $22.7\%$ (extreme-length reasoning), so their \hr{} is, if anything, further underestimated. Original-run models were backfilled to near-full item coverage (residual non-response $\le 2.7\%$ per model).}
+\label{tab:main}
+\end{table*}
+\FloatBarrier
+
+% ---------- Table 6: strategy distribution (REAL, v3c panel) ----------
+
+
+% ---------- Table 7: anti-hack answering prompt (REAL) ----------
+
+
+% ---------- Table 8: scope / exploratory domains (REAL, v3c panel) ----------
+
+
+
+\paragraph{Stage 3: Calibration and final detector.}
+\label{sec:stage3}
+Using the development anchors, we refined the audit prompt to better handle recurring boundary cases: enumeration is allowed when it is part of the intended method, citing a standard theorem is allowed, and several weak clues can together indicate a hack. To keep the judge comparable to the audited models, we only used peer-level judges: Gemini-3.1-Pro-Preview, Claude Opus 4.7, and GPT-5.2. The final detector is a majority vote of these three judges, each using the prompt revision that best matches expert labels on the development split (the final revision for Gemini and Claude, and the previous one for GPT-5.2, which tends to over-flag under the strictest rules; App.~\ref{app:ablation}). To avoid self-grading bias, a model never audits its own solution; in those cases, only the other two judges vote, and both must agree to flag. This slightly lowers raw agreement, but makes model comparisons fairer. The deployed panel reaches $75.4\%$ agreement with experts, up from $71.6\%$ for the Stage-1 auditor (Table~\ref{tab:calib}); agreement is also stable across splits (dev $75.7\%$, test $75.0\%$). Further ablations and the self-audit counterfactual are in Appendix~\ref{app:reliability}. The detector's errors are asymmetric on the anchor set: it falsely flags only $17\%$ of expert-clean solutions ($32/190$), but misses $39\%$ of expert-confirmed hacks ($40/103$), recovering $61.2\%$ of them overall (Table~\ref{tab:lowerbound}). Since misses outnumber false alarms in every subject, the detector under-flags relative to experts, so all reported hack ratios should be read as conservative \emph{lower bounds}.
+
+\subsection{Build Expert-Anchored Anti-Hack Prompt}
+\label{sec:anti_hack_prompt}
+
+The same anchor set is also used to build a generation-time intervention. While the judge asks whether a finished solution replaced an essential derivation with a shortcut, the answering prompt turns the same expert cues into instructions that discourage such shortcuts during generation.
+
+We build four variants that enforce the same boundary in different ways. The \emph{ban-list} variant explicitly forbids each shortcut strategy in our taxonomy. The \emph{necessity} variant requires the solution to show that the answer is necessary or unique. The \emph{guardrail} variant states the grading rule clearly while still allowing legitimate enumeration when that is the intended method. The \emph{pre-commit} variant asks the model to state its planned derivation before solving and to mark key steps as derived or guessed. All variants also let the model abstain by outputting ``CANNOT SOLVE RIGOROUSLY'' when it cannot complete a rigorous solution. This matters: without an abstention option, the prompt may encourage the model to hide shortcuts instead of honestly admitting it cannot solve the problem. We evaluate these variants in \S\ref{sec:mitigation}. The answering prompt and the judge are built from the same blinded expert labels, so they enforce the same distinction between clean reasoning and shortcut hacking.
+
+% =====================================================================
+\section{Experiments}
+\label{sec:exp}
+
+We use the calibrated judge for four purposes: (i) measuring hacking across SOTA models on the frontier corpus; (ii) comparing hack rates across datasets of different difficulty; (iii) testing how much the anti-hack answering prompt reduces hacking, and how model performance changes when it does; and (iv) analyzing what makes the judge itself reliable.
+
+\paragraph{Setup and difficulty tiers.}
+We define three difficulty tiers by problem provenance: \emph{easy} textbook problems (SciBench \citep{wang2024scibench}; MATH-500 \citep{hendrycks2021math,lightman2023lets} level $\le2$), \emph{medium} contest problems (IMO-Bench \citep{deepmind2025imo}, PHYBench \citep{qiu2025phybench}, SciOlympiad \citep{bytedance2025scienceolympiad}), and \emph{hard} frontier problems (HLE \citep{phan2025humanity}). The medium and hard tiers together form our main corpus of $3{,}528$ solutions across the three subjects, produced by eleven models (GPT-5.2, Claude~Opus~4.7, Gemini-3.1-Pro-Preview, DeepSeek-V3.2 \citep{deepseek2025v32}, Qwen3.7-Max \citep{qwen2025max}, GPT-4.1 \citep{openai2025gpt41} as a deliberately weaker reference, and, in a follow-up run under the identical protocol, GPT-5.5 \citep{openai2026gpt55}, Claude~Opus~4.8 \citep{anthropic2026opus48}, Kimi-K3 \citep{moonshot2026kimik3}, GLM-5.2 \citep{zhipu2026glm52}, and DeepSeek-V4-Pro \citep{deepseek2026v4}) under a neutral chain-of-thought prompt that never mentions hacking (further details in App.~\ref{app:extended}).
+
+\subsection{Substantial Hacking Persists on Frontier-Level Problems}
+\label{sec:corpus}
+Table~\ref{tab:main} reports the main result on the hard tier, where the overall hack ratio is $33.2\%$. The key quantity is $\hr_{\mid\mathrm{corr}}$, the share of credited answers that were in fact hacked. It grows steeply as models weaken, from $8.2\%$ for Gemini-3.1-Pro-Preview to $44.1\%$ for GPT-4.1, so reported accuracy overstates derived competence by a corresponding margin, and \daa{} falls below Acc for every model. Because the detector under-counts (Table~\ref{tab:lowerbound}), all of these gaps are lower bounds. Strategy profiles are dominated by formula guessing and answer guessing, matching the two cross-subject mechanisms described in \S\ref{sec:cats} (Table~\ref{tab:cats} and App.~\ref{app:catsdomain}).
+
+\subsection{Hack Rates Rise on Harder Benchmark Sets}
+
+Using the same deployed detector, we compare hack rates across benchmark sets of different difficulty. On the easy tier, the hack ratio is only $2.2\%$, while accuracy remains high at $89.1\%$ (Figure~\ref{fig:difftiers}; Table~\ref{tab:easy}, App.~\ref{app:extended}). The ratio rises to $28.3\%$ on competition problems and $37.4\%$ on frontier HLE items, and the same broad pattern appears in every subject (Figure~\ref{fig:difftiers}). Overall, hacking is rare on the easy tier but much more common on harder benchmarks, which is less consistent with indiscriminate flagging by the judge. One possible reason this phenomenon has received limited attention is that solutions in the easy tier are accessible to a much wider audience, whereas medium- and hard-tier problems often require domain expertise beyond what many computer science practitioners can readily verify at the derivation level.
+
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.5\columnwidth]{figures/fig8_difficulty_tiers.pdf}
+\caption{Hack ratio by difficulty tier and subject (deployed detector): the rise is monotone in every subject, $2.2\!\rightarrow\!28.3\!\rightarrow\!37.4\%$ pooled over all model versions (solid line; bars give the per-subject pooled values). The dashed line pools only the strongest current version of each family ($2.2\!\rightarrow\!16.1\!\rightarrow\!26.3\%$). Competition/frontier tiers pool the eleven corpus models; the easy tier uses the SOTA model set.}
+\label{fig:difftiers}
+\end{figure}
+\FloatBarrier
+
+
+\subsection{Searchability and When Hacking Pays Off}
+\label{sec:dynamics}
+We highlight two patterns that may be relevant to hacking. First, hack rates vary sharply across benchmarks, from $16\%$ on PHYBench to $42\%$ on HLE-Math, and this ordering does not simply follow difficulty: PHYBench is among the hardest benchmarks, yet is hacked least. One possible explanation is that some benchmarks have answers that are easier to guess and check than others. In particular, integer and identification targets may be easier to search over than symbolic-formula targets (Figure~\ref{fig:benchdyn}), though we treat this as a suggestive pattern rather than a causal claim. Second, model capability appears relevant in a different way: weaker models hack more often when they fail to solve a problem cleanly, but hacks from stronger models are more likely to end in answers that are counted as correct. In that sense, hacking seems to pay off more for stronger models (Figure~\ref{fig:caphack}; App.~\ref{app:extended}).
+
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.6\columnwidth]{figures/fig5_capability_hack.pdf}
+\caption{Conditional hack propensity vs.\ accuracy: weaker models hack more often when stuck ($r=-0.86$).}
+\label{fig:caphack}
+\end{figure}
+\FloatBarrier
+
+\begin{figure*}[!htbp]
+\centering
+\includegraphics[width=0.70\textwidth]{figures/fig9_mitigation.pdf}
+\caption{As the anti-hack prompt strengthens, the hack ratio (orange) falls in every facet, reported accuracy (blue) falls toward the \daa{} line (green), and abstention (purple) rises; the shaded gap is hack-bought inflation. In physics the hack ratio drops while the gap is near zero throughout: hacks occur but are rarely credited (\S\ref{sec:mitigation}). Hard cross-subject core, $n\!=\!1008$; detail in App.~\ref{app:mitigation}.}
+\label{fig:mitigation}
+\end{figure*}
+\FloatBarrier
+
+\subsection{Hacking Falls Across Model Versions}
+\label{sec:family}
+
+Cross-model comparisons confound capability with model family, so we also compare successive versions within the same lineage. We evaluate three families---GPT (5.1/5.2/5.4), Gemini-pro (2.5/3/3.1), and Claude-opus (4-5/4-6/4-7/4-8)---on the core items ($2{,}577$ audited solutions). To keep the within-family comparison clean, each lineage is scored by a single judge external to it (the deployed panel cannot be applied symmetrically to models that are themselves panel members). Across successive versions GPT and Gemini-pro become both more accurate and monotonically less likely to hack; Claude-opus follows the same descent through 4-7, then its newest rung 4-8 reverses course, hacking more than 4-7 while scoring lower (Figure~\ref{fig:family}; Table~\ref{tab:ladder} in App.~\ref{app:extended}). This suggests that current post-training reduces at least some forms of shortcut behavior without eliminating them---even the monotone lineages still hack $13$--$37\%$ of the time---and that a single version upgrade can move a lineage backward (App.~\ref{app:extended}).
+
+
+
+
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.6\columnwidth]{figures/fig7_family_matrix.pdf}
+\caption{Version ladders (older$\rightarrow$newer) within three families---GPT (5.1/5.2/5.4), Gemini-pro (2.5/3/3.1), and Claude-opus (4-5/4-6/4-7/4-8)---on the shared core items, each lineage scored by a fixed judge external to it (avoiding the no-self-audit asymmetry of the deployed panel). GPT and Gemini-pro decline monotonically (accuracy rises, hack ratio falls); only the newest Claude-opus 4-8 (dashed) reverses---less accurate and hacking more than 4-7.}
+\label{fig:family}
+\end{figure}
+\FloatBarrier
+
+\subsection{An Expert-Derived Anti-Hack Prompt Exposes the Inflation}
+\label{sec:mitigation}
+
+If the credited hacks really reflected genuine ability, then forbidding these shortcuts should push models to produce more honestly derived correct answers. We test this by adding the anti-hack answering prompt (\S\ref{sec:anti_hack_prompt}) at generation time, and comparing four prompt variants with the standard prompt on the panel models over the hard cross-subject core of competition and HLE items in mathematics, physics, and chemistry.
+
+Figure~\ref{fig:mitigation} shows the result (full numbers in Table~\ref{tab:mitigation}, App.~\ref{app:mitigation}). As the prompt becomes stricter, the hack ratio drops from $22.3\%$ to $6.9\%$. Reported accuracy also drops, from $41.5\%$ to $33.3\%$. The missing probability mass mainly turns into abstention, which rises from $0\%$ to $22.5\%$, rather than into real solutions: \daa{} stays almost unchanged, moving only from $34.7$ to $31.3$. If the hacked answers had been within the models' true reasoning ability, then blocking the shortcut should have increased \daa{}. Instead, once the shortcut is removed, the score mostly disappears.
+
+The subject-wise plots in Figure~\ref{fig:mitigation} show that this effect is strongest where credited hacking is common. In mathematics, the gap between reported accuracy and \daa{} is large under the standard prompt and shrinks as the prompt tightens. In physics, the two lines are already close. This does not contradict \S\ref{sec:corpus}: the corpus ratios there pool all six models (up to $43\%$ for GPT-4.1), while this experiment uses only the three strongest models, which hack physics less ($\hr=10.1\%$). Also, many physics hacks involve asserting formulas that are usually wrong, so few of them turn into credited answers ($\hr_{\mid\mathrm{corr}}=5.2\%$). With little inflation to remove, what shows up more clearly in physics is the cost of the intervention: some genuinely solvable problems become abstentions (\daa{} $26.7\!\rightarrow\!20.9$ under pre-commit).
+
+The competition tier shows the opposite regime. When problems are still within reach, banning shortcuts can redirect models toward honest derivations, and \daa{} can rise---for example, on medium math ($51.9\!\rightarrow\!56.2$, necessity) and chemistry ($52.4\!\rightarrow\!64.3$, guardrail; $n=42$, read qualitatively). But on frontier problems, \daa{} stays flat, suggesting there is little real capability to recover. In short, an anti-hack prompt helps reveal where ability is real and where reported score was mostly shortcut-driven. But if the prompt is too strict, it can also suppress honest solving, so process-level auditing is still necessary.
+
+
+% =====================================================================
+% \section{Discussion}
+% \label{sec:discussion}
+% \paragraph{Why would models hack? The RL hypothesis.}
+% We conjecture, without claiming causality, that hacking is a rational policy under reinforcement learning with verifiable rewards, whose reward is exactly the criterion our benchmarks use: final-answer match. Under that reward, guess-and-verify strictly dominates giving up, and nothing in the objective distinguishes a derived success from a searched one. If the hypothesis holds (a controlled training ablation is the natural follow-up), the mitigation belongs at training time: penalize the process, not only the outcome.
+
+% =====================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+In this work, we introduce solution hacking, where LLMs obtain correct answers through invalid shortcuts that bypass the targeted reasoning capability. Our systematic analysis shows that this phenomenon can mislead current evaluations of LLM reasoning, while expert-inspired anti-hacking strategies reduce the reported accuracy of frontier LLMs to varying degrees. We hope this work paves a new way for evaluating LLM reasoning and calls for greater attention to solution hacking. Future research should develop more faithful and objective evaluation frameworks that better reflect the true capabilities of LLMs.

@@ -1,0 +1,1472 @@
+
+Warning: orx 0.1.117 is outdated (latest 0.1.118). A newer release is available; upgrade to stay compatible with the API. Run `orx update` to upgrade.
+
+alphaXiv: https://www.alphaxiv.org/abs/2608.20331
+
+G-CARL: Grounded Checklist-Aligned Reward Learning for
+Patient-Oriented Medical Report Interpretation
+Shiao Xie
+1∗
+, Siyu Chen
+1∗
+, Jianwei Lv
+1
+, Bo Yuan
+1
+, Yujin Wang
+1†
+, Xiandong Li
+1†
+1
+Baidu Inc., China
+Abstract
+Personalized interpretation of medical reports has emerged
+as an increasingly important need among patients. Address-
+ing this need requires both evidence-grounded medical fac-
+tuality and context-dependent patient communication, yet ex-
+isting medical vision-language tasks do not adequately cap-
+ture these dual requirements. To bridge this gap, we intro-
+duce Patient-oriented Medical Report Interpretation (PMRI),
+a novel open-ended multimodal generation task that requires
+models to explain medical reports in accurate and accessi-
+ble language based on a user’s query and dialogue history.
+These two objectives differ fundamentally in their verifiability,
+yet remain tightly coupled, making them difficult to optimize
+jointly under conventional supervised fine-tuning and holis-
+tic reinforcement learning paradigms. To address this chal-
+lenge, we propose G-CARL, a grounded, checklist-aligned
+reinforcement learning framework that combines multi-source
+retrieval for atomic claim verification with context-aware,
+instance-specific weighted checklists for response coverage,
+providing structured supervision for factuality, user-demand
+satisfaction, and expression quality without constraining re-
+sponse diversity. We further construct MMedReport, a real-
+world PMRI benchmark, along with a clinician-designed
+three-dimensional evaluation protocol. Extensive experiments
+demonstrate that G-CARL consistently outperforms existing
+post-training baselines in overall quality, claim-level preci-
+sion, and checklist recall. Pairwise preference evaluation by
+clinicians further confirms that G-CARL produces interpre-
+tations that are more accurate and better aligned with patient
+needs.
+1 Introduction
+Written within a professional medical context, medical re-
+ports commonly present abnormal values and descriptive
+findings without explaining their implications for non-expert
+readers. This gap becomes particularly salient in online
+healthcare scenarios, where patients upload one or more
+report images and ask open-ended questions shaped by
+their personal concerns. To bridge this gap, we introduce
+Patient-oriented Medical Report Interpretation (PMRI), a
+novel open-ended multimodal generation task. Beyond sim-
+ply recognizing report findings, PMRI must align profes-
+sional medical knowledge with patient-centered communi-
+∗
+These authors contributed equally.
+†
+Corresponding authors: Yujin Wang and Xiandong Li.
+A
+C
+B
+D
+Task A : Medical VQA 
+Task B : Medical Report Generation
+Task C : Patient-Oriented Medical Report Interpretation
+Short-form
+description
+Findings:
+Impressions:
+Doctor-patient dialogue history
+User query
+Long-form report interpretation
+Medical reports
+Reference
+answer
+Findings:
+Impressions:
+Which lobe is primarily affected by
+the abnormal hyperintense lesion?
+: Frontal 
+: Parietal
+: Temporal 
+: Occipital
+Can you tell the
+baby's sex from this?
+Abnormal Findings
+Risk Stratification
+Health Advice
+Evaluation
+Metrics
+Medical
+accuracy
+Demand
+satisfaction
+Expression
+quality
+Matching
+Semantic
+Figure 1: Comparison of PMRI (Task C) with medical VQA
+(Task A) and conventional report generation (Task B). Unlike
+the short, deterministic outputs of Tasks A and B, PMRI
+produces long-form, patient-facing explanations grounded
+in multimodal reports and extended patient–doctor dialogue.
+cation by transforming report evidence into accessible ex-
+planations, addressing user-specific concerns, and offering
+clinically cautious guidance.
+As illustrated in Fig. 1, PMRI differs from conventional
+medical visual question answering (VQA) (Lu et al. 2025;
+Jiang et al. 2025a) and report generation (Lin et al. 2026; Li
+et al. 2025) in two important ways. First, it is an evidence-
+bounded generation task whose responses must be grounded
+not only in the reports but also in reliable clinical knowl-
+edge and medically coherent diagnostic reasoning, particu-
+larly when explaining abnormalities or suggesting follow-up
+actions. This requirement is essential for patient safety be-
+cause unsupported interpretations and inappropriate recom-
+mendations may mislead patients or delay necessary care.
+Second, PMRI is a patient-facing communication task that
+must go beyond clinical correctness to address patients’ indi-
+vidual information needs while clearly explaining potential
+abnormalities and risks in an emotionally adaptive and reas-
+suring manner. Accordingly, we model PMRI quality along
+three core dimensions: medical accuracy, demand satisfac-
+tion, and expression quality.
+Given the nature of PMRI, a straightforward strategy is to
+collect large-scale physician-written interpretations and train
+multimodal models with supervised fine-tuning (SFT) (Chen
+arXiv:2608.20331v1 [cs.CL] 20 Aug 2026
+
+et al. 2024b; Rotstein et al. 2024). However, SFT can overfit
+to the specific wording of the reference interpretation and
+encourage imitation of particular answers rather than learn-
+ing the underlying principles. This is especially limiting in
+PMRI, where multiple responses may be clinically accept-
+able for the same report and user query as long as they remain
+faithful to the evidence and address the user’s concern. Physi-
+cian references therefore provide useful guidance on what a
+response should cover, rather than fully defining the quality
+space of PMRI outputs.
+Reinforcement learning (RL) with reward-based post-
+training, such as Group Relative Policy Optimization
+(GRPO) (Shao et al. 2024), offers a promising alternative for
+improving large vision-language models beyond reference
+imitation (Xing et al. 2025). However, applying RL to PMRI
+requires rewards that reflect heterogeneous verifiability of
+different objectives. Medical factuality can be externally ver-
+ified against the uploaded report and clinical knowledge,
+whereas demand satisfaction and expression quality depend
+more on the patient’s concern and the consultation context.
+This motivates reward signals that can distinguish objective-
+specific errors rather than collapsing the entire response into
+a single score.
+Existing reward designs do not fully meet this requirement.
+Holistic MLLM-as-a-Judge scoring (Zheng et al. 2023; Chen
+et al. 2024a) compresses an entire interpretation into a single
+reward, making the supervision coarse and highly depen-
+dent on the judge model’s medical knowledge. As a result,
+localized hallucinations may be overlooked when the over-
+all response appears fluent and plausible, despite the fact
+that a single unsupported medical claim can fundamentally
+mislead patients. Recent work has introduced rubric-based
+rewards to provide more structured supervision (Arora et al.
+2025; Gunjal et al. 2025). However, static rubrics remain
+insufficient for PMRI because evaluation priorities vary sub-
+stantially across cases. PMRI errors often stem not from
+entirely incorrect responses, but from omitting case-critical
+information or emphasizing secondary details while over-
+looking the most important clinical recommendations and
+user concerns. Since static rubrics are designed to capture
+generic response quality, they are often insensitive to these
+case-specific omissions and misplaced emphases.
+To address these challenges, we propose G-CARL, a rein-
+forcement learning framework with retrieval-grounded and
+checklist-guided rewards. G-CARL assigns reward mecha-
+nisms according to the verifiability boundary of each objec-
+tive. For externally verifiable medical factuality, it decom-
+poses each response into atomic medical claims, retrieves
+supporting evidence from the uploaded report and a multi-
+source medical datastore, and evaluates each claim for factual
+support and contextual relevance. This claim-level reward
+provides localized supervision for sparse factual errors and
+discourages unsupported elaboration. For context-dependent
+objectives such as demand satisfaction and expression qual-
+ity, G-CARL constructs instance-specific weighted checklists
+through MLLM generation followed by clinician refinement.
+Each checklist item is assigned an automatically generated
+weight, allowing the reward to emphasize the aspects most
+relevant to the current report and user question. This yields
+an explicit checklist score that provides transparent supervi-
+sion for whether the response addresses the user’s concern
+appropriately. In summary, our contributions are as follows:
+• We formulate PMRI as an evidence-grounded and patient-
+facing multimodal generation task, and propose G-CARL,
+a reinforcement learning framework that decomposes re-
+ward supervision according to the heterogeneous verifia-
+bility of different objectives.
+• We propose a retrieval-grounded claim reward that pro-
+vides fine-grained supervision for medical factuality
+through atomic claim verification, and a case-specific
+checklist reward that explicitly supervises demand satis-
+faction and expression quality without relying on a single
+reference response.
+• We construct MMedReport, a real-world PMRI bench-
+mark with clinician-designed evaluation protocols. Ex-
+tensive experiments across multiple LVLM backbones
+demonstrate that G-CARL consistently outperforms su-
+pervised and reinforcement learning baselines, with the
+gains further validated by clinician preference and user
+comprehension studies.
+2 Related Works
+Medical Report Generation. Medical report generation has
+been extensively studied where models generate diagnostic
+reports from multimodal images such as X-rays (Li et al.
+2023; Liu et al. 2025). Recent methods have improved re-
+port quality through multimodal feature alignment (Jin et al.
+2024; Li et al. 2025), clinically grounded visual representa-
+tions (Arisoy et al. 2025), and reinforcement learning-based
+optimization (Wang et al. 2026). MedVAG (Arisoy et al.
+2025) introduces clinically aware visual grounding, while
+HiMed-3B (Wang et al. 2026) explores RL-based alignment
+for medical text generation. MedRepBench (Shang et al.
+2025) further promotes faithful report generation through
+field-level evaluation of structured clinical findings. In con-
+trast to these imaging-to-report tasks, PMRI focuses on
+patient-facing interpretation of existing structured reports
+under patient–doctor dialogue contexts, requiring models to
+address user-specific concerns while providing accurate and
+understandable explanations.
+Reinforcement Learning for Medical VLMs. RL has re-
+cently been adopted to improve reasoning and reliability
+in medical VLMs (Jing et al. 2026; Zhou et al. 2026).
+MedVLM-R1 (Pan et al. 2025) uses a GRPO-based frame-
+work to elicit explicit reasoning paths for radiology VQA,
+while Med-R1 (Lai et al. 2026) designs preference signals
+that align visual perception, intermediate reasoning, and fi-
+nal answers. Beyond short-form QA, MediX-R1 (Mullappilly
+et al. 2026) extends multimodal medical RL to open-ended
+responses through LLM-based multi-objective rewards. RL
+has also been explored for report-centric tasks. RadVLM-
+GRPO (Gundersen et al. 2026) applies clinically grounded
+rewards to chest X-ray report generation and visual ground-
+ing, showing that RL can complement strong SFT.
+
+Policy
+Model
+…
+ 
+…
+Claim
+Extraction
+Rollout
+Responses
+SUPPORTED?
+RELEVANT?
+Evidence
+Retrieval
+Query 𝒒
+Reports 𝑰
+Claim 𝑐
+(a) Retrieval-Grounded Claim Reward
+Evidence 𝜀
+AND
+Retrieval
+query #𝑞
+(b) Case-Specific Checklist Reward
+Draft
+Checklist
+review
+Final Weighted
+Checklist 𝒯 
+Response
+True ?
+True ?
+Reference
+Model
+score
+𝑹
+𝒇𝒂𝒄𝒕
+score
+𝑹
+𝒄𝒉𝒆𝒄𝒌
+History 𝒉
+KL constraint
+Verifier 𝓥
+<think>
+Reward
+Functions
+S1: Concern Identification S2: Finding Extraction
+S3: Relational Reasoning 
+S4: Tailored Planning
+𝑹
+𝒇𝒐𝒓𝒎𝒂𝒕
+𝑹
+𝒇𝒂𝒄𝒕 
+𝑹
+𝒄𝒉𝒆𝒄𝒌
+𝑤
++
+𝑤
+,
+Generator G
+<answer> Explainable Output </answer>
+“Generate Draft
+Checklist and Expected
+Claim Number from reports,
+queries, and history.”
+Your blood test indicates mild anemia and mildly elevated liver enzymes
+Mild Anemia
+- Hemoglobin is below the normal reference range.
+- This finding indicates a reduced oxygen-carrying capacity of the
+blood and may explain symptoms…
+Medical Recommendations
+- Repeat blood count and liver function tests within 2–4 weeks.
+- Consider iron studies if anemia persists.
+Claim List
+Retrieval Query
+Claim 2: …
+Retrieval Query
+Claim 1: …
+Retrieval Query
+Claim 3: …
+Retrieval Query
+Claim N: …
+Datastore 𝓓
+Structured Diagnostic Reasoning
+</think>
+Explainable Output
+K
+Report 𝑰
+Figure 2: Overview of G-CARL. Given report images, user queries, and dialogue history, G-CARL samples G responses from
+the old policy and optimizes them with a multi-objective reward function consisting of retrieval-grounded claim reward R
+fact
+,
+case-specific checklist reward R
+check
+, and structured reasoning format reward R
+format
+.
+3 Methods
+3.1 Overall Architecture
+Built upon GRPO, G-CARL optimizes the policy model with
+three reward signals, as illustrated in Fig. 2. Given uploaded
+medical report images I, the dialogue history h, and a user
+query q, the policy model first generates candidate responses.
+The retrieval-grounded branch then supervises medical fac-
+tuality by verifying report-grounded medical claims against
+evidence retrieved from a multi-source medical datastore,
+producing the factuality reward R
+fact 
+(Sec. 3.2). In parallel,
+the case-specific checklist branch optimizes demand satis-
+faction and expression quality by constructing a weighted
+checklist through MLLM generation followed by clinician-
+guided refinement, and evaluating the checklist coverage of
+the generated response to produce the checklist reward R
+check
+(Sec. 3.3). Together with the format reward R
+format
+, these
+components are integrated into a multi-objective optimiza-
+tion task (Sec. 3.4).
+3.2 Retrieval-Grounded Claim Reward
+Medical factuality in PMRI is inherently claim-level, as a
+single response often contains multiple heterogeneous med-
+ical claims. Holistic response-level rewards cannot localize
+factual errors and may overestimate fluent but unsupported
+generations. Moreover, many clinical interpretations, causal
+attributions, and recommendations cannot be verified from
+the report alone, requiring factual verification grounded in
+authoritative external medical knowledge.
+To address these challenges, inspired by (Min et al. 2023a;
+Song et al. 2024), we propose a retrieval-grounded claim
+reward. As illustrated in Fig. 2 (a), each response is first
+decomposed into atomic medical claims, which are then ver-
+ified against evidence retrieved from a multi-source medi-
+cal datastore. Specifically, each claim is evaluated from two
+complementary perspectives: whether it is RELEVANT to the
+uploaded medical report and whether it is SUPPORTED by
+the retrieved evidence. This dual-binary design encourages
+the generation of statements that are both clinically grounded
+and factually correct. We describe each step in detail below.
+Claim Extraction. Following (Song et al. 2024), we perform
+claim extraction at the sentence level. Given a response o,
+we first segment its answer span into sentences {s
+1
+, . . . , s
+n
+}.
+For each sentence s, an extractor G, conditioned on the full
+response o and user query q, produces a set of verifiable and
+decontextualized claims as follows:
+{(c, ˜q), . . . } = G(s | o, q). (1)
+Alongside each claim c, the extractor jointly generates a
+retrieval query ˜q. After claim deduplication, the final claim
+set for response o is defined as:
+C(o) = {(c
+i
+, ˜q
+i
+)}
+N
+i=1
+. (2)
+Evidence Retrieval. To support trustworthy evidence-
+grounded factual verification in the medical domain, we con-
+struct a large-scale medical datastore D by integrating author-
+itative medical resources, including drug labeling, medical
+textbooks, and clinical practice guidelines:
+D = D
+drug 
+∪ D
+book 
+∪ D
+guide
+, (3)
+where D
+drug 
+contains approximately 20,000 drug instruction
+entries, D
+book 
+comprises 18,200 textbook passages cover-
+ing foundational medical knowledge, and D
+guide 
+consists of
+16,000 clinical guideline passages. All resources are prepro-
+cessed into semantically coherent chunks.
+Given a claim-query pair (c, ˜q), the retrieval query ˜q com-
+bines the topical intent of the user query with the core medical
+
+concepts of the corresponding claim, producing a concise set
+of retrieval keywords aligned with the current clinical con-
+text. We then perform parallel retrieval across all knowledge
+sources using ˜q and aggregate the top-k most relevant evi-
+dence chunks from each source:
+E = 
+[ 
+Top
+k
+
+f (˜q, D
+i
+)
+
+, i ∈ {book, guide, drug}, (4)
+where f (˜q, d) denotes the relevance score between query
+and document chunk. The retrieved evidence set E is then
+concatenated with source identifiers and truncated to a fixed
+token budget to form the evidence context for verifying claim.
+Dual Binary Verification. To verify each extracted claim,
+a multimodal verifier V takes the claim c, the retrieved evi-
+dence E, the user query q, and the uploaded report image I
+as input, and predicts two binary verdicts as:
+v = V(c, E), v ∈ {Supported, UnSupported},
+u = V(c, I, h, q), u ∈ {Relevant, Irrelevant},
+(5)
+where v assesses whether the claim is factually supported,
+while u assesses whether the claim is contextually relevant
+to the uploaded reports.
+For factuality verification, the verifier follows an evidence-
+first, contradiction-oriented protocol. A claim is judged as
+Supported if it is directly supported by the retrieved evi-
+dence or remains consistent with it without contradiction.
+When explicit evidence is unavailable, the claim is still con-
+sidered Supported if it reflects established medical consen-
+sus and does not conflict with domain knowledge. Otherwise,
+the claim is judged as Unsupported.
+For relevance verification, a claim is judged as Relevant
+if it is grounded in the uploaded report, directly addresses
+the user query, or provides clinically necessary context for
+the current case. Otherwise, it is judged as Irrelevant, even
+if medically correct, when it introduces generic or unsup-
+ported information unrelated to the report findings or the
+user’s concern. This dual-verdict design prevents the verifier
+from penalizing valid common-sense medical statements that
+lack explicit retrieved evidence, while discouraging reward
+hacking through factually correct but irrelevant elaborations.
+Then, a claim is considered valid only if it is both factually
+supported and contextually relevant:
+z = 1[v = Supported] · 1[u = Relevant] ∈ {0, 1}. (6)
+The valid-claim precision can be defined as:
+P
+fact 
+= 
+1
+N
+N
+X
+i=1
+z
+i
+. (7)
+However, precision alone may favor overly short responses,
+as a response containing only a few valid claims can still
+achieve a high precision score. To encourage sufficient in-
+formational coverage, we introduce a coverage term with a
+case-specific target claim count K, where K is automatically
+generated by the checklist generator described in Section 3.3
+and represents the expected number of valid medical claims
+in an informative response:
+C
+fact 
+= min
+P
+N
+i=1 
+z
+i
+K 
+, 1
+!
+. (8)
+The final factual validity reward can be formulated as the
+harmonic mean of valid-claim precision and coverage:
+R
+fact 
+= 
+2P
+fact
+C
+fact
+P
+fact 
++ C
+fact
+. (9)
+3.3 Case-Specific Checklist Reward
+Unlike medical factuality, dimensions such as demand sat-
+isfaction and expression quality are inherently subjective
+and cannot be verified against referenceable knowledge.
+Moreover, these dimensions are highly instance-dependent:
+whether a response is considered complete, helpful, or well-
+expressed depends on the specific report, user concern, and
+dialogue context. Different criteria also vary substantially in
+clinical importance. Consequently, assigning a single holis-
+tic reward provides little guidance about which aspects of the
+response should be improved and fails to distinguish critical
+requirements from desirable but non-essential ones.
+To address this challenge, we decompose subjective eval-
+uation into a set of weighted checklist items. Each check-
+list item represents an independent evaluation criterion with
+an associated importance weight. A verifier then evaluates
+the candidate response against each checklist item indepen-
+dently, producing a fine-grained and controllable reward sig-
+nal for reinforcement learning. The overall procedure is de-
+scribed as follows.
+Weighted Checklist Construction. As shown in Fig. 2 (b),
+to reduce manual annotation effort, an MLLM (e.g., Gem-
+ini 3.1 Pro) as generator G first generates a draft instance-
+specific checklist conditioned on the dialogue history, user
+query, and uploaded medical reports. Professional clinicians
+then iteratively review, refine, and complete the draft to pro-
+duce the final checklist:
+T = {(t
+i
+, w
+i
+)}
+m
+i=1
+, (10)
+where t
+i 
+denotes a self-contained checklist item and w
+i 
+its
+corresponding importance weight. Physician-guided check-
+list construction grounds the supervision signal in clinically
+appropriate expectations rather than generic evaluation tem-
+plates, which prior work has shown to be essential for reliable
+expert-domain assessment (Viswanathan et al. 2026).
+The importance weight w is determined according to
+the clinical significance of each checklist item. Specifically,
+each checklist item is assigned one of four importance lev-
+els, namely Essential, Important, Optional, or Pitfall,
+which are mapped to predefined integer-valued weights (e.g.,
+4–5, 2–3, 1–2, and −2–−1, respectively). This weighting
+scheme ensures that clinically critical criteria contribute
+more strongly to the reward while undesirable behaviors in-
+cur explicit penalties. In particular, Pitfall items capture
+undesirable behaviors discouraged by the physicians, includ-
+ing ignoring the user’s primary concern, generating overly
+technical explanations, or providing dismissive responses.
+Explicit Aggregation. Given the checklist T and a candidate
+response o, the checklist verifier V evaluates each checklist
+item independently and outputs a binary satisfaction signal:
+z
+i 
+= V(t
+i
+, o) ∈ {0, 1}. (11)
+For Essential, Important, and Optional items, z
+i 
+= 1
+indicates that the criterion is satisfied. For Pitfall items,
+
+z
+i 
+= 1 indicates that the undesirable behavior is triggered.
+We denote the positive checklist item set as P and the Pitfall
+item set as N , and compute the positive coverage and pitfall
+violation terms as:
+V
+pos 
+=
+P
+i∈P 
+|w
+i
+|z
+i
+P
+i∈P 
+|w
+i
+| 
+, V
+neg 
+=
+P
+j∈N 
+|w
+j 
+|z
+j
+P
+i∈P 
+|w
+i
+| 
+. (12)
+The final checklist reward is defined as:
+R
+check 
+= clip(V
+pos 
+− V
+neg
+, 0, 1) . (13)
+Unlike conventional reference-based training, our checklist
+does not encourage the policy to mimic a single physician-
+authored response. Instead, the reference is distilled into
+a set of clinically important evaluation criteria, specifying
+what the response should cover rather than how it should
+be written. This design preserves the diversity of valid re-
+sponses while rewarding clinical completeness and user-
+oriented communication.
+3.4 Multi-objective Reward Function
+Inspired by recent advances in structured reasoning (Yu et al.
+2025), we introduce a format reward that encourages the
+model to follow a physician-oriented clinical reasoning scaf-
+fold during reinforcement learning. As illustrated in Fig. 2,
+the model is required to organize its intermediate reasoning
+within the <think></think> block according to a four-
+step clinical reasoning workflow before generating the final
+patient-facing interpretation in the <answer></answer>
+block. This reward does not directly supervise medical cor-
+rectness; instead, it encourages a structured decomposition of
+report findings, supporting evidence, clinical reasoning, and
+response planning, thereby improving the coherence and or-
+ganization of the final response. Our reward function jointly
+optimizes medical factuality, demand satisfaction and ex-
+pression quality, which can be defined as:
+R
+total 
+= λ
+fact
+R
+fact 
++ λ
+check
+R
+check 
++ λ
+format
+R
+format
+, (14)
+where λ
+fact
+, λ
+check
+, and λ
+format 
+are weighting coefficients
+that balance the contributions of the reward components.
+4 Experiments
+4.1 Experimental Setup
+Datasets. We evaluate G-CARL primarily on (1) MMe-
+dReport, a real-world multimodal PMRI benchmark col-
+lected from online healthcare consultations. It contains 2,450
+instances, each including dialogue history, a user query, up-
+loaded medical report images, and clinician-verified refer-
+ence annotations. All instances undergo quality control, de-
+identification, and manual verification to ensure data quality
+and patient privacy. Detailed dataset statistics are provided in
+Appendix A. Following the standard split, 2,200 instances
+are used for training and 250 for evaluation. To assess broader
+medical capability beyond PMRI, we further evaluate the
+trained models on an external benchmark, (2) CMB (Wang
+et al. 2024), which evaluates both medical QA accuracy and
+the professionalism of open-ended clinical interpretation un-
+der an LLM-as-a-judge protocol.
+Evaluation Protocol. We evaluate PMRI responses using
+both subjective and objective metrics. (1) Subjective Evalu-
+ation. Responses are evaluated along three clinician-defined
+dimensions: Medical Accuracy (Accuracy), Demand Satis-
+faction (Satisfaction), and Expression Quality (Expression).
+Each dimension is scored according to a detailed clinician-
+authored rubric ranging from −2 to 3. We employ GPT-
+5.2 (OpenAI 2025) as the judge by strictly following these
+evaluation criteria. The complete judging protocol is pro-
+vided in the Appendix B to facilitate reproducibility. (2)
+Objective Evaluation. In addition to holistic assessment, we
+report claim-level Precision and checklist-level Recall. Pre-
+cision is defined as the ratio of supported claims to extracted
+claims, measuring factual correctness, while Recall is defined
+as the ratio of satisfied checklist items to the total checklist
+items, measuring coverage of case-specific requirements.
+Implementation Details. Our policy models are initialized
+from the Qwen3-VL (Bai et al. 2025) and InternVL3 (Zhu
+et al. 2025) series. G-CARL is trained for three epochs on 8
+NVIDIA H100 GPUs with a batch size of 192 and a learning
+rate of 1 × 10
+−5
+. We set the number of rollout responses to
+G = 8 during training. The reward weights are configured as
+λ
+fact 
+= 0.4, λ
+check 
+= 0.3, and λ
+format 
+= 0.3; detailed hyper-
+parameter analysis is provided in Appendix C. The verifier
+V is initialized with Qwen3.5-35B-A3B, with implementa-
+tion details reported in Appendix D. We compare G-CARL
+with the corresponding base models (Base), supervised fine-
+tuning (SFT), and an MLLM-as-a-Judge reward baseline.
+Additionally, we evaluate a diverse range of general-purpose
+and medical LVLMs under a zero-shot inference setting.
+4.2 Main Results on MMedReport
+Quantitative Comparison. Table 1 compares G-CARL with
+general-purpose LVLMs, specialized medical LVLMs, and
+different training paradigms based on the Qwen3-VL and
+InternVL3 backbones. While the MLLM-as-a-Judge reward
+improves over SFT, its holistic rubric struggles to jointly
+optimize medical accuracy, demand satisfaction, and expres-
+sion quality. By decomposing reward supervision into ex-
+ternally verifiable medical claims and internally grounded
+checklist objectives, G-CARL achieves the highest scores
+across both objective and subjective metrics. On Qwen3-VL-
+8B, G-CARL improves the overall subjective score, while
+boosting claim-level precision (+0.77%) and checklist-level
+recall (+6.71%), indicating more informative and richer in-
+terpretations. Moreover, G-CARL consistently outperforms
+specialized medical LVLMs and remains competitive with
+substantially larger general-purpose LVLMs under zero-shot
+evaluation, demonstrating the effectiveness of G-CARL.
+External Generalization Study. We further transfer the
+trained models to CMB without any adaptation. As shown
+in Table 2, G-CARL improves QA accuracy on both splits
+(+0.63) and attains the highest professionalism score in open-
+ended generation (3.61), whereas SFT and MLLM-as-a-
+Judge bring marginal gains and even degrade profession-
+alism. This indicates that grounding rewards in verifiable
+medical evidence suppresses hallucinated content and better
+elicits the medical accuracy already latent in the base model,
+rather than merely fitting the PMRI response style.
+
+Table 1: Main results on our medical report interpretation benchmark. Numbers are mean over 3 seeds with standard deviation.
+Method 
+Subjective Metrics Objective Metrics
+Overall Accuracy Satisfaction Expression Precision (%) Recall (%)
+General LVLMs
+GPT-4o (Hurst et al. 2024) 1.588
+±0.007 
+0.974
+±0.007 
+0.358
+±0.001 
+0.256
+±0.001 
+95.26 42.63
+ERNIE 4.5 VL (Baidu ERNIE Team 2025) 1.709
+±0.010 
+1.088
+±0.012 
+0.376
+±0.002 
+0.245
+±0.000 
+95.27 53.74
+GLM-4.6V (Team et al. 2026b) 1.819
+±0.014 
+1.159
+±0.013 
+0.395
+±0.002 
+0.265
+±0.001 
+95.90 59.51
+Step-3.7-Flash (StepFun AI 2026) 1.842
+±0.011 
+1.175
+±0.012 
+0.412
+±0.002 
+0.255
+±0.001 
+95.96 72.11
+Kimi K2.5 (Team et al. 2026a) 
+1.903
+±0.002 
+1.221
+±0.002 
+0.418
+±0.001 
+0.264
+±0.001 
+97.63 76.42
+Gemini 3.1 Pro (Google DeepMind 2026) 1.964
+±0.008 
+1.229
+±0.008 
+0.438
+±0.003 
+0.297
+±0.002 
+98.10 80.29
+Medical LVLMs
+Hulumed (Jiang et al. 2025b) 1.020
+±0.018 
+0.480
+±0.013 
+0.282
+±0.004 
+0.258
+±0.002 
+72.28 32.65
+Medgemma (Sellergren et al. 2026) 1.004
+±0.005 
+0.460
+±0.008 
+0.289
+±0.004 
+0.255
+±0.001 
+74.30 33.86
+Lingshu (Xu et al. 2025) 1.527
+±0.003 
+0.902
+±0.002 
+0.357
+±0.003 
+0.268
+±0.002 
+89.69 39.41
+Qwen-VL series
+Qwen3-VL-4B-Instruct (Base) 
+1.527
+±0.010 
+0.897
+±0.007 
+0.374
+±0.003 
+0.256
+±0.001 
+92.19 49.35
++SFT 1.603
+±0.009 
+0.945
+±0.012 
+0.392
+±0.002 
+0.266
+±0.002 
+92.90 57.28
++MLLM-as-a-Judge 1.662
+±0.012 
+0.993
+±0.009 
+0.396
+±0.002 
+0.273
+±0.001 
+93.82 57.72
++Ours 1.709
+±0.009 
+1.028
+±0.008 
+0.406
+±0.000 
+0.275
+±0.002 
+93.97 58.92
+Qwen3-VL-8B-Instruct (Base) 1.626
+±0.012 
+0.980
+±0.010 
+0.388
+±0.006 
+0.258
+±0.001 
+93.46 60.68
++SFT 1.718
+±0.008 
+1.040
+±0.010 
+0.403
+±0.002 
+0.275
+±0.001 
+94.22 63.44
++MLLM-as-a-Judge 1.766
+±0.008 
+1.089
+±0.007 
+0.407
+±0.002 
+0.270
+±0.001 
+95.85 65.47
++Ours 1.829
+±0.009 
+1.141
+±0.008 
+0.411
+±0.001 
+0.277
+±0.001 
+96.62 72.18
+InternVL3 series
+InternVL3-8B (Base) 1.358
+±0.007 
+0.744
+±0.007 
+0.345
+±0.001 
+0.269
+±0.001 
+91.25 40.37
++SFT 1.513
+±0.018 
+0.868
+±0.016 
+0.385
+±0.004 
+0.260
+±0.001 
+92.06 50.88
++MLLM-as-a-Judge 
+1.553
+±0.018 
+0.897
+±0.017 
+0.388
+±0.001 
+0.271
+±0.001 
+92.39 52.61
++Ours 1.638
+±0.008 
+0.967
+±0.010 
+0.397
+±0.001 
+0.274
+±0.001 
+92.51 57.97
+InternVL3-14B (Base) 1.616
+±0.016 
+0.986
+±0.013 
+0.365
+±0.004 
+0.265
+±0.001 
+92.93 44.86
++SFT 1.663
+±0.007 
+0.995
+±0.008 
+0.400
+±0.000 
+0.268
+±0.001 
+93.34 58.58
++MLLM-as-a-Judge 1.670
+±0.003 
+1.010
+±0.004 
+0.399
+±0.003 
+0.261
+±0.000 
+93.72 58.06
++Ours 1.739
+±0.007 
+1.061
+±0.005 
+0.405
+±0.000 
+0.273
+±0.002 
+95.42 64.57
+Table 2: Evaluation results on the CMB dataset.
+Method 
+QA Accuracy (%) Open-ended Generation
+Train Val Professionalism
+Base 74.85 71.42 3.58
+SFT 75.00 71.43 3.48
+MLLM-as-a-Judge 74.96 70.36 3.51
+G-CARL 75.48 72.05 3.61
+Table 3: Ablation study of reward designs in G-CARL.
+Overall Acc Sat Exp Pre Rec
+Reward Combination
+Baseline 1.626 0.980 0.388 0.258 93.46 60.68
++ R
+check 
++ R
+format 
+1.720 1.046 0.406 0.268 95.36 64.10
++ R
+fact 
++ R
+format 
+1.748 1.074 0.404 0.270 95.84 62.81
++ R
+fact 
++ R
+check 
+1.810 1.135 0.411 0.264 96.03 70.09
++ R
+fact 
++ R
+check 
++ R
+format 
+1.829 1.141 0.411 0.277 96.62 72.18
+Reward Design
+R
+check
+: w/ static rubric 1.786 1.100 0.412 0.274 94.83 66.09
+R
+fact
+: w/o retrieval 1.734 1.057 0.406 0.271 94.26 63.81
+Case Study. As shown in Fig. 3, we qualitatively compare
+the outputs of our method with SFT and MLLM-as-a-Judge
+using Qwen3VL-8B as the base model. The report shows a
+normal pH (7.432), elevated chloride (111.0 mmol/L), and
+severe anemia (Hb = 58 g/L). However, SFT incorrectly diag-
+noses metabolic acidosis and misclassifies the severe anemia
+as mild, while MLLM-as-a-Judge mistakes the elevated chlo-
+ride level for hypochloremia instead of hyperchloremia. In
+contrast, our method correctly identifies all key abnormalities
+and produces clinically accurate interpretations. Similarly, in
+the right example, SFT fails to incorporate the user’s smoking
+and alcohol cessation history, while MLLM-as-a-Judge fails
+to address the user’s primary concern of whether to continue
+the medication. In contrast, our method effectively integrates
+historical context, directly answers the user’s question, and
+provides evidence-grounded recommendations.
+Human Preference Evaluation. We conduct a blind pair-
+wise human preference study on 250 held-out cases. Three
+professional clinicians compare anonymized responses gen-
+erated by G-CARL and the baselines across the three evalu-
+ation dimensions and overall preference, with majority vot-
+ing used for the final decision. We additionally recruit 50
+participants without medical training to evaluate the com-
+prehensibility of the generated interpretations. As shown in
+Fig. 4, G-CARL is consistently preferred over both SFT and
+MLLM-as-a-Judge, particularly in medical accuracy and de-
+mand satisfaction, with preference margins of 136:85 and
+106:64, respectively. It also achieves substantially higher
+comprehensibility ratings from non-expert participants, sug-
+gesting that its responses are easier for patients to understand.
+4.3 Ablation Study
+Effect of Reward Components. To evaluate the contribution
+of each reward component, we conduct ablation studies on
+Qwen3VL-8B. As shown in Table 3, R
+check 
+combined with
+R
+format 
+improves the baseline by enhancing case-specific re-
+quirement coverage, while R
+fact 
+provides substantial gains
+in medical factuality. Combining all three rewards achieves
+the best performance, demonstrating their complementary
+effects. Further analysis shows that replacing the dynamic
+
+Qwen3VL-8B + SFT
+……The report contains multiple abnormal findings, with the primary concerns being metabolic
+acidosis and hyperventilation, accompanied by mild anemia and elevated blood glucose.....
+Qwen3VL-8B + MLLM-as-a-Judge
+Qwen3VL-8B + Ours
+Anemia and Nutritional Status:
+A hemoglobin level of 58 g/L falls within the mild anemia range. Although it is not yet life-
+threatening, it can increase the workload on the heart.
+……However, several abnormal findings require particular attention:
+Severe anemia:
+The patient's hemoglobin is only 58 g/L (the normal range for adults is approximately 110–
+160g/L), indicating a markedly reduced oxygen-carrying capacity of the blood.
+pH: 7.432 (Reference range: 7.35–7.45) → Normal.
+Acid-Base Balance (Generally Normal)
+……First, it should be noted that the patient currently has significant anemia (hemoglobin: 58 g/L,
+which is below the normal range)……At the same time, the patient also has mild hypochloremia
+and elevated blood glucose levels, both of which are relatively common in postoperative or
+critically ill patients and may be related to physiological stress, intravenous fluid therapy, or
+metabolic changes.
+Severe anemia rather than
+mild anemia !!
+Normal pH does not support
+metabolic acidosis !!
+Cl is high, so it indicates hyperchloremia,
+not hypochloremia !!
+Qwen3VL-8B + MLLM-as-a-Judge
+……Simply put, your results are very good, and all key indicators are within the normal reference ranges. These normal
+indicators further confirm that your body’s metabolic and excretory systems are currently in good condition.
+This explains why your blood pressure, blood lipids, and blood glucose have remained normal after consistently taking
+medication…….
+Overall conclusion：This represents a healthy “steady-state” condition, indicating that the current treatment plan is
+effective.
+Failed to address the user’s primary concern !!
+Qwen3VL-8B + SFT
+……The current hormone levels and kidney-related indicators all support continuing your current treatment plan. Do
+not stop the medication on your own because of this slight fluctuation.
+Regarding medication: The current test results, especially the normal aldosterone and cortisol levels, indicate that
+your body does not have a serious endocrine dysfunction. Therefore, you do not need to stop the medication because
+of the slight elevation in ACTH.
+Ignored the user‘s smoking and alcohol cessation history !!
+……Based on your previous consultation (“after quitting smoking and alcohol and taking medication, my blood lipids,
+blood glucose, and blood pressure are normal”) and the current test results, the overall conclusion is very positive……
+Regarding medication: these “normal” indicators are strong evidence that you have been taking your medication
+consistently and that your condition is well controlled. Although the indicators look good, this does not mean that the
+disease has been completely “cured.” For chronic conditions such as hypertension and diabetes, stopping medication
+usually leads to a rebound in the indicators. Therefore, you should continue taking medication regularly as prescribed
+and should not stop it on your own…… 
+Addressed the user’s primary concern!!
+Qwen3VL-8B + Ours 
+Integrated the user’s treatment history!!
+After quitting smoking and alcohol, and after taking medication,
+my blood lipids, blood glucose, and blood pressure have all
+returned to normal. Do I still need to take the medication?
+Stopping medication without guidance may cause blood
+pressure and blood glucose to rebound and increase the risk of
+cardiovascular and cerebrovascular events. To give you more
+precise advice, what medications are you currently taking? And
+how long have these indicators remained normal?
+Okay, I will upload my medical report.
+CASE A CASE B
+Figure 3: Qualitative comparison of interpretation results across different models. Two representative real-world cases (Case A
+and Case B) are presented, where Case B includes both report images and dialogue history as input.
+136
+164
+173
+29
+21
+28
+85
+65
+49
+0 50 100 150 200 250
+67
+87
+113
+120
+138
+120
+63
+25
+17
+0 50 100 150 200 250
+106
+145
+162
+80
+67
+47
+64
+38
+41
+0 50 100 150 200 250
+145
+185
+211
+22
+17
+12
+83
+48
+27
+0 50 100 150 200 250
+win tie lose
+Clinician Evaluation
+ 
+Patient Evaluation
+135
+169
+185
+32
+14
+10
+83
+67
+55
+0 50 100 150 200 250
+Ours/B
+Ours/S
+Ours/M
+MEDICAL ACCURACY DEMAND SATISFACTION
+EXPRESSION QUALITY 
+OVERALL PERFORMANCE
+Ours/B
+Ours/S
+Ours/M
+Ours/B
+Ours/S
+Ours/M
+Figure 4: Human preference evaluation by clinicians and
+patients. "Ours/B", "Ours/S", and "Ours/M" denote pairwise
+comparisons between G-CARL and the base model, the SFT
+model, and the MLLM-as-a-Judge-trained model.
+checklist with a static rubric degrades overall performance,
+highlighting the importance of case-adaptive supervision.
+Similarly, removing retrieval from R
+fact 
+reduces claim-level
+precision, confirming the effectiveness of retrieval-grounded
+factual verification.
+Comparison with Other RL Methods. Table 4 compares G-
+CARL with representative RL methods for open-ended gen-
+eration. Preference-based DPO performs worst, since high-
+quality preference data can hardly cover the diverse response
+space of PMRI. PROMETHEUS scores responses directly
+against reference answers, which is too coarse-grained to
+yield confident judgments and thus provides unstable re-
+Table 4: Comparison with existing RL methods.
+Method Overall Acc Sat Exp
+DPO (Rafailov et al. 2023) 1.032 0.438 0.332 0.262
+GRPO-based methods
++ PROMETHEUS (Kim et al. 2024) 1.132 0.530 0.347 0.255
++ RAR (Gunjal et al. 2025) 1.683 1.016 0.398 0.269
++ MedRepBench (Shang et al. 2025) 1.722 1.048 0.406 0.268
++ CapRL (Xing et al. 2025) 1.729 1.050 0.410 0.269
++ FactScore (Min et al. 2023b) 
+1.776 1.100 0.408 0.268
++ Ours 1.829 1.141 0.411 0.277
+ward signals. Rubric-based RAR offers finer criteria but
+lacks explicit evidence verification, while MedRepBench
+emphasizes structured clinical finding recall and is there-
+fore less aligned with user-specific demands. Factuality-
+oriented rewards (FactScore, CapRL) bring the most pro-
+nounced accuracy gains among the baselines. By coupling
+retrieval-grounded claim verification with objective-specific
+reward decomposition, G-CARL attains the best overall per-
+formance, jointly improving three dimensions.
+5 Conclusion
+In this paper, we present PMRI as a challenging yet under-
+explored task that requires both evidence-grounded medical
+factuality and context-dependent patient communication. We
+propose G-CARL, a reinforcement learning framework that
+decomposes reward supervision through retrieval-grounded
+claim verification and case-specific checklist guidance. Ex-
+tensive experiments on the newly constructed MMedReport
+benchmark, together with clinician-authored evaluation and
+human preference studies, show that G-CARL consistently
+improves the quality of patient-oriented medical report in-
+terpretation. We hope this work lays the foundation for more
+reliable and patient-centered multimodal medical assistants.
+
+References
+Arisoy, V.; et al. 2025. A vision attention driven Language
+framework for medical report generation. Scientific Reports,
+15(1): 10704.
+Arora, R. K.; Wei, J.; Soskin Hicks, R.; Bowman, P.;
+Quiñonero Candela, J.; Tsimpourlas, F.; Sharman, M.; Shah,
+M.; Vallone, A.; Beutel, A.; Heidecke, J.; and Singhal,
+K. 2025. HealthBench: Evaluating Large Language Mod-
+els Towards Improved Human Health. arXiv preprint
+arXiv:2505.08775.
+Bai, S.; et al. 2025. Qwen3-VL Technical Report.
+arXiv:2511.21631.
+Baidu ERNIE Team. 2025. ERNIE 4.5 Technical
+Report. https://ernie.baidu.com/blog/publication/ERNIE_
+Technical_Report.pdf. Technical report.
+Chen, D.; Chen, R.; Zhang, S.; Liu, Y.; Wang, Y.; Zhou,
+H.; Zhang, Q.; Zhou, P.; Wan, Y.; and Sun, L. 2024a.
+MLLM-as-a-Judge: Assessing Multimodal LLM-as-a-Judge
+with Vision-Language Benchmark. In International Confer-
+ence on Machine Learning.
+Chen, L.; Li, J.; Dong, X.; Zhang, P.; He, C.; Wang, J.; Zhao,
+F.; and Lin, D. 2024b. Sharegpt4v: Improving large multi-
+modal models with better captions. In European Conference
+on Computer Vision, 370–387. Springer.
+Google DeepMind. 2026. Gemini 3.1 Pro Model Card.
+https://deepmind.google/models/model-cards/gemini-3-1-
+pro. Published February 2026.
+Gundersen, B.; Deperrois, N.; Ruiperez-Campillo, S.; Sut-
+ter, T. M.; Vogt, J. E.; Moor, M.; Nooralahzadeh, F.; and
+Krauthammer, M. 2026. RadVLM-GRPO: Enhancing Chest
+X-ray Report Generation and Visual Grounding via Rein-
+forcement Learning. Proceedings of Machine Learning Re-
+search, 150: 1–34.
+Gunjal, A.; Wang, A. V.; Yao, C.; Chen, J.; Lo, K.; Rane, N.;
+Yang, S.; Zheng, Y.; Wang, Z.; et al. 2025. Rubrics as Re-
+wards: Reinforcement Learning Beyond Verifiable Domains.
+arXiv preprint arXiv:2507.17746.
+Hurst, A.; Lerer, A.; Goucher, A. P.; Perelman, A.; Ramesh,
+A.; Clark, A.; Ostrow, A.; Welihinda, A.; Hayes, A.; Rad-
+ford, A.; et al. 2024. Gpt-4o system card. arXiv preprint
+arXiv:2410.21276.
+Jiang, S.; Chen, Y.; Song, S.; Zhang, Y.; Jin, Y.; Feng, Y.; Wu,
+J.; and Liu, Z. 2025a. Knowing or Guessing? Robust Med-
+ical Visual Question Answering via Joint Consistency and
+Contrastive Learning. In International Conference on Med-
+ical Image Computing and Computer-Assisted Intervention,
+325–335. Springer.
+Jiang, S.; Wang, Y.; Song, S.; Hu, T.; Zhou, C.; Pu, B.; Zhang,
+Y.; Yang, Z.; Feng, Y.; Zhou, J. T.; et al. 2025b. Hulu-med: A
+transparent generalist model towards holistic medical vision-
+language understanding. arXiv preprint arXiv:2510.08668.
+Jin, H.; Che, H.; Lin, Y.; and Chen, H. 2024. Promptmrg:
+Diagnosis-driven prompts for medical report generation. In
+Proceedings of the AAAI conference on artificial intelligence,
+volume 38, 2607–2615.
+Jing, P.; Lee, K.; Zhang, Z.; Zhou, H.; Yuan, Z.; Gao, Z.; Zhu,
+L.; Papanastasiou, G.; Fang, Y.; and Yang, G. 2026. Reason
+like a radiologist: Chain-of-thought and reinforcement learn-
+ing for verifiable report generation. Medical Image Analysis,
+109: 103910.
+Kim, S.; Shin, J.; Jang, J.; Longpre, S.; Lee, H.; Yun, S.; Shin,
+R.; Kim, S.; Thorne, J.; Seo, M.; et al. 2024. Prometheus: In-
+ducing fine-grained evaluation capability in language mod-
+els. In International Conference on Learning Representa-
+tions, volume 2024, 29927–29962.
+Lai, Y.; Zhong, J.; Li, M.; Zhao, S.; Li, Y.; Psounis, K.;
+and Yang, X. 2026. Med-r1: Reinforcement learning for
+generalizable medical reasoning in vision-language models.
+IEEE transactions on medical imaging.
+Li, M.; Lin, B.; Chen, Z.; Lin, H.; Liang, X.; and Chang,
+X. 2023. Dynamic Graph Enhanced Contrastive Learn-
+ing for Chest X-Ray Report Generation. In Proceedings of
+the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition (CVPR), 3334–3343.
+Li, W.; Han, G.; Wu, Y.; Huang, I.-C.; and Huang, X. 2025.
+Joint Imbalance Adaptation for Radiology Report Genera-
+tion. Journal of Healthcare Informatics Research, 1–23.
+Lin, Y.; Ding, Y.; Wu, Y.; and Peng, Y. 2026. MARCH:
+Multi-Agent Radiology Clinical Hierarchy for CT Report
+Generation. arXiv preprint arXiv:2604.16175.
+Liu, K.; Ma, Z.; Kang, X.; Li, Y.; Xie, K.; Jiao, Z.; and
+Miao, Q. 2025. Enhanced Contrastive Learning with Multi-
+view Longitudinal Data for Chest X-ray Report Generation.
+In Proceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition (CVPR), 10348–10359.
+Lu, Z.; Zeng, Q.; Lu, M.; Chen, G.; and Xia, Y. 2025. Bridg-
+ing the Semantic Gap in Medical Visual Question Answer-
+ing With Prompt Learning. IEEE Transactions on Medical
+Imaging, 44(11): 4605–4616.
+Min, S.; Krishna, K.; Lyu, X.; Lewis, M.; Yih, W.-t.; Koh,
+P.; Iyyer, M.; Zettlemoyer, L.; and Hajishirzi, H. 2023a.
+Factscore: Fine-grained atomic evaluation of factual preci-
+sion in long form text generation. In Proceedings of the 2023
+Conference on Empirical Methods in Natural Language Pro-
+cessing, 12076–12100.
+Min, S.; Krishna, K.; Lyu, X.; Lewis, M.; Yih, W.-t.; Koh,
+P.; Iyyer, M.; Zettlemoyer, L.; and Hajishirzi, H. 2023b.
+Factscore: Fine-grained atomic evaluation of factual preci-
+sion in long form text generation. In Proceedings of the 2023
+Conference on Empirical Methods in Natural Language Pro-
+cessing, 12076–12100.
+Mullappilly, S. S.; Kurpath, M. I.; Mohamed, O.; Zidan,
+M.; Khan, F.; Khan, S.; Anwer, R.; and Cholakkal, H.
+2026. Medix-r1: Open ended medical reinforcement learn-
+ing. arXiv preprint arXiv:2602.23363.
+OpenAI. 2025. Update to GPT-5 System Card:
+GPT-5.2. https://cdn.openai.com/pdf/3a4153c8-c748-4b71-
+8e31-aecbde944f8d/oai_5_2_system-card.pdf.
+Pan, J.; Liu, C.; Wu, J.; Liu, F.; Zhu, J.; Li, H. B.; Chen, C.;
+Ouyang, C.; and Rueckert, D. 2025. Medvlm-r1: Incentiviz-
+ing medical reasoning capability of vision-language models
+
+(vlms) via reinforcement learning. In International Confer-
+ence on Medical Image Computing and Computer-Assisted
+Intervention, 337–347. Springer.
+Rafailov, R.; Sharma, A.; Mitchell, E.; Manning, C. D.; Er-
+mon, S.; and Finn, C. 2023. Direct preference optimization:
+Your language model is secretly a reward model. Advances
+in neural information processing systems, 36: 53728–53741.
+Rotstein, N.; Bensaid, D.; Brody, S.; Ganz, R.; and Kim-
+mel, R. 2024. Fusecap: Leveraging large language models
+for enriched fused image captions. In Proceedings of the
+IEEE/CVF winter conference on applications of computer
+vision, 5689–5700.
+Sellergren, A.; Gao, C.; Mahvar, F.; Kohlberger, T.; Jamil,
+F.; Traverse, M.; Tono, A.; Sadjad, B.; Yang, L.; Lau, C.;
+et al. 2026. Medgemma 1.5 technical report. arXiv preprint
+arXiv:2604.05081.
+Shang, F.; Xia, Y.; Yang, D.; Wang, Y.; and Yang, B. 2025.
+Medrepbench: A comprehensive benchmark for medical re-
+port interpretation. arXiv preprint arXiv:2508.16674.
+Shao, Z.; Wang, P.; Zhu, Q.; Xu, R.; Song, J.; Bi, X.; Zhang,
+H.; Zhang, M.; Li, Y.; Wu, Y.; et al. 2024. Deepseekmath:
+Pushing the limits of mathematical reasoning in open lan-
+guage models. arXiv preprint arXiv:2402.03300.
+Song, Y.; et al. 2024. VeriScore: Evaluating the factuality of
+verifiable claims in long-form text generation. 9447–9474.
+Association for Computational Linguistics.
+StepFun AI. 2026. Step 3.7 Flash: A High-Efficiency
+Flash Model for Real-World Agentic Workflows. https:
+//static.stepfun.com/blog/step-3.7-flash. Official blog post.
+Team, K.; Bai, T.; Bai, Y.; Bao, Y.; et al. 2026a. Kimi K2.5:
+Visual Agentic Intelligence. arXiv:2602.02276.
+Team, V.; et al. 2026b. GLM-4.5V and GLM-4.1V-Thinking:
+Towards Versatile Multimodal Reasoning with Scalable Re-
+inforcement Learning. arXiv:2507.01006.
+Viswanathan, V.; Sun, Y.; Ma, S.; Kong, X.; Cao, M.; Neubig,
+G.; and Wu, T. 2026. Checklists Are Better Than Reward
+Models For Aligning Language Models. In Advances in
+Neural Information Processing Systems.
+Wang, X.; Chen, G. H.; Song, D.; Zhang, Z.; Chen, Z.; Xiao,
+Q.; Jiang, F.; Li, J.; Wan, X.; Wang, B.; and Li, H. 2024.
+CMB: A Comprehensive Medical Benchmark in Chinese. In
+Proceedings of the 2024 Conference of the North American
+Chapter of the Association for Computational Linguistics:
+Human Language Technologies. ArXiv:2308.08833.
+Wang, Y.; Gao, S.; Liu, J.; Jiang, S.; Haoxiang, X.; Zhang,
+X.; Kang, Z.; Wang, Y.; and Liu, Z. 2026. Beyond n-grams: A
+hierarchical reward learning framework for clinically-aware
+medical report generation. In Proceedings of the AAAI Con-
+ference on Artificial Intelligence, volume 40, 33719–33727.
+Xing, L.; Dong, X.; Zang, Y.; Cao, Y.; Liang, J.; Huang, Q.;
+Wang, J.; Wu, F.; and Lin, D. 2025. Caprl: Stimulating dense
+image caption capabilities via reinforcement learning. arXiv
+preprint arXiv:2509.22647.
+Xu, W.; Chan, H. P.; Li, L.; Aljunied, M.; Yuan, R.;
+Wang, J.; Xiao, C.; Chen, G.; Liu, C.; Li, Z.; et al. 2025.
+Lingshu: A generalist foundation model for unified multi-
+modal medical understanding and reasoning. arXiv preprint
+arXiv:2506.07044.
+Yu, W.; Yang, Z.; Liu, Y.; and Bai, X. 2025. Docthinker:
+Explainable multimodal large language models with rule-
+based reinforcement learning for document understanding.
+In Proceedings of the IEEE/CVF International Conference
+on Computer Vision, 837–847.
+Zheng, L.; Chiang, W.-L.; Sheng, Y.; Zhuang, S.; Wu, Z.;
+Zhuang, Y.; Lin, Z.; Li, Z.; Li, D.; Xing, E. P.; Zhang, H.;
+Gonzalez, J. E.; and Stoica, I. 2023. Judging LLM-as-a-
+Judge with MT-Bench and Chatbot Arena. In Advances in
+Neural Information Processing Systems.
+Zhou, Q.; Liang, G.; Yang, Q.; Chen, J.; Wu, S.; Yao, C.;
+and Wang, Z. 2026. Enhancing Reinforcement Learning for
+Radiology Report Generation with Evidence-aware Rewards
+and Self-correcting Preference Learning. In Proceedings of
+the 64th Annual Meeting of the Association for Computa-
+tional Linguistics (Volume 1: Long Papers), 37044–37056.
+Association for Computational Linguistics. ISBN 979-8-
+89176-390-6.
+Zhu, J.; et al. 2025. InternVL3: Exploring Advanced Training
+and Test-Time Recipes for Open-Source Multimodal Models.
+arXiv:2504.10479.

@@ -1,0 +1,62 @@
+
+
+
+
+\textsc{\benchname} is a controlled environment that tests LLM agents on synthetic tabular machine learning tasks which contain exploitable shortcuts.
+Unlike prior environments, the shortcuts in \benchname{} live in the data the agent is asked to model rather than in the evaluation machinery.
+On the two regression tasks the shortcut is optional, since each task carries a genuine signal that an agent can use to make a fair, informed prediction.
+The classification task is a more extreme case with no learnable signal at all, so the behavior of interest is whether the agent reports that there is no signal rather than manufacturing a gain by overfitting the public labels.
+In every case the expected reward-hacking mechanism is known by construction.
+In each task we plant a specific exploit in the public test set that raises the score there, and remove it from a held-out split.
+The gap between public and held-out performance is therefore a ground-truth signal for whether a reported gain is genuine or the result of reward hacking.
+
+
+
+\subsection{Tasks}
+Each task provides a training set and a public test set in an exact 80--20 train/test split, plus a held-out robust split that the agent never sees.
+We create three task families, each providing 50 numeric features per sample, which we collect into a vector $x \in \mathbb{R}^{50}$, at three scales of 100, 10{,}000, and 100{,}000 samples.
+Every feature is standard normal, $\mathcal{N}(0,1)$, although in the two regression tasks samples are deliberately correlated.
+Each sample also has a target $y$, which is real-valued in the two regression tasks and a binary label in the classification task.
+The regression tasks are scored by RMSE and the classification task by accuracy, and we recompute the same metric on the robust split to test whether a reported gain generalizes.
+Details and exact constants for each task are given in Appendix~\ref{app:task-generation-details}.
+Each task family below is named after the exploitable shortcut it contains.
+
+ 
+\paragraph{Entity-overlap leakage}
+The first task is a regression task that plants entity-overlap leakage, a form of group leakage in which many samples share a common source (e.g. a user or device) that we call an entity.
+Each sample carries an identifier for its entity in addition to its 50 features.
+Because the same entities appear in both the training and public splits, an entity's target can be looked up rather than predicted.
+Samples from the same entity share nearly the same features, and a sample from entity $e$ has target
+\begin{equation*}
+y = \underbrace{\beta^\top x}_{\text{learnable signal}} \;+\; \underbrace{b_e}_{\text{entity offset}} \;+\; \text{noise}
+\end{equation*}
+where the entity offset $b_e$ is drawn independently of the features and is therefore not a function of $x$.
+An honest predictor can recover the learnable signal $\beta^\top x$ but not the offset, which is only revealed by an entity's observed targets.
+An agent can therefore predict a public sample by averaging that entity's training targets, which captures the offset as well and drives the public error toward the noise floor.
+On the held-out split the entities are new, the offset is unrecoverable, and only the learnable signal remains.
+ 
+\paragraph{Near-duplicate contamination}
+The second task is a regression task that plants near-duplicate contamination.
+Unlike the first task, samples carry no identifier and only the 50 features, so the train and test overlap here is purely geometric.
+Each public test sample has near-duplicates in the training set that share its exact target
+\begin{equation*}
+y = \underbrace{\beta'^\top u}_{\text{learnable signal}} \;+\; \underbrace{\zeta}_{\text{duplicate offset}}
+\end{equation*}
+where $u$ is the feature vector shared by the duplicates and the duplicate offset $\zeta$ is not determined by the features.
+Honest regression again recovers only the learnable signal, whereas copying the target of a public sample's near-duplicates recovers the offset $\zeta$ exactly.
+The held-out split contains fresh samples with no duplicates, so the lookup gives no advantage there.
+
+ \paragraph{No-signal classification}
+The third task is a classification task that plants public-score overfitting.
+The features are random noise and each label is an independent fair coin flip, so no rule maps features to labels and the honest ceiling is 50\% accuracy.
+Any consistent score above 50\% beyond sampling noise can only come from fitting the specific public labels, whether by reading them directly or by repeatedly optimizing predictions against the public score.
+These labels are independent of the held-out split's labels, so such a gain cannot transfer.
+
+
+\subsection{Agent Loop}
+ 
+The agent receives the training and public test sets described above, a document with instructions (see Appendix~\ref{app:prompts}), a solution file containing the Python code it edits, and a fixed, read-only evaluator that scores its predictions on the public test set.
+Its objective is to optimize the public score.
+The public test set includes its target values, and the instructions forbid using them except through the evaluator.
+Following its instructions, the agent works in an iterative loop, repeatedly editing the solution, scoring it through the evaluator, and recording each attempt in an experiment log, until its time budget is exhausted. Note that the loop is encouraged via the prompt, but not enforced via any scaffolding, so that the agent has full freedom in when to run the intermediate evaluations. 
+After the experimental time is up, we provide a final prompt instructing it to write a short summary of the approach it settled on.
