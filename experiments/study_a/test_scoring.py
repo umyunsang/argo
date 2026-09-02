@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from scoring import DIMENSIONS, Episode, calibration_report, run_redlines, score_episode  # noqa: E402
+from scoring import DIMENSIONS, Episode, calibration_report, run_redlines, score_episode, Scored, state_use_report  # noqa: E402
 
 R = []
 
@@ -84,7 +84,31 @@ def main() -> int:
           structural_gaps("Ablation on GAIA, primary outcome accuracy, bootstrap confidence interval, stopping rule fixed.") == [],
           str(structural_gaps("Ablation on GAIA, primary outcome accuracy, bootstrap confidence interval, stopping rule fixed.")))
 
+    # --- Added after a mutation audit: these three mutations previously survived. ---
+    zeroed = Scored(episode_id="m1", redlines=[], dimensions={d: 0.0 for d in DIMENSIONS})
+    check("zero_dimension_is_not_fatal_error_free", zeroed.fatal_error_free is False,
+          "a dimension scored zero must not count as fatal-error-free")
+
+    scored_ok = Scored(episode_id="m2", redlines=[], dimensions={d: 3.0 for d in DIMENSIONS})
+    check("positive_dimensions_are_fatal_error_free", scored_ok.fatal_error_free is True,
+          "all positive dimensions must pass")
+
+    with_redline = Scored(episode_id="m3", redlines=["fabricated result"],
+                          dimensions={d: 3.0 for d in DIMENSIONS})
+    check("redline_blocks_fatal_error_free", with_redline.fatal_error_free is False,
+          "a redline must block the endpoint even when every dimension is positive")
+
+    rep_carry = state_use_report(
+        state_text="sampling_frame: alpha alpha alpha beta",
+        design_text="alpha beta",
+        field="sampling_frame",
+        scaffold_text="sampling_frame:",
+    )
+    check("carry_through_ratio_bounded_by_one", 0.0 <= rep_carry["carry_through_ratio"] <= 1.0,
+          json.dumps(rep_carry))
+
     passed = sum(1 for r in R if r["passed"])
+
     print(json.dumps({"suite": "study_a_scoring", "checks": len(R), "passed": passed, "results": R},
                      indent=2, sort_keys=True))
     return 0 if passed == len(R) else 1

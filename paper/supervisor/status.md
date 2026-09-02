@@ -1,14 +1,25 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** audit the other committed instruments for fixtures that assert an author assumption rather than a system property, starting with the scoring and verification modules.
+- **next_first_action:** write paired suites for the three instrument modules that still have none: the adversarial validity check, the pilot builder, and the element verifier.
 
-- **last_updated:** 2026-09-03T01:14:20+09:00
+- **last_updated:** 2026-09-03T01:19:20+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 21 closed — the cost instrument itself was wrong by 14.4x and every number it produced is void
+- **current_phase:** cycle 22 closed — instruments audited by mutation; four faults were undetectable before, all are caught now
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 22 — the instruments were audited by mutation, not by reading
+
+- **Gap picked:** one instrument had been wrong while its suite passed, so no other suite could be trusted on inspection alone.
+- **Executed:** 17 semantic mutations, one at a time, across six instrument modules, each paired suite run, each module restored and digest-checked.
+- **13 caught, 4 survived.** Three survivors were in scoring: an episode with a dimension scored zero could pass as fatal-error-free, a fabrication redline could stop blocking that endpoint, and the carry-through ratio could exceed one.
+- **The fourth survivor was the worst.** The release sandbox could report a workspace **admissible while a probe had fired**, neutralising the entire fail-closed admission gate, and every test still passed.
+- **Five fixtures added; all 17 mutations then caught.**
+- **A defect in the test harness itself surfaced:** the scoring suite computed its pass tally *before* the newly added checks ran, reporting 14 of 18 while every check passed. The tally now runs last.
+- **Literature named the defect class:** an oracle that takes its expected value from the system it judges cannot fail, because a fault moves measurement and expectation together. That is exactly how the cost fixture protected a wrong parser.
+- **Two limits recorded:** catching 17 mutations does not show the instruments are correct, and three modules still have no paired suite at all.
 
 ### Cycle 21 — the instrument was wrong, and its own fixture protected the error
 

@@ -1,0 +1,178 @@
+
+
+
+
+%\section{Identifying Untested Expected Behaviours with \toolname}
+\section{\toolname{}: Detecting Untested Behaviours}
+\label{sec:approach}
+
+
+We built the \toolname{} proof-of-concept to investigate the prevalence of behavioural gaps in real-world Java systems.
+The high-level process \toolname{} follows is shown in Figure~\ref{fig:tool}.
+First, the approach creates per-method call graphs to link source methods to the test cases that validate them.
+Second, the behaviour extractor uses an LLM-based approach to identify the expected behaviours for any documented method.
+Finally, the method's expected behaviours are mapped to the behaviours validated by the method's test cases to determine which behaviours remain untested by the existing test suite. 
+\toolname{} works on Java (v8+) systems using the JUnit test library (v4+).
+\toolname{} is available in the replication package.
+
+%\toolname focuses on identifying behaviours that are declared in documentation but not validated by existing tests.
+%Our prototype is currently implemented for systems written in Java that use the popular JUnit unit testing library(v4.0+) and supports Java 8 and above versions.
+
+
+%Developers declare and implement new behaviours within methods. Unit tests are also written at the method level, where tests invoke a method and assert properties about its behaviour.
+%For this reason, \toolname performs its analysis at the granularity of individual methods. Figure~\ref{fig:tool} illustrates how \toolname identifies gaps between a method's expected behaviours and the behaviours validated by its existing developer-written test suite.
+%This component bridges the gap between expected behaviour and test coverage by treating documentation as a source of truth and mapping it to actual test suite validated behaviour. To identify untested expected behaviours for a given method, \toolname performs three main steps.
+% First, it determines the method's expected behaviours. Second, it identifies the test cases that exercise the method. Finally, it compares the full list of the method's expected behaviours to the existing developer-written tests to identify untested behaviours.
+
+\subsection{Test Case Identification (Figure~\ref{fig:tool}(a))}
+\label{sec:approach:tests}
+
+To determine which behaviours of a method are validated by the test suite, \toolname{} first identifies the set of test cases that invoke each method under test. 
+The approach statically scans the repository for JUnit \texttt{@Test} and \texttt{@ParameterizedTest} annotations to enumerate all test classes, then constructs a full-system call graph capturing how each test case interacts with the methods under test.
+
+By default, \toolname{} uses dynamic analysis: each test class is executed in isolation using an AspectJ\footnote{AspectJ: \url{https://github.com/eclipse-aspectj/aspectj}}-based monitoring agent that records every method entry and exit. 
+Dynamic analysis is preferred because it captures exact runtime execution paths, avoiding the over- and under-approximation inherent in static analysis. 
+The cost of this dynamic analysis is approximately 2x the test execution time compared to an uninstrumented test suite.
+
+Because the per-class call graph contains detail irrelevant to any individual method under test, \toolname{} prunes the graph into a dedicated call graph per method. 
+A breadth-first traversal finds all paths that eventually invoke the target method; the surviving nodes are then statically enriched with each method's implementation, Javadoc, and referenced class-level variables. 
+The result is one enriched entry method under test, which serves as the primary input to the behaviour mapping step (Section~\ref{sec:approach:mapping}).
+
+\toolname{} also supports several specializations for flexible use and increased performance.
+Analysis scope can be narrowed from the full system to a single directory, class, or method, substantially reducing runtime. 
+For systems with straightforward test suites, static call-graph tracing can replace dynamic instrumentation entirely resulting in negligible test case identification overhead.
+Finally, \toolname{} integrates naturally into CI/CD pipelines: given a diff, it can update call-graph knowledge for only the affected source and test methods rather than recomputing all test-to-code links from scratch.
+
+%To determine which of a method's behaviours are validated by the test suite, we first need to understand which test cases invoke each method under test.
+% To evaluate the existing test suite against these expected behaviours, \toolname must first identify the test cases that exercise the focal method. 
+% The following describes this process for a single focal method. 
+%%%%% test class Identification
+% \toolname first enumerates all the test classes in the repository as not all tests invoke the focal method. \toolname also provide additional configuration that the user can choose from to reduce the number of test classes to be analyzed. Users may specify a test directory, individual test class names, or a specific focal method name. In the last case, \toolname uses static call graph traversal to find the test classes that can transitively invoke the focal method. However, by default \toolname considers all test classes as we are analyzing the entire repository across all documented method. Any method in this set annotated with JUnit's \texttt{@Test} or \texttt{@ParameterizedTest} annotation is considered a test case for the focal method. Notably, this design also naturally extends to a CI/CD setting, where \toolname can be triggered on each pull request to analyze only the methods that were added or modified and identify missing tests before changes are merged.
+%\toolname statically identifies all test classes in the repository looking for  JUnit's \texttt{@Test} or \texttt{@ParameterizedTest} source code annotation.
+%
+%%%%%% Call graph building
+% Once the target test classes are determined, \toolname constructs the call graph to capture how each test interacts with the focal method. \toolname supports two modes for this. By default, it uses dynamic analysis. In this mode, \toolname execute each test class in isolation and inject a monitoring agent built with \texttt{AspectJ}~\footnote{AspectJ: \url{https://github.com/eclipse-aspectj/aspectj}} into the testing environment to record every method entry and exit. We choose dynamic analysis as the default because it captures the exact runtime execution paths, avoiding the over- or under-approximation that static analysis can introduce. 
+% For projects where tests are relatively flat and directly invoke the focal method without deep abstract call chains, \toolname also supports a static analysis mode that skips test execution entirely. Static mode instead analyzes source code relationships to map potential execution paths. Since static analysis cannot observe runtime polymorphism, \toolname optionally includes parent class method calls to over-approximate the call graph and reduce the risk of missing relevant paths. 
+%\toolname{} then constructs a full-system call graph to capture how each test case  interacts with the methods under test.  By default a dynamic analysis is used; each test class is executed in isolation with an AspectJ\footnote{AspectJ: \url{https://github.com/eclipse-aspectj/aspectj}}-based monitoring agent that records every method entry and exit as a tree.
+%Dynamic analysis is used by default because it captures the exact runtime execution paths, avoiding the over- or under-approximation that static analysis can introduce. 
+%Dynamic instrumentation adds $\approx$2--3$\times$ overhead compared to a standard test suite execution.
+
+% Regardless of the execution mode, method invocations are recorded as a hierarchical tree, where each invoked method is added as a child node for current node. The resulting tree is serialized to a JSON file per test class, either after all tests in the class finish executing in dynamic mode, or immediately after the traversal in static mode. Based on our measurements, dynamic instrumentation typically adds $\approx$2--3$\times $ overhead compared to a standard test run, while static analysis completes without any execution cost.
+
+% By default we choose dynamic analysis because it captures the exact runtime execution paths and avoids the over/under approximation that static analysis introduce. All the method invocation are recorded as a hierarchical tree. Meaning, when a method invokes another method that method is added as a child node and when it returns the node is closed. After executing all tests in a class \toolname serialize the resulting tree into a JSON file. From our analysis of the recorded time we found that this dynamic process usually takes $\approx$2-3x more time to execute a test case than normally running the test alone. 
+%%%%%%%%% static call graph building
+% For projects where tests are relatively flat and directly invoke the focal method without deep abstract call chains, dynamic analysis can be overkill. In these cases, \toolname supports a static analysis mode that skips test execution entirely and instead analyzes source code relationships to map potential execution paths. Since static analysis cannot observe runtime polymorphism, \toolname optionally includes parent class method calls to over-approximate the call graph and reduce the risk of missing relevant paths. The traversal starts at the discovered test methods and traces outward to locate invoked methods. It continues to traverse the call chain structure layer by layer until it reaches a maximum depth defined by the user.
+
+%%%%%%%%% Pruning call graph
+%Since the per-class call graph contains extraneous details for any given method under test, \toolname{} prunes the call graph to create a single call graph for each tested method.
+%As the recorded call graph can be large in size and can contains many additional path that do not invoke the focal method \toolname applies a pruning step. 
+%For each method under test, a breadth-first traversal is used to find all paths that eventually invokes the method.  After pruning, the remaining call graph nodes are statically enriched with each method's implementation, Javadoc, and any referenced class-level variables. This produce one enriched JSON file per method under test, which serves as the primary input to the behaviour mapping step described in Section~\ref{sec:approach:mapping}.
+
+%This process can be specialized in several different ways to allow for flexible use. Instead of system-wide test case identification, \toolname{} can also analyze a single method under test, a single class, or a single method, which is much quicker than analyzing the full system. While dynamic analysis works best for systems that have complex test suites, for most systems a static approach can be used to trace between the methods under test and their test cases. Finally, the call graphs allow \toolname{} to be applied in a CI/CD setting as given a diff \toolname{} can update its knowledge about subsets of the system under test rather than recomputing all of the test-to-code links.
+
+\subsection{Extracting Behaviours (Figure~\ref{fig:tool}(b))} 
+\label{sec:approach:behaviours}
+
+\toolname{} generates a list of expected behaviours for every source method in the system that is accompanied by a method-level Javadoc comment.
+% Our prototype only considers methods that have method-level documentation, as we wanted to focus on methods where developers may rely on the documentation to build their expectation of what a method does instead of examining the implementation, which they would have to do if documentation did not exist.
+Our proof-of-concept focuses on documented methods because developers use documentation as a flexible way to surface a method's expected behaviours without inspecting its implementation~\cite{hossain2025doc2oracllinvestigatingimpactdocumentation}.
+For each such method, \toolname invokes an LLM with some guidance, the method signature, implementation, and Javadoc. 
+% RTH: I like this but i don't wan to have to defend the code being there (annoying reviewer: if docs are required, why not just docs?)
+% Providing both code and documentation allows grounding the model's interpretation in the actual implementation.
+%
+% To construct a list of focal method's expected behaviours, we create a natural language prompt\footnote{Behaviour Extraction: ~\ppp{URL}} and send it to a large language model (LLM). The prompt includes the method signature, its implementation, and its Javadoc comment. Providing both code and documentation allows the model to ground its interpretation of the documentation in the actual implementation.
+The output of this is a list of expected behaviours (denoted $EB_1, EB_2,\dotsc$). Each expected behaviour is typically expressed as a single sentence and describes a property or guarantee a developer would reasonably expect from the method based on its documentation. 
+These behaviours form the reference set against which test cases that validate the method are evaluated. 
+For the code given in Figure~\ref{triple:emptyArray}, \toolname{} returns two expected behaviours: ``Returns an empty array with no elements``, and ``Returns the 
+same singleton array instance every time.'' 
+
+% We use LLM for this step because the expected behaviours are expressed in natural language. Prior approaches such as JDoctor~\cite{10.1145/3213846.3213872} and Toradocu~\cite{10.1145/2931037.2931061} focus on extracting formal specifications from structured Javadoc tags, such as \texttt{@param}, \texttt{@return}, and \texttt{@throws}. These approaches are effective when documentation explicitly describes constraints in a form that can be translated into preconditions or postconditions. However, many documented behaviours are described outside of structured tags, or are conveyed implicitly through narrative text, examples, or conditional descriptions (Section~\ref{sec:rq2_5} shows Judot covered only 149 methods due to JDoctor's failure on unstructured documentation). Our goal is to get the set of behaviours a developer might reasonably expect based on the full documentation of a method, rather than to infer formal contracts. LLMs are well suited to this task because they can interpret unstructured natural language and summarize it into discrete, testable behaviours without relying on the presence of specific documentation tags~\cite{Wong_2023}. As a result, \toolname addresses a complementary problem to contract inference tools by focusing on behavioural coverage rather than contract completeness.
+
+LLMs are well-suited to behaviour extraction because they can interpret unstructured natural language and summarize it into discrete, testable behaviours~\cite{Wong_2023}.
+This has been leveraged by prior approaches; for example,
+JDoctor~\cite{10.1145/3213846.3213872} and Toradocu~\cite{10.1145/2931037.2931061} extract formal contracts only from structured Javadoc tags (\texttt{@param}, \texttt{@return}, \texttt{@throws}). 
+In this work, we focus on the entire Javadoc block, including any narrative text the developer thought would be important for understanding a method.
+Our goal in this phase is to surface the set of behaviours a developer might reasonably expect based on the full documentation of a method, rather than to infer formal contracts. 
+
+% RTH: this is in the obviously-wrong spot in the tex, but makes it so it
+% _renders_ in the right spot, so we might as well leave it here
+\begin{table*}[b]
+\centering
+\caption{Dataset used from \texttt{Defects4J} along with their key properties and details of their developer-written test suites.} 
+\label{tab:repositories}
+\begin{tabular}{lrrrrr}
+        \toprule
+        \textbf{Project (Version)} & \textbf{\# Source Methods} & \textbf{\# Test Methods} & \textbf{SLOC} & \textbf{Line Cov.} & \textbf{Mutation Kill Score} \\
+        \midrule
+        commons-cli (1.10.0-SNAPSHOT) & 214 & 461 & 1965 & 98.2\% & 93\% \\
+        commons-codec (1.21.1-SNAPSHOT) & 523 & 1,196 & 4972 & 94.9\% & 92\% \\
+        commons-compress (1.29.0-SNAPSHOT) & 997 & 2,254 & 25308 & 88.0\% & 82\% \\
+        commons-jxpath (1.4.1-SNAPSHOT) & 98 & 367 & 9,228 & 77.7\% & 75\% \\
+        commons-collections (4.5.1-SNAPSHOT) & 1,352 & 1,901 & 14751 & 85.9\% & 87\% \\
+        commons-lang (3.18.0-SNAPSHOT) & 2,703 & 4,483 & 16,133 & 96.5\% & 88\% \\
+        commons-csv (1.14.2-SNAPSHOT) & 175 & 511 & 1,225 & 99.6\% & 95\% \\
+        gson (2.13.3-SNAPSHOT) & 244 & 1,395 & 5,253 & 92.2\% & 91\% \\
+        jfreechart (2.0.0-SNAPSHOT) & 2,068 & 2,299 & 51,346 & 56.5\% & 59\% \\
+        jsoup (1.21.1) & 548 & 1,442 & 9,778 & 89.6\% & 79\% \\
+        \bottomrule
+    \end{tabular}
+    \vspace{-1.0em}
+\end{table*}
+
+
+\subsection{Behaviour Mapping (Figure~\ref{fig:tool}(c))} 
+\label{sec:approach:mapping}
+
+Once the method's expected behaviours and relevant test cases are known, \toolname{} determines which of the expected behaviours are not validated by the existing test cases. 
+This phase establishes a traceability link between a method's natural language documentation and concrete test cases that validate its behaviour.
+
+For each relevant test case, \toolname{} uses an LLM to determine which expected behaviour(s) the test case validates.
+The model is provided with a set of goals, the method under test and its documentation, the test case method being evaluated, the list of expected behaviours ($EB = \{EB_1, EB_2, \dots, EB_n\}$), and the relevant nodes in the call graph between the method under test and the test case. 
+Including the call graph allows the model to consider indirect interactions between the test case and the method under test.
+This step produces a set of tested behaviours, denoted $TB = \{TB_1, TB_2,\cdots, TB_n\}$ (by construction, $TB \subseteq EB$), where each element corresponds to an expected behaviour that is validated by the test case.
+
+Finally, \toolname{} emits the set of untested behaviours as $UTB = EB - TB$.
+These untested behaviours (UTB) represent gaps between the behaviours derived from the method's documentation and the behaviours validated by the existing test suite. 
+The average processing time was $\approx$3--4 minutes per method, including both behaviour extraction and test mapping. On local inference, the primary bottleneck was LLM response latency, accounting for nearly 2--3 minutes for a method with 7--8 associated tests. Token usage averaged 6K--8K per method under test, scaling with the number of associated test cases. 
+This relatively small token burden can be processed by commercial LLM services in $<10$ seconds per method.
+
+% For commercial APIs, inference latency would be substantially lower, making the per-method processing time dominated by test execution rather than LLM response time.
+
+% The result of this prompt is a list of zero or more tested behaviours ($TB = \{TB_1, TB_2,\cdots, TB_n\}$) each of which were already present in the list of expected behaviours ($TB \subseteq EB$).
+% Finally, we determine the set of untested behaviours ($UTB$) by comparing the expected behaviours and already tested behaviours ($UTB = EB - TB$).
+
+
+\endinput 
+
+\subsection{Strengthening Test Suites}
+\label{sec:test-generator}
+
+Given a method, its documentation, and a list of the expected behaviours for the method that are not currently tested, \toolname generates currently-missing test cases.
+To improve the utility of the generated test cases, each test both compiles and tries to look similar in style to the existing test cases for the method.
+Figure~\ref{fig:toolGenerator} captures how \toolname generate test cases that strengthen the existing developer-written test suite by validating untested expected behaviours.
+For each untested expected behaviour $UTB$, the test suite strengthener performs two tasks: first, a candidate test case is generated; second, the candidate test case is validated to ensure it is syntactically valid.
+
+\paragraph{Test case generation.}
+Rather than generating large set of test cases for a method, \toolname generates only a single test case for each individual untested behaviour.
+Given the relative complexity of this task, we provide a large set of information to the LLM,\footnote{Test Generation:~\url{https://anonymous.4open.science/r/FSE-7DEC/prompts/test_case_generation.md}} including the method, its documentation, the untested expected behaviour, all existing test cases for the method, and the type and method declarations present in the call graph between the existing test cases and their method under test.
+This prompt approach does not rely on conversational memory or fine-tuning the LLM. Instead, each test generation pass is stateless and self-contained: all required information is embedded within the prompt itself. 
+By doing this we have been been able to apply \toolname to several different projects, all using the identical prompt format.
+% This makes the system more modular, interpretable, and reproducible. Since we control exactly what context is fed into the model, it is easier to debug and adapt across different projects.
+%
+The additional call graph information and test cases are added to the prompt to enable the LLM to produce test cases that adhere to the conventions and dependencies present in the existing test suite.
+These inclusions greatly simplify the test case validation phase, and we believe make the test cases easier to compare to the existing developer-written tests.
+%
+The output of the test generation phase is a test case that validates the untested behaviour for the target method, styled in a way that matches existing developer-written tests.
+To ensure these generated tests could be run by the developer, \toolname next performs a validation phase.
+
+\paragraph{Test case validation.}
+
+We believe that in order to be trustworthy, generated tests must at least compile.
+Since many generated tests do not, we apply test case repair, a commonly used technique in automated test generation~\cite{xue2024exploring}. Our approach adapts the validation process from CHATTESTER~\cite{yuan2023no} to check and improve the generated test cases.
+Tests that compile are automatically accepted, and the test case is accepted for the $UTB$.
+If a test does not compile, it undergoes an iterative LLM-based repair process that includes the compiler error messages in addition to the test case that does not compile to the LLM to try to repair the problem with the test case.
+This process repeats at most five times.
+
+Valid test cases are integrated into the developer's existing test suite for their examination.
+If a suitable test class already exists, such as one covering other behaviours of the method under test, the generated test case is inserted there. 
+Otherwise, \toolname adds the newly generated test case to a default test class corresponding to the target class (e.g., \texttt{HashMap} $\rightarrow$ \texttt{HashMapTest}).

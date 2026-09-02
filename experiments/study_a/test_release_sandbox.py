@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from release_sandbox import Bundle, build_workspace, run_probes, workspace_digest  # noqa: E402
+from release_sandbox import Bundle, build_workspace, run_probes, workspace_digest, ProbeReport  # noqa: E402
 
 CANARY = "WITHHELD-CANARY-4f2b9c7e"
 RESULTS = []
@@ -98,6 +98,13 @@ def main() -> int:
         final = run_probes(ws, bundle, **clean_ctx)
         check("clean_state_restored", final.admissible, json.dumps(final.fired))
         check("workspace_digest_stable", workspace_digest(ws) == digest_before)
+
+    # --- Added after a mutation audit: this mutation previously survived. ---
+    fired_report = ProbeReport(fired={"withheld_bytes": "canary present"})
+    check("fired_probe_is_not_admissible", fired_report.admissible is False,
+          "a report with any fired probe must be inadmissible")
+    check("silent_report_is_admissible", ProbeReport().admissible is True,
+          "a report with no fired probe must be admissible")
 
     passed = sum(1 for r in RESULTS if r["passed"])
     print(json.dumps({"suite": "study_a_release_sandbox", "checks": len(RESULTS), "passed": passed,
