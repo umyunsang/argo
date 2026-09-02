@@ -1,11 +1,11 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** 고정 툴체인 개정판(v3)을 만들어 Noto Sans KR을 격리 경계 안에 넣고, 기존 영문 빌드가 바이트 단위로 재현되는지 먼저 확인한 뒤 한글 Ⅰ장을 쓴다.
+- **next_first_action:** build_submission.py 진입점을 quarto render로 바꾸고 제출 docx가 artifact 게이트와 재현성 receipt를 통과하는지 확인한다. 깨지면 되돌리고 Q를 올린다.
 
-- **last_updated:** 2026-09-03T05:35:46+09:00
+- **last_updated:** 2026-09-03T05:42:43+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** anthropic/claude-opus-5
-- **current_phase:** cycle 63 closed — 한글 조판 가능성 측정 완료, 격리 규칙이 시스템 폰트를 거부해 툴체인 개정이 필요
+- **current_phase:** cycle 64 closed — 툴체인 v3로 한글이 PDF에 실제로 렌더되고, Quarto 정본 원고가 양식 검사 9/9 통과
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 
@@ -13,6 +13,13 @@
 > 1. **그림 route:** 9/9 `vector_fallback_after_image_failure`. gpt-image-2 자격 증명은 유효하나 계정이 **HTTP 429 `credit_balance_exhausted`** 를 반환해 이미지가 생성되지 않았다. 이미지 누적 **$0.00**. Graphviz 벡터본이 판독 게이트를 **9/9, 라벨 일치율 1.000** 으로 통과한 상태라 원고는 대기하지 않는다.
 > 2. **라벨 수령:** `paper/experiments/calibration/labels-received-receipt.json`. 25건 중 **판정 가능 19건**, unclear 6건 제외. 2차 blind 일치도는 **지시문 수치를 옮기지 않고 두 파일에서 직접 재계산**했다 — 전체 **24/25**, unclear 제외 **18/18**, 불일치 L022. 정지 조건 미해당. **라벨러는 사람이 아니라 모델**이므로 논문에서 `human-anchored`를 전부 제거하고 `model-anchored calibration set`으로 바꿨다. 판정 채점은 **여전히 inadmissible**(라벨 6건 부족 + 기준이 사람이 아님). 보충 양식 8건 `supplement_ready`.
 > 3. **HF 누적:** 호출 **521건**, **보수적 상한 추정 $1.97** (< $10 상한). 실측이 아니라 상한 추정이며 가정을 cost-ledger에 명시했다.
+
+
+> **instruction-0011 보고 (§7)**
+> 1. **정본 소스:** `paper/manuscript/thesis-ko.qmd` (Quarto 1.10.18 단일 파일). 렌더 검사 **9/9 통과** — A4 11906×16838, `Ⅰ. Introduction` 제목, 그림 캡션 하단 `그림 1.`, 표 캡션 상단 `표 1.`, 본문 상호참조, 한글 비율 **0.794**, receipt 연동 표 실행. **아직 제출 진입점은 교체하지 않았다**(제출 docx는 매 커밋 게이트 통과 상태 유지).
+> 2. **한글 장 진행:** **1/5** (Ⅰ장 집필). 표 **1개**(분산 성분, receipt에서 생성·assert). 그림 1개 삽입.
+> 3. **Q-0009(하네스 비교 arm):** 미착수 — 작업 순서상 다음 단계. 기본값 (b) 실행 안 함.
+> 4. **툴체인 v3:** 한글 폰트를 고정 툴체인 안에 넣어 격리 규칙을 **완화하지 않고** 한글 조판을 열었다. 영문 빌드는 폰트 추가 전후 **바이트 동일**(`e57e8f13…`)로 반증 조건을 통과했다.
 
 ## Completed in current phase
 
