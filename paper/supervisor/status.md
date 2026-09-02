@@ -1,14 +1,25 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** ask what an endpoint would need to carry condition variance at all, and check whether any quantity already recorded in the executed blocks separates conditions better than element coverage does.
+- **next_first_action:** repair the endpoint on the branch the evidence points at — re-derive coverage from whole-artifact judging with measured recall, and re-run the generalizability study on the repaired endpoint to see whether a condition component appears.
 
-- **last_updated:** 2026-09-03T04:59:06+09:00
+- **last_updated:** 2026-09-03T05:01:44+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 58 closed — the quality arm is not sizeable at any n: the condition carries ~0% of endpoint variance
+- **current_phase:** cycle 59 closed — the manipulation took effect strongly; the judged endpoint sees none of it
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 59 — the manipulation is not inert; the endpoint is blind
+
+- **Gap picked:** a near-zero condition component has two very different explanations. Cycle 58 could not tell them apart.
+- **Executed:** for every per-episode quantity on the 15 admissible episodes, the share of variance lying between condition means within a task.
+- **Process quantities separate the conditions sharply** — interface calls **0.899 / 0.951**, context tokens **0.915 / 0.925**, marginal tokens 0.845 / 0.896, cost 0.771 / 0.936.
+- **Artifact quantities separate weakly** — artifact size **0.367 / 0.702**, structural gap count 0.443 / 0.657.
+- **Judged coverage separates them not at all** — 0.009 and a clamped zero.
+- **The process figures are read as a manipulation check, not a result.** A condition supplying more context and access makes more calls by construction. Promoting one to primary endpoint was explicitly rejected: it would report the manipulation back as if it were a finding.
+- **Two readings remain alive and the design cannot separate them:** the conditions do not change artifact quality, or the endpoint cannot see the change. The falsified retrieval filter and the near-zero condition component both sit on the second branch, which is reason to suspect the instrument before concluding anything about the conditions.
+- Claim checks 58.
 
 ### Cycle 58 — sizing rebuilt with the instrument as a facet, and the arm abandoned
 
