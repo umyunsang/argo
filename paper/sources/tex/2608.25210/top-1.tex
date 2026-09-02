@@ -1,0 +1,613 @@
+\vspace{-1mm}
+\section{Finding Top-1 Provenance}
+\label{sec:1-provenance}
+
+Given the input text $T$, question $Q$, LLM $L$, and answer $A$, we present a two-phase approach to infer a single minimal provenance. 
+
+% \sys aims to return a provenance $P$ of small size to help users understand how the answer $A$ to $Q$ is produced. We design a framework consisting of two phases, {\em prune-refine} to return a provenance that is guaranteed to be {\em minimal}. The first phase aims to aggressively produce a small provenance and the second phase refines the provenance obtained from the previous phase to ensure it is minimal. 
+
+%\yiming{add a graph example}
+
+\subsection{Phase 1: Provenance Pruning} 
+\label{subsec:phase1}
+%\sep{can potentially remove condense embedding/llm strategies here as ranking to remove ``extra'' approaches which we can point to in R1D3 that we reduced complexity and just kept the best-performing one/one that matters}
+To prune sentences that do not contribute to the answer $A$, we propose four intuitive strategies that leverage heuristics to rank sentences by their relevance to the $\langle Q,A \rangle$ pair (e.g., embedding similarities or LLMs), and  different scan orders (e.g., bottom-up or top-down), along with an adaptive strategy that combines the strengths of these approaches in Section~\ref{subsec:analysis}. 
+
+
+\vspace{1pt}
+\topic{Strategy 1: Embedding-bottom-up} In this strategy  (Algorithm~\ref{alg:linear-search}), we divide the input text $T$ into a list of equal-sized blocks, $T = \langle b_1, b_2, \dots, b_m\rangle$, where each block contains a sequence of sentences (Line 1). The value $m$ is chosen to balance the cost of strategies and the size of the returned provenance. (Empirically, setting $m = 20$ strikes a good balance, as shown in Section~\ref{sec:exp})  
+  We then sort the blocks in descending order of embedding similarity to $\langle Q,A \rangle$, i.e., 
+the concatenation of $Q$ and $A$ (by setting \code{ranker} as \code{embedding} in Line 2).  
+%In the sorted list, a block $b_i$ with a lower index $i$ has a higher similarity score. We then consider each block in ascending order of its index. 
+As soon as the first $i$ sorted blocks reproduce an answer equivalent to $A$, we stop searching and return them as the provenance (Lines 5–9). When evaluating the top-$i$ blocks using LLM $L$, we always re-order the sentences in the evaluated blocks in increasing order of their indexes in $T$, as implemented by \code{rerank\_index} in Line 7. For example, the top-$i$ blocks $\langle b_7,b_8, b_2, b_3 \rangle$ are reordered as $\langle b_2, b_3, b_7,b_8 \rangle$ before being passed to $L$ for answer generation, to prevent unintended changes in meaning due to reordering. 
+%Similarly, when we find the provenance, we always reorder the sentences based on their original indexes in $T$ (Line 20).
+
+
+\setlength{\textfloatsep}{0pt}
+\begin{algorithm}[bt]
+    \scriptsize
+    \caption{\code{Prune}[\code{ranker}, \code{scan}]}
+    \label{alg:linear-search}
+ \KwIn{$\langle T,Q,L\rangle$}
+$T \leftarrow \langle b_1,b_2,...,b_m\rangle$; $A \leftarrow L(T,Q)$ \\ 
+$B \leftarrow \code{rank}(T, \code{ranker})$ \\ 
+$P \leftarrow \emptyset$ \\ 
+\If{\code{scan} == bottom-up}
+{\For{$b_i\in B$, in ascending order of $i$}{
+$P \leftarrow P \cup b_i$ \\ 
+$P' \leftarrow \code{rerank\_index}(P)$ \\ 
+\If{$I(L(P',Q),A)==$True}{
+{\bf break}
+}
+}}
+\If{\code{scan} == top-down}{
+$l \leftarrow 1, r \leftarrow m$ \\ 
+    \While{$l \leq r$}{
+$mid \leftarrow \lceil \frac{l+r}{2} \rceil$ \\ 
+$P \leftarrow <b_1,b_{2},...,b_{mid}>$ \\ 
+$P' \leftarrow \code{rerank\_index}(P)$ \\ 
+\eIf{$I(L(P',Q),A) == \text{True}$}{
+$r \leftarrow mid-1$ \\ 
+}
+{$l \leftarrow mid + 1$}
+}
+}
+$P \leftarrow \code{rerank\_index}(P)$ \\ 
+\textbf{Return} $P$\\
+\end{algorithm}
+
+
+
+\topic{Strategy 2: Embedding-top-down} This strategy instead  performs a top-down search over the blocks sorted by embedding similarity, by setting \code{scan} to \code{top-down} in Line 10 of Algorithm~\ref{alg:linear-search}. 
+We start with the entire ranked list of blocks $B$ from $T$ as the initial provenance $P$, and perform binary search to identify the smallest top-$k$ prefix that reproduces an answer equivalent to $A$. At each iteration, we consider the midpoint $mid = \lceil \frac{l + r}{2} \rceil$ of the current index range $[l, r]$, and evaluate the top-$mid$ blocks, i.e., $⟨b_1, b_2, \dots, b_{mid}⟩$ to see if they constitute a provenance (Line 11-15). If they reproduce an answer equivalent to $A$, we refine the search window to the left half $[l, mid - 1]$; otherwise, we consider the right half $[mid + 1, r]$ in the next iteration (Line 16-19).  
+ The algorithm makes at most $\lceil \log_2 m \rceil$ LLM calls, where $m$ is the number of blocks in $T$.  
+
+\vspace{1pt}
+\topic{Strategy 3 \& 4: LLM-bottom-up and LLM-top-down} These strategies are like 1 \& 2 but instead of sorting blocks based on embedding similarities, they invoke an LLM model $L'$ to score each block $b_i$ in $B$ on a  scale of 1 to 10 based on the relevance of $b_i$ to the $\langle Q,A\rangle$ pair, using the \code{LLM-Ranker-Prompt} \papertext{in \vldb{\cite{blip}.}}\techreport{below.} The model $L'$ used to score the blocks does not necessarily need to be the same as the model $L$ used to answer $Q$. %We then perform a bottom-up or top-down search. 
+
+\techreport{\noindent\underline{\code{LLM-Ranker-Prompt}}: the \textcolor{blue}{[Q]}, \textcolor{blue}{[A]}, and \textcolor{blue}{[Text blocks]} are placeholders corresponding to $Q$, $A$, and $B$ in Algorithm~\ref{alg:linear-search}. }
+
+
+% \mypython{
+% \small 
+%     Prompt: Given the following question: \textcolor{blue}{[Q]},  and a list of text blocks, the corresponding answers are \textcolor{blue}{[A]}. Your task is to assign a score (from 1 to 10) to each block based on how likely it is to contain context relevant to answering the question. The text blocks are listed below, each starting with Block i: followed by its content. Return only a comma-separated list of scores corresponding to each block, in the order they are given. Do not include any explanations or additional text. \textcolor{blue}{[Text blocks]}}
+
+% \vspace{1pt}
+% \topic{Strategy 4: LLM-top-down} By setting \code{rank} as \code{LLM} and \code{scan} as \code{top-down}, this strategy sorts the blocks based on LLM scores and identifies the provenance in a top-down manner, the same as in Strategy~2. 
+
+Intuitively, given text blocks $B$ sorted by embedding similarities or LLMs, when the provenance lies within the first‑$i$ blocks and $i$ is small (i.e., the provenance size is small and the ranker is effective), a bottom-up search is ideal as it can quickly identify a small provenance. On the other hand, if $i$ is large, bottom-up incurs high cost by repeatedly evaluating the first $i$ blocks, resulting in a quadratic number of block accesses. In such a case, the top-down search is more efficient, as it discards blocks exponentially faster. In Section~\ref{subsec:analysis}, we analyze the costs of both strategies \rone{and in Section~\ref{sec:rec_strategy} recommend what approach to use for a given dataset. }   
+
+\techreport{
+\mypython{
+\small 
+    LLM-Ranker-Prompt: Given the following question: \textcolor{blue}{[Q]},  and a list of text blocks, the corresponding answers are \textcolor{blue}{[A]}. Your task is to assign a score (from 1 to 10) to each block based on how likely it is to contain context relevant to answering the question. The text blocks are listed below, each starting with Block i: followed by its content. Return only a comma-separated list of scores corresponding to each block, in the order they are given. Do not include any explanations or additional text. \textcolor{blue}{[Text blocks]}}}
+% \vspace{1pt}
+% \topic{Strategy 5: Divide-and-Conquer} In contrast to the linear search-based strategies described previously, we present a divide-and-conquer strategy. We begin with the entire set of blocks $B$, where the blocks are unsorted and each block in $B$ preserves the original indexes from the text $T$. In each iteration, we divide the current list of blocks $T_{l,r}$ into a left half $T_{l,mid}$ and a right half $T_{mid+1,r}$, where $mid = \lceil \frac{l + r}{2} \rceil$. We maintain sibling relationships between $T_{l,mid}$ and $T_{mid+1,r}$, as well as parent relationships for $T_{l,mid}$, $T_{mid+1,r}$, and $T_{l,r}$ accordingly (Line 9–11). The strategy recursively searches the half that returns an answer equivalent to $A$ (Line 13-14). The strategy terminates when only one block remains (i.e., $l$ equals $r$ for $T_{l,r}$) (Line 3-5) or, when both the current blocks $T_{l,r}$ and its sibling blocks $SIB(T_{l,r})$ evaluate as false, where in such a case the parent blocks $PAR(T_{l,r})$ is returned as provenance (Line 6-9).   
+
+% \begin{algorithm}[tb]
+% \small
+% \caption{\code{Divide-and-Conquer}}
+% \label{alg:divide-and-conquer}
+% \KwIn{$Q,\,T,\,L,\,A$}  
+% $T = \langle b_1,\dots ,b_m\rangle$ \\ 
+% \SetKwFunction{DFS}{Find\_Provenance}
+% \SetKwProg{Fn}{Function}{:}{}
+% \Fn{\DFS(l,r)}{ 
+% \If{$I(L(T_{l,r},Q),A) == True$}{
+% \If{$l == r$}{
+% \textbf{Return} $T_{l,r}$ \\ 
+% }}
+% \Else{
+% $sib \leftarrow SIB(T_{l,r})$\\
+% \If{$I(SIB(L(T_{l,r}),Q),A) == False$}{
+% \textbf{Return} $PAR(T_{l,r})$ \\ 
+% }
+% }
+% $mid = \lceil \frac{l+r}{2} \rceil$ \\ 
+% $SIB(T_{l,mid}) = T_{mid+1,r}$, $SIB(T_{mid+1,r}) = T_{l,mid}$ \\ 
+% $PAR(T_{l,mid}) = T_{l,r}$, $PAR(T_{mid+1,r}) = T_{l,r}$ \\ 
+% \textbf{Return} \DFS($l,mid$) \\ 
+% \textbf{Return} \DFS($mid+1,r$) \\ 
+% }
+% $P \leftarrow$ \DFS($1,m$) \\ 
+% \textbf{Return }$P$
+% \end{algorithm}
+
+
+
+
+\vspace{-6mm}
+\subsection{Phase 2: Provenance Refinement}  
+The returned provenance from Phase 1, while smaller than $T$,  may not be minimal. In this phase, we present two strategies that take as input any provenance and compute a minimal provenance.
+
+\begin{algorithm}[bt]
+\scriptsize
+\caption{\code{Refine}[\code{scan}]}
+\label{alg:greedy}
+\KwIn{$P,\langle T,Q,L\rangle$}  
+\SetKwFunction{SP}{Sequential\_Greedy}
+\SetKwFunction{EP}{Exponential\_Greedy}
+\SetKwProg{Fn}{Function}{:}{}
+\Fn{\SP{$P$}}{
+\For{$s_i \in P$, in descending order of $i$}{
+$P' \leftarrow P \setminus s_i$ \\ 
+\If{$I(L(P',Q),A) == True$}{
+$P \leftarrow P'$ \\ 
+}
+}
+\textbf{Return }$P$}
+\Fn{\EP{$P$}}{
+$j \leftarrow |P|-1, l \leftarrow 0$\\ 
+\While{$j \geq 0$}{
+$i \leftarrow j - 2^l+1$ \\ 
+$P' \leftarrow P \setminus P_{[i,j]}$ \\ 
+\If{$I(L(P',Q),A) == True$}{
+$P \leftarrow P'$ \\ 
+$j \leftarrow i - 1$,$l \leftarrow l + 1$ \\ 
+}
+\Else{
+$l \leftarrow 0$
+}
+}
+}
+\If{\code{scan} == sequential}{
+$P \leftarrow$ \SP{$P$}; $P_{prev} \leftarrow P$; $A \leftarrow L(T,Q)$ \\ 
+\While{$P_{prev} \neq P$}{
+    $P_{prev} \leftarrow P$ \\ 
+    $P \leftarrow \SP{P}$
+}
+}
+\If{\code{scan} == exponential}{
+$P \leftarrow$ \EP{$P$}; $P_{prev} \leftarrow P$; $A \leftarrow L(T,Q)$ \\ 
+\While{$P_{prev} \neq P$}{
+    $P_{prev} \leftarrow P$ \\ 
+    $P \leftarrow \EP{P}$
+}
+}
+\textbf{Return} $P$
+\end{algorithm}
+
+\topic{Strategy 1: Sequential-Greedy} Taking any provenance $P$ as input, \code{Sequential\_Greedy} (in Algorithm~\ref{alg:greedy}) considers each sentence $s_i \in P$ in descending order of $i$ to maximize the prefixes shared among LLM inferences. If after removing a sentence $s_i$ from the current provenance $P$, the remaining text $P \setminus s_i$ produces an answer equivalent to $A$, then $s_i$ is removed from $P$; otherwise, $s_i$ is retained (Lines 1–6). We repeatedly invoke \code{Sequential\_Greedy} on the resulting provenance $P$ until $P$ no longer changes (Lines 18–21). This step (and a similar one in Strategy 2) is essential for minimality. 
+
+\begin{example}
+    Assume the provenance $P$ returned from the first phase is $P = \langle s_1, s_2, s_3, \dots, s_{20} \rangle$. In the first iteration, $s_{20}$ will be removed if $P \setminus \{s_{20}\}$ returns an equivalent answer to $A$. Next, when  $s_{19}$ is examined, its prompt (consisting of the question and context) shares a prefix with the previous one since both contain the same question followed by the same prefix of context, i.e., $\{s_1, s_2, \dots, s_{18}\}$. As a result, the cost of input tokens in the second iteration is reduced by a factor of $f_L$ = 4 (or 2) when using \code{gemini-2-flash} (or \code{gpt-4o-mini}), respectively, because the entire prompt consists of cached tokens. Similar cost reductions apply to subsequent LLM inferences, resulting in significant cost savings. 
+\end{example}
+
+
+
+\topic{Strategy 2: Exponential-Greedy} In contrast to considering sentences one by one, \code{Exponential\_Greedy} (Algorithm~\ref{alg:greedy}) removes sentences more aggressively by exponentially increasing the number of sentences considered for removal, as long as the result  continues to produce an answer equivalent to $A$. Let $P_{[i,j]}$ denote a subsequence of $P$ from the $i$-th to the $j$-th sentence within $P$. 
+
+We use a running example to explain the behavior. Suppose the provenance $P$ returned from the first phase is $P = \langle s_1, s_2, s_3, \dots, s_{20} \rangle$. This strategy considers each subsequence $P_{[i,j]}$ within $P$. In the first iteration, it considers removing a subsequence $P_{[20,20]} = \langle s_{20} \rangle$.  If $P \setminus P_{[20,20]}$ produces an equivalent answer to $A$, then $P_{[20,20]}$ is removed from $P$. In the next iteration, instead of only $s_{19}$, we double the length of the candidate subsequence and consider removing $P_{[18,19]} = \langle s_{18}, s_{19}\rangle$. If the remaining text $\langle s_1, s_2, \dots, s_{17} \rangle$ still produces an equivalent answer, $P_{[18,19]}$ is removed, and we proceed to $P_{[14,17]}$. If, in any iteration, the remaining text after removing the current subsequence fails to reproduce the answer, the length of the next candidate subsequence is reset to 1 (Lines 8–16). For example, if removing $P_{[18,19]}$ causes the remaining text to produce a different answer, we instead attempt to remove $\langle s_{19} \rangle$. If this succeeds, we then examine the removal of $P_{[17,18]}$ in the next iteration.  The above process repeats until no further sentences can be removed (Lines 8–16). As with \code{Sequential\_Greedy}, we repeatedly apply \code{Exponential\_Greedy} to the provenance returned the previous iteration until the provenance no longer changes (Lines 23–26). %\edit{This step is essential to guarantee the minimality of the provenance.}
+
+During this process, the opportunity to leverage prefix caching for cost optimization is maximized, as the prompt evaluated in the current iteration shares the longest possible prefix with the previous one, except for the sentences that have been examined and retained so far. 
+
+%attempt to remove $P_{[18,19]} =  \langle s_{18}, s_{19} \rangle$ from the current $P$. If the remaining text $\langle s_1, s_2, \dots, s_{17} \rangle$ still produces an equivalent answer, then $P_{[18,19]}$ is removed. 
+
+
+
+ %If removing $P_{[i,j]}$ from $P$ yields an answer equivalent to $A$, then $P_{[i,j]}$ is removed, and the number of sentences considered in the next iteration is doubled. Otherwise, the sequence $P_{[i,i]}$ is evaluated, and the process repeats until no further sentences can be removed (Lines 8–16). As with \code{Sequential\_Greedy}, we repeatedly apply \code{Exponential\_Greedy} to the provenance returned from the previous iteration until the provenance no longer changes (Lines 23–26). 
+
+% \begin{example}
+%      Assume the provenance $P$ returned from the first phase is $P = \langle s_1, s_2, s_3, \dots, s_{20} \rangle$. In the first iteration, if $P \setminus \{s_{20}\}$ produces an equivalent answer to $A$, then $P$ is updated to $P \setminus \{s_{20}\}$. In the next iteration, instead of considering the removal of only $s_{19}$, we attempt to remove $\langle s_{18}, s_{19} \rangle$ from the current $P$. If the remaining text $\langle s_1, s_2, \dots, s_{17} \rangle$ still produces an equivalent answer, then $\langle s_{18}, s_{19} \rangle$ is removed. Note that in this iteration, the cost of input tokens benefits from a reduction factor, as all tokens in the prompt are a prefix of the previous prompt and are therefore considered cached tokens. 
+%      In the following iteration, we consider removing $\langle s_{14}, s_{15}, s_{16}, s_{17} \rangle$, doubling the number of sentences removed in the previous iteration. If removing $\langle s_{18}, s_{19} \rangle$ causes the remaining text to yield an answer not equivalent to $A$, we instead examine the removal of $\langle s_{19} \rangle$ in the next iteration. During this process, the opportunity to leverage prefix caching for cost optimization is maximized, as the prompt evaluated in the current iteration shares the longest possible prefix with the previous one, except for the sentences that have been examined and retained so far. 
+% \end{example}
+
+\subsection{\rtwo{Quality} and Cost Analysis}
+\label{subsec:analysis}
+
+\subsubsection{\rtwo{Quality} Analysis}
+\label{subsubsec:correct} 
+%\leavevmode
+Let $\mathcal{S}_{prune} = \{\text{\code{Embedding-bottom-up}}, \\ \text{\code{Embedding-top-down}},  \text{\code{LLM-bottom-up}}, \text{\code{LLM-top-down}}\}$ and  $\mathcal{S}_{refine} = \\ \{\text{\code{Sequential-Greedy}},  \text{\code{Exponential-Greedy}}\}$ be the set of strategies in the pruning and refinement phases, respectively.  
+
+%We first define the optimality of a strategy and then show that our two-phase approach is optimal.
+
+%Recall that in Definition~\ref{def:optimal}, we define a strategy $S$ to be optimal if for any provenance $P \sqsubseteq T$, $S(P)$ returns a minimal provenance. 
+
+%\begin{definition}[Optimality.]~\label{def:optimal} \edit{A strategy $S$ is said to be optimal, if for all tasks $\langle T,Q,L\rangle$, and provenance $P \sqsubseteq T$, $S(P,\langle T,Q,L\rangle)$ returns a minimal provenance. }
+%\end{definition}
+
+% \begin{definition}[Optimality.]~\label{def:optimal} \edit{A strategy $S$ is said to be optimal, if for inputs, $S(\cdot)$ returns a minimal provenance. }
+% \end{definition}
+
+
+
+\begin{theorem}
+\label{theo:optimal}
+\edit{
+$\forall S \in \mathcal{S}_{refine}$, for all tasks $\langle T,Q,L\rangle$, and provenance $P \sqsubseteq T$, $S(P,\langle T,Q,L\rangle)$ always returns a minimal provenance. } %for $\langle T,Q,L\rangle$   
+\end{theorem}
+
+%\rone{Intuitively, our refinement strategies maintain a provenance $P$, terminating only when no sentences can be removed from $P$ while still yielding a provenance, thereby guaranteeing minimality.} 
+We show the formal proof of Theorem~\ref{theo:optimal} \papertext{in \vldb{\cite{blip}.}}\techreport{below.} \rmix{To return a minimal provenance, \sys does not make any assumptions about the task (e.g., weak or strong monotonicity). These assumptions are only necessary if a strictly-minimal provenance is needed (Theorem~\ref{theo:minimal-eq}).}   
+
+\techreport{\begin{proof}
+    We prove Theorem~\ref{theo:optimal} by contradiction. Given a provenance $P$ for the answer $A$, let the provenance returned by $S$ be $P_S$, where $S \in \mathcal{S}_{\text{refine}}$. If $P_S$ is not minimal, there must exist a sentence $s \in P_S$ such that $P_S \setminus s$ produces an answer equivalent to $A$, i.e., $I(L(P_S \setminus s), A)$ is \textit{True}. If $S = \code{Sequential\_Greedy}$, this contradicts the algorithm’s behavior (Lines 3 and 17–21 in Algorithm~\ref{alg:greedy}), since \code{Sequential\_Greedy} is applied in multiple passes to the provenance returned from the previous iteration, ensuring that removing any sentence from it results in an answer that is not equivalent to $A$. A similar contradiction can be established for $S = \code{Exponential\_Greedy}$. Thus, $P_S$ is a minimal provenance returned by any strategy in $\mathcal{S}_{\text{refine}}$. 
+\end{proof}}
+
+% \begin{theorem}
+% \label{theo:all}
+% For task $\langle T,Q,L\rangle$, for all $S_i \in \mathcal{S}_{prune}$ and $S_j \in \mathcal{S}_{refine}$,  $S_j(S_i(T, \langle T,Q,L\rangle))$ returns a minimal provenance. 
+% \end{theorem}
+
+% \begin{theorem}
+% \label{theo:all}
+% \edit{$\forall S_i \in \mathcal{S}_{prune}$ and $S_j \in \mathcal{S}_{refine}$,  $S_j \circ S_i$ is optimal. } 
+% \end{theorem}
+
+\begin{theorem}
+\label{theo:all}
+\edit{$\forall S_i \in \mathcal{S}_{prune}$ and $S_j \in \mathcal{S}_{refine}$,  for any task $\langle T,Q,L\rangle$, let $P = S_i(\langle T,Q,L\rangle)$ be the provenance returned by $S_i$.  $S_j(P,\langle T,Q,L\rangle)$ always returns a minimal provenance for $\langle T,Q,L\rangle$. }  
+\end{theorem}
+\vspace{-0.5em}
+ 
+The correctness of Theorem~\ref{theo:all} follows directly from the fact that any strategy $S_i$ in $\mathcal{S}_{prune}$ returns a provenance. \rone{Although heuristics are explored in rankers (e.g., embedding-based or LLM-based) and enumerations (e.g., bottom-up or top-down) to reduce cost and latency, Theorem~\ref{theo:all} guarantees that \sys returns a minimal provenance for any data processing task, including non-monotonic tasks.} \rtwo{We provide below an example of how \sys behaves on a non-monotonic task to illustrate this guarantee.}
+%Behavior of \sys on non-monotonic and weakly-monotonic tasks.
+\rtwo{Consider a non-monotonic task where $T = \langle s_1,s_2,s_3,s_4 \rangle$, and only $\langle s_1 \rangle$ and $\langle s_1,s_2,s_3 \rangle$ are verifiable provenances among all true subsets of $T$ ($T$ itself is a provenance by definition). In this case, $\langle s_1 \rangle$ is a strictly-minimal provenance, while both  $\langle s_1 \rangle$ and  $\langle s_1,s_2,s_3 \rangle$ are minimal provenances. \sys returns $\langle s_1,s_2,s_3 \rangle$, and is not able to return $\langle s_1 \rangle$ since  any superset of it formed by adding one more sentence (e.g., $\langle s_1,s_2 \rangle$) is not a provenance. } 
+\rtwo{For the above task, if $\langle s_1,s_2 \rangle$ is also a provenance, then it becomes a weakly-monotonic task. \sys then returns $\langle s_1 \rangle$ by searching along the path from $\langle s_1,s_2,s_3 \rangle$, to $\langle s_1,s_2 \rangle$, and finally $\langle s_1 \rangle$, using Algorithm~\ref{alg:greedy} (Line 17-26). } 
+
+%Theorem~\ref{theo:all} thus guarantees that any strategy combination under our two-phase framework returns a minimal provenance. 
+
+
+%\revised{Note that the correctness of our approach is independent of the provenance size.  The minimal provenance returned by \sys does not imply that the actual size of the provenance should be small. If the true provenance includes every sentence, then BLIP returns the entire input as the provenance, which is informative, indicating that the output depends on all of the input.  }
+
+
+
+%When the provenance is large, baselines such as retrieval or LLM-generated provenance are more likely to fail, either returning too much or too little without guaranteeing verifiability.   BLIP, instead, always returns the minimal provenance that reproduces the answer.
+
+% \subsubsection{Robustness Analysis Against LLM Errors}
+% \label{subsubsec:robustness-llm-error}
+% \edit{LLMs may be wrong in deciding if a sequence $P$ can reproduce an answer equivalent to $A$. In particular, an LLM may produce hallucinations when generating answers in $L(T, Q)$ or make verification errors (e.g., $I(A, A') = \text{False}$ when it is $\text{True}$, or vice versa). }
+ 
+
+% Let $P$ and $mp$ be the provenances returned in the pruning and refining phrase, where $mp \sqsubseteq P$, respectively. Let $\{P_{1},P_{2},..., P_{t}\}$ be the set of intermediate provenances produced by \code{Sequential-Greedy}, where $mp\sqsubseteq P_{1} \sqsubseteq P_{2} \sqsubseteq ... \sqsubseteq P_{t} \sqsubseteq P$, and $\forall P_{i}, L(P_{i},Q)=A'$ with $I(A,A') = \text{True}$.  Let $p_{i}$ be the probability that $P_{i}$ can reproduce an equivalent answer to $A$. For simplicity, let $P_{0}$ be $mp$ and $P_{t+1}$ be $P$.
+% Consider the set of provenances $P_{0}\sqsubseteq P_{1} \sqsubseteq P_{2} \sqsubseteq ... \sqsubseteq P_{t} \sqsubseteq P_{t+1}$. %verified by $L$. 
+
+
+% \edit{We first analyze how \sys performs under such errors for a {\em strongly monotonic} task defined in Definition~\ref{def:strong-mono}, and then discuss the impact of errors in other cases. If $L$ incorrectly determines that  $P_{i}$ can reproduce an equivalent answer to $A$, with a probability $1-p_{i}$, then for any $P_{j}$ where $j<i$, $P_{j}$ cannot reproduce an equivalent answer to $A$ for a strongly monotonic task.} We denote by $\neg P_{i}$ an event that $P_{i}$ cannot reproduce an equivalent answer to $A$. Let $Prob(\neg P_{0},\neg P_{1},..., \neg P_{i}, P_{i+1}, ..., P_{t+1} | L \vdash P_{i})$ be the conditional probability that any $P_{j}$ where $j \leq i$ cannot reproduce the answer, while the rest can, given that $L$ incorrectly made decisions on $P_{i}$. This conditional probability is computed as, 
+
+% \begin{equation}~\label{equ:prob}
+%     \frac{\prod_{0\leq j \leq i}(1-p_{j})\prod_{i<j\leq t+1}p_{j}}{1-p_{i}}  
+%     = \prod_{0\leq j < i}(1-p_{j})\prod_{i<j\leq t+1}p_{j} 
+% \end{equation}  
+
+% LLMs are often more accurate when the context size is smaller~\cite{liu2024lost}. In other words, empirically, smaller $|P_{i}|$, higher $p_{i}$. The size of the provenance $|P|$ (i.e., $|P_{t+1}|$, the output of the pruning phase) is typically only 10--20\% of the original context in our experiments in Section~\ref{sec:exp}, indicating that LLMs are likely to make correct decisions on such small inputs. As a result, the product of $(1 - p_{j})$ for $j < i$ in Equation~\ref{equ:prob} becomes negligible. The same analysis can be trivially applied to \code{Exponential-Greedy}. 
+
+
+
+
+
+
+
+
+
+\subsubsection{Cost of Bottom-up versus Top-down} 
+\label{subsubsec:bottom-top}
+\leavevmode 
+
+Consider the \code{bottom\_up} and \code{top\_down} strategies, with the text $T$ as a list of $m$ equal-sized blocks ranked by  embeddings or LLMs. We focus on embeddings, but the analysis is similar for any ranker.  
+Let $C_{BU}$ and $C_{TD}$ denote the total cost of \code{embedding\_bottom\_up} and \code{embedding\_top\_down}, respectively. Assume that the minimal provenance is contained within the top-$k$ out of $m$ total blocks. When there are multiple  minimal provenances, we consider $k$ to be the smallest number among them. 
+
+To determine which strategy incurs a lower cost given $k$, we analyze how the cost ratio $\frac{C_{BU}}{C_{TD}}$ varies with respect to $k$.
+To this end, we approximate the cost by counting the total number of block accesses in LLM verification calls, \trs{i.e., invocations of $I(L(P, Q), A)$,} where a block is counted multiple times if it appears in multiple LLM calls. 
+\techreport{We also assume that the LLM is accurate in provenance verification. Specifically, if a subsequence $T'$ is a superset of any minimal provenance $mp$ (i.e., $mp \subseteq T'$), then the verification function returns true: $I(L(T', Q), A) = \text{True}$. We will later relax this assumption and analyze its impact on our results. Note that under this assumption, both \code{bottom\_up} and \code{top\_down} return exactly the top-$k$ blocks as the provenance in this phase. }
+
+\techreport{The cost of \code{bottom\_up} is computed as:  $C_{BU} = \sum_{i=1}^{k}i = \frac{k(k+1)}{2}$.  } 
+
+\techreport{We use a recursive expression to compute the cost of \code{top\_down}. 
+Let $C(l,r)$ be the total number of blocks used in the iteration where \code{top\_down} is searching the blocks in the interval $[l,r]$ in Algorithm~\ref{alg:linear-search}. In this case, $C_{TD} = C(1,m)$.  }
+%\vspace{-1mm}
+% \[
+% C(l,r)\;=\;
+% \begin{cases}
+% 0, &
+% l = r, \\[-1pt]
+% \displaystyle
+% \text{mid}(l,r)\;+\;
+% C\!\bigl(l,\;\text{mid}(l,r)-1\bigr), &
+% k \le \text{mid}(l,r), \\[-1pt]
+% \displaystyle
+% \text{mid}(l,r)\;+\;
+% C\!\bigl(\text{mid}(l,r)+1,\;r\bigr), &
+% k > \text{mid}(l,r).
+% \end{cases}
+% \]
+\techreport{
+\[
+C(l,r)\;=\;
+\begin{cases}
+0, &
+l = r, \\[-1pt]
+\displaystyle
+\text{mid}(l,r)\;+\;
+C\!\bigl(l,\;\text{mid}(l,r)-1\bigr), &
+k \le \text{mid}(l,r), \\[-1pt]
+\displaystyle
+\text{mid}(l,r)\;+\;
+C\!\bigl(\text{mid}(l,r)+1,\;r\bigr), &
+k > \text{mid}(l,r).
+\end{cases}
+\]
+}
+%\frac{1}{ln2} + \sqrt{(\frac{1}{ln2})^2+2m}
+\techreport{where $
+\text{mid}(l,r)\;=\Bigl\lceil (l+r)/2\Bigr\rceil
+$. In this expression, the number of blocks considered in each iteration, i.e., $\text{mid}(l, r)$, is accumulated until the binary search terminates at $l = r$. }
+
+We \papertext{leave the details of how to compute $C_{BU}$ and $C_{TD}$ in \cite{blip}, and} present a breakdown of the cost comparison based on different values of $k$ relative to $m$, the total number of blocks.  
+
+\begin{theorem}
+    \label{theo:top-down-bottom-up}
+   When $k \leq L_m$, where $L_m = \frac{\sqrt{8m-7}-1}{2}$,  we have $C_{BU} \leq C_{TD}$; when $k \geq U_m$, where $U_m = \frac{-1 + \sqrt{1+8 (mlog_2m-m+1)}}{2}$, we have $C_{BU} \geq C_{TD}$. For $L_m<k<U_m$, one must evaluate $C_{BU}$ and $C_{TD}$ explicitly to determine which is larger. 
+\end{theorem}
+
+
+
+We show the detailed proof \papertext{in \vldb{\cite{blip}.}}\techreport{below.} As implied in Theorem~\ref{theo:top-down-bottom-up}, bottom\_up is preferred when the provenance size is relatively small (i.e., $k$ is smaller than $L_m$). In contrast,  top-down wins when $k$ is large (greater than $U_m$). 
+
+\techreport{\begin{proof}
+    [Proof of Theorem~\ref{theo:top-down-bottom-up}] 
+%Let us first consider an upper bound of $C_{TD}$ before computing the relative cost of $C_{TD}$ and $T_{BU}$. 
+During binary search in the top\_down approach, consider the lower and upper bounds of $C_{TD}$. In the best case, in every iteration it moves to the left half interval, leading to a cost $C_{TD}^{L} = \lceil \frac{m}{2} \rceil + \lceil \frac{m}{4} \rceil + \dots + 1 \geq m - 1$. In the worst case, in every iteration it moves to the right half interval. In this case, the first iteration incurs a cost of $\lceil \frac{m}{2} \rceil$, and the second iteration incurs a cost of $\lceil \frac{m}{2} \rceil + \lceil \frac{m}{4} \rceil$. Thus, the $i$-th iteration has a cost of $C_i = \sum_{j=1}^{i} \lceil \frac{m}{2^j} \rceil$. The total cost is $C_{TD}^{U} = \sum_{i=1}^{h} C_i$, where $h = \lceil \log_2 m \rceil$. We have, 
+
+\begin{equation}
+    C_{TD}^{U} = mlog_2m-m+1
+\end{equation}
+Solving $C_{BU} \leq C_{TD}^{L}$ leads to, 
+
+\begin{equation}
+    k \leq \frac{\sqrt{8m-7}-1}{2} 
+\end{equation}
+ 
+Soving $C_{BU} \geq C_{TD}^{U}$ gives, 
+
+\begin{equation}
+    k \geq \frac{-1 + \sqrt{1+8 (mlog_2m-m+1)}}{2}
+\end{equation}
+
+We denote by $U_m = \frac{-1 + \sqrt{1+8 (mlog_2m-m+1)}}{2}$ and $L_m = \frac{\sqrt{8m-7}-1}{2}$, respectively. When $k\leq L_m$, we have $C_{BU} \leq C_{TD}$. 
+When $k \geq U_m$, we have $C_{BU} \geq C_{TD}$. For $L_m<k<U_m$, one must evaluate the 
+two formulas explicitly to determine which is larger.
+\end{proof}}
+
+
+
+ \begin{figure}[tb]
+    \centering
+    \includegraphics[width=1\linewidth]{figures/seq_vs_exp_1_cropped.pdf}
+    \vspace{-1.8em}
+    \caption{\small \code{SEQ} versus \code{EXP}. $P$ refers to the provenance returned from the first phase, and $mp \sqsubseteq P$ refers to a minimal provenance.}  
+    %\vspace{-1em}
+    \label{fig:seq-exp}
+\end{figure}
+
+
+\subsubsection{Cost of Sequential\_Greedy versus Exponential\_Greedy}
+\label{subsubsec:seq-exp}
+\leavevmode
+Taking the provenance, denoted as $P$, returned by the {\em prune} phase as input, 
+both Sequential\_Greedy (\code{SEQ} for short) and Exponential\_Greedy (\code{EXP} for short) return a minimal provenance, denoted as $mp \sqsubseteq P$. Let $C_{SEQ}$ and $C_{EXP}$ be the cost of \code{Sequential\_Greedy} and  \code{Exponential\_Greedy}, when applied to $P$. To analyze $C_{SEQ}$ and $C_{EXP}$, we assume  both strategies return the same \trs{minimal provenance} $mp$, as illustrated in Figure~\ref{fig:seq-exp}-a, where the blue intervals represent $mp$. 
+
+Irrespective of the distribution of the minimal provenance $mp$ within $P$, any input sequence $P$ can be decomposed into a list of subsequences (e.g., $\langle P_{1}, P_{2}, P_{3}\rangle$), where the first (possibly empty) subsequence $P_1$ has no contribution to $mp$, followed by $P_2$, $P_3$, ..., each of which has a prefix $P_2'$, $P_3'$ that is part of $mp$.  
+This decomposition is useful for comparing \code{EXP} versus \code{SEQ} across different types of sequences. 
+For $P_1$, \code{EXP} is clearly preferred over \code{SEQ}, as \code{EXP} eliminates sentences in logarithmic time, whereas \code{SEQ} does so linearly. 
+
+We now focus on the cost comparison for sequences such as $P_2$ or $P_3$. W.L.O.G., 
+consider such a sequence $P_i = \langle s_{i1}, s_{i2}, \dots, s_{il} \rangle$, where the leading subsequence $mp_i = \langle s_{i1}, \dots, s_{ih} \rangle$ is part of the minimal provenance $mp$, as illustrated in Figure~\ref{fig:seq-exp}-b. 
+ \techreport{Similar to the cost analysis in Section~\ref{subsubsec:bottom-top}, we approximate the cost by counting the total number of block accesses in LLM verification calls and assume the LLM is accurate in provenance verification.} \code{EXP} performs logarithmic deletion over the subsequence $P_i \setminus mp_i$ and linear deletion over $mp_i$, whereas \code{SEQ} always performs linear deletion over the entire $P_i$\papertext{.}\techreport{, both by scanning sentences in decreasing order of their indexes.} However, when an LLM verification fails, \code{EXP} resets the probing window step back to 1, rendering the current LLM call ineffective in deleting any sentences, thus, a {\em useless} probe. To analyze the cost comparison between \code{EXP} and \code{SEQ}, we need to account for both the savings from \code{EXP}'s logarithmic deletion and the additional cost incurred by useless probes. 
+
+% \begin{theorem}
+% \label{theo:seq-exp}
+%     Given a sequence $P = \langle s_{i1}, s_{i2}, \ldots, s_{il} \rangle$ with a leading subsequence $mp' = \langle s_{i1}, \ldots, s_{ih} \rangle$ that is part of the provenance, if $l - h < 3$, then $C_{SEQ} < C_{EXP}$; otherwise, $C_{EXP} \leq C_{SEQ}$. 
+% \end{theorem}
+
+% The proof of Theorem~\ref{theo:seq-exp} is shown in Appendix~\ref{subsec:proof-topdown-bottom-up}. 
+% Theorem~\ref{theo:seq-exp} implies that for any sequence $P$, \code{SEQ} outperforms only when the number of non-provenance sentences is at most three. In this case,  \code{EXP} incurs the overhead of a doubling attempt without achieving a useful skip, which is minimal - at most one useless probe. In all other cases, \code{EXP} is preferred. Thus, we recommend using \code{EXP} in the refine phase of \sys, given its overall better theoretical performance; our empirical results in Section~\ref{sec:exp} further support this recommendation.
+
+
+\begin{theorem}
+\label{theo:seq-exp}
+    Given a sequence $P_i = \langle s_{i1}, s_{i2}, \ldots, s_{il} \rangle$ with a leading subsequence $mp_i = \langle s_{i1}, \ldots, s_{ih} \rangle$ that is part of the provenance, let $g = l-h$, we have: 
+    \begin{align*}
+    &C_{SEQ}=\Theta\!\bigl(gl+h^{2}\bigr),  \\ 
+    \Omega\!\bigl(g+h^{2}\bigr)\le
+&C_{EXP}\le
+O\!\bigl(g\log^2_2 g+h\log^2_2g+h^{2}\bigr)
+    \end{align*}
+    The cost of $C_{SEQ}$ and $C_{EXP}$ are broken down as follows,  
+    \begin{align*}
+& g=\omega(1)
+       \Longrightarrow\;
+         C_{EXP}=o\bigl(C_{SEQ}\bigr), \\%[6pt]
+& g=\Theta(1)
+       \Longrightarrow\;
+         C_{EXP}=\Theta \bigl(C_{SEQ}\bigr).
+\end{align*}
+\end{theorem}
+We show the proof \papertext{in \vldb{\cite{blip}.}}\techreport{below.} As shown in Theorem~\ref{theo:seq-exp}, \( C_{\code{EXP}} \) is asymptotically no worse and often cheaper than \( C_{\code{SEQ}} \) in most cases. 
+ In practice, since the provenance size often remains constant relative to the sequence length, i.e., \( r = \omega(1) \), \code{EXP} is cheaper than \code{SEQ} when $l$ and $r$ become larger, implied by \( C_{EXP} = o(C_{SEQ}) \).  
+%Thus, we recommend using \code{EXP} in the refine phase of \sys, and our empirical results in Section~\ref{sec:exp} further support this recommendation. 
+
+\techreport{\begin{proof}
+\newcommand{\SEQ}{\mathrm{SEQ}}
+\newcommand{\EXP}{\mathrm{EXP}}
+
+First, consider computing $C_{SEQ}$. Let \( g := l - h \) be the number of sentences that are not part of the provenance. To linearly probe each sentence in \( P \setminus mp \) using \code{SEQ}, the number of data blocks per LLM verification is \( l - 1, l - 2, \dots, l - g \), leading to a total cost of \( gl - \frac{g(g+1)}{2} \). For probing each sentence in \( mp \), since no sentence can be removed, \code{SEQ} incurs an additional cost of \( h(h - 1) \), resulting in the total cost:
+\[
+C_{SEQ} = gl - \frac{g(g+1)}{2} + h(h - 1).
+\] 
+
+We have the tight bound of $C_{SEQ}$ as, 
+\[
+  \boxed{\,C_{\SEQ}=\Theta\!\bigl(gl+h^{2}\bigr)\,}
+\]
+since \(gl\ge g\) and \(h^{2}\ge h(h-1)\), while
+\(\tfrac12 g(g+1)\le g^{2}\le gl+g^{2}\le2gl\). 
+
+Now consider $C_{EXP}$. To probe and delete sentences that are not part of the provenance, \code{EXP} performs \( k \) successful probes followed by one failure, then resets the window size to 1 and recursively repeats the same probing process. The cost in this stage is broken down into the cost of successful probes and the failure probe. The former is computed as $\sum_{i=0}^{k-1}(h+g - 2^i) = k(h+g) - 2^k + 1$, where $k = \lceil log_2g\rceil$, the number of successful probes. 
+
+
+\[
+  \underbrace{k(h+g)-2^k + 1}_{\text{successful probes}}
+  \;+\;
+  \underbrace{\max\{0,h+g-2^{k+1}\}}_{\text{one failure}}
+  \;=\;O\!\bigl((h+g)\log_2 g\bigr).
+\]
+
+After a failure probe, at most \(2^{k}\!-\!1<\tfrac12 g\) non-provenance sentences remain,
+so the recursion depth is at most \(\lceil\log_{2}g\rceil\). Thus, we have the upper asymptotic bound of \( C_{\code{EXP}} \) as follows, where \( O(h^2) \) accounts for the cost of probing the \( h \) provenance sentences. 
+
+\[
+  \boxed{\,C_{\EXP}=O\!\bigl(glog^2_2g+h\log^{2}_2 g+h^{2}\bigr)\,}.
+\]
+
+Now we develop the lower asymptotic bound of $C_{EXP}$ as below, 
+\[
+  \boxed{\,C_{\EXP}=\Omega\!\bigl(g+h^{2}\bigr)\,}.
+\]
+
+Here, every non-provenance sentence in \( P \setminus mp \) contributes a cost of at least one block to the overall cost.
+
+Comparing the two strategies, we have the tight bound
+\(C_{SEQ}(l,h)=\Theta\!\bigl(gl+h^{2}\bigr)\)
+with \(g=l-h\), while \code{EXP} satisfies
+\(\Omega\!\bigl(g+h^{2}\bigr)\le
+C_{EXP}(l,h)\le
+O\!\bigl(g\log^2_2 g+h\log^2_2 g+h^{2}\bigr)\).
+Because \(gl\) grows strictly faster than \(g\log g\) once
+\(g=\omega(1)\), we obtain \(C_{EXP}=o(C_{SEQ})\) for sequence containing more than a constant number of non-provenance sentences; conversely,
+when \(g=\Theta(1)\) both costs are the same order. Overall, we have, 
+
+\[
+\boxed{%
+\begin{aligned}
+& g=\omega(1)
+      &&\Longrightarrow\;
+         C_{EXP}=o\!\bigl(C_{SEQ}\bigr), \\%[6pt]
+& g=\Theta(1)
+      &&\Longrightarrow\;
+         C_{SEQ}=\Theta\!\bigl(C_{EXP}\bigr).
+\end{aligned}}
+\]
+\end{proof}}
+
+\subsubsection{\rone{Recommended Approach}}\label{sec:rec_strategy}
+%\sep{added:}
+\rone{We have presented two different pruning  (bottom-up and top-down) and refinement strategies (SEQ and EXP). Theorems~\ref{theo:top-down-bottom-up} and \ref{theo:seq-exp} (as well as our empirical study in Section~\ref{subsec:exp-result}) show that the best pruning and refinement approach depends on the size of the provenance, quality of ranking,  as well as how  provenance is distributed within $T$.
+%---with any combination of approaches potentially achieving the lowest cost depending on these factors. 
+Given absence of knowledge about these factors, we provide the following recommendations to decide which pruning and refinement strategy to use. %We empirically validate these recommendations in Section~\ref{subsec:exp-result}. 
+\\\indent
+\textit{Recommended Pruning strategy}. We propose an adaptive strategy for pruning. Theorem~\ref{theo:top-down-bottom-up} showed that if provenance is the first $L_m$ blocks, top-down performs best while if it is in the last $U_m$ blocks, then the bottom-up  performs best. % (for quantities $U_m$ and $L_m$ defined in  Theorem~\ref{theo:top-down-bottom-up}). 
+We use this insight to design the following adaptive strategy. We use $CP = \frac{L_m + U_m}{2}$ to approximate a {\em crossover point}. 
+Given a ranking approach, the adaptive strategy initially applies  bottom-up  to probe the ranked blocks. If the top-$CP$ blocks fail to produce the correct answer, the strategy switches to top-down to complete the search. Our empirical results (Section~\ref{subsec:exp-result}) show that this simple strategy often outperforms both methods.  \\\indent
+\textit{Recommended Refinement strategy}. SEQ performs best when a short provenance can be found at the beginning of the document (i.e., $h$ is small in Theorem~\ref{theo:seq-exp}) while EXP performs better when documents are longer. This is consistent with our empirical observation: we recommend using SEQ if the number of sentences in the provenance returned from the pruning stage is below a threshold $t$ ($t=10$ reported in Section~\ref{subsec:exp-result}),  but to use EXP otherwise. 
+}
+
+
+\vspace{-2mm}
+\subsubsection{\rone{\sys Scope}}\label{sec:usefulness_scope}
+%\sep{added}
+\rone{We so far have shown that \sys returns a minimal provenance for any LLM-powered data processing~\cite{zhao2024chat2data, huang2024transform, naeem2024retclean, buss2023generating, zhu2024autotqa} task, as discussed in Section~\ref{subsubsec:correct}; and for any  SPJRU (i.e., ${\mathcal RA}^+$) task, the provenance is well-defined and useful, as discussed in Section~\ref{subsec:database-prov-relationship}.   However, whether \sys can do so efficiently depends on the task itself as well as the abilities of the ranking method used.    \\\indent First, if the provenance for the task is large, then the cost of \sys increases, as discussed in Theorem~\ref{theo:seq-exp}---guaranteeing minimality of a large set is difficult as any sentence can be redundant and our algorithm must check if the removal of any sentence can lead to a smaller provenance. Second, the quality of the ranking method affects the cost---the better the ranker, the more effectively \sys can prune out blocks that are not part of the provenance. The quality of the ranker depends on the capabilities of the embedding model (or the LLM used for ranking), as well as task and data characteristics. Embedding models are commonly used for semantic retrieval tasks both for text~\cite{zhuang2023toolqa} and tabular data~\cite{jin2022survey,nan2022fetaqa}, and as we see in our experiments, can provide accurate ranking for common LLM-powered text and table processing tasks done by LLMs. However, embedding models may not be well-suited for ranking in tasks that require logical operations (e.g., when we have a predicate \texttt{A = 4}, and all values of \texttt{A} are between 3 to 5). Such queries should be performed using SQL, e.g., by using an LLM to rewrite the query $Q$ using text-to-SQL as opposed to the LLM processing data directly.  In this case, existing provenance tracking solutions for databases~\cite{green2007provenance,buneman2001and,cheney2009provenance} are more effective. We leave how our approach can be combined with query answering with SQL to the future work.}
+
+\if 0
+Here, we compare \sys with traditional database provenance approaches and discuss the scop of tasks we believe \sys is useful for.
+
+\textbf{Comparison with Database Provence Finding Approaches}. A key distinction between \sys and existing approaches for finding provenance in databases is that 
+
+
+The reason we use the term "data processing" is because it is commonly used
+to describe LLMs processing data (documents, tables, videos etc.),
+as used in recent work~\cite{}.
+\fi
+
+
+
+
+
+
+\if 0
+Inspired by the above cost breakdown, we propose an adaptive strategy that combines the two. 
+
+
+%Notably, empirical results over all datasets consistenly suggest the crosspoints are close to ($\sqrt{2m}$), which is then used as the crosspoint in our adaptive strategy. 
+
+\sep{I'm proposing to move this to 3.3.4}
+\topic{Adaptive Strategy in Phase 1} We use $CP = \frac{L_m + U_m}{2}$ to approximate a {\em crossover point}. 
+%when $k \leq CP$, $C_{BU} < C_{TD}$; otherwise, when $k > CP$, $C_{TD} < C_{BU}$. 
+Given a ranking approach, the adaptive strategy initially applies the bottom\_up strategy to probe the ranked blocks. If the top-$CP$ blocks fail to produce the answer, the strategy switches to top\_down to complete the search.  
+%Let $CP_L$ and $CP_R$ represent the values $\sqrt{2m}$ and $\frac{1}{ln2} + \sqrt{(\frac{1}{ln2})^2+2m}$, respectively. 
+%In our implementation where $m$ is set to 20, $L_m \approx 5.7$ and $U_m \approx 11.1$. 
+We provide a simple heuristic here to decide how to choose 
+
+In practice, these parameters can be estimated from past queries data, in 
+
+
+Quality of ranking vs cost
+\fi
+
+
+
+% \begin{equation}
+% \frac{C_{SEQ}}{C_{EXP}}
+%   \;=\;
+%   \Theta\!\left(
+%       \frac{l^2-hl+h^{2}}{\,h-l + hlog_2(h-l) + h^2}
+%   \right)
+%   % \;=\;
+%   % \Theta\!\left(
+%   %     \frac{n+h}{\log(n-h)+h^{2}/n}
+%   % \right).
+% \end{equation}
+
+% We further provide a breakdown based on different sizes of the minimal provenance within the given provenance. 
+
+
+% \[
+% \frac{C_{SEQ}}{C_{EXP}}
+% \;=\;
+% \begin{cases}
+% \Theta\!\left(\dfrac{n}{\log n}\right), 
+% & \displaystyle h = o\!\bigl(\sqrt{n\log n}\bigr), \\[6pt]
+% \Theta\!\bigl((n/h)^{2}\bigr), 
+% & \displaystyle \sqrt{n\log n}\;\lesssim\; h \;\lesssim\; \alpha n,\; 0<\alpha<1, \\[6pt]
+% \Theta(1), 
+% & \displaystyle h = \Theta(n).
+% \end{cases}
+% \]
+
+% \noindent where the notation $x \lesssim y$ indicates an \emph{asymptotic upper bound}: there exists a constant $\alpha>0$ such that
+% $
+% x \le \alpha y, \text{for all sufficiently large } n,
+% $
+% i.e.\ $x = O(y)$.  (Dually, $x \gtrsim y$ denotes $x = \Omega(y)$.) We observe that when $h$ is small or moderate relative to $n$, \code{Exponential\_Greedy} achieves a theoretically lower cost than \code{Sequential\_Greedy}, with both exhibiting the same performance when $h = n$. Based on this observation, we {\em recommend using \code{Exponential\_Greedy} in the refine phase of \sys.}
+
+
+%  \begin{figure}[tb]
+%     \centering
+%     \includegraphics[width=0.75\linewidth]{figures/sep-exp-3-cropped.pdf}
+%     \vspace{-1em}
+%     \caption{\small Cost Analysis of \code{EXP}. }  
+%     %\vspace{-1em}
+%     \label{fig:seq-exp}
+% \end{figure}
+%$P_i$ refers to the provenance returned from the prunning phase, and $mp_i \sqsubseteq P_i$ refers to a minimal provenance. 
+\techreport{Note that adopting \code{Exponential\_Greedy} improves the worst-case performance of the two-phase approach when the provenance returned from the first phase is large, particularly when the provenance distribution is local. This is because it offers a logarithmic-factor reduction in pruning sentences that do not contribute to the answer, thereby making the approach more robust. }
+
+
+
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 

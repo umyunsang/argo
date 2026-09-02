@@ -634,6 +634,9 @@ def main():
             + json.loads(
                 (ROOT / "paper/sources/arxiv-metadata-literature-round52-receipt.json").read_text(encoding="utf-8")
             ).get("records", [])
+            + json.loads(
+                (ROOT / "paper/sources/arxiv-metadata-literature-round54-receipt.json").read_text(encoding="utf-8")
+            ).get("records", [])
         )
         combined_metadata_ids = [x.get("source_id") for x in combined_metadata_records]
         duplicate_metadata_ids = sorted(k for k, v in collections.Counter(combined_metadata_ids).items() if v > 1)
@@ -1792,6 +1795,38 @@ def main():
             if forbidden.lower() in abstract.lower():
                 abstract_claims["failures"].append(
                     f"abstract states {forbidden!r} while executed evidence exists")
+        paper_body = paper_text[:paper_text.find("\\begin{thebibliography}")]
+        for item in claim_cfg.get("body_numbers_from_receipts", []):
+            abstract_claims["checked"] += 1
+            receipt_path = ROOT / item["receipt"]
+            if not receipt_path.is_file():
+                abstract_claims["failures"].append(f"receipt missing: {item['receipt']}")
+                continue
+            value = json.loads(receipt_path.read_text(encoding="utf-8"))
+            try:
+                for key in item["path"]:
+                    value = value[key] if isinstance(value, dict) else value[int(key)]
+            except (KeyError, IndexError, ValueError):
+                abstract_claims["failures"].append(
+                    f"receipt path unresolvable for {item['number']}")
+                continue
+            rendered = item.get("render") or str(value)
+            # The rendered form must appear in the body, and the receipt must still hold
+            # the value it was bound to, so editing either side alone fails the gate.
+            if rendered not in paper_body:
+                abstract_claims["failures"].append(
+                    f"body does not state {rendered!r} from {item['receipt']}")
+            expected = item["number"]
+            if str(value) != expected and f"{value}" != expected:
+                tolerance = float(item.get("tolerance", 1e-9))
+                try:
+                    drift = abs(float(value) - float(expected)) > tolerance
+                except (TypeError, ValueError):
+                    drift = True
+                if drift:
+                    abstract_claims["failures"].append(
+                        f"receipt value {value!r} no longer matches the bound number {expected!r}")
+
         for item in claim_cfg.get("numbers_from_receipts", []):
             abstract_claims["checked"] += 1
             receipt_path = ROOT / item["receipt"]

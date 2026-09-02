@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** bind the remaining unbound numeric claims in the introduction and method sections to receipts, since the gate currently covers only the abstract.
+- **next_first_action:** extend the two-sided bindings to the remaining unbound body numbers, since only the fifteen headline checks are guaranteed today.
 
-- **last_updated:** 2026-09-03T02:08:18+09:00
+- **last_updated:** 2026-09-03T02:15:42+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 31 closed — the abstract contradicted its own conclusions; rewritten against the record and gated
+- **current_phase:** cycle 32 closed — the claim-binding audit tool failed its own validity test and was replaced by explicit two-sided binding
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 32 — the audit tool failed its own validity test
+
+- **Gap picked:** only the abstract had numbers bound to receipts.
+- **First attempt looked perfect and was worthless.** A matcher compared every body number against all 396 receipt values, allowing a factor of 100 either way, and reported **66 of 66 bound, zero unmatched**.
+- **Then I tested the test.** Random numbers of the same shape were fed to the same matcher: it accepts **82.5%** of them. Expected matches under the null were 54.4 of 66, so the perfect score mostly measured how permissive the test was.
+- **This is the same defect I falsified before**, in the same form: a high-recall filter presented as a decision procedure, exactly like the cue endpoint at a false-positive rate of 0.969. The matcher was rejected as a certificate.
+- **Replaced by explicit two-sided binding:** a bound number names a receipt and a path, the rendered form must appear in the body, and the receipt must still hold the bound value. **Both directions fire** — changing the prose alone and changing the receipt alone each fail the gate.
+- **Coverage is partial and said to be partial:** 15 checks bind the headline numbers; the rest of the body numbers are not individually bound.
 
 ### Cycle 31 — the abstract said the work had not been done
 
