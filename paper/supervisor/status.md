@@ -1,14 +1,24 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** rebuild sample-size planning as a generalizability design with the scoring method as a facet, and measure that facet properly before it carries a plan.
+- **next_first_action:** ask what an endpoint would need to carry condition variance at all, and check whether any quantity already recorded in the executed blocks separates conditions better than element coverage does.
 
-- **last_updated:** 2026-09-03T04:50:50+09:00
+- **last_updated:** 2026-09-03T04:59:06+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 57 closed — the paired detectable effect is void as a design target; the instrument facet varies more than the effect
+- **current_phase:** cycle 58 closed — the quality arm is not sizeable at any n: the condition carries ~0% of endpoint variance
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 58 — sizing rebuilt with the instrument as a facet, and the arm abandoned
+
+- **Built the replacement:** `experiments/study_a/gstudy.py` with `test_gstudy.py` — a crossed condition x method x element variance decomposition and decision study. **32 checks; 11 of 11 mutations caught** after 5 survivors forced exact-arithmetic fixtures (the analytic value of the condition component, divisor-by-divisor error variances, explicit degrees of freedom, and a residual pinned against an independently computed sum of squares).
+- **Applied per task**, because anchor elements are task specific and pooling would manufacture degrees of freedom.
+- **The condition carries almost none of the endpoint variance:** **0.9%** of the clamped total in K5, and a **negative estimate clamping to zero** in K6. Element difficulty is **47.9%** and residual **37.1%** in K5; residual is **50.5%** in K6.
+- **Dependability as run is 0.040 and 0.000**, and no element count within a cap of 400 reaches 0.8 — more measurement cannot enlarge a signal estimated at zero.
+- **A block size was the wrong question.** The quality arm cannot be repaired by adding episodes. Either the endpoint changes or no condition claim is available from it. `RD-2026-09-03-53A/54A` now carry `SIZING_ABANDONED`.
+- **Precision caveat stated, and it does not rescue the arm:** four conditions leave the condition component three degrees of freedom, and negative components mean quantities small relative to sampling error, not quantities known to be zero.
+- **Gate caught me mid-cycle:** two shares were bound as percentages against fractions in the receipt. Rather than add a scale transform that would loosen every binding, the percentages are now stored explicitly. Claim checks 55.
 
 ### Cycle 57 — the design target was sized on the smaller half of the problem
 
