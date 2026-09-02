@@ -1,0 +1,116 @@
+%% ============================================================
+%% Appendix: Baseline Adaptation Details
+%% ============================================================
+
+\section{Baseline Adaptation Details}
+\label{app:baseline_adaptation}
+
+All baselines are open-source systems adapted to the ADRS benchmark under identical conditions: Gemini~3.1~Pro backbone, up to 20 solver iterations per task, 2-hour code generation windows, and 3~seeds per task.
+Runs that crashed due to infrastructure issues (API timeouts, rate limits, \LaTeX{} compilation errors) were re-attempted with fresh state up to 3~times. No run was re-attempted to improve solver scores.
+Below we detail the per-system adaptations.
+
+\paragraph{Sakana AI-Scientist v2 (Sakana).}
+Sakana~v2 required the deepest adaptation.
+The original codebase assumes an ML-training workflow throughout its 4-stage best-first tree search (BFTS) pipeline: stage goals instruct the agent to ``tune learning rates and batch sizes,'' ``introduce datasets from HuggingFace,'' and ``avoid changing the model architecture.''
+%In an initial 15-run trial with unmodified prompts, most runs trained irrelevant PyTorch neural networks instead of writing ADRS optimization code; only \textsc{txn\_scheduling} consistently used simulated annealing with the real evaluator.
+
+To adapt for ADRS, we rewrote all four stage goals in \texttt{agent\_manager.py} and 14~prompt locations in \texttt{parallel\_agent.py}, replacing ML-specific terminology (``training loop,'' ``model architecture,'' ``dataset'') with optimization-domain equivalents (``solution search,'' ``algorithm design,'' ``problem instance'').
+%The rewritten stage goals direct Stage~1 toward a working implementation that produces a valid score, Stage~2 toward hyperparameter tuning across problem instances, Stage~3 toward creative algorithmic exploration (hybrid solvers, learned construction policies, domain-specific heuristics), and Stage~4 toward systematic ablation studies.
+
+Beyond prompt changes, we created a bridge entry point (\texttt{perform\_experiments\_adrs.py}) that loads ADRS task specifications, injects the evolve-block starter code, and routes evaluation through the one-ai-scientist task loader rather than Sakana's built-in interpreter.
+We also added a Gemini~3.1~Pro backend (\texttt{backend\_gemini.py}), since the original codebase only supports OpenAI-compatible APIs.
+%The writeup pipeline required two fixes: (1)~the citation injection regex targeted the ICBINB template's \verb|\begin{filecontents}| block, absent in the NeurIPS template---we switched to direct append to \texttt{references.bib}; and (2)~the NeurIPS template lacked a \verb|\graphicspath| directive, causing figures to render as placeholders.
+In total, 16~source files were modified or created, plus 5~task-specific idea files and the NeurIPS~2026 \LaTeX{} template.
+%The BFTS pipeline runs with iteration budgets of 20/12/12/18 across stages~1--4, 4~parallel workers, 3~search drafts per stage, max debug depth~3, and a 1-hour execution timeout per iteration.
+%The writeup phase gathers citations over 10~rounds from Semantic Scholar, aggregates experiment plots via a VLM, and generates an 8-page NeurIPS-format paper.
+% Each Slurm job runs on a CPU-only c3~node (8~vCPUs, 32\,GB~RAM) with a 12-hour wall-time limit.
+% Of the 15~runs, 2~had infrastructure failures (one OOM kill, one Slurm time-limit exceeded), both recovered from checkpoints.
+
+Four post-integration fixes were required, discovered during forensic audit:
+\begin{enumerate}[nosep,leftmargin=*]
+\item \emph{Canonical evaluator injection.}
+BFTS bypasses its own \texttt{exec\_callback} and executes generated code directly. The evaluation callback we registered was dead code.
+We instead appended a guarded canonical evaluation harness to the initial code template, so every generated \texttt{runfile.py} runs the official ADRS evaluator and prints canonical metrics to stdout for the BFTS metric parser.
+\item \emph{Deterministic best-node selection.}
+BFTS selects its ``best'' node via an LLM call at temperature$=$0.3 that considers ``training dynamics'' and ``plot quality''---not raw score alone.
+We added a deterministic argmax over all nodes across all 4~stages, producing \texttt{best\_solver.py} with a fresh canonical re-evaluation.
+\item \emph{Paper--code alignment.}
+The writeup pipeline reads the LLM-selected node, while \texttt{best\_solver.py} comes from the deterministic argmax---yielding different algorithms in all 15~runs.
+The papers evaluated in this study were not regenerated after this fix, so paper descriptions may refer to the LLM-selected node rather than the highest-scoring one.
+\item \emph{Plot generation path.}
+The upstream \texttt{load\_exp\_summaries()} hardcodes \texttt{logs/0-run/} as the summary directory, but our bridge writes summaries to the run root.
+The mismatch caused \texttt{aggregate\_plots} to receive empty data, producing zero figures across all 15~runs.
+All 15~Sakana papers are therefore figure-free.
+\end{enumerate}
+
+Sakana's specification violation patterns (10/15 papers flagged) are analyzed in \S\ref{app:coe_audit_details}. The dominant cause is a design mismatch between BFTS's multi-stage architecture (which assumes self-contained evaluation) and ADRS's solver contract (which treats the evaluator as off-limits infrastructure).
+
+%\paragraph{Sakana: specification violations and score cherry-picking.}
+%Sakana has the highest specification violation rate among all systems (10/15 papers flagged).
+%The dominant violation pattern (present in all 10~flagged runs) is the solver importing the canonical evaluator and calling it as an optimization oracle---looping over hyperparameter configurations, evaluating each via the official scorer, and keeping the best.
+%In txn\_scheduling, the agent additionally modifies \texttt{get\_random\_costs()}, a function outside the \texttt{EVOLVE-BLOCK} markers that delimit the editable region of the initial program.
+%
+%Inspection of the flagged solutions reveals that they are not standalone solver functions but complete \emph{experimental scripts}: each contains the solver logic, an evaluator-import loop that sweeps hyperparameters, experiment-tracking data structures, and plotting code.
+%This is a direct consequence of BFTS's multi-stage architecture.
+%Sakana's original pipeline defines four stages---preliminary investigation, hyperparameter tuning, research agenda execution, and ablation studies---with stage goals that instruct the agent to ``tune hyperparameters'' (stage~2) and ``systematically remove or replace each component'' (stage~4).
+%Our ADRS adaptation preserved this stage structure, translating ML-specific terminology (``tune learning rates'') into optimization-domain equivalents (``tune search depth, population size''), but the imperative to tune and ablate is inherent to Sakana's design.
+%
+%On ML tasks, this works naturally: the agent modifies training hyperparameters within its own self-contained script, which produces its own metrics.
+%On ADRS, the agent \emph{could} tune hyperparameters through BFTS's iteration loop---changing a parameter value per iteration and letting the external evaluator score each variant---but the stage goal's phrasing (``test across multiple parameter settings'') encourages the agent to build an intra-iteration sweep instead, which requires calling the evaluator directly.
+%Our canonical evaluator injection (Fix~1 above) compounded the issue by revealing the evaluator's import pattern in the initial code template, making it trivial to copy.
+%
+%The resulting violations are therefore a \emph{design mismatch} between BFTS's multi-stage architecture (which assumes self-contained evaluation) and ADRS's solver contract (which treats the evaluator as off-limits infrastructure), rather than adversarial exploitation or a pure model compliance failure.
+%The 5~clean runs (all 3~EPLB seeds plus cloudcast seeds~2 and~3) are tasks where the agent fulfilled the stage goals without importing the evaluator.
+
+%\paragraph{Solver extraction gap (limitation).}
+%A further design mismatch affects the validity of our I2 and I4 audit results for Sakana.
+%BFTS nodes contain full \emph{experimental scripts}---solver logic interleaved with evaluator-import loops, hyperparameter sweep dictionaries, experiment-tracking data structures, and plotting code---because BFTS was designed for ML experiments where the entire script is the deliverable.
+%Our code stripping (applied before the v2~batch) removed only the canonical evaluation harness we injected (Fix~1), not the agent's own experimental scaffolding.
+%The resulting \texttt{best\_solver.py} is therefore structurally different from what other baselines produce: it is a discovery pipeline script, not a standalone solver.
+%This means the I2 specification violation rate (10/15) reflects violations in the \emph{experimental script}, not necessarily in the solver function itself, and the I4 method-code alignment rate (5/15) compares paper descriptions against code that includes substantial non-solver content.
+%Proper solver extraction---either template-constrained code generation or post-hoc extraction of the solver function from the experimental script---was not implemented and is left as future work.
+%I1~(score verification) and I3~(reference verification) are unaffected: scores come from canonical re-evaluation of solver output, and citations are verified against external databases regardless of code structure.
+%
+%A separate integrity issue affects reported scores.
+%In cloudcast seed-0, the paper reports a ``Baseline (Fully Optimized GRASP)'' score of 665.50 in its main results table.
+%Canonical re-evaluation of the submitted solver yields 1035.14---a 56\% discrepancy.
+%The number 665.50 does not appear in the selected node's metric data (which records 1035.14), nor in its code or analysis.
+%It originates from the \emph{ablation summary}: a different node in BFTS stage~4 achieved 665.504 during a hyperparameter grid search.
+%The writeup LLM, given all four stage summaries as context, selected this number and presented it as the paper's headline result---even though the submitted solver is from the research stage and scores 56\% worse.
+%This arises from a boundary mismatch in the pipeline: node selection draws from stages~1--2, but the writeup LLM sees summaries from all four stages, creating a pool of scores available for cherry-picking.
+%Across all 15~runs, 8 of 12~verifiable papers fail score verification (6 inflate, 2 deflate), with discrepancies ranging from 1.8\% to 56\% (excluding one metric mismatch where the paper and evaluator report incomparable quantities).
+
+\paragraph{AutoResearchClaw (ARC).}
+ARC~v0.4.0 (commit \texttt{39c996b}, April~2026) required 2~source patches: one to add Gemini~3.x to the thinking-model whitelist (2~lines in \texttt{llm/client.py}), and one to configure the scaffold directory for ADRS tasks.
+No changes were made to ARC's search logic, stopping criteria, or evaluation pipeline.
+We set \texttt{max\_iterations=20} (6.7$\times$ ARC's default of~3) and \texttt{max\_refine\_duration=7200s}.
+ARC's internal limits (max 2~decision pivots, max 3~repair cycles) are architectural and were not modified.
+ARC's post-pipeline scoring (PQEP) failed on 4 of 15~runs due to a regex bug in evaluator path substitution. These were resolved by re-running the canonical ADRS evaluator on the submitted code.
+Figure generation failed across all 15~runs because ARC's \texttt{FigureAgent} requires a Docker image not available in our environment. All papers were produced without figures.
+
+ARC's blueprint planner designs multi-file project architectures (\texttt{config.py}, \texttt{models.py}, etc.) before seeing ADRS's single-file constraint.
+The scaffold partially compensates by renaming the entry point to \texttt{program.py}, but the solver still imports helper modules that exist only in the original experiment directory.
+Re-evaluation in isolation fails for 5 of 15~solvers---the dominant root cause of ARC's I1 and I4 failures.
+
+\paragraph{DeepScientist (DS).}
+DS~v1.5.17 (tag \texttt{v1.5.17}, April~2026) on Codex~CLI~0.57.0 required prompt-only changes---no source files were patched.
+Task specifications and the NeurIPS~2026 template were injected via the write-phase prompt.
+We set \texttt{CODE\_TIMEOUT=7200s} and \texttt{WRITE\_TIMEOUT=5400s}, with up to 3~retries each for code and write phases.
+DS's write skill instructs the agent to retrieve citations via Semantic Scholar, arXiv, and CrossRef APIs. However, across all 15~write-phase logs, the agent never called any retrieval API or MCP tool, generating all references from model memory.
+This is a model compliance failure---the tools are available but the agent consistently shortcuts the citation retrieval instructions.
+
+\paragraph{AI-Researcher (AIR).}
+AIR required the most extensive adaptation: 19~source files were patched to interface with ADRS task configurations, the Docker-based sandbox, and the NeurIPS~2026 paper template.
+AIR's MetaChain ReAct agent runs inside a Docker container. We configured the same Gemini~3.1~Pro model and iteration budgets as other systems.
+Of the 15~runs, 6~required re-runs due to Gemini API rate limits or sandbox crashes. Four papers required manual \LaTeX{} fixes (trailing newlines, malformed \texttt{filecontents} environments, bibliography corruption).
+
+%\paragraph{Architecture--integrity connection.}
+%Each system's integrity profile (Table~\ref{tab:integrity}) traces directly to its architectural choices.
+%Sakana's BFTS explores the broadest search space (62~iterations across 4~stages) and its Semantic Scholar retrieval produces zero hallucinated references (0/159 entries, 87 unique keys across 15~papers, matching \sys{}).
+%However, the writeup stage misaligns with its own selected node's code in 10 of 15~papers (method-code alignment 5/15), and fails score verification in 8 of 12~verifiable runs (6 inflate, 2 deflate).
+%The combination of strong retrieval, weak method description, and score discrepancies reveals a failure mode distinct from other systems: not hallucinated \emph{evidence} but hallucinated \emph{narrative}---the system retrieves real papers and runs real code, but the writeup LLM struggles to faithfully describe what the code does, and cherry-picks favorable numbers from across stage boundaries.
+%The domain-agnostic search also means the agent infers the optimization objective entirely from prompts, making it uniquely sensitive to prompt wording (hence the $\sim$12/15 failure rate with unmodified ML-centric goals).
+%ARC's structured retrieval (OpenAlex, Semantic Scholar) produces the lowest baseline hallucinated reference rate (1.5\%), but its 23-stage waterfall pipeline---where code generation and paper writing run as disconnected phases---results in the worst method-code alignment (3/15 papers).
+%The paper-writing phase has no access to the solver's intermediate reasoning, so it frequently describes algorithms that differ from the submitted code.
+%DS achieves zero-intrusion adaptation (prompt-only), but the model consistently ignores the retrieval tools available to it, generating all citations from memory and producing the highest hallucination rate (20.9\%).
+%AIR's ReAct loop keeps code and writing closer together, yielding the best baseline method-code alignment (12/15), but this tight coupling also makes adaptation harder (19 patched files) and less stable (6/15 re-runs).

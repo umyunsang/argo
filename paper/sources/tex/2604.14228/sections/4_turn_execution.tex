@@ -1,0 +1,91 @@
+\section{Turn Execution: The Agentic Query Loop}
+\label{sec:turn}
+
+When the user submits ``Fix the failing test in auth.test.ts,'' the input enters a reactive loop, one of several possible orchestration patterns for coding agents. This section examines Claude Code's choice of a simple while-loop architecture and traces one turn of that loop end-to-end, illustrating three design principles from \Cref{tab:principles}: \emph{minimal scaffolding with maximal operational harness}, \emph{context as scarce resource with progressive management}, and \emph{graceful recovery and resilience}.
+
+\subsection{The Query Pipeline}
+\label{sec:turn:pipeline}
+
+Each turn follows a fixed sequence (\Cref{fig:turn-flow}, \file{query.ts}):
+
+\begin{enumerate}[nosep]
+  \item \textbf{Settings resolution.} The \func{queryLoop} function destructures immutable parameters including the system prompt, user context, permission callback, and model configuration.
+  \item \textbf{Mutable state initialization.} A single \code{State} object stores all mutable state across iterations, including messages, tool context, compaction tracking, and recovery counters. The loop's seven \code{continue} points (the ``continue sites'') each overwrite this object in one whole-object assignment rather than mutating fields individually.
+  \item \textbf{Context assembly.} The function \func{getMessagesAfterCompactBoundary} retrieves messages from the last compact boundary forward, ensuring that compacted content is represented by its summary rather than the original messages.
+  \item \textbf{Pre-model context shapers.} Five shapers execute sequentially (\Cref{sec:turn:shapers}).
+  \item \textbf{Model call.} A \code{for await} loop over \code{deps.callModel()} streams the model's response, passing assembled messages (with user context prepended), the full system prompt, thinking configuration, the available tool set, an abort signal, the current model specification, and additional options including fast-mode settings, effort value, and fallback model.
+  \item \textbf{Tool-use dispatch.} If the response contains \code{tool\_use} blocks, they flow to the tool orchestration layer (\Cref{sec:turn:dispatch}).
+  \item \textbf{Permission gate.} Each tool request passes through the permission system (\Cref{sec:auth}).
+  \item \textbf{Tool execution and result collection.} Tool results are added to the conversation as \code{tool\_result} messages, and the loop continues.
+  \item \textbf{Stop condition.} If the response contains no \code{tool\_use} blocks (text only), the turn is complete.
+\end{enumerate}
+
+The \func{queryLoop} function is defined as an \code{AsyncGenerator}, yielding \code{StreamEvent}, \code{RequestStartEvent}, \code{Message}, \code{TombstoneMessage}, and \code{ToolUseSummaryMessage} events as it progresses. This generator-based design enables streaming output to the UI layer while maintaining a single synchronous control flow within the loop.
+
+Claude Code's reactive loop follows the ReAct pattern~\citep{yao2022react}: the model generates reasoning and tool invocations, the harness executes actions, and results feed the next iteration. Alternative orchestration patterns include explicit graph-based routing~\citep{langgraph2024}, where control flow is defined as a state machine with typed edges, and tree-search methods~\citep{zhou2024lats} that explore multiple action trajectories before committing. Anthropic's own documentation~\citep{anthropic2024effective} identifies five composable workflow patterns (prompt chaining, routing, parallelization, orchestrator-workers, and evaluator-optimizer) of which Claude Code primarily uses the orchestrator-workers pattern for subagent delegation (\Cref{sec:subagent}) while keeping the core loop reactive. The reactive design trades search completeness for simplicity and latency: each turn commits to one action sequence without backtracking.
+
+\subsection{Tool Dispatch and Streaming Execution}
+\label{sec:turn:dispatch}
+
+When the model response contains \code{tool\_use} blocks, the system chooses between two execution paths. The primary path uses \code{StreamingToolExecutor}, which begins executing tools as they stream in from the model response, reducing latency for multi-tool responses. The fallback path uses \func{runTools} in \file{toolOrchestration.ts}, which iterates over partitions produced by \func{partitionToolCalls}. Both paths classify tools as concurrent-safe or exclusive. Read-only operations can execute in parallel, while state-modifying operations like shell commands are serialized.
+
+The \code{StreamingToolExecutor} (\file{StreamingToolExecutor.ts}) manages concurrent execution with two coordination mechanisms:
+
+\begin{itemize}[nosep]
+  \item \textbf{Sibling abort controller.} Fires when any Bash tool errors, immediately terminating other in-flight subprocesses rather than letting them run to completion.
+  \item \textbf{Progress-available signal.} Wakes up the \func{getRemainingResults} consumer when new output is ready.
+\end{itemize}
+
+Results are buffered and emitted in the order tools were received, so output order stays the same even when tools run in parallel. This is important because the model expects tool results in the same order as its tool-use requests. This concurrent-read, serial-write execution model occupies a middle ground between fully serial dispatch and more aggressive speculative approaches such as PASTE~\citep{sui2026paste}, which speculatively pre-executes predicted future tool calls while the model is still generating, hiding tool latency through speculation.
+
+The tool result collection phase iterates over updates from either the streaming executor or the batched \func{runTools} async generator. Both are async iterables consumed by the same \code{for await} loop; the contrast is in whether tool execution starts before the model finishes streaming (streaming) or after partitioning into concurrency-safe groups (batched). Each update may carry a tool result, an attachment, or a progress event. A special check detects \code{hook\_stopped\_continuation} attachments: if a PostToolUse hook signals that the turn should not continue, a \code{shouldPreventContinuation} flag is set. Results are normalized for the Anthropic API via \func{normalizeMessagesForAPI}, filtering to keep only user-type messages.
+
+\subsection{Pre-Model Context Shapers}
+\label{sec:turn:shapers}
+
+Five context shapers execute sequentially in \file{query.ts} before every model call, each operating on the \code{messagesForQuery} array. The five shapers run in sequence, with earlier steps applying lighter reductions before later steps apply broader compaction.
+
+\paragraph{Budget reduction.} (\func{applyToolResultBudget}).
+Enforces per-message size limits on tool results, replacing oversized outputs with content references. Exempt tools (those where \code{maxResultSizeChars} is not finite) retain their full output. Content replacements are persisted for agent and session query sources to enable reconstruction on resume. Budget reduction runs before microcompact because microcompact operates purely by \code{tool\_use\_id} and never inspects content; the two compose cleanly.
+
+\paragraph{Snip.} (\func{snipCompactIfNeeded}, gated by \code{HISTORY\_SNIP}).
+A lightweight trim that removes older history segments, returning \code{\{messages, tokensFreed, boundaryMessage\}}. The \code{snipTokensFreed} value is plumbed to auto-compact because the main token counter derives context size from the \code{usage} field on the most recent assistant message, and that message survives snip with its pre-snip \code{input\_tokens} still attached; snip's savings are therefore invisible to the counter unless passed through explicitly.
+
+\paragraph{Microcompact.}
+Fine-grained compression that always runs a time-based path and optionally a cache-aware path (gated by \code{CACHED\_MICROCOMPACT}). When the cached path is enabled, boundary messages are deferred until after the API response so they can use actual \code{cache\_deleted\_input\_tokens} rather than estimates. Returns \code{\{messages, compactionInfo\}} where \code{compactionInfo} may include \code{pendingCacheEdits}.
+
+\paragraph{Context collapse.} Gated by \code{CONTEXT\_COLLAPSE}.
+A read-time projection over the conversation history. The source comments explain: ``Nothing is yielded; the collapsed view is a read-time projection over the REPL's full history. Summary messages live in the collapse store, not the REPL array. This is what makes collapses persist across turns.'' Unlike the other shapers, context collapse does not mutate the REPL's stored history; it replaces the \code{messagesForQuery} array with a projected view via \func{applyCollapsesIfNeeded}, so the model sees the collapsed version while the full history remains available for reconstruction.
+
+\paragraph{Auto-compact.}
+The fifth shaper, triggering a full model-generated summary via \func{compactConversation} in \file{compact.ts}. This function executes \code{PreCompact} hooks, creates a summary request using \func{getCompactPrompt}, and calls the model to produce a compressed summary. The result feeds into \func{buildPostCompactMessages} (\file{compact.ts}). Auto-compact fires only when the context still exceeds the pressure threshold after all four previous shapers have run.
+
+\subsection{Recovery Mechanisms}
+\label{sec:turn:recovery}
+
+The query loop implements several recovery mechanisms for edge cases:
+
+\begin{itemize}[nosep]
+  \item \textbf{Max output tokens escalation}: When the response hits the output token cap, the system can retry with an escalated limit, subject to a GrowthBook flag and the absence of an existing override or environment-variable cap. Up to three recovery attempts are allowed per turn (\code{MAX\_OUTPUT\_TOKENS\_RECOVERY\_LIMIT = 3}).
+  \item \textbf{Reactive compaction} (gated by \code{REACTIVE\_COMPACT}): When the context is near capacity, reactive compact summarizes just enough to free space. The \code{hasAttemptedReactiveCompact} flag ensures this fires at most once per turn.
+  \item \textbf{Prompt-too-long handling}: If the API returns a \code{prompt\_too\_long} error, the loop first attempts context-collapse overflow recovery and reactive compaction. Only after these fail does it terminate with \code{reason: 'prompt\_too\_long'}.
+  \item \textbf{Streaming fallback}: The \code{onStreamingFallback} callback handles streaming API issues, allowing the loop to retry with a different strategy.
+  \item \textbf{Fallback model}: The \code{fallbackModel} parameter enables switching to an alternative model if the primary model fails.
+\end{itemize}
+
+\subsection{Stop Conditions}
+\label{sec:turn:stop}
+
+Multiple conditions can terminate the loop:
+
+\begin{enumerate}[nosep]
+  \item \textbf{No tool use}: The model produces only text content (the primary stop condition).
+  \item \textbf{Max turns}: The configurable \code{maxTurns} limit is reached.
+  \item \textbf{Context overflow}: The API returns \code{prompt\_too\_long}.
+  \item \textbf{Hook intervention}: A PostToolUse hook sets \code{hook\_stopped\_continuation}.
+  \item \textbf{Explicit abort}: The \code{abortController} signal fires.
+\end{enumerate}
+
+The turn pipeline determines \emph{how} tool requests are orchestrated and recovered. The next section examines the gate that determines \emph{whether} each request is permitted to execute at all.
+
+

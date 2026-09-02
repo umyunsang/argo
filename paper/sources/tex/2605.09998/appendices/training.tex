@@ -1,0 +1,41 @@
+\section{Training Setup and Results}\label{app:training}
+
+This appendix gives the full training details for the open-source transfer pipeline (\cref{sec:training}): SFT, offline GRPO, and online co-learning hyperparameters; the full evaluation matrix across Gemma-4 sizes; and training-curve diagnostics for the co-learning stages.
+
+\subsection{Training Hyperparameters}\label{app:training:hyperparams}
+
+\paragraph{Supervised fine-tuning.} We fine-tune Gemma-4 variants (E2B, E4B, 26B MoE, 31B dense) via LoRA with rank $r{=}256$, $\alpha{=}256$, bf16 precision, and an 8K-token context using Unsloth on H200 GPUs. Each example is a (screenshot, harness prompt, teacher response) tuple extracted from Gemini-3.1-pro \texttt{Continual Harness} gameplay. Learning rate $2\times10^{-5}$, linear warmup over 3\% of training, cosine decay. We train for one pass over the teacher-trajectory set per model.
+
+\paragraph{Offline GRPO.} For each state in the teacher-visited set, the SFT-initialized policy generates $G{=}4$ candidate completions. Each is scored independently by a Gemini-3-flash-preview per-step oracle on a composite of action correctness (binary, weight $0.6$) and format compliance (binary, weight $0.4$). Advantages are group-normalized within the $G$ samples per state and the policy is updated via standard GRPO~\citep{shao2024deepseekmath}. Learning rate $1\times10^{-6}$, KL coefficient $\beta{=}0.04$ against the SFT reference, batch size 8 states per optimizer step, 590 total optimization steps.
+
+\paragraph{Online co-learning loop.} Each online iteration is a $K{=}256$-step DAgger~\citep{ross2011reduction,karten2026smallexperts} rollout through the full \texttt{Continual Harness} (memory, skills, sub-agents, and prompt all evolving via \cref{fig:methodology}) on Pok\'emon Red. A pairwise process reward model~\citep{wang2026openclawrl} (Gemini-3-flash-preview) scores each transition over a sliding window; reward is a weighted combination of trajectory progress ($0.4$), action correctness ($0.3$), reasoning quality ($0.2$), and format compliance ($0.1$). Low-reward windows are relabeled by a Gemini-3.1-pro teacher, and a soft SFT update on the relabeled shard produces the next iteration's checkpoint.
+
+\subsection{Gemma-4 Full Eval Matrix}\label{app:h6_full}
+
+The main-text claim that neither warm-up stage produces meaningful milestone advancement (\cref{sec:exp:colearn}) is documented here per Gemma-4 size. The matrix covers E2B, E4B, 26B MoE, and 31B dense. Smaller sizes converge to low SFT training loss but collapse to $\texttt{tool\_format}{=}0$ on the real harness prompt, consistent with an interaction between SFT signal strength and the 8K context needed to hold the full state plus reasoning. The 31B SFT Emerald model underperforms the 26B SFT Emerald model on most metrics in our runs.
+
+\input{analysis/tables/h6_eval_full_emerald.tex}
+\input{analysis/tables/h6_eval_full_red.tex}
+\input{analysis/tables/h6_training_progression.tex}
+
+\subsection{Training Curves and Reward Decomposition}\label{app:training:curves}
+See \cref{fig:h6_training}.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{analysis/figures/h6_training.pdf}
+\caption{Gemma-4 tool-calling behavior across warm-up stages. (A) SFT on frontier \texttt{Continual Harness} trajectories lifts \texttt{tool\_format} success from near zero. (B) Reward curves for the two offline GRPO variants (heuristic 4-component reward and Gemini-oracle reward); the dashed line marks the approximate SFT reward baseline.}
+\label{fig:h6_training}
+\end{figure}
+
+\subsection{Reset-Free DAgger+PRM Experiments}\label{app:training:dagger_resetfree}
+
+The online co-learning loop in \cref{sec:training} composes a DAgger-style teacher-relabel step~\citep{ross2011reduction,karten2026smallexperts} with a pairwise process reward model (PRM) and reset-free emulator-state propagation across iterations. Each iteration's $K$-step rollout begins from the saved emulator state of the previous iteration, the PRM scores per-step pairs, the Gemini teacher relabels low-reward windows, and the model is updated via soft SFT on the relabeled shard before the next rollout. We instantiate this on Pok\'emon Red with the 26B Gemma-4 SFT model as the initial policy and study whether multiple iterations of training advance the agent through the in-game milestone progression. Each run targets one starting checkpoint along the Red progression, with starting points spanning the early game (milestone~1, leave Pallet Town) through the mid game (milestone~24, defeat rival in Cerulean City; milestone~30, meet Bill).
+
+\paragraph{Run variation.} We run a set of training jobs in parallel and vary three design choices. Some runs start from the beginning of the game and others load a saved emulator state at a fixed mid-game milestone. Across the beginning-of-game runs we vary the shard-window size and the shard accumulation policy. One run replaces the default relabel teacher prompt with a variant that injects already-completed objectives into the context. All runs use rollout-step budget $K{=}256$, soft SFT (3 epochs at $5{\times}10^{-6}$), and pairwise PRM with stride~8.
+
+\paragraph{Cumulative game progress over training.} \cref{fig:colearn_pipeline} reports the milestone index reached versus training iteration for the advancing runs. Mid-game starting points advance from their loaded indices, indicating that the training procedure is not tied to the early-game distribution. Advances are bursty, with cumulative milestone gain accumulating across multi-iteration improvement bands rather than within single iterations.
+
+\paragraph{Per-iteration PRM reward.} The per-iteration PRM reward is non-monotonic across all runs. Reward sustains of multiple consecutive iterations near or above 0.40 precede the largest milestone gains, with regression iterations interleaved; the bursty advance pattern in \cref{fig:colearn_pipeline} aggregates these reward-sustained windows.
+
+\paragraph{Resume-checkpoint regression.} The first iteration after a checkpoint resume regresses relative to the pre-resume iteration and recovers within two to three iterations. We treat this as an artifact of the resume protocol; we compute the aggregate signal over resume-spanning windows. Milestone advances occur in post-resume iterations, indicating that the regression is reward-specific and does not propagate to the trajectory-completion signal the judge uses.

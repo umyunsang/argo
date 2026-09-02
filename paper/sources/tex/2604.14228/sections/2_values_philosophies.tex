@@ -1,0 +1,94 @@
+\section{Design Philosophies, Design Principles and Architectural Motivations}
+\label{sec:values}
+
+Production coding agents are built by humans, for humans, and the architectural decisions they embed reflect what their creators believe matters. This section identifies the human values that motivate Claude Code's design, traces them through recurring design principles, and frames the design-space questions that organize the analysis in \Cref{sec:arch,sec:turn,sec:auth,sec:ext,sec:context,sec:subagent,sec:persist}.
+
+Anthropic's framework for safe agents states a central tension: ``Agents must be able to work autonomously; their independent operation is exactly what makes them valuable. But humans should retain control over how their goals are pursued''~\citep{anthropic2025agents}. Claude's Constitution resolves this not through rigid decision procedures but by cultivating ``good judgment and sound values that can be applied contextually''~\citep{anthropic2026constitution}. These commitments, together with empirical findings about how developers actually use the tool~\citep{anthropic2025internal,anthropic2026autonomy}, point to five human values that shape the architecture.
+
+\subsection{Five Values and Philosophies}
+\label{sec:values:five}
+
+\paragraph{Human Decision Authority.}
+The human retains ultimate decision authority over what the system does, organized through a principal hierarchy (Anthropic, then operators, then users) that formalizes who holds authority over what~\citep{anthropic2026constitution}. The system is designed so that humans can exercise informed control: they can observe actions in real time, approve or reject proposed operations, interrupt compatible in-progress operations, and audit after the fact. When Anthropic found that users approve 93\% of permission prompts~\citep{anthropic2026automode}, the response was not to add more warnings but to restructure the problem: defined boundaries (sandboxing, auto-mode classifiers) within which the agent can work freely, rather than per-action approvals that users stop reviewing once habituated~\citep{anthropic2025sandboxing}.
+
+
+\paragraph{Safety, Security, and Privacy.}
+The system protects humans, their code, their data, and their infrastructure from harm, even when the human is inattentive or makes mistakes. This is distinct from Human Decision Authority: where authority is about the human's \emph{power to choose}, safety is about the system's \emph{obligation to protect even when that power lapses}. Anthropic's safe-agents framework separately identifies securing agent interactions and protecting privacy across extended interactions as core commitments~\citep{anthropic2025agents}. The auto-mode threat model~\citep{anthropic2026automode} explicitly targets four risk categories: overeager behavior, honest mistakes, prompt injection, and model misalignment.
+
+\paragraph{Reliable Execution.}
+The agent does what the human actually meant, stays coherent over time, and supports verifying its work before declaring success. This value spans both single-turn correctness (did it interpret the request faithfully?) and long-horizon dependability (does it remain coherent across context window boundaries, session resumption, and multi-agent delegation?). Anthropic's product documentation~\citep{anthropic2026howworks} describes a three-phase loop that the agent repeats until the task is complete: gather context, take action, and verify results. The agent design guidance~\citep{anthropic2024effective} further emphasizes that ``ground truth from the environment'' at each step assesses progress. The harness-design guidance~\citep{anthropic2026harness} likewise notes that ``agents tend to respond by confidently praising the work,'' even when quality is mediocre, motivating separation of generation from evaluation.
+
+\paragraph{Capability Amplification.}
+The system materially increases what the human can accomplish per unit of effort and cost. Anthropic's internal survey~\citep{anthropic2025internal}, discussed in
+\Cref{sec:intro}, suggests that the architecture enables qualitatively new
+workflows, not merely faster existing ones: approximately 27\% of tasks
+represented work that would not otherwise have been attempted. The system is described by its creators as ``a Unix utility rather than a traditional product,'' built from the smallest building blocks that are ``useful, understandable, and extensible''~\citep{cherny2025latentspace}. The architecture invests in deterministic infrastructure (context management, tool routing, recovery) rather than decision scaffolding (explicit planners or state graphs), on the premise that increasingly capable models benefit more from a rich operational environment than from frameworks that constrain their choices.
+
+\paragraph{Contextual Adaptability.}
+The system fits the user's specific context (their project, tools, conventions, and skill level) and the relationship improves over time. The extension architecture (CLAUDE.md, skills, MCP, hooks, plugins) provides configurability at multiple levels of context cost (\Cref{sec:ext,sec:context}). Longitudinal data~\citep{anthropic2026autonomy} shows that the human-agent relationship evolves: auto-approve rates increase from approximately 20\% at fewer than 50 sessions to over 40\% by 750 sessions. This pattern, described as autonomy that is ``co-constructed by the model, the user, and the product,'' means the system is designed for trust trajectories rather than fixed trust states. MCP's donation to the Linux Foundation's Agentic AI Foundation~\citep{linuxfoundation2025aaif} reflects the ecosystem dimension of this value.
+
+\subsection{Design Principles}
+\label{sec:values:principles}
+
+These values are operationalized through thirteen design principles, each answering a recurring question that production coding agents must resolve. \Cref{tab:principles} summarizes the principles; subsequent sections (\Cref{sec:arch} to \Cref{sec:persist}) trace each through specific implementation choices.
+
+\begin{table*}[t]
+\centering
+\small
+\caption{Design principles, the values they serve, and the design-space question each answers. Principles map to multiple values; implementations appear in the sections indicated.}
+\label{tab:principles}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}m{3.8cm}>{\raggedright\arraybackslash}m{3.2cm}>{\raggedright\arraybackslash}X>{\centering\arraybackslash}m{1.2cm}@{}}
+\toprule
+\textbf{Principle} & \textbf{Values Served} & \textbf{Design Question} & \textbf{Sections} \\
+\midrule
+Deny-first with human escalation & Authority, Safety & Should unrecognized actions be allowed, blocked, or escalated to the human? & \ref{sec:auth}, \ref{sec:subagent}, \ref{sec:persist} \\
+\midrule
+Graduated trust spectrum & Authority, Adaptability & Fixed permission level, or a spectrum users traverse over time? & \ref{sec:auth} \\
+\midrule
+Defense in depth with layered mechanisms & Safety, Authority, Reliability & Single safety boundary, or multiple overlapping ones using different techniques? & \ref{sec:arch}, \ref{sec:auth} \\
+\midrule
+Externalized programmable policy & Safety, Authority, Adaptability & Hardcoded policy, or externalized configs with lifecycle hooks? & \ref{sec:auth}, \ref{sec:ext} \\
+\midrule
+Context as scarce resource with progressive management & Reliability, Capability & What is the binding resource constraint, and how to manage it: single-pass truncation or graduated pipeline? & \ref{sec:turn}, \ref{sec:ext}, \ref{sec:context}, \ref{sec:subagent} \\
+\midrule
+Append-only durable state & Reliability, Authority & Mutable state, checkpoint snapshots, or append-only logs? & \ref{sec:turn}, \ref{sec:persist} \\
+\midrule
+Minimal scaffolding, maximal operational harness & Capability, Reliability & Invest in scaffolding-side reasoning, or operational infrastructure that lets the model reason freely? & \ref{sec:arch}, \ref{sec:turn} \\
+\midrule
+Values over rules & Capability, Authority & Rigid decision procedures, or contextual judgment backed by deterministic guardrails? & \ref{sec:arch}, \ref{sec:auth}, \ref{sec:context} \\
+\midrule
+Composable multi-mechanism extensibility & Capability, Adaptability & One unified extension API, or layered mechanisms at different context costs? & \ref{sec:ext} \\
+\midrule
+Reversibility-weighted risk assessment & Capability, Safety & Same oversight for all actions, or lighter for reversible and read-only ones? & \ref{sec:turn}, \ref{sec:auth}, \ref{sec:subagent} \\
+\midrule
+Transparent file-based configuration and memory & Adaptability, Authority & Opaque database, embedding-based retrieval, or user-visible version-controllable files? & \ref{sec:context} \\
+\midrule
+Isolated subagent boundaries & Reliability, Safety, Capability & Subagents share the parent's context and permissions, or operate in isolation? & \ref{sec:subagent} \\
+\midrule
+Graceful recovery and resilience & Reliability, Capability & Fail hard on errors, or silently recover and reserve human attention for unrecoverable situations? & \ref{sec:turn}, \ref{sec:auth} \\
+\bottomrule
+\end{tabularx}
+\end{table*}
+
+
+These principles can be read against three major alternative design families. First, \emph{rule-based orchestration}: frameworks such as LangGraph~\citep{langgraph2024} encode decision logic as explicit state graphs with typed edges, choosing scaffolding over minimal harness. Second, \emph{container-isolated execution}: SWE-Agent and OpenHands~\citep{yang2024sweagent,wang2024openhands} rely on Docker isolation rather than layered policy enforcement. Third, \emph{version-control-as-safety}: tools like Aider~\citep{gauthier2024aider} use Git rollback as the primary safety mechanism rather than deny-first evaluation. Claude Code's principle set is distinctive in combining minimal decision scaffolding with layered policy enforcement, values-based judgment with deny-first defaults, and progressive context management with composable extensibility.
+
+\subsection{From Values to Architecture}
+\label{sec:values:bridge}
+
+Each value traces through its principles to specific architectural decisions:
+
+\begin{itemize}[nosep]
+  \item \textbf{Human Decision Authority} motivates deny-first evaluation, the graduated trust spectrum, append-only state (auditable history), externalized programmable policy, and values-over-rules (\Cref{sec:auth,sec:persist,sec:ext,sec:context}).
+  \item \textbf{Safety, Security, and Privacy} motivates defense in depth, deny-first defaults, reversibility-weighted assessment, externalized policy, and isolated subagent boundaries (\Cref{sec:auth,sec:subagent}).
+  \item \textbf{Reliable Execution} motivates context-as-scarce-resource, append-only durable state, graceful recovery, isolated subagent boundaries, and defense in depth (\Cref{sec:turn,sec:context,sec:subagent,sec:persist}).
+  \item \textbf{Capability Amplification} motivates minimal scaffolding, composable extensibility, reversibility-weighted risk, context management, and graceful recovery (\Cref{sec:turn,sec:ext,sec:auth}).
+  \item \textbf{Contextual Adaptability} motivates transparent file-based memory, composable extensibility, the graduated trust spectrum, and externalized programmable policy (\Cref{sec:context,sec:ext,sec:auth}).
+\end{itemize}
+
+These mappings also reveal what the architecture does \emph{not} do: it does not impose explicit planning graphs on the model's reasoning, does not provide a single unified extension mechanism, and does not restore all session-scoped trust-related state across resume. These absences are consistent with the principle set above.
+
+\subsection{A Cross-Cutting Question: Long-term Developer Capability}
+\label{sec:values:lens}
+
+The five values above describe what the architecture is designed to serve. This paper also asks a sixth question: whether the architecture helps developers preserve long-term understanding and capability. This concern is real: Anthropic's own study of 132 engineers and researchers~\citep{anthropic2025internal} documents a ``paradox of supervision'' in which overreliance on AI risks atrophying the skills needed to supervise it, and independent research~\citep{shen2026skill} finds that developers in AI-assisted conditions score 17\% lower on comprehension tests. However, this concern is not prominently reflected as a design driver in the architecture or in Anthropic's stated design values. We therefore treat it not as a co-equal value but as a cross-cutting concern: a question applied across all five values in \Cref{sec:discuss}, asking whether short-term amplification costs long-term human understanding, codebase coherence, and the developer pipeline.

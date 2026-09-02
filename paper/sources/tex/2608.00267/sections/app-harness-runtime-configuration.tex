@@ -1,0 +1,103 @@
+% Appendix: LHB Evaluation Runtime Configuration
+% Describes the parameters accepted when invoking `lhb run`.
+
+\section{Loop Engineering Evaluation Runtime Configuration}
+\label{app:run-config}
+The \lhb{} evaluation runtime is invoked via \texttt{lhb run --config \textit{config.yaml}}, and the resulting run artifact records the loop parameters used for attribution.
+The evaluation runtime treats the evaluation adapter, loop budget, and residual handoff policy as explicit loop engineering factors for each run.
+All parameters can be set in the YAML configuration file or overridden by CLI flags. Table~\ref{tab:run-params} summarizes the runtime parameters used to separate attribution across model choice, evaluation adapter, budget, and residual handoff policy while keeping the evaluated task contract fixed.
+
+\begin{table}[!htb]
+  \centering
+  \caption{Runtime parameters for \texttt{lhb run}.}
+  \label{tab:run-params}
+  \vspace{0.3em}
+  \footnotesize
+  \setlength{\tabcolsep}{3pt}
+  \renewcommand{\arraystretch}{1.15}
+  \resizebox{\columnwidth}{!}{%
+  \begin{tabular}{@{}l l l p{6.5cm}@{}}
+    \toprule
+    \textbf{Group} & \textbf{Parameter} & \textbf{Default} & \textbf{Description} \\
+    \midrule
+    \multirow{3}{*}{Dataset}
+      & \texttt{dataset\_path} & \texttt{tasks/} & Path to the task directory tree. \\
+      & \texttt{task\_ids} & all               & Task ID globs to include (repeatable). \\
+      & \texttt{exclude\_task\_ids} & \texttt{[]} & Task ID globs to exclude (repeatable). \\
+    \midrule
+    \multirow{4}{*}{Evaluation adapter}
+      & \texttt{agent} & \texttt{oracle} & Built in evaluation adapter name. \\
+      & \texttt{agent\_import\_path} & --             & Import path for a custom evaluation adapter class. \\
+      & \texttt{model} & --                & LLM in \texttt{provider/model} format. \\
+      & \texttt{agent\_kwargs} & \texttt{\{\}} & Key value pairs forwarded to the evaluation adapter. \\
+    \midrule
+    \multirow{3}{*}{Output}
+      & \texttt{output\_path} & \texttt{runs/} & Root directory for run artifacts. \\
+      & \texttt{run\_id} & timestamp         & Unique identifier for this run. \\
+      & \texttt{n\_tasks} & all               & Cap on number of tasks to evaluate. \\
+    \midrule
+    \multirow{2}{*}{Build}
+      & \texttt{no\_rebuild} & \texttt{false} & Skip rebuilding Docker images. \\
+      & \texttt{cleanup} & \texttt{true} & Remove images after run completes. \\
+    \midrule
+    \multirow{2}{*}{Logging}
+      & \texttt{log\_level} & \texttt{info} & Python logging level. \\
+      & \texttt{livestream} & \texttt{false} & Stream evaluated loop I/O in real time. \\
+    \midrule
+    \multirow{2}{*}{Concurrency}
+      & \texttt{n\_concurrent} & \texttt{4} & Tasks evaluated in parallel. \\
+      & \texttt{n\_attempts} & \texttt{1} & Attempts per task. \\
+    \midrule
+    \multirow{3}{*}{Timeout}
+      & \texttt{global\_timeout\_multiplier} & \texttt{1.0} & Multiplier for all per task timeouts. \\
+      & \texttt{global\_agent\_timeout\_sec} & per task     & Override loop budget (seconds). \\
+      & \texttt{global\_test\_timeout\_sec} & per task     & Override test budget in seconds. \\
+    \bottomrule
+  \end{tabular}}
+\end{table}
+
+\paragraph{Per task timeouts.}
+Each task declares \texttt{max\_agent\_timeout\_sec} (default~1\,800\,s) and \texttt{max\_test\_timeout\_sec} (default~3\,600\,s) in its \texttt{task.yaml}.
+The global overrides and multiplier allow uniform budget scaling without rewriting individual task files. Budget changes therefore remain attributable to run configuration rather than task materialization.
+
+\paragraph{Residual handoff structure.}
+The evaluation runtime executes an \emph{outer loop} over evaluation adapter runs. Each round starts a fresh shell session while preserving the workspace from prior rounds, so residual handoff is measured as an observed loop engineering factor rather than treated as an implicit retry mechanism.
+The number of rounds is controlled by \texttt{outer\_loop\_count} (default~3); setting it to \texttt{0} or \texttt{unlimited} removes the cap, allowing repeated residual handoffs until the timeout budget is exhausted and making continuation policy explicit in the loop trace.
+Within each round, rate limit errors trigger retries governed by \texttt{rate\_limit\_retries\_per\_round} (default~5) with exponential backoff starting at \texttt{rate\_limit\_backoff\_sec} (default~45\,s), recording provider availability separately from loop progress.
+
+\paragraph{Model and provider configuration.}
+Provider credentials and environment variables are supplied via a separate YAML file (\texttt{model\_config\_path} or \texttt{-{}-model-config}), which supports \texttt{env\_files} (dotenv paths) and an explicit \texttt{env} map. This separation places provider transport outside the loop engineering factors attributed to model choice and evaluation adapter.
+Keys already set in the process environment are preserved unless \texttt{override\_process\_env:\allowbreak{} true} is selected, reducing cross run configuration drift.
+
+\paragraph{Example configuration.}
+The following minimal configuration specifies the dataset and execution policy while recording the evaluation adapter, loop budget, and residual handoff policy as explicit run metadata.
+
+\begin{promptbox}{Run Configuration \textnormal{(\texttt{lhb.run.yaml})}}
+dataset_path: tasks
+output_path: runs
+
+agent: mini-swe-agent
+model: anthropic/claude-sonnet-4-20250514
+
+n_concurrent: 4
+n_attempts: 1
+
+no_rebuild: false
+cleanup: true
+log_level: info
+livestream: false
+
+agent_kwargs:
+  outer_loop_count: 3
+  rate_limit_retries_per_round: 5
+  rate_limit_backoff_sec: 45
+
+global_timeout_multiplier: 1.0
+\end{promptbox}
+
+\begin{promptbox}{Model Environment \textnormal{(\texttt{lhb.model.yaml})}}
+env_files: []
+override_process_env: false
+env:
+  ANTHROPIC_API_KEY: "sk-ant-..."
+\end{promptbox}

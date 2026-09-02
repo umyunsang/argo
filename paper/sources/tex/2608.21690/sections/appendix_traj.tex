@@ -1,0 +1,897 @@
+\section{Example Trajectories}
+\label{app:case-studies}
+
+This appendix reproduces four trajectories from the BEAM$_{10M}$ run reported in Table~\ref{tab:beam-category} (Scroll with Qwen3.8-Max, extended reasoning enabled): two successes from the categories where Scroll scores highest (knowledge update, 92.5; contradiction resolution, 88.1) and two failures from the categories where it trails the best published systems (preference following, 89.1 vs.\ 97.5 for Hindsight; summarization, 70.5 vs.\ 91.9 for Exabase M-1).
+
+Each trajectory is shown in its logged JSON format (\texttt{task\_id}, \texttt{metrics}, \texttt{steps}), abridged as follows. 
+Model-authored code
+is moved from each step's \texttt{"source"} field into the referenced code
+block and is otherwise unedited, including the model's own comments.
+\texttt{"reasoning"} (the model's thinking before the action) and
+\texttt{"observation"} strings are excerpted, with elisions marked
+\texttt{[...]}; newlines inside strings are rendered literally
+, and non-ASCII
+punctuation is normalized. Gray \texttt{//} lines are our annotations, not
+part of the log; the steps our trajectory analysis identifies as decisive for
+the probe's outcome are flagged in bold color
+(\trajgoodline{\texttt{//~>>}}~steps that drive the success,
+\trajbadline{\texttt{//~>>}}~steps where the failure is decided).
+\texttt{seq} denotes an event's immutable Event Log address;
+\texttt{[Session n | date]} prefixes are part of the stored events.
+Judge scores are those of the benchmark-provided LLM judge.
+
+% ------------------------------------------------------------
+\subsection{Success (knowledge update): resolving a superseded value by Event Log order}
+\label{app:traj-ku}
+
+\begin{tcolorbox}[colback=codebg, colframe=codeframe, boxrule=0.6pt, left=6pt, right=6pt, top=5pt, bottom=5pt]
+\textbf{Probe} (task \texttt{10M-1}, category \emph{knowledge update}; judge score 1.0 on all four rubric criteria):\\[3pt]
+\emph{``How many tasks have I logged in Jira for the sprint on 2024-11-05,
+and what is my sprint completion target percentage?''}
+\end{tcolorbox}
+
+The queried values are updated \emph{within} the relevant
+session (Session 42; 14$\to$17 tasks, 85\%$\to$88\%), amid decoy sprints in Sessions 4,
+22, and 47. The trajectory resolves the update by Event Log order: one
+search, one SQL materialization, then in-kernel filters over the cached
+variable.
+
+\begin{lstlisting}[style=traj]
+{"task_id": "beam/10M-1",
+ "metrics": {"tokens_in": 51224, "tokens_out": 1471, "wall_time_s": 36.62, "step_count": 5},
+ "steps": [
+  (*@\trajgoodline{// >> Success: One coarse search pins the right session (42) among the}@*)
+  (*@\trajgoodline{// >> decoy sprints (Sessions 4, 22, 47), and both competing values already surface}@*)
+  (*@\trajgoodline{// >> in the hits}@*)
+  {"step_index": 0,
+   "reasoning": "I need to find the mentions of Jira tasks for the sprint on 2024-11-05, and the sprint completion target percentage. Let me search for these.",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:ku-c0}@*)}},
+   "observation": "
+      stdout:
+      8349 42 [Session 42 | 2024-11-05] user: I'm trying to update the task count in Jira to reflect the new total of 17 tasks, and I want to make sure I'm doing it correctly to meet our sprint completion target of
+      [...]
+      8123 42 [Session 42 | 2024-11-05] user: I'm trying to plan my sprint and I've added 14 tasks for dynamic resizing, aiming for 85% sprint completion. I'm using Jira 9
+      [...]
+      8350 42 [Session 42 | 2024-11-05] assistant: Great! Let's update the task count in Jira to reflect the new total of 17 tasks and ensure you're on track to meet your sprint completion target of 88%.
+      [...]
+      565 4 [Session 4 | 2024-07-05] user: I've added 10 feasibility tasks to my Jira board, targeting 85% completion within t
+      [...]
+      4283 22 [Session 22 | 2024-08-05] user: I'm using Jira 9.5.0 to manage my project, and I've added 18 tasks for ingestion strateg
+      [...]"},
+
+  // The queried values changed within Session 42 -- materialize the whole session in
+  // address order, bound to the kernel variable rows
+  {"step_index": 1,
+   "reasoning": "The search results show Session 42 (2024-11-05) which is the relevant session. [...] the value CHANGED over time. Let me look at the full session 42 to find the most recent values mentioned. [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:ku-c1}@*)}},
+   "observation": "
+      stdout:
+      seq=8047 role=user: [Session 42 | 2024-11-05] user: I'm working on enhancing the RAG system's context window management, specifically focusing on dynamic resizing based on query complexity, an
+      [...]
+      [output too long: 96806 chars printed, over the 32000-char limit -- the rest is hidden to protect your context window. Your variables persist, so re-run printing LESS: a count or list of seqs, snippet=True for a bounded triage view, or aggregate in a variable and print only the result -- not whole rows.]"},
+
+  // The 32K observation cap truncated the print, but rows persists -- 
+  // re-filter in the kernel with no Event Log re-access
+  {"step_index": 2,
+   "reasoning": "The result was too long. Let me print less - just the user turns and key snippets about task counts and sprint completion percentages from Session 42.",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:ku-c2}@*)}},
+   "observation": "
+      [...]
+      seq=8047: [Session 42 | 2024-11-05] user: I'm working on enhancing the RAG system's context window management, specifically focus
+      [...]"},
+
+  (*@\trajgoodline{// >> Success: establishes intra-session order by seq -- 8123 (14 tasks,}@*)
+  (*@\trajgoodline{// >> 85\%) precedes 8349 (17 tasks, 88\%) -- exactly the evidence needed to ensure}@*)
+  (*@\trajgoodline{// >> latest information holds}@*)
+  {"step_index": 3,
+   "reasoning": "I found key evidence: Session 42 on 2024-11-05. [...] I need to check if there are any later mentions in session 42 that update these values further. [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:ku-c3}@*)}},
+   "observation": "
+      [...]
+      seq=8123: [Session 42 | 2024-11-05] user: I'm trying to plan my sprint and I've added 14 tasks for dynamic resizing, aiming for 85% sprint completion. I'm using Jira 9.6.0 to track my progress, but I'm not sure how to prioritize my tasks and allocate my time e
+      [...]
+      seq=8349: [Session 42 | 2024-11-05] user: I'm trying to update the task count in Jira to reflect the new total of 17 tasks, and I want to make sure I'm doing it correctly to meet our sprint completion target of 88%
+      [...]"},
+
+  // later address supersedes earlier: seq 8349 (17 tasks, 88%) follows seq 8123 (14
+  // tasks, 85%); Session 47's sprint is ruled out by date.
+  {"step_index": 4,
+   "reasoning": "[...] 1. seq=8123: User says "I've added 14 tasks for dynamic resizing, aiming for 85% sprint completion" [...] The question asks specifically about "the sprint on 2024-11-05". The most recent mention within that sprint is seq=8349 with 17 tasks and 88% completion target. [...]",
+   "action": {"tool": "submit_answer",
+              "args": {"answer": "
+      For the sprint on 2024-11-05, you logged **17 tasks** in Jira (updated from an earlier count of 14), and your sprint completion target percentage is **88%** (updated from the initial 85%)."}}}
+ ]}
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Knowledge update: full-text search; each hit returns its Event Log address (\texttt{seq}), session, and snippet.}, label={lst:ku-c0}]
+hits = ms.search("sprint 2024-11-05", scope='task', k=20)
+for h in hits:
+    print(h["seq"], h["step_index"], h["snippet"][:200])
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={SQL materialization of Session 42 in address order, bound to the kernel variable \texttt{rows}.}, label={lst:ku-c1}]
+rows = ms.sql_query(
+    "SELECT seq, role, content FROM hist.conversation_history WHERE kind='conversation' AND step_index=42 ORDER BY msg_index"
+)
+for r in rows:
+    # Print just the first 300 chars to get an overview
+    print(f"seq={r['seq']} role={r['role']}: {r['content'][:300]}")
+    print("---")
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={In-kernel filter of the cached \texttt{rows} (user turns only); no Event Log access.}, label={lst:ku-c2}]
+# Print only user turns from session 42, just first 200 chars each
+for r in rows:
+    if r['role'] == 'user':
+        print(f"seq={r['seq']}: {r['content'][:200]}")
+        print("---")
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Second in-kernel filter (user turns, \texttt{seq}${\geq}$8100), exposing the value progression.}, label={lst:ku-c3}]
+# Look at user turns from seq 8100 onwards in session 42 to see progression
+for r in rows:
+    if r['role'] == 'user' and r['seq'] >= 8100:
+        # Print seq and a snippet around "task" or "sprint"
+        content = r['content']
+        print(f"seq={r['seq']}: {content[:250]}")
+        print("---")
+\end{lstlisting}
+
+% ------------------------------------------------------------
+\subsection{Success (contradiction resolution): retrieving both sides of a conflict and ordering them}
+\label{app:traj-cr}
+
+\begin{tcolorbox}[colback=codebg, colframe=codeframe, boxrule=0.6pt, left=6pt, right=6pt, top=5pt, bottom=5pt]
+\textbf{Probe} (task \texttt{10M-10}, category \emph{contradiction
+resolution; judge score 1.0 on all four rubric criteria}):\\[3pt]
+\emph{``Has Pamela ever helped coordinate with vendors or saved setup time
+during my events?''}
+\end{tcolorbox}
+
+The rubric requires stating that the record is contradictory, citing the
+user's correction, citing the earlier claim, and resolving which is correct.
+The trajectory operationalizes this as a retrieval program: one query per
+side of the conflict, provenance checks on both, and an address-bounded
+search that proves no later reversal.
+
+\begin{lstlisting}[style=traj]
+{"task_id": "beam/10M-10",
+ "metrics": {"tokens_in": 104160, "tokens_out": 5758, "wall_time_s": 132.78, "step_count": 10},
+ "steps": [
+  // search the affirmative side of the conflict
+  {"step_index": 0,
+   "reasoning": "[...] I need to find all mentions of Pamela and vendor coordination/setup time, identify the conflict, and determine which statement is the latest or a correction. [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:cr-c0}@*)}},
+   "observation": "
+      stdout:
+      16900 73  ... Certainly! It sounds like Pamela took initiative to gather quick ratings from three vendors, which helped streamline the feedback process and saved
+      [...]
+      8434 36  ... 1. **Morning Setup**:
+         - **Pamela**: Supervise the arrival and setup of vendors and decorators.
+
+      [...]
+      7254 31  ... Great to hear that Pamela is here to help! Given her experience and maturity, she can be a valuable asset in managing t
+      [...]"},
+
+  (*@\trajgoodline{// >> Success: the model authors an opposing, negation-term query for the}@*)
+  (*@\trajgoodline{// >> 'against' side of the conflict; the user's correction surfaces at seq 8867}@*)
+  {"step_index": 1,
+   "reasoning": "The search results are showing that Pamela coordinated with vendors. Next I need to find the contradictory information. [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:cr-c1}@*)}},
+   "observation": "
+      [...]
+      8867 37 [Session 37 | 2023-07-15] user: How can I make sure Pamela is aware she didn't actually brief any entertainers or save me coordination time, as that
+      [...]"},
+
+  // materialize the correction exactly
+  {"step_index": 2,
+   "reasoning": "The search result at seq 8867 (Session 37) looks like it has key information [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:cr-c2}@*)}},
+   "observation": "
+      stdout:
+      8867 user
+      [Session 37 | 2023-07-15] user: How can I make sure Pamela is aware she didn't actually brief any entertainers or save me coordination time, as that was a misunderstanding?
+      ---"},
+
+  // session-scoped SQL around the correction; the original delegation (seq 8675) 
+  // sits in the same session
+  {"step_index": 3,
+   "reasoning": "[...] Now I need to check what was said earlier about Pamela coordinating with vendors or saving setup time. [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:cr-c3}@*)}},
+   "observation": "
+      [...]
+      seq 8675 [user]: [Session 37 | 2023-07-15] user: What's the most efficient way to brief the 5 entertainers, as Pamela had taken on this task earlier?
+      [...]"},
+
+  // expand the later, seemingly re-affirming mentions from Session 73
+  {"step_index": 4,
+   "reasoning": "[...] Let me look at the seq 16900 and 16902 hits from Session 73, which seem to discuss Pamela's vendor ratings and saved time. [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:cr-c4}@*)}},
+   "observation": "
+      [...]
+      seq 16902 [assistant]:
+      [Session 73 | 2023-08-22] assistant: You're welcome! I'm glad that clarifying Pamela's actions helped you understand how her quick calls saved you time and provided immediate insights.
+      [...]
+      2. **Time Saved**: By handling these calls herself, Pamela saved you approximately 15 minutes of follow-up time.
+      [...]"},
+
+  // provenance check: those are assistant turns -- verify what the user actually
+  // said nearby; the user's own later confirmation surfaces
+  {"step_index": 5,
+   "reasoning": "[...] this is assistant-generated text, not the user's own statement. I need to check whether the user in session 73 actually said something that led to this assistant response, or if this wa [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:cr-c5}@*)}},
+   "observation": "
+      [...]
+      seq 16899 [user]: [Session 73 | 2023-08-22] user: Can you help me understand why Pamela called 3 vendors for quick ratings, and how it saved me 15 minutes of follow-up?
+      [...]
+      seq 16901 [user]: [Session 73 | 2023-08-22] user: Yeah, that makes sense. Pamela's quick calls definitely saved me time. It's good to get those immediate insights without having to follow up myself. Thanks for clarifying!
+      [...]"},
+
+  // the reasoning separates the two claims: 'coordination time' during setup 
+  // (corrected) vs. post-event 'follow-up time' (confirmed)
+  {"step_index": 6,
+   "reasoning": "[...] The correction in Session 37 is about Pamela NOT briefing entertainers or saving coordination time (a misunderstanding). [...] In Session 73, the user confirms Pamela called 3 vendors for quick ratings and saved 15 minutes of follow-up time. [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:cr-c6}@*)}},
+   "observation": "
+      [...]
+      seq 8868 [assistant]: [Session 37 | 2023-07-15] assistant: To clarify the misunderstanding with Pamela and ensure she is aware that she did not actually brief any entertainers or save coordination time, it's important to communicate this information
+      [...]"},
+
+  // retrieve the claim side verbatim (Sessions 31 and 36)
+  {"step_index": 7,
+   "reasoning": "[...] **Earlier claims (pre-correction):** Multiple sessions (31, 36) had assistant suggestions about Pamela supervising vendor arrival/setup, coordinating with vendors, etc. [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:cr-c7}@*)}},
+   "observation": "
+      [...]
+      seq 7496 [assistant]: [Session 31 | 2023-07-10] assistant: Delegating tasks like decor oversight to someone like Pamela can have a significant positive impact on the overall timeli
+      [...]
+      seq 8434 [assistant]: [Session 36 | 2023-07-15] assistant: That sounds like an excellent plan! By leveraging Pamela's skills and experience, you can ensure that the guest check-in
+      [...]"},
+
+  (*@\trajgoodline{// >> Success: the disconfirming query -- an address-bounded search proving}@*)
+  (*@\trajgoodline{// >> nothing after Session 73 overturns the correction. }@*)
+  (*@\trajgoodline{// >> Across this run, successful trajectories issue such a query before }@*)
+  (*@\trajgoodline{// >> submitting; but failed ones never do}@*)
+  {"step_index": 8,
+   "reasoning": "[...] The later statement (Session 73) would normally win. But I need to check if there's a later correction after Session 73 as well. [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:cr-c8}@*)}},
+   "observation": "
+      stdout:
+      18077 77 [Session 77 | 2023-08-24] user: Yeah, it definitely caused some frustration. Those 5 guests w
+      [...]"},
+
+  // each rubric criterion maps to evidence retrieved explicitly
+  {"step_index": 9,
+   "reasoning": "[...] So the resolution is nuanced: The user corrected that Pamela did NOT brief entertainers or save coordination time during setup (that was a misunderstanding), but later confirmed Pamela DID help by calling vendors for quick ratings, saving follow-up time [...]",
+   "action": {"tool": "submit_answer",
+              "args": {"answer": "
+      The conversation contains conflicting information about this, and here's how it resolves:
+
+      **The initial claim:** In earlier sessions (around Sessions 31-36), plans were made for Pamela to coordinate with vendors, supervise vendor arrivals/setup, and brief entertainers -- with the expectation that this would save you coordination time during the event.
+
+      **Your correction (Session 37, July 15, 2023):** You explicitly clarified that this was a misunderstanding -- Pamela did NOT actually brief any entertainers or save you coordination time during setup. You asked how to make sure Pamela was aware of this correction.
+
+      **A later, narrower confirmation (Session 73, August 22, 2023):** You confirmed that Pamela did call 3 vendors for quick ratings after the event, which saved you about 15 minutes of follow-up time. You said: "Pamela's quick calls definitely saved me time."
+
+      **Resolution:** The broad claim that Pamela coordinated vendors and saved setup time during your events was corrected by you as a misunderstanding (Session 37). However, Pamela did help in a more limited, post-event way -- gathering quick vendor ratings that saved you ~15 minutes of follow-up (Session 73). So she didn't save setup time or coordinate vendors during the event itself, but she did contribute afterward with vendor feedback calls."}}}
+ ]}
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Contradiction resolution: full-text search on the claim side.}, label={lst:cr-c0}]
+hits = ms.search("Pamela vendor", scope='task', k=20)
+for h in hits:
+    print(h["seq"], h["step_index"], h["snippet"][:150])
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Negation-term search for the correction side.}, label={lst:cr-c1}]
+hits2 = ms.search("Pamela didn't OR wasn't OR never OR not", scope='task', k=20)
+for h in hits2:
+    print(h["seq"], h["step_index"], h["snippet"][:150])
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Exact materialization of the correction (\texttt{ms.expand}).}, label={lst:cr-c2}]
+rows = ms.expand([8867])
+for r in rows:
+    print(r["seq"], r["role"])
+    print(r["content"][:2000])
+    print("---")
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Session-scoped SQL over Session 37.}, label={lst:cr-c3}]
+# Look at the assistant response after seq 8867 and surrounding context in session 37
+rows = ms.sql_query("SELECT seq, role, content FROM hist.conversation_history WHERE kind='conversation' AND step_index=37 ORDER BY seq LIMIT 30")
+for r in rows:
+    print(f"seq {r['seq']} [{r['role']}]: {r['content'][:200]}")
+    print("---")
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Expansion of the post-correction mentions (\texttt{seq} 16900, 16902).}, label={lst:cr-c4}]
+# Check later references (after the correction at seq 8867) about Pamela and vendor coordination/setup time
+rows = ms.expand([16900, 16902])
+for r in rows:
+    print(f"seq {r['seq']} [{r['role']}]:")
+    print(r["content"][:600])
+    print("---")
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Provenance check---the user turns around \texttt{seq} 16900.}, label={lst:cr-c5}]
+# Check what the user said in session 73 around seq 16900
+rows = ms.sql_query("SELECT seq, role, content FROM hist.conversation_history WHERE kind='conversation' AND step_index=73 AND seq BETWEEN 16890 AND 16910 ORDER BY seq")
+for r in rows:
+    print(f"seq {r['seq']} [{r['role']}]: {r['content'][:300]}")
+    print("---")
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={The assistant's uptake of the correction (\texttt{seq} 8868).}, label={lst:cr-c6}]
+# Check the assistant response after the user's correction at seq 8867
+rows = ms.sql_query("SELECT seq, role, content FROM hist.conversation_history WHERE kind='conversation' AND step_index=37 AND seq BETWEEN 8867 AND 8870 ORDER BY seq")
+for r in rows:
+    print(f"seq {r['seq']} [{r['role']}]: {r['content'][:500]}")
+    print("---")
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={The original claim side (Sessions 31 and 36).}, label={lst:cr-c7}]
+# Let me also check the earlier sessions (31, 36) where Pamela was assigned vendor coordination roles, to get the full picture of the "claim" side
+rows = ms.expand([7496, 8434])
+for r in rows:
+    print(f"seq {r['seq']} [{r['role']}]: {r['content'][:400]}")
+    print("---")
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={\texttt{seq\_range}-bounded search over the remainder of the history, proving no later reversal.}, label={lst:cr-c8}]
+# Check if there are any later corrections about Pamela after session 73
+hits3 = ms.search("Pamela misunderstanding OR correction OR didn't OR wasn't", scope='task', k=15, seq_range=(16900, 23716))
+for h in hits3:
+    print(h["seq"], h["step_index"], h["snippet"][:200])
+\end{lstlisting}
+
+% ------------------------------------------------------------
+\subsection{Failure (preference following): competent retrieval on the wrong axis}
+\label{app:traj-pf}
+
+\begin{tcolorbox}[colback=codebg, colframe=codeframe, boxrule=0.6pt, left=6pt, right=6pt, top=5pt, bottom=5pt]
+\textbf{Probe} (task \texttt{10M-8}, category \emph{preference following}; judge score 0.0 on all three rubric criteria):\\[3pt]
+\emph{``I'm planning the route for our upcoming trip. How would you suggest
+I map it out?''}
+\end{tcolorbox}
+
+All three
+criteria concern one stated preference: avoiding tolls. The retrieval
+patterns that succeed elsewhere all execute correctly here---the failure is
+upstream, in query formulation: the model frames the probe as \emph{which
+tool} the user prefers and never queries the \emph{route-constraint} axis.
+The graded preference is abundant in the Event Log, in the user's own words
+(seq 805: ``which route would you say is better for someone who wants to
+avoid tolls as much as possible?''; seq 807; Session 3, seq 617--631, where
+the hybrid route is adopted because it saves \$15 in tolls).
+
+\begin{lstlisting}[style=traj]
+{"task_id": "beam/10M-8",
+ "metrics": {"tokens_in": 82830, "tokens_out": 2471, "wall_time_s": 69.19, "step_count": 7},
+ "steps": [
+  (*@\trajbadline{// >> Failure: the outcome is decided here, before any retrieval runs --}@*)
+  (*@\trajbadline{// >> the probe is framed as 'which mapping tool', all six queries name tools, and}@*)
+  (*@\trajbadline{// >> none of the trajectory's 14 queries contains toll, fee, avoid, or cost, }@*)
+  (*@\trajbadline{// >> which is the axis all three rubric criteria grade}@*)
+  {"step_index": 0,
+   "reasoning": "[...] I need to find a preference they established earlier -- a chosen tool, version, style, or constraint. [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:pf-c0}@*)}},
+   "observation": "
+      stdout:
+      10016 43  ... Drag and drop the route lines to adjust the path according to the detour.
+      [...]
+      8148 34  ... Compare the routes to see which one avoids tolls.
+      [...]
+      662 3  ... Sync with Google Maps
+      While you cannot directly sync Google Maps with GasBuddy, you can use both apps together
+      [...]"},
+
+  (*@\trajbadline{// >> Failure: the toll preference brushes past in the previous step's hits}@*)
+  (*@\trajbadline{// >> (seq 8148, 'avoids tolls') and goes unpursued; the model chases the Maps.me }@*)
+  (*@\trajbadline{// >> tool candidate instead}@*)
+  {"step_index": 1,
+   "reasoning": "[...] Let me also check seq 16614 which mentions Maps.me as a "Current Tool". [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:pf-c1}@*)}},
+   "observation": "
+      [...]
+      16614 [Session 75 | 2023-04-20] assistant: Improving your detour accuracy and saving time with navigation tools like Maps.me is a great achievement. Here are some other n
+      [...]"},
+
+  // sound provenance discipline: the Maps.me hit is discarded as assistant-authored;
+  // five preference-phrase queries follow -- still tool-framed
+  {"step_index": 2,
+   "reasoning": "[...] that's an assistant response. I need to find where the user explicitly states their preference for a mapping tool. [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:pf-c2}@*)}},
+   "observation": "
+      [...]
+      2349 10  ... That sounds like a solid plan! I'll make sure to use Google Maps and Roadtrippers to map out the hybrid route and share it with Chris. I'll also download off
+      [...]
+      17175 77 [Session 77 | 2023-04-22] user: That sounds great! I'll definitely use mapping tools like Google Maps and Waze to plan my routes and find good stopping points.
+      [...]"},
+
+  // recency check over the final sessions: 
+  // no later preference supersedes the finding
+  {"step_index": 3,
+   "reasoning": "[...] Let me look more closely at the most recent user turns about mapping, especially in later sessions (82-100), [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:pf-c3}@*)}},
+   "observation": "
+      (no output)"},
+
+  // user-authored evidence for the tool preference accumulates (Sessions 1, 10, 13)
+  {"step_index": 4,
+   "reasoning": "[...] the user has consistently used **Roadtrippers** and **Google Maps** together. [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:pf-c4}@*)}},
+   "observation": "
+      [...]
+      2335 10  ... That sounds perfect! I'll use Google Maps and Roadtrippers to map out the hybrid route and share it with Chris. We'll definitely need to download offline maps for a
+      [...]
+      25 [Session 1 | 2022-05-01] user: How does the Roadtrippers app work, and can it really help me visualize a route that covers at least 5 national parks?
+      [...]"},
+
+  // scope the upcoming trip (Session 100): 
+  // a 1,200-mile northern route, four landmarks
+  {"step_index": 5,
+   "reasoning": "[...] check if there's anything in the most recent sessions (S100, seq 22221-22560) about a specific route they're planning for the "upcoming trip [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:pf-c5}@*)}},
+   "observation": "
+      [...]
+      22221 user [Session 100 | 2023-05-31] user: What's the best way to plan a 1,200-mile northern route within 9 months, aiming for 4 key landmarks, like I've targeted?
+      [...]"},
+
+  // The answer is grounded and well-structured, but without toll information. 
+  // Judge: 0.0 on all three criteria.
+  {"step_index": 6,
+   "reasoning": "[...] The most recent and repeated preference is **Google Maps and Roadtrippers** used together. The user consistently says they'll use both to map out routes. [...]",
+   "action": {"tool": "submit_answer",
+              "args": {"answer": "
+      Based on our past conversations, you've consistently used **Google Maps and Roadtrippers** together to map out your routes -- you mentioned this combination multiple times, including when planning the hybrid route with Chris and when scouting scenic areas. I'd suggest sticking with that approach for your upcoming 1,200-mile northern route to your 4 key landmarks:
+      [...]
+      1. **Roadtrippers first** -- Plot your 4 landmarks as waypoints and use it to discover scenic stops, detours, and points of interest along the northern route. It's great for visualizing the overall tri
+      [...]
+      This two-tool combo has worked well for you across multiple trips, so it should serve you well for this one too."}}}
+ ]}
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Preference following: multi-query sweep, de-duplicated by address; all six queries name tools.}, label={lst:pf-c0}]
+# Search for mapping tool preferences in the conversation
+hits = []
+for q in ["map route", "Google Maps", "Roadtrippers", "mapping tool", "app route", "map out"]:
+    hits += ms.search(q, scope='task', k=10)
+
+# Print unique hits with snippets for triage
+seen = set()
+for h in hits:
+    if h["seq"] not in seen:
+        seen.add(h["seq"])
+        print(h["seq"], h["step_index"], h.get("snippet", "")[:150])
+        print("---")
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Expansion of the Maps.me candidate (\texttt{seq} 16614).}, label={lst:pf-c1}]
+# Let me look at the user's own turns about mapping tools, especially from later sessions
+# First check seq 16614 which mentions Maps.me as "Current Tool"
+rows = ms.expand([16614])
+for r in rows:
+    print(r["seq"], r["content"][:500])
+    print("---")
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Preference-phrase sweep plus a Roadtrippers query---still tool-framed.}, label={lst:pf-c2}]
+# Search for user turns specifically about their preferred mapping tool
+hits2 = []
+for q in ["I'll use", "I prefer", "my favorite", "I've been using", "I use"]:
+    hits2 += ms.search(f"{q} map", scope='task', k=10)
+
+# Also search for Roadtrippers specifically in user turns
+hits3 = ms.search("Roadtrippers route plan", scope='task', k=15)
+
+seen2 = set()
+for h in hits2 + hits3:
+    if h["seq"] not in seen2:
+        seen2.add(h["seq"])
+        print(h["seq"], h["step_index"], h.get("snippet", "")[:160])
+        print("---")
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={\texttt{seq\_range}-bounded recency check over the final sessions.}, label={lst:pf-c3}]
+# Look at user turns in later sessions about mapping tools
+hits4 = ms.search("map route plan", seq_range=(18323, 22716), scope='task', k=20)
+for h in hits4:
+    if h.get("role") == "user":
+        print(h["seq"], h["step_index"], h.get("snippet", "")[:180])
+        print("---")
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={User-turn search plus session-scoped SQL over Session 1.}, label={lst:pf-c4}]
+# Check user turns specifically mentioning their chosen mapping approach
+# Focus on user turns that state what they'll use or prefer
+hits5 = ms.search("Google Maps Roadtrippers map out", scope='task', k=15)
+for h in hits5:
+    if h.get("role") == "user":
+        print(h["seq"], h["step_index"], h.get("snippet", "")[:200])
+        print("---")
+
+# Also check the earliest session where Roadtrippers was introduced
+print("\n=== Session 1 user turns about Roadtrippers ===")
+rows_s1 = ms.sql_query("SELECT seq, role, content FROM hist.conversation_history WHERE kind='conversation' AND step_index=1 AND role='user' AND content LIKE '%Roadtrippers%' ORDER BY msg_index LIMIT 5")
+for r in rows_s1:
+    print(r["seq"], r["content"][:300])
+    print("---")
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Reading the opening of Session 100 to scope the upcoming trip.}, label={lst:pf-c5}]
+# Check the most recent session (S100) for context about the upcoming trip
+rows_s100 = ms.sql_query("SELECT seq, role, content FROM hist.conversation_history WHERE kind='conversation' AND step_index=100 ORDER BY msg_index LIMIT 10")
+for r in rows_s100:
+    print(r["seq"], r["role"], r["content"][:250])
+    print("---")
+\end{lstlisting}
+
+% ------------------------------------------------------------
+\subsection{Failure (summarization): positional sampling misses mid-session evidence}
+\label{app:traj-sum}
+
+\begin{tcolorbox}[colback=codebg, colframe=codeframe, boxrule=0.6pt, left=6pt, right=6pt, top=5pt, bottom=5pt]
+\textbf{Probe} (task \texttt{10M-8}, category \emph{summarization}; judge
+score 0.42---two of six rubric criteria fully satisfied, one partially):\\[3pt]
+\emph{``Can you summarize how my travel decisions and habits evolved from
+April 8, 2023 to April 25, 2023 and how they influenced my overall experience
+and personal growth?''}
+\end{tcolorbox}
+
+Coverage at session granularity is complete: cells
+0--6 page and merge all 4,448 events in the date range (Sessions 61--80,
+verified gap-free). The score is then decided by sampling choices within that
+coverage: the trajectory reads long mixed-topic sessions \emph{positionally}
+(head and tail) rather than \emph{thematically}, and the graded mid-session
+facts---the 3-hour driving cap with its fatigue reduction (Session 77, seq
+17171--17207) and the sleep and hydration goals (Session 66, seq
+14809--14817)---never enter an observation.
+
+\begin{lstlisting}[style=traj]
+{"task_id": "beam/10M-8",
+ "metrics": {"tokens_in": 197973, "tokens_out": 8846, "wall_time_s": 221.2, "step_count": 14},
+ "steps": [
+  // date-range SQL over event metadata; both the 1000-row cap and the 32K observation
+  // cap bite -- the model pivots to paging
+  {"step_index": 0,
+   "reasoning": "[...] First, I need to find the conversations within this date range. I'll try using SQL to filter by date.",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:sum-c0}@*)}},
+   "observation": "
+      stdout:
+      1000
+      13611 61 2023-04-08 user [Session 61 | 2023-04-08] user: What's the best way to spend our last day in Los Angeles bef
+      [...]
+      [note] a sql_query hit the 1000-row cap -- matching rows beyond the first 1000 were NOT returned; narrow with WHERE or page with LIMIT/OFFS
+      [...]"},
+
+  // aggregate per session in the kernel: page 1 reaches only 2023-04-13
+  {"step_index": 1,
+   "reasoning": "The result got cut off at 1000 rows. Need to paginate. [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:sum-c1}@*)}},
+   "observation": "
+      stdout:
+      1000 13611 14610 2023-04-13
+      61 ['2023-04-08'] 188
+      62 ['2023-04-09'] 222
+      63 ['2023-04-10'] 196
+      64 ['2023-04-11'] 190
+      65 ['2023-04-12'] 194
+      66 ['2023-04-13'] 10"},
+
+  // page the remainder; steps 3-5 rerun this query changing only the OFFSET
+  {"step_index": 2,
+   "reasoning": "[...] I need to fetch the remaining period (April 13-25). [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:sum-c2}@*)}},
+   "observation": "
+      stdout:
+      1000
+      66 ['2023-04-13'] 268
+      67 ['2023-04-14'] 200
+      68 ['2023-04-15'] 198
+      69 ['2023-04-15'] 196
+      70 ['2023-04-15'] 138
+      15600 2023-04-15"},
+
+  {"step_index": 3,
+   "reasoning": "I need to continue paging through the data and keep collecting the remaining pages until I reach April 25th.",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:sum-c2} (OFFSET 1000)@*)}},
+   "observation": "
+      stdout:
+      1000 16600 2023-04-20
+      [...]"},
+
+  {"step_index": 4,
+   "reasoning": "On track -- continuing the paging to cover April 20-25.",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:sum-c2} (OFFSET 2000)@*)}},
+   "observation": "
+      stdout:
+      1000 17600 2023-04-24
+      [...]"},
+
+  {"step_index": 5,
+   "reasoning": "[...] Let me fetch the last page (the remainder from April 24th onwards) to complete the coverage, [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:sum-c2} (OFFSET 3000)@*)}},
+   "observation": "
+      stdout:
+      458
+      79 ['2023-04-24'] 178
+      80 ['2023-04-25'] 280"},
+
+  // merge and de-duplicate by seq in the kernel: 4,448 events, Sessions 61-80, verified
+  // gap-free -- session-level coverage is complete. Note Session 77's size: 470 events
+  {"step_index": 6,
+   "reasoning": "[...] Next I need to merge everything into one complete dataset (deduplication), [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:sum-c6}@*)}},
+   "observation": "
+      [...]
+      4448 13611 2023-04-08 18058 2023-04-25
+      [...]
+      61 ['2023-04-08'] 188 13611 13798
+      [...]
+      77 ['2023-04-22'] 470 16909 17378
+      [...]
+      80 ['2023-04-25'] 280 17779 18058"},
+
+  (*@\trajbadline{// >> Failure: the first of the two sampling choices that decide the score}@*)
+  (*@\trajbadline{// >> -- positional reading (first 3 + last 2 user turns per session);}@*)
+  (*@\trajbadline{// >> head-and-tail reads of 200-470-row mixed-topic sessions systematically}@*)
+  (*@\trajbadline{// >> skip the middle, where habit threads sit}@*)
+  {"step_index": 7,
+   "reasoning": "[...] that's about 2200 user turns, way too much. Better approach: for each session, print the first few and last few user turns.",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:sum-c7}@*)}},
+   "observation": "
+      [...]
+      === Session 61 (2023-04-08) -- 94 user turns ===
+      [...]
+      13611: [S61 | 2023-04-08] U: What's the best way to spend our last day in Los Angeles before heading home, considering we're starting the final stretch of our 2,500-mi
+      [...]"},
+
+  (*@\trajbadline{// >> Failure: the deep read stays head-only (first 6 user turns of 7 sessions); }@*)
+  (*@\trajbadline{// >> the graded driving-limit arc sits ~100 user turns into Session 77}@*)
+  (*@\trajbadline{// >> (seq 17171-17207) and is never reached -- even though this read surfaces 'I'm}@*)
+  (*@\trajbadline{// >> trying to manage my travel fatigue' (Session 63) as a lead}@*)
+  {"step_index": 8,
+   "reasoning": "[...] To grasp the main components, let me try sampling a few turns from each session in more detail. [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:sum-c8}@*)}},
+   "observation": "
+      [...]
+      ########## SESSION 61 (2023-04-08) ##########
+      [...]
+      --- seq 13611 ---
+      [Session 61 | 2023-04-08] user: What's the best way to spend our last day in Los Angeles before heading home, considering we're starting the final stretch of ou
+      [...]"},
+
+  (*@\trajbadline{// >> Failure: the second sampling choice -- the trajectory's only thematic}@*)
+  (*@\trajbadline{// >> search covers growth vocabulary exclusively; the probe asks about }@*)
+  (*@\trajbadline{// >> 'decisions AND habits', but no query ever names driving hours, fatigue, }@*)
+  (*@\trajbadline{// >> sleep, or hydration (the graded habit dimensions)}@*)
+  {"step_index": 9,
+   "reasoning": "[...] Let me search for growth-related turns and key decisions within a few sessions. [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:sum-c9}@*)}},
+   "observation": "
+      [...]
+      15489  ... I feel like I learned a lot about myself and our relationship during that hike.
+      [...]"},
+
+  // verbatim grounding of the growth quantifications (40% patience, 35% flexibility, 
+  // 82% self-rating) -- these earn the fully satisfied criteria
+  {"step_index": 10,
+   "reasoning": "[...] Let me expand a few of the key seqs to get verbatim details. [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:sum-c10}@*)}},
+   "observation": "
+      [...]
+      === seq 15489 | role=user ===
+      [Session 70 | 2023-04-15] user: Yeah, the Grand Canyon hike was definitely a standout moment. It pushed us both physically and mentally, and seeing the canyon was breathtaking. It made me realize how much I can accomplish with determination and teamwork. Plus, it gave me a new perspective on life and made me appreciate nature more. I feel like I learned a lot about myself and our relationship during that hike.
+
+
+      [...]"},
+
+  // budget details land ($70 Pittsburgh delay, $250 food overspend); the 
+  // sleep/hydration cluster (seq 14809-14817, mid-Session 66) is never touched
+  {"step_index": 11,
+   "reasoning": "[...] let me gather a few more specific points: budget details ($250 food overspend, Pittsburgh delay $70), habit changes (session 72, screen time), [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:sum-c11}@*)}},
+   "observation": "
+      [...]
+      HIT 17368  ... In this case, the total overspend on food is $250, with $60 coming from a single diner visit in LA. Here's a structured approach to
+      [...]"},
+
+  // final spot checks; the model declares coverage sufficient
+  {"step_index": 12,
+   "reasoning": "[...] Actually, I have enough material. [...]",
+   "action": {"tool": "recall_history_python",
+              "args": {"source": (*@Code Block~\ref{lst:sum-c12}@*)}},
+   "observation": "
+      [...]
+      [Session 79 | 2023-04-24] assistant: Limiting trips to 2 stops max played a significant role in my overall personal growth, particularly in handling unexpected detours and fee
+      [...]"},
+
+  // judge: 0.42 -- two of six criteria fully satisfied, one partial. Everything the
+  // rubric graded was inside the materialized sessions; the misses (3-hour driving 
+  // cap, Session 77; 8-hour sleep and hydration goals, Session 66) fell outside the 
+  // sampled positions
+  {"step_index": 13,
+   "reasoning": "[...] Let me do a final coverage check against what the question is ask [...]",
+   "action": {"tool": "submit_answer",
+              "args": {"answer": "
+      **The arc, April 8-25, 2023 (Sessions 61-80):** Your travel decisions evolved through three clear phases: (1) **wrap-up logistics** in Los Angeles (Apr 8-10), (2) **deliberate rest and the journey home** (Apr 13-16), and (3) **post-trip processing, sharing, and lesson-building** back in New Jeffreytow
+      [...]
+      You **quantified your growth**: 40% more patience (later framed as a 40% increase in confidence and adaptability), 35% more flexibility after the 5 unplanned detours, and an overall trip-growth self-rating of 82%.
+
+      [...]
+      By April 25 you had distilled **4 key trip lessons** -- "Flexibility is Key" and "Embrace Spontaneity" among them -- and begun journaling to sustain the gains. Your unplanned stops reshaped your future travel philosophy: looser itineraries with buffer time, openness to local recommendations, and fewer, deeper stops rather than rigid day-by-day plans."}}}
+ ]}
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Summarization: date-range SQL over event metadata (2023-04-08 to 2023-04-25).}, label={lst:sum-c0}]
+rows = ms.sql_query(
+    "SELECT seq, step_index, json_extract(metadata,'$.date') AS date, role, headline, substr(content, 1, 200) AS preview "
+    "FROM hist.conversation_history WHERE kind='conversation' "
+    "AND json_extract(metadata,'$.date') BETWEEN '2023-04-08' AND '2023-04-25' "
+    "ORDER BY msg_index")
+print(len(rows))
+for r in rows:
+    print(r['seq'], r['step_index'], r['date'], r['role'], (r['preview'] or '')[:120].replace('\n',' '))
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Per-session aggregation of page 1 in the kernel.}, label={lst:sum-c1}]
+rows_all = list(rows)
+print(len(rows_all), rows_all[0]['seq'], rows_all[-1]['seq'], rows_all[-1]['date'])
+# Aggregate per session: date range
+from collections import defaultdict
+sess = defaultdict(lambda: {'dates': set(), 'roles': 0})
+for r in rows_all:
+    sess[r['step_index']]['dates'].add(r['date'])
+    sess[r['step_index']]['roles'] += 1
+for s in sorted(sess):
+    print(s, sorted(sess[s]['dates']), sess[s]['roles'])
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Paging query; steps 3--5 rerun it changing only the \texttt{OFFSET}.}, label={lst:sum-c2}]
+rows2 = ms.sql_query(
+    "SELECT seq, step_index, json_extract(metadata,'$.date') AS date, role, substr(content,1,180) AS preview "
+    "FROM hist.conversation_history WHERE kind='conversation' "
+    "AND json_extract(metadata,'$.date') BETWEEN '2023-04-13' AND '2023-04-25' "
+    "ORDER BY msg_index LIMIT 1000 OFFSET 0")
+print(len(rows2))
+rows2 = list(rows2)
+from collections import defaultdict
+sess2 = defaultdict(lambda: {'dates': set(), 'n': 0})
+for r in rows2:
+    sess2[r['step_index']]['dates'].add(r['date'])
+    sess2[r['step_index']]['n'] += 1
+for s in sorted(sess2):
+    print(s, sorted(sess2[s]['dates']), sess2[s]['n'])
+print(rows2[-1]['seq'], rows2[-1]['date'])
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Kernel-side merge of all five pages, de-duplicated by \texttt{seq}.}, label={lst:sum-c6}]
+# Merge all pages by seq (dedupe)
+all_turns = {}
+for coll in [rows_all, rows2, rows3, rows4, rows5]:
+    for r in coll:
+        all_turns[r['seq']] = r
+merged = [all_turns[k] for k in sorted(all_turns)]
+print(len(merged), merged[0]['seq'], merged[0]['date'], merged[-1]['seq'], merged[-1]['date'])
+from collections import defaultdict
+sess_all = defaultdict(lambda: {'dates': set(), 'n': 0, 'first_seq': None, 'last_seq': None})
+for r in merged:
+    d = sess_all[r['step_index']]
+    d['dates'].add(r['date'])
+    d['n'] += 1
+    if d['first_seq'] is None:
+        d['first_seq'] = r['seq']
+    d['last_seq'] = r['seq']
+for s in sorted(sess_all):
+    print(s, sorted(sess_all[s]['dates']), sess_all[s]['n'], sess_all[s]['first_seq'], sess_all[s]['last_seq'])
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Positional sampling---first 3 and last 2 user turns per session.}, label={lst:sum-c7}]
+from collections import defaultdict
+sess_turns = defaultdict(list)
+for r in merged:
+    sess_turns[r['step_index']].append(r)
+
+# Print first 3 and last 2 user turns per session to get arc
+for s in sorted(sess_turns):
+    users = [r for r in sess_turns[s] if r['role'] == 'user']
+    print(f"=== Session {s} ({users[0]['date']}) -- {len(users)} user turns ===")
+    for r in users[:3] + users[-2:]:
+        txt = r['preview'].replace('[Session ', '[S').replace('] user: ', '] U: ')
+        print(f"  {r['seq']}: {txt[:160]}")
+    print()
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Head-only deep read (first 6 user turns) of sessions 61, 63, 66, 70, 76, 77, 80.}, label={lst:sum-c8}]
+# Pull full user-turn content for decision-rich sessions and print to read
+import json
+def full_content(seq):
+    rr = ms.sql_query("SELECT content FROM hist.conversation_history WHERE seq=?", (seq,))
+    return rr[0]['content'] if rr else None
+
+# Sample: first ~6 user turns of sessions 61,63,66,70,76,77,80
+for s in [61,63,66,70,76,77,80]:
+    ut = [r for r in sess_turns[s] if r['role']=='user']
+    print(f"\n########## SESSION {s} ({ut[0]['date']}) ##########")
+    for r in ut[:6]:
+        c = full_content(r['seq'])
+        print(f"\n--- seq {r['seq']} ---")
+        print(c[:600])
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={The trajectory's only thematic search---growth vocabulary, bounded to the date range.}, label={lst:sum-c9}]
+hits = []
+for q in ["personal growth", "lessons learned", "personal growth trip", "growth", "changed me", "learned about myself"]:
+    hits += ms.search(q, seq_range=(13611, 18058), scope='task', k=6)
+seen = {}
+for h in hits:
+    if h['seq'] not in seen:
+        seen[h['seq']] = h
+print(len(seen))
+for seq, h in sorted(seen.items()):
+    print(seq, h.get('snippet','')[:160].replace('\n',' '))
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Verbatim expansion of eight growth-evidence addresses.}, label={lst:sum-c10}]
+rows = ms.expand([15138, 15489, 16441, 16678, 16824, 17216, 17712, 17932])
+for r in rows:
+    print(f"=== seq {r['seq']} | role={r['role']} ===")
+    print(r['content'][:900])
+    print()
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Targeted expansions plus two budget searches.}, label={lst:sum-c11}]
+rows = ms.expand([16009, 16018])
+for r in rows:
+    print(f"=== seq {r['seq']} | role={r['role']} ===")
+    print(r['content'][:800])
+    print()
+# also search budget / Pittsburgh delay / food overspend
+hits2 = ms.search("Pittsburgh delay", seq_range=(13611,18058), scope='task', k=5)
+for h in hits2:
+    print("HIT", h['seq'], h.get('snippet','')[:200].replace('\n',' '))
+hits3 = ms.search("food overspend", seq_range=(13611,18058), scope='task', k=5)
+for h in hits3:
+    print("HIT", h['seq'], h.get('snippet','')[:200].replace('\n',' '))
+\end{lstlisting}
+
+\begin{lstlisting}[style=scroll, caption={Final point reads (\texttt{seq} 16685, 17712).}, label={lst:sum-c12}]
+# Quick final check: confirm the "2 stops max" and "future travel" decision details from seq 17712 and 16678 context
+r1 = ms.sql_query("SELECT content FROM hist.conversation_history WHERE seq=16685")
+print(r1[0]['content'][:500])
+r2 = ms.sql_query("SELECT content FROM hist.conversation_history WHERE seq=17712")
+print(r2[0]['content'][:300])
+\end{lstlisting}
+

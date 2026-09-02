@@ -1,0 +1,41 @@
+\section{Setup}
+
+\subsection{Agent Settings}
+
+\paragraph{ReAct paradigm.} We focus on agents that follow a ReAct-style \citep{yao2023react} search-and-reason loop. Given a question $q$, an agent's policy $\pi_\theta$ produces, at each step $t$, a reasoning trace $\tau_t$ and an action $a_t$ conditioned on the running history $h_t = (q, \tau_1, a_1, o_1, \ldots, \tau_{t-1}, a_{t-1}, o_{t-1})$: $(\tau_t, a_t) \sim \pi_\theta(\cdot \mid h_t)$.
+Each action is either a tool call or a terminal answer; non-terminal actions yield an observation $o_t = \mathcal{T}(a_t)$ from the environment $\mathcal{T}$, which is appended to the history. A \emph{trajectory} is the resulting finite sequence $\xi = (\tau_1, a_1, o_1, \ldots, \tau_T, a_T)$, ending either with a terminal answer or with an early termination due to a step cap, context overflow, or tool error.
+
+\paragraph{Tool interface.} The tool interface contains two tools, \texttt{search} and \texttt{visit}.
+Both tools are routed to a local backend over the official BrowseComp-Plus corpus. The \texttt{search} tool issues a query $q'$ and returns the top-$K{=}5$ results retrieved by Qwen3-Embedding-8B \citep{zhang2025qwen3embedding}. Each result contains the document id, retrieval score, and a snippet truncated to $512$ tokens. The \texttt{visit} tool fetches the full document text given a document id.
+
+\begin{table*}[t]
+\centering
+\small
+\caption{Overall performance and per-question effort/cost on BrowseComp-Plus. \emph{Acc}: accuracy; \emph{Gold Rec.}: mean gold-document recall; \emph{Inc.}: incomplete rate; \emph{Q/turn}: queries per search turn ($>1$ = batching); effort/cost columns are \emph{median (mean)}.}
+\label{tab:overall}
+\begin{tabular}{lccccccc}
+\toprule
+Agent & Acc (\%) & Gold Rec.\ (\%) & Inc. (\%) & Search & Visit & Ctx (K) & Q/turn \\
+\midrule
+gpt-oss-120b           & 38.0 & 52.0 & 12.8 & 33 (32) & 1 (1.8) & 86 (83) & 1.00 \\
+Tongyi-DR              & 52.2 & 64.2 & 38.0 & 30 (28) & 3 (3.8) & 84 (77) & 1.00 \\
+Qwen3.5-35B-A3B        & 55.2 & 63.0 &  1.3 & 19 (22) & 1 (1.6) & 66 (74) & 1.74 \\
+\midrule
+Deepseek V4 Pro        & 68.6 & 75.4 &  0.7 & 21 (29) & 2 (1.8) & 72 (89) & 1.49 \\
+Kimi K2.6              & 69.2 & 78.2 & 16.5 & 22 (27) & 1 (1.2) & 68 (93) & 1.01 \\
+GLM 5.1                & 74.1 & 78.7 &  9.8 & 14 (20) & 2 (1.6) & 52 (73) & 1.87 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\paragraph{Agents.} We evaluate six agents in two scale tiers. All six have open weights, so the study never mixes open and closed systems and every rollout is in principle reproducible; what separates the tiers is model scale, and with it how we serve them. The \emph{mid-scale} tier comprises Tongyi DeepResearch \citep{Team2025TongyiDeepResearchTechnical}, Qwen3.5-35B-A3B \citep{qwen2025qwen3}, and gpt-oss-120b \citep{openai2025gptoss}, none above roughly $120$B total parameters; we serve their released checkpoints locally. The \emph{frontier-scale} tier comprises Kimi K2.6 \citep{kimi2026k26}, GLM 5.1 \citep{zeng2026glm}, and Deepseek V4 Pro \citep{deepseekai2026deepseekv4}, each substantially larger and reached through its provider's API. All six run through the same ReAct harness, which exposes \texttt{search} and \texttt{visit} as native tools and records reasoning traces, tool calls, tool returns, and the final answer per question. Each rollout is capped at $128$ turns and $150$ minutes; hitting either cap without an answer is recorded as \emph{incomplete}, as analyzed in §\ref{sec:results-failure}. The models use their recommended sampling parameters.
+
+\subsection{Benchmark and Evaluation Signals}
+\label{sec:signals}
+\label{sec:impl}
+
+We instantiate our analysis on \textbf{BrowseComp-Plus} \citep{Chen2025BrowseComp-PlusAMore}, a depth-oriented information-seeking benchmark of $830$ English questions paired with a fixed corpus and human-annotated qrels. We adopt it as our sole benchmark because it is the only public benchmark in this regime that provides the per-query, document-level relevance judgments our framework requires. Holding the corpus, retriever interface, and supervision signal fixed across agents isolates behavioral differences from setup confounds. Over the fixed ${\sim}100$K-document corpus, each question has an average of $6.10$ evidence-graded documents and $2.90$ gold-graded documents; the gold set is a strict subset of the evidence set.
+
+BrowseComp-Plus's qrels come in two layers: a broader \emph{evidence-qrels} set covering documents with topical relevance to the question, and a stricter \emph{gold-qrels} set covering documents whose content is sufficient to derive the gold answer. We use both, but for different diagnoses. In the cross-agent attribution and episode-level mechanism analyses of §\ref{sec:results-attribution}--\ref{sec:results-mechanism}, $E(q)$ denotes the evidence-qrels set; a retrieved document counts as evidence iff its corpus document id appears in $E(q)$, regardless of surface relatedness. For the failure-mode classification in §\ref{sec:results-failure}, we use the stricter gold-qrels set $G(q) \subseteq E(q)$, since calling a wrong answer a \emph{utilization} failure requires that the trajectory have surfaced evidence sufficient to derive the right answer.
+
+Both qrel signals are deterministic and independent of LLM judging, so the retrieval-side metrics in §\ref{sec:results-mechanism} and the failure classification in §\ref{sec:results-failure} are not confounded with answer-judging noise. End-to-end answer correctness is the only judgment task in our pipeline. Following the official BrowseComp protocol, GPT-4o judges each prediction against the BrowseComp-Plus gold answer with binary correct/incorrect labels; we use \texttt{gpt-4o-2024-08-06} at temperature $0$. End-to-end correctness therefore rests on this single judge, while the retrieval-side metrics do not, localizing any judge noise to the accuracy axis alone.

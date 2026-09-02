@@ -1,0 +1,45 @@
+% ============================================================
+\section{Experimental Setup}
+\label{sec:setup}
+% ============================================================
+
+\subsection{Benchmarks}
+\label{sec:setup-benchmarks}
+
+We evaluate Scroll in two long-horizon settings:
+(1) retrieving and reasoning over interaction histories that exceed the live context, and (2) reasoning and acting in an agentic environment whose state grows over time.
+
+\paragraph{Long-term memory retrieval and reasoning.}
+\texttt{LongMemEval}~\citep{wu2025longmemeval} poses questions over a history of prior user--assistant conversations. Answering may require locating evidence scattered across sessions, resolving temporal dependencies and knowledge updates, and reasoning over the retrieved evidence. The benchmark provides three settings with increasing amounts of distractor history: \texttt{Oracle}, where the history contains only the evidence sessions; and \texttt{S} and \texttt{M}, where each question is paired with roughly 50 and 500 sessions (${\sim}115$K and ${\sim}1.5$M tokens) of history, respectively.
+
+\texttt{BEAM}~\citep{beam} extends this evaluation to substantially longer coherent histories. Its questions may require collecting non-adjacent evidence, tracking changes over time, deduplicating repeated information, or aggregating facts distributed throughout the history. The benchmark spans four history scales (128K, 500K, 1M, and 10M tokens); at the largest scale, BEAM$_{10M}$, histories cannot be consumed directly within current model context windows.
+
+\paragraph{Long-context reasoning and acting.}
+\texttt{LOCA}~\citep{zeng2026loca} evaluates agents that must reason, invoke tools, and modify an environment as the available environment state accumulates. LOCA measures whether an agent can continue to reason and act throughout a growing tool-use trajectory. The benchmark scales the \emph{environment description length} (the token count of the full environment state as seen through tool outputs) across seven regimes from 8K to 256K tokens; we evaluate on the two largest regimes (128K and 256K).
+
+
+\subsection{Agent Configuration}
+\label{sec:setup-agent}
+
+Our main experiments use Qwen3.8-Max as the agent backbone. All context management methods are implemented and evaluated on top of QwenPaw~\citep{qwenpaw}, an agent operating system providing tool invocation and execution infrastructure, and orchestrated with Harbor~\citep{harbor} in the benchmark-provided environments. Our implementation to reproduce all reported results is available at \url{https://github.com/niceIrene/QwenPaw/tree/scroll-research}.
+
+Scroll exposes its functionality to the agent through a set of tools, of which the following two implement the \texttt{exec} action of Section~\ref{sec:method}.
+
+\begin{itemize}[leftmargin=1.4em,itemsep=1pt,topsep=2pt]
+    \item \texttt{repl\_exec} executes a model-generated Python cell in the persistent kernel. Environment tools are exposed as Python functions forwarded to the underlying services, enabling programmatic tool calling; all intermediate computation stays in the kernel, and only explicit, budgeted \texttt{print} output enters the model's working window.
+    \item \texttt{recall\_history\_python} executes a cell with the memory surface \texttt{ms} bound: \texttt{ms.search} locates evicted records and \texttt{ms.expand} materializes them as Python objects, which the model filters, combines, or aggregates in the kernel before printing a distilled result.
+\end{itemize}
+
+
+We use a single system prompt and one set of context-management rules across all benchmarks, with no few-shot demonstrations. Each memory benchmark contributes only a short rubric specifying its data layout, memory-surface usage, evidence-selection conventions, and answer format (see detailed prompts in Appendix~\ref{app:prompts}). For LOCA, we use the benchmark's official task instructions unmodified, adding only environment metadata (available APIs and workspace paths). 
+
+To test generality across backbones, we additionally evaluate Qwen3.7-Max, Deepseek-v4-pro, GLM-5.2, Kimi-K2.7, and Qwen3.6-35B-A3B (an open-weight model with a smaller active-parameter footprint), changing only the foundation model.
+
+\subsection{Evaluation Protocol}
+\label{sec:setup-protocol}
+
+% first ingest each instance's conversation history into Scroll's backing store (\texttt{history.db}). Ingestion stores the raw history as-is and involves no LLM invocation for summarization, fact extraction, or embedding, so constructing memory incurs zero LLM cost. 
+For the two memory benchmarks, we ingest each conversation history into Scroll session by session, in chronological order. At each session boundary, the raw context is cleared, and only Scroll's internal state (the eviction index and the Event Log) is carried forward to subsequent sessions.
+For LOCA, each task starts from the benchmark-provided initial environment state. The agent explores and acts on the environment directly, with Scroll managing its context as the trajectory grows.
+
+LongMemEval and BEAM are scored with their benchmark-provided LLM-as-a-judge prompts, using Qwen3.6-flash at temperature \(0\) as the judge; we report accuracy for LongMemEval and the judge score for BEAM. LOCA is scored with its native rule-based verifier, which checks the final environment state, and we report accuracy. Unless otherwise noted, each task is evaluated once in the benchmark-provided container with a random seed; we also record model-facing input and output tokens and the number of interaction turns for each task.

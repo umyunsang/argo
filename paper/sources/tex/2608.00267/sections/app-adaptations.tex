@@ -1,0 +1,31 @@
+\section{Evaluation Adapter Details}\label{app:adaptations}
+
+\lhb{} evaluates six widely used coding agent loop implementations through a uniform \texttt{BaseAgent} contract. The evaluation adapters normalize credential handling, model identifiers, and workspace conventions, so Table~\ref{tab:rq1} can vary model choice and loop implementation while holding the task contract fixed.
+
+Each run records the evaluation adapter boundary because it determines how an evaluated loop receives requirements, commits work, records plans, and returns artifacts used to compute loop trace metrics.
+
+\paragraph{Workspace and git contract.}
+
+Each evaluated loop executes inside \texttt{/workspace} in a per task Docker container built from the task's \texttt{Dockerfile}, providing every adapter with the same filesystem and execution boundary.
+
+The directory is initialized as a git repository with three subtrees recorded by the evaluation runtime. \texttt{requirements/} contains per unit YAML manifests presented during evaluation, \texttt{agent\_plans/} stores the optional \texttt{plan.json} for RQ2 plan analysis, and \texttt{requirement\_patches/} stores one \texttt{<slug>.diff} per implemented unit derived from \texttt{git diff --cached}.
+
+A unit enters the recorded implementation set after its patch file is non empty. Checkpoint detection (\path{long_horizon_bench/harness/regression_harness.py}) uses \texttt{min\_diff\_lines=5} as the minimum diff growth for a snapshot trigger. The per unit threshold is derived from the smallest gold artifact currently on the ready frontier, making snapshot frequency follow recorded implementation progress rather than transcript length or turn count.
+
+\paragraph{Evaluation adapters.}
+
+\textit{Claude Code} is evaluated through the Anthropic Agent SDK with a \path{ContainerWorkspaceBackend} that proxies the SDK bash and edit tools into the task container. Loop traces and per trial usage are written to \path{claude_sdk_trajectory.jsonl} and \path{claude_sdk_result.json}.
+
+\textit{Codex} uses a custom \texttt{model\_provider} block, \texttt{lhb\_azure} or \texttt{lhb\_proxy}, injected into \texttt{config.toml}. This preserves the Codex invocation contract while routing model calls through the evaluation provider layer, keeping provider transport separate from loop behavior.
+
+\textit{GitHub Copilot CLI} is evaluated in noninteractive mode against a sidecar at \texttt{AZURE\_SIDECAR\_PORT=23337}, reached through the container default gateway IP in default compose setups that omit \texttt{host.docker.internal}.
+
+\textit{Cursor CLI} uses an adapter that maps Anthropic shorthand to Cursor model IDs before invoking \texttt{agent --model}.
+
+\textit{mini-SWE-agent} is installed inside the container at \texttt{/opt/python} through \texttt{pip --prefix} with an explicit \texttt{PYTHONPATH} adjustment. Models prefixed with \texttt{copilot/} are rewritten to \texttt{openai/}, allowing LiteLLM to reach the OpenAI compatible proxy.
+
+\textit{SWE-agent} applies a compatibility patch that removes the \texttt{top\_p} keyword. Anthropic rejects requests carrying both \texttt{temperature} and \texttt{top\_p}, while the SWE-agent defaults set both fields.
+
+\paragraph{Credential isolation.}
+
+Earlier versions of the evaluation adapter wrote Azure AD tokens and Copilot keys into \texttt{os.environ} inside a context manager. Under the \texttt{ThreadPoolExecutor} used by the evaluation runtime, concurrent trials could overwrite shared tokens, and cleanup from one trial could clear a credential entry while another trial remained active. The current evaluation adapters pass credentials as explicit kwargs to \texttt{run\_task} (\texttt{azure\_ad\_token\_provider}, \texttt{copilot\_api\_key}, \texttt{anthropic\_api\_key}), preventing credential races from being attributed to the evaluated loop.

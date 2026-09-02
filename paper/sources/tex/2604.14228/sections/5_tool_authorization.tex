@@ -1,0 +1,119 @@
+\begin{figure}[!t]
+  \centering
+  \begin{minipage}[c]{0.54\linewidth}
+      \centering
+      \includegraphics[width=\linewidth]{resources/pdf_figs/permission.pdf}
+  \end{minipage}%
+  \hfill
+  \begin{minipage}[c]{0.44\linewidth}
+      \centering
+      \scriptsize
+      \setlength{\tabcolsep}{4pt}
+      \renewcommand{\arraystretch}{1.1}
+      \begin{tabular}{@{}>{\centering\arraybackslash}p{2.0cm}>{\raggedright\arraybackslash}p{4.2cm}@{}}
+          \toprule
+          \textbf{Principle} & \textbf{Description} \\
+          \midrule
+          Progressive Trust & The agent starts with minimal autonomy; users expand it by approving tool invocations that become permanent rules. \\
+          \addlinespace
+          Deny-First, Ask-by-Default & Deny rules always win, even under looser modes. In default and manual approval modes, unmatched risk-bearing actions ask the user instead of running silently; optional auto mode routes many such reviews through classifier-mediated checks. \\
+          \addlinespace
+          Composable Policy & Three mechanisms shape policy: declarative rules, global trust modes, and programmable hooks, each independently configurable. \\
+          \bottomrule
+      \end{tabular}
+  \end{minipage}
+  \caption{Permission gate overview and design principles.}
+  \label{fig:permission}
+\end{figure}
+
+\section{Tool Authorization and Control Boundaries}
+\label{sec:auth}
+
+Production coding agents adopt different safety architectures: layered policy enforcement, OS-level sandboxing, or version-control-based rollback. Claude Code combines the first two, implementing four design principles from \Cref{tab:principles}: \emph{deny-first with human escalation}, \emph{graduated trust spectrum}, \emph{defense in depth with layered mechanisms}, and \emph{reversibility-weighted risk assessment}.
+
+When Claude decides to execute a tool (for example, running \code{npm test} via BashTool to reproduce the auth test failure), the request enters the permission pipeline shown in \Cref{fig:permission}. Except in bypass mode, tool invocations pass through the permission system. In the default interactive posture, actions beyond read-only access ask for approval rather than run silently, while more permissive modes replace some prompts with scoped auto-approval, denial, or classifier-mediated review. This default is motivated by a documented behavioral pattern: Anthropic's auto-mode analysis~\citep{anthropic2026automode} found that users approve approximately 93\% of permission prompts, indicating that approval fatigue renders interactive confirmation behaviorally unreliable as a sole safety mechanism. Because users habitually approve without careful review, the system must maintain safety independently of human vigilance. This motivates the architectural commitment to deny-first evaluation, blanket-deny pre-filtering, and sandboxing as independent layers that operate regardless of user attentiveness.
+
+\subsection{Permission Modes and Rule Evaluation}
+\label{sec:auth:modes}
+
+Seven permission modes exist across the type definitions (5 external modes at \file{types/permissions.ts}; \code{auto} added conditionally; \code{bubble} in the type union):
+
+\begin{enumerate}[nosep]
+  \item \code{plan}: The model must create a plan; execution proceeds only after user approval.
+  \item \code{default}: Standard interactive use. Most operations require user approval.
+  \item \code{acceptEdits}: Edits within the working directory and certain filesystem shell commands (mkdir, rmdir, touch, rm, mv, cp, sed) are auto-approved; other shell commands require approval.
+  \item \code{auto}: An ML-based classifier evaluates requests that do not pass fast-path checks (gated by \code{TRANSCRIPT\_CLASSIFIER}).
+  \item \code{dontAsk}: Prompts are suppressed, and actions that would otherwise prompt are auto-denied; explicit allow and deny rules still apply.
+  \item \code{bypassPermissions}: Skips most permission prompts, but safety-critical checks and bypass-immune rules still apply.
+  \item \code{bubble}: Internal-only mode for subagent permission escalation to the parent terminal.
+\end{enumerate}
+
+The five externally visible modes (\code{acceptEdits}, \code{bypassPermissions}, \code{default}, \code{dontAsk}, \code{plan}) are defined in the \code{EXTERNAL\_PERMISSION\_MODES} array. The \code{auto} mode is conditionally included only when the \code{TRANSCRIPT\_CLASSIFIER} feature flag is active. The \code{bubble} mode exists in the type union but not in either mode array; it is used internally for subagent permission escalation (\Cref{sec:subagent}).
+
+Permission rules are evaluated in deny-first order (\file{permissions.ts}). The \func{toolMatchesRule} function checks deny rules first: a deny rule always takes precedence over an allow rule, even when the allow rule is more specific. A broad deny (``deny all shell commands'') cannot be overridden by a narrow allow (``allow \code{npm test}''). The rule system supports tool-level matching (by tool name) and content-level matching (matching specific tool input patterns, such as \code{Bash(prefix:npm)}).
+
+The seven modes span a graduated autonomy spectrum, from \code{plan} (user approves all plans before execution) through \code{default} and \code{acceptEdits} to \code{bypassPermissions} (minimal prompting). This gradient reflects a recurring design tension: as autonomy increases, the system must shift from interactive approval to automated safety checks. Other agent systems resolve this tension differently. SWE-Agent and OpenHands~\citep{yang2024sweagent,wang2024openhands} use Docker container isolation, sandboxing the agent's entire execution environment rather than evaluating individual tool invocations. Aider~\citep{gauthier2024aider} relies on Git as a safety net, making all changes reversible through version control. Claude Code's approach layers multiple policy-enforcement mechanisms on top of optional container sandboxing, trading simplicity for fine-grained control over individual actions.
+
+\subsection{The Authorization Pipeline}
+\label{sec:auth:pipeline}
+
+
+
+The full authorization pipeline proceeds through several stages:
+
+\paragraph{Pre-filtering.}
+Before any tool request reaches runtime evaluation, \func{filterToolsByDenyRules} (\file{tools.ts}) strips blanket-denied tools from the model's view entirely at tool pool assembly time. The documentation states: ``Uses the same matcher as the runtime permission check, so MCP server-prefix rules like \code{mcp\_\_server} strip all tools from that server before the model sees them.'' This prevents the model from attempting to invoke forbidden tools, so the model does not waste calls on them.
+
+\paragraph{PreToolUse hook.}
+Registered hooks fire as part of the permission pipeline. A PreToolUse hook can return a \code{permissionDecision} to deny or ask, or an \code{updatedInput} that modifies the tool's input parameters (\file{types/hooks.ts}). A hook \code{allow} does not bypass subsequent rule-based denies or safety checks. In the interactive path, the user dialog is queued first and hooks run asynchronously; coordinator and similar background-agent paths await automated checks before showing the dialog.
+
+\paragraph{Rule evaluation.}
+The deny-first rule engine evaluates the request. MCP tools are matched by their fully qualified \code{mcp\_\_server\_\_tool} name, and server-level rules match all tools from that server.
+
+\paragraph{Permission handler.}
+The handler in \file{useCanUseTool.tsx} branches into one of four paths based on runtime context:
+
+\begin{enumerate}[nosep]
+  \item \textbf{Coordinator}: For multi-agent coordination mode. Attempts automated resolution (classifier, hooks, rules) before falling back to user interaction.
+  \item \textbf{Swarm worker}: Handles worker agents in a multi-agent swarm with their own resolution logic.
+  \item \textbf{Speculative classifier}: When \code{BASH\_CLASSIFIER} is enabled and the tool is BashTool, a speculative classifier races a pre-started classification result against a timeout. If the classifier returns with high confidence, the tool is approved instantly without user interaction.
+  \item \textbf{Interactive}: The fallback path. Presents the standard user approval dialog through the terminal UI.
+\end{enumerate}
+
+In coordinator and some background paths, automated resolution is attempted before user interaction. In the standard interactive path, the dialog can appear first while hooks or classifier checks continue in parallel. When the classifier or a deny rule blocks an action, the system treats the denial as a routing signal rather than a hard stop: the model receives the denial reason, revises its approach, and attempts a safer alternative in the next loop iteration. The \code{PermissionDenied} hook event (\Cref{sec:ext}) enables external code to observe and respond to these denials programmatically. This recovery-oriented design means that permission enforcement shapes the agent's behavior rather than simply halting it.
+
+\subsection{Auto-Mode Classifier and Hook Lifecycle}
+\label{sec:auth:classifier}
+
+The auto-mode classifier (\file{yoloClassifier.ts}) participates in permission decisions when enabled. When \code{TRANSCRIPT\_CLASSIFIER} is enabled, the classifier loads three prompt resources:
+
+\begin{itemize}[nosep]
+  \item A base system prompt.
+  \item An external permissions template.
+  \item For Anthropic-internal users, a separate internal template.
+\end{itemize}
+
+The classifier evaluates the proposed tool invocation against the conversation transcript and the permission template, producing an allow, deny, or request for manual approval. The function \func{isUsingExternalPermissions} checks \code{USER\_TYPE} and a \code{forceExternalPermissions} config flag to select the appropriate template.
+
+Of the 27 hook events defined in the source (\file{coreTypes.ts}), five participate directly in the permission flow, each with a specific Zod-validated output schema (\file{types/hooks.ts}):
+
+\begin{itemize}[nosep]
+  \item \textbf{PreToolUse}: Can return \code{permissionDecision} (deny or ask, but allow does not bypass subsequent checks), \code{permissionDecisionReason}, and \code{updatedInput} (modify parameters).
+  \item \textbf{PostToolUse}: Can inject \code{additionalContext} and, for MCP tools, return \code{updatedMCPToolOutput} to modify results before they enter the context.
+  \item \textbf{PostToolUseFailure}: Can inject \code{additionalContext} for error-specific guidance.
+  \item \textbf{PermissionDenied}: Can provide \code{retry} guidance after auto-mode denials.
+  \item \textbf{PermissionRequest}: Can return a \code{decision} of \code{allow} or \code{deny}. In coordinator and similar paths, this can resolve before the user dialog. In the standard interactive path, it can also run alongside the dialog.
+\end{itemize}
+
+For non-MCP tools, the \code{tool\_result} is emitted before the PostToolUse hook fires. For MCP tools, the result is delayed until after post hooks have run, enabling \code{updatedMCPToolOutput} to take effect.
+
+\subsection{Shell Sandboxing}
+\label{sec:auth:sandbox}
+
+Shell sandboxing provides an additional layer of protection for Bash and PowerShell commands (\file{shouldUseSandbox.ts}). The \func{shouldUseSandbox} function checks whether sandboxing is globally enabled, whether the invocation has opted out, and whether the command matches any exclusion patterns.
+
+When active, the sandbox provides filesystem and network isolation independent of the application-level permission model.\footnote{Independent security research reports a parser-differential gap in this network confinement during the analyzed window: the host allowlist used a JavaScript suffix match while name resolution truncated at an embedded null byte, so a crafted hostname could pass the suffix check yet resolve to a different, blocked host. The reported affected range (v2.0.24--v2.1.89) includes the v2.1.88 snapshot analyzed here, and no CVE was assigned~\citep{cybersecnews2026sandbox} (\tierC{}).} A command can be permission-approved but still sandboxed, or permission-denied and never reach the sandbox check. The two systems operate on different axes: authorization versus isolation.
+
+The layered safety architecture rests on an independence assumption: if one layer fails, others catch the violation. However, several layers share common performance constraints. Security researchers~\citep{adversa2026bypass} have documented that commands with more than 50 subcommands fall back to a single generic approval prompt instead of running per-subcommand deny-rule checks, because per-subcommand parsing caused UI freezes. This example demonstrates that defense-in-depth can degrade when its layers share failure modes, a structural tension between safety and performance analyzed further in \Cref{sec:discuss:tradeoffs}.
+
+The permission pipeline governs whether a tool request executes. The next section examines what determines which tools exist in the first place: the extensibility architecture that assembles the model's action surface.

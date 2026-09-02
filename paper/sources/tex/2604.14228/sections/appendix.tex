@@ -1,0 +1,144 @@
+\section*{Evidence Base and Methodology}
+\label{sec:method}
+
+This appendix records the evidence sources, analytic procedure, and limits of the study.
+
+\subsection*{Evidence Base and Evidence Tiers}
+
+Claims in this paper are grounded at three evidence tiers:
+
+\begin{itemize}[nosep]
+  \item \tierA{} \textbf{(product-documented)}: Claims drawn from official Anthropic documentation and engineering publications. These establish product intent but may not reflect internal implementation.
+  \item \tierB{} \textbf{(code-verified)}: Claims citing specific files and functions in the extracted TypeScript codebase (v2.1.88, obtained from a publicly available npm package extraction). This is the strongest evidence tier.
+  \item \tierC{} \textbf{(reconstructed)}: Claims derived from community analysis, OpenClaw or Hermes Agent structural comparison, or inference from code patterns. These are stated with hedging language.
+\end{itemize}
+
+The source corpus comprises approximately 1,884 files totaling roughly 512K lines of TypeScript.
+OpenClaw and Hermes Agent are used as comparative reference points rather than as ground-truth standards.
+
+\subsection*{Design-Space Analytic Procedure}
+
+Design questions were identified by examining each subsystem for recurring choice points where alternative designs exist in other production agents.
+Claude Code's answers to each question were traced through specific source files and function implementations (\tierB{} evidence).
+The five-value framework (human decision authority, safety, security, and privacy, reliable execution, capability amplification, and contextual adaptability) was identified from official documentation and creator statements (\tierA{}), then traced through thirteen design principles to architectural decisions.
+Long-term capability preservation is treated separately as a cross-cutting question rather than a design value, because it is not prominently reflected as a design driver in the architecture or in Anthropic's stated values (\Cref{sec:values:lens}).
+Token economics serves as a cross-cutting constraint that bounds all five values simultaneously, revealing how individual subsystem choices interact under shared resource pressure.
+
+\subsection*{Limitations}
+\label{sec:method:limits}
+
+\begin{itemize}[nosep]
+  \item \textbf{Static snapshot.} Analysis reflects one version (v2.1.88). Feature flags (\eg, \code{TRANSCRIPT\_CLASSIFIER}, \code{CONTEXT\_COLLAPSE}) create build-time variability. Different build targets may produce functionally different applications.
+  \item \textbf{Reverse-engineering epistemology.} Source code reveals implemented structure, control flow, dependencies, and feature gates. It cannot confirm design intent, enabled production flags, runtime prevalence, or unshipped behavior.
+  \item \textbf{Single-system analysis.} Findings describe Claude Code's design space, not the entire design space of coding agents. Generalizations are bounded.
+  \item \textbf{Comparison-system snapshots.} The OpenClaw and Hermes Agent analyses each reflect a specific development state and may not represent their current capabilities.
+\end{itemize}
+
+\section*{Package Structure}
+\label{sec:appendix}
+
+This part maps the main TypeScript package to runtime responsibilities.
+
+\subsection*{Directory-to-Responsibility Map}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{resources/pdf_figs/fig7_package_structure_v2.pdf}
+\caption{Extracted package structure mapped to runtime responsibilities. Left column: TypeScript source directories and key files. Right column: inferred runtime roles. This appendix represents reconstructed analysis (Tier~C evidence), not official Anthropic documentation.}
+\label{fig:package}
+\end{figure}
+
+The package (\Cref{fig:package}) is organized around a \file{src/} directory. \Cref{tab:key-files} lists the key files that form the main subsystems.
+
+\begin{table}[h]
+\centering
+\caption{Key files by approximate size and runtime responsibility.}
+\label{tab:key-files}
+\small
+\begin{tabular}{llp{4.5cm}}
+\toprule
+\textbf{File} & \textbf{Size} & \textbf{Responsibility} \\
+\midrule
+\file{main.tsx} & 804KB & Entry point, mode dispatch, setup \\
+\file{query.ts} & 68KB & Core agent loop, 5 context shapers \\
+\file{QueryEngine.ts} & 47KB & SDK/headless conversation wrapper \\
+\file{Tool.ts} & 30KB & Tool interface, types, utilities \\
+\file{history.ts} & 14KB & Global prompt history \\
+\file{mcp/client.ts} & Large & MCP client (8+ transport variants) \\
+\file{compact.ts} & Large & Compaction engine \\
+\file{AgentTool.tsx} & Large & Agent tool, subagent dispatch \\
+\file{runAgent.ts} & Large & Agent lifecycle and coordination \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The \file{tools/} directory contains approximately 42 subdirectories implementing tools, with the corresponding schema, description, permission requirements, and execution logic. The \file{commands/} directory contains approximately 86 slash command subdirectories.
+
+Key service directories include \file{services/tools/} (StreamingToolExecutor, toolOrchestration, toolExecution), \file{services/compact/} (compaction engine), and \file{services/mcp/} (MCP client and configuration). The permission infrastructure spans \file{utils/permissions/} (rule evaluation, classifier), \file{hooks/useCanUseTool.tsx} (permission handler), \file{types/permissions.ts} (mode definitions), and \file{types/hooks.ts} (event schemas).
+
+A structural quirk: \file{query.ts} (file) and \file{query/} (directory) coexist. The file contains the main query loop. The directory houses helper modules for loop configuration and context assembly.
+
+\subsection*{Conditional Tool Availability}
+
+The \func{getAllBaseTools} function (\file{tools.ts}) constructs different tool sets depending on mode, build, environment, and feature flags (\Cref{tab:tool-availability}). The model may see as few as 3 tools in simple mode (Bash, Read, Edit) or up to 54 tools (19 unconditional plus 35 conditional) in a full internal build with all features enabled.
+
+\begin{table}[t]
+\centering
+\caption{Conditional tool availability categories.}
+\label{tab:tool-availability}
+\small
+\begin{tabularx}{\columnwidth}{lX}
+\toprule
+\textbf{Category} & \textbf{Examples} \\
+\midrule
+Always included & AgentTool, BashTool, FileReadTool, FileEditTool, FileWriteTool, SkillTool, WebFetchTool, WebSearchTool \\
+\midrule
+Environment & GlobTool/GrepTool (unless embedded), ConfigTool (ant-only), PowerShellTool (Windows) \\
+\midrule
+Feature flag & TaskCreate/Get/Update/List (\code{todoV2}), EnterWorktreeTool (\code{worktree}), TeamTools (\code{swarms}), ToolSearchTool \\
+\midrule
+Null-checked & SuggestBackgroundPRTool, WebBrowserTool, RemoteTriggerTool, MonitorTool, SleepTool \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection*{Cross-File Dependencies}
+
+The import graph includes the following dependency structure. \code{QueryEngine.ts} delegates to \code{query.ts} for turn execution. \code{query.ts} imports from \file{services/tools/} (StreamingToolExecutor, runTools) and \file{services/compact/} (autoCompact, buildPostCompactMessages). \code{QueryEngine.ts} imports from \file{memdir/} for memory and prompt assembly. The code explicitly avoids circular imports: \file{types/permissions.ts} was extracted to break import cycles, and \func{setCachedClaudeMdContent} in \file{context.ts} avoids a cycle through the permissions/filesystem path.
+
+\section*{Community Reimplementations}
+\label{sec:appendix:community}
+
+After the Claude Code TypeScript source became publicly readable, several community projects published independent reimplementations. This appendix lists a few representative examples.
+
+\subsection*{Representative Projects}
+\label{sec:appendix:community:list}
+
+\Cref{tab:reimplementations} lists five reimplementations identified from the public ecosystem as of 2026. Each project is a working CLI agent rather than a passive source dump or annotation pass. The set spans four runtime targets (Python, Rust, TypeScript with Bun, JavaScript via npm) and three rebuild methodologies (independent rewrites from observed behavior, fork from a TypeScript snapshot with reconstructed build, and automated decompilation pipelines).
+
+\begin{table}[h]
+\centering
+\caption{Representative community reimplementations of Claude Code (as of 2026).}
+\label{tab:reimplementations}
+\small
+\begin{tabularx}{\columnwidth}{lll>{\raggedright\arraybackslash}X}
+\toprule
+\textbf{Project} & \textbf{Runtime} & \textbf{Citation} & \textbf{Methodology} \\
+\midrule
+ClawCodex & Python & \citep{clawcodex2026} & Port plus multi-provider model layer \\
+\addlinespace
+Claw Code & Rust & \citep{clawcoderust2026} & Independent Rust rewrite \\
+\addlinespace
+claude-code-working & TypeScript / Bun & \citep{claudecodeworking2026} & Reverse-engineered, runnable \\
+\addlinespace
+Claude Code Source: Buildable Research Fork & TypeScript & \citep{tlabclaude2026} & Build system reconstructed from snapshot \\
+\addlinespace
+Open Claude Code & JavaScript / npm & \citep{openclaudecode2026} & Nightly auto-decompile pipeline \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section*{Companion Design-Space Resources}
+\label{sec:appendix:community:resources}
+
+The project repository maintains companion notes that track new agent-system developments as they appear; these are not evidence for Claude Code's implementation, which remains grounded in the evidence tiers above~\citep{vilalab2026designnotes}.

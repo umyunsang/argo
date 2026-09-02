@@ -1,0 +1,149 @@
+\section{\heb: Harness Optimization as a Task}
+\label{sec:task}
+
+Harness optimization is a constrained, stochastic
+program-optimization problem. Algorithm~\ref{alg:protocol} summarizes the
+interaction protocol an optimizer must satisfy; this section defines each element in its
+general form, then fixes it for this work.
+
+\begin{algorithm}[t]
+\caption{The \heb\ protocol}
+\label{alg:protocol}
+\begin{algorithmic}[1]
+\Require $H_0$; $\theta=(\mathcal{M},E,V)$; $B$; $\pi$
+\State $\mathcal{C}\gets\{H_0\}$
+\While{$\sum_j c_j\leq B$ and no candidate is nominated}
+  \State \textbf{either}: commit $H'\in\mathcal{H}$ and add it to $\mathcal{C}$
+  \State \textbf{or}: choose $H\in\mathcal{C}$ and cases $Q$
+  \State $(\hat{s},\varphi)\gets F_{\theta}(H,Q)$
+  \State observe $\pi_{\mathcal{D}}(\hat{s},\varphi)$
+\EndWhile
+\State nominate $H^{+}\in\mathcal{C}$
+\State server evaluates $H^{+}$ on $\mathcal{D}^{\mathrm{test}}$
+\State \textbf{report} $g$ from Eq.~\ref{eq:normalized-gain}
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{The optimization problem}
+
+\paragraph{Candidates and invariants.}
+A candidate harness $H$ is an executable codebase. No semantic partition is imposed between
+prompts, tool definitions, memory, and control flow. The optimizer may edit, add,
+or delete files subject to a fixed execution interface and a small set of
+immutable paths. We write $\mathcal{H}$ for the feasible set and
+$H_0\in\mathcal{H}$ for the pinned seed. A task additionally fixes invariants $\theta=(\mathcal{M},E,V)$:
+the models $\mathcal{M}$ available to a candidate, the environment $E(x)$ associated with each case $x$, and the verifier $V$ mapping a completed trajectory to a score in $[0,1]$. The optimizer may change $H$ but not $\theta$; changing $\theta$ defines a different task, not a different candidate. A harness' web access, for example, might be controlled by $E$. 
+
+\paragraph{Evaluation and disclosure.}
+Cases are partitioned into disjoint development, validation, and test sets,
+$\mathcal{D}^{\mathrm{dev}}$, $\mathcal{D}^{\mathrm{val}}$, and
+$\mathcal{D}^{\mathrm{test}}$. Executing harness $H$ on case $x$ produces a
+stochastic trajectory
+$\tau\sim\operatorname{Rollout}(H,\theta,x)$, to which the verifier assigns
+score $V(\tau,x)$. We define the expected score on partition $\mathcal{D}$ as
+\begin{equation}
+\mathcal{E}_{\theta}(H;\mathcal{D}) = 
+\mathbb{E}_{x\sim\mathcal{D}}
+\mathbb{E}_{\tau\sim\operatorname{Rollout}(H,\theta,x)}
+\left[V(\tau,x)\right],
+\end{equation}
+and abbreviate $\mathcal{E}_{\theta}(H;\mathcal{D}^{\mathrm{test}})$ as
+$\mathcal{E}_{\theta}(H)$. During search, the optimizer may request an
+evaluation of $H$ on a subset
+$Q\subseteq\mathcal{D}^{\mathrm{dev}}$ or
+$Q\subseteq\mathcal{D}^{\mathrm{val}}$:
+\begin{equation}
+F_{\theta}(H,Q)\longrightarrow(\hat{s},\varphi),
+\end{equation}
+where $\hat{s}$ estimates aggregate performance on $Q$ (e.g. sample mean) and $\varphi$ contains per-case
+outcomes and execution traces. A partition-specific disclosure policy
+$\pi_{\mathcal{D}}$ determines which of these outputs the optimizer observes.
+Development reveals case inputs, per-case outcomes, and traces to support
+diagnosis; validation reveals only an aggregate score to support selection.
+The test partition is inaccessible during search and is evaluated by the
+trusted server only after the optimizer nominates a candidate.
+
+
+\paragraph{Budget.}
+Each evaluation request $j$ incurs a non-negative cost vector
+$c_j\in\mathbb{R}_{\geq 0}^{d}$, and search must satisfy $\sum_j c_j\leq B$
+componentwise for a fixed budget vector $B$, so the optimizer chooses what to
+evaluate and at what fidelity. In \heb, the primary components of $B$ are caps
+of 100 evaluation calls per partition and four full case passes on each of the
+development and validation partitions, plus a cap on total expendable
+target-model tokens. The optimizer's own inference is metered for observability
+but uncapped in this work, though
+the framework permits capping it.
+
+\paragraph{Optimizer.}
+An optimizer $O$ is any program satisfying
+the interface of Algorithm~\ref{alg:protocol} that receives $H_0$, interacts with $F_{\theta}$
+under disclosure $\pi$ and budget $B$, produces candidates
+$H_1,\ldots,H_T\in\mathcal{H}$, and nominates a final candidate $H^{+}$. In our work, the optimizer
+is an LLM operating through a coding harness.
+
+\paragraph{Objective.}
+The optimizer maximizes the expected improvement of its nominated candidate over
+the pinned seed on the held-out partition,
+\begin{align*}
+\max_{H \in \mathcal{H}}\quad
+\![
+  \mathcal{E}_{\theta}(H) - \mathcal{E}_{\theta}(H_0)
+]
+\quad\text{s.t.}\quad
+\sum_j c_j\leq B,
+\end{align*}
+Since $H_0$ is pinned, $\mathcal{E}_{\theta}(H_0)$ is a constant within a task. Because test disclosure is empty, the optimizer never observes
+the quantity it maximizes. Raw improvement may not be comparable across
+tasks whose scoring scales differ, so wherever tasks are
+compared we use normalized gain
+\begin{equation}
+g
+=
+\frac{
+  \mathcal{E}_{\theta}(H^{+}) - \mathcal{E}_{\theta}(H_0)
+}{
+  1-\mathcal{E}_{\theta}(H_0)
+},
+\label{eq:normalized-gain}
+\end{equation}
+where negative values indicate a nominated candidate worse than the seed.
+
+\subsection{The \heb suite}
+
+\label{sec:suite}
+\label{sec:scoring}
+
+Every pinned seed $H_0$ across \heb tasks is a small, deliberately untuned Python
+harness that leaves obvious headroom. Three of the four are competent but naive;
+the OfficeQA seed, for example, is a $\sim$130-line agent built on the OpenAI API, with three
+tools, a 24-turn loop, and a generic system prompt. GAIA's is a non-functional stub.  
+
+Table~\ref{tab:suite} in the appendix compares the pinned seeds $H_0$ to a number of open-source harnesses, showing that they perform comparably or worse than the weakest ones, providing ample headroom for improvement. The environment and the verifier are taken directly from each benchmark; environmental constraints such as limited network access and strict wall clock bounds are used without modification. Across all tasks, $|\mathcal{M}| = 1$, i.e. we use one pinned target model per task; these are listed in Table~\ref{tab:suite}. Target models were chosen so that the seed would land in a measurable
+mid-range rather than at the floor or the ceiling. 
+
+Each task's $\mathcal{E}_{\theta}(H_0)$ is measured once, averaged over $K{=}3$
+independent rounds, and pinned for reproducibility; a nominated candidate is likewise scored three
+times per test case and averaged. Because repeated scores can differ, we summarize
+this evaluation noise with a task-specific \emph{resolution band}
+(Section~\ref{sec:analysis}); smaller differences are treated as unresolved.
+
+Figure~\ref{fig:arch} details our execution infrastructure. Each optimizer is run in an isolated sandbox with evaluation results, task data, and the target harness in the filesystem. Similarly, each target agent rollout is performed in an ephemeral sandbox to control for noise introduced by environmental drift. 
+
+\input{generated/T05_gain_by_task}
+
+% Declared one unit earlier than it is discussed, on purpose. A full-width float
+% cannot be placed on the page it is declared on -- LaTeX's output routine only
+% considers double floats at a page boundary -- so a figure* declared partway down
+% page N is deferred to the top of page N+1. Moving the declaration back is the only
+% way to pull the figure forward; stfloats/dblfloatfix add bottom placement on the
+% later page and do not help with this.
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.6\linewidth]{figures/F03_generational.pdf}
+\caption{\textbf{Gain across model releases.} Successive Claude Opus (blue) and GPT (orange)
+releases on OfficeQA, with all factors fixed within each series except the
+optimizer model. Markers show release means and the shaded region is the
+OfficeQA resolution band, $\pm\LadderBand$.}
+\label{fig:ladder}
+\end{figure}

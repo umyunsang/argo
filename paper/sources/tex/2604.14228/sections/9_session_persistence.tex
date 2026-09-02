@@ -1,0 +1,67 @@
+\section{Session Persistence and Recovery}
+\label{sec:persist}
+
+Session persistence in coding agents involves a design choice between append-only logs, structured databases, checkpoint-based snapshots, and stateless architectures, each with different trade-offs in auditability, query power, and deployment complexity. Claude Code's persistence design implements the \emph{append-only durable state} principle from \Cref{tab:principles}. Session-scoped permissions live in memory only and are not serialized to the transcript, so resume rebuilds the permission context from CLI args and disk settings; any request that the rebuilt context does not recognize falls back to deny-first prompting.
+
+By the time the auth-test task reaches this section, the session contains the original prompt, tool invocations and results, compact boundaries, and the subagent summary from exploring the authentication module (\Cref{sec:subagent}). This section asks which of those artifacts are durably recorded and what can be recovered later without carrying forward the session's old permission grants.
+
+Claude Code's persistence mechanisms write the conversation (messages, tool results, and compact boundaries) to disk as events occur.
+
+\subsection{Transcript Model}
+\label{sec:persist:transcript}
+
+\begin{figure}[t]
+    \centering
+    \begin{minipage}[c]{0.54\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{resources/pdf_figs/session_compact.pdf}
+    \end{minipage}%
+    \hfill
+    \begin{minipage}[c]{0.44\linewidth}
+        \centering
+        \scriptsize
+        \setlength{\tabcolsep}{4pt}
+        \renewcommand{\arraystretch}{1.1}
+        \begin{tabular}{@{}>{\centering\arraybackslash}p{2.1cm}>{\raggedright\arraybackslash}p{4.1cm}@{}}
+            \toprule
+            \textbf{Principle} & \textbf{Description} \\
+            \midrule
+            Conversations Outlive Context & A session's useful life cannot be capped by the model's context window. The transcript on disk records durable session events, so compaction can recycle the live view without ending the conversation. \\
+            \addlinespace
+            Conversations Outgrow a Single Path & A session should not be trapped on a single linear trajectory. The append-only transcript lets users rewind, resume, or fork into a new branch without losing prior work. \\
+            \bottomrule
+        \end{tabular}
+    \end{minipage}
+    \caption{Session persistence and context compaction. The diagram separates live session state (context window, compaction) from durable storage (session transcripts, history.jsonl, subagent sidechains, checkpoints). Resume and fork restore messages but not session-scoped permissions.}
+    \label{fig:persistence}
+\end{figure}
+
+
+Session transcripts are stored as mostly append-only JSONL files at a project-specific path (with explicit cleanup rewrites as an exception) (\Cref{fig:persistence}). The \func{getTranscriptPath} function (\file{sessionStorage.ts}) computes this as \code{join(projectDir, \$\{getSessionId()\}.jsonl)}, where \code{projectDir} is determined by first checking \func{getSessionProjectDir} (set by \func{switchSession} during resume/branch) and falling back to \func{getProjectDir(getOriginalCwd())}.
+
+Three persistence channels operate independently:
+
+\begin{enumerate}[nosep]
+  \item \textbf{Session transcripts}: Conversation records including user, assistant, attachment, and system messages, plus compaction and other metadata events. Project-scoped, one file per session.
+  \item \textbf{Global prompt history}: User prompts only, stored in \file{history.jsonl} at the Claude configuration home directory (\file{history.ts}). The \func{makeHistoryReader} generator yields entries in reverse order via \func{readLinesReverse}, supporting Up-arrow and ctrl+r navigation.
+  \item \textbf{Subagent sidechains}: Separate \file{.jsonl} + \file{.meta.json} files per subagent (\Cref{sec:subagent:sidechain}).
+\end{enumerate}
+
+Session transcripts store several kinds of events beyond simple messages, including compaction markers, file-history snapshots, attribution snapshots, and content-replacement records.
+The append-only JSONL format is a deliberate choice favoring auditability and simplicity over query power. Every logged event is human-readable, version-controllable, and inspectable without specialized tooling. Database-backed alternatives would enable richer queries over session history but introduce deployment dependencies and reduce transparency.
+
+The session identity system pairs \code{sessionId} with \code{sessionProjectDir}, set together during resume or branch. The transcript path must use the same project directory that was active when messages were written, to avoid hooks looking in the wrong directory.
+
+\subsection{Resume, Fork, and Not Restoring Permissions}
+\label{sec:persist:recovery}
+
+The \code{-{}-resume} flag rebuilds the conversation by replaying the transcript (\file{conversationRecovery.ts}). Fork creates a new session from an existing one (\file{commands/branch/branch.ts}). However, resume and fork do not restore session-scoped permissions; users must grant them again in the new session. This is a deliberate safety-conservative design choice: sessions are treated as isolated trust domains. Restoring previously granted permissions on resume would create a convenience benefit but risk carrying stale trust decisions into a changed context. The architecture opts for re-granting over implicit persistence, accepting user friction as the cost of maintaining the safety invariant that trust is always established in the current session.
+
+The \code{compact\_boundary} marker is carefully designed to work with persistence. The \func{annotateBoundaryWithPreservedSegment} function (\file{compact.ts}) records \code{headUuid}, \code{anchorUuid}, and \code{tailUuid} in the boundary event. These UUIDs enable the session loader to patch the message chain at read time: preserved messages keep their original \code{parentUuids} on disk, and the loader uses boundary metadata to link them correctly. This mostly-append design means compaction normally does not modify or delete previously written transcript lines.
+
+The ``checkpoints'' in Claude Code are file-history checkpoints for \code{-{}-rewind-files}, stored at \file{\textasciitilde/.claude/file-history/<sessionId>/}. These are file-level snapshots for reverting filesystem changes, not a generic checkpoint store.
+
+The preceding sections have documented Claude Code's answers to recurring design questions. The next section contrasts Claude Code's design choices with those of two architecturally independent AI agent systems.
+
+
+

@@ -1,0 +1,219 @@
+\section{Method}
+
+\subsection{Overview}
+\label{sec:method:overview}
+
+Given a long-horizon task $\mathcal{T}$ and a computer environment,
+LongHorizon-Harness executes the task through a sequence of dynamically
+determined rounds rather than a single continuously growing session.
+The harness maintains an explicit task state outside task execution and
+advances it only with evidence independently verified from the
+environment. Across rounds, only the task state and its supporting audit
+reports persist; the executor's raw interaction trajectory is
+discarded after each round. Fig.~\ref{fig:pipeline} provides an overview
+of the framework.
+
+Each round follows a \emph{Manage-Execute-Audit} (MEA) loop. Let $S_i$
+denote the task state available at the beginning of round $i$,
+$e_{i-1}\in\mathcal{E}$ the current environment state, and
+$V_{i-1}=(v_1,\ldots,v_{i-1})$ the accumulated audit reports. The
+manager constructs a bounded subtask contract $c_i$. A fresh-context
+executor performs the contract, transforms the environment from
+$e_{i-1}$ to $e_i$, and returns an execution report $o_i$. A separate
+auditor then inspects $e_i$ through read-only tools and produces audit
+report $v_i$. The manager incorporates $v_i$ into the next task state
+$S_{i+1}$ before determining whether another round is required. The loop
+ends when the audited state satisfies the original task, no
+permitted subtask can advance the remaining requirements, user input is
+required, or the round budget is exhausted.
+
+
+\subsection{Manager}
+\label{sec:method:manager}
+
+The manager owns the persistent task state and determines how the task
+should proceed. It has access to the original task $\mathcal{T}$, the
+current task state, and all accumulated audit reports, but has no direct
+interface to the computer environment. It cannot observe application
+state, inspect workspace contents, invoke GUI or CLI tools, or modify
+the environment. Its decisions are based entirely on the task state and
+environment evidence recorded by the auditors.
+
+After round $i$, the manager updates the task state and produces the
+next control decision:
+\begin{equation}
+\label{eq:manager}
+(S_{i+1},q_{i+1},c_{i+1})
+=
+\Phi_{\mathrm{mgr}}
+\left(
+\mathcal{T},
+S_i,
+V_i
+\right),
+\end{equation}
+where $V_i=(v_1,\ldots,v_i)$ and $q_{i+1}$ is one of
+\textsc{execute}, \textsc{done}, \textsc{blocked}, and \textsc{ask}.
+The contract $c_{i+1}$ is returned only when further execution is
+required.
+
+\paragraph{Task-state update.}
+The task state is a structured collection of task-relevant records:
+a \textit{requirement} represents an objective or constraint derived
+from the original task, an \textit{artifact} represents an output
+created or modified during execution, and a \textit{fact} records
+environment information needed by subsequent rounds. Each record is
+marked as \textit{completed}, \textit{pending}, \textit{blocked}, or
+\textit{untrusted}, and retains references to the audit evidence
+supporting its current status. The initial state $S_1$ is constructed
+from $\mathcal{T}$ with its requirements marked as pending. After each
+round, the manager applies the verified findings in $v_i$ to $S_i$,
+adding or updating the corresponding records while leaving unresolved
+ones pending, blocked, or untrusted as appropriate. Executor claims do
+not directly change the persistent state: a record is marked as
+completed only when supported by clean audit evidence. 
+
+\paragraph{Next-subtask construction.}
+The manager compares $S_{i+1}$ against the original task, selects an
+unresolved objective that can be advanced from the current state, and
+checks its dependencies and prerequisites. It then constructs a bounded
+contract $c_{i+1}$ specifying the immediate goal, acceptance criteria,
+boundary constraints, and the task-state records and prior audit reports
+relevant to execution and verification. The contract is routed to a GUI
+or CLI executor according to the primary environment transition it
+requires. The manager returns \textsc{done} when the audited state
+satisfies $\mathcal{T}$ without unresolved integrity violations,
+\textsc{blocked} when no permitted action can advance the remaining
+requirements, and \textsc{ask} when progress requires user information
+or authorization; otherwise, it returns \textsc{execute} together with
+$c_{i+1}$.
+
+\subsection{Executor}
+\label{sec:method:executor}
+
+The executor performs the contract selected by the manager and is the
+only role permitted to intentionally modify the environment. In round
+$i$, it receives the original task $\mathcal{T}$, the current task
+state $S_i$, the subtask contract $c_i$, and only the prior audit
+reports referenced by the contract. It transforms the environment from
+$e_{i-1}$ to $e_i$:
+\begin{equation}
+\label{eq:executor}
+(e_i,o_i)
+=
+\Phi_{\mathrm{exec}}
+\left(
+\mathcal{T},
+S_i,
+c_i;
+e_{i-1}
+\right),
+\end{equation}
+where $o_i$ summarizes the actions performed, resulting state,
+artifacts produced or modified, and issues encountered during
+execution. The report $o_i$ describes the executor's outcome but does
+not establish that the contract has been completed.
+
+\paragraph{Fresh-context execution.}
+Each executor invocation runs as a fresh, budget-bounded episode
+containing only the information supplied for the current round. It does
+not receive the raw interaction trajectories of earlier rounds. Within
+the episode, the executor may perform multiple cycles of planning,
+environment interaction, observation, and revision. When the episode
+ends, its raw trajectory and internal reasoning are discarded; only
+$o_i$ is forwarded for auditing.
+
+\paragraph{GUI and CLI capability boundaries.}
+GUI and CLI executors operate through different environment interfaces.
+The GUI executor receives screen-oriented capabilities such as taking
+screenshots, clicking, scrolling, and entering text, and is responsible
+for transitions centered on application and interface state. The CLI
+executor receives capabilities such as shell execution, file editing,
+coding, and testing, and is responsible for transitions centered on
+workspace, process, and program state.
+
+The harness exposes only the environment interface and tool set
+assigned to the selected executor role. Capabilities outside that role
+are unavailable unless explicitly provided by its configuration. This
+separates responsibility for different classes of state-changing
+actions while allowing the manager to select the interface appropriate
+for each contract.
+
+\paragraph{Backend execution.}
+Executors are instantiated through a common agent-adapter interface.
+Given a contract, a role-specific environment interface, and an
+execution budget, the adapter launches an existing backend such as
+Claude Code, Codex CLI, or OpenClaw as one bounded episode. The backend
+retains its native planning and tool-use loop and may normally invoke
+the shell, edit files, write code, run tests, or interact with
+applications when those capabilities are exposed by its assigned role.
+The harness does not replace the backend's internal execution process;
+it controls the supplied context, available tools, environment
+permissions, execution budget, and returned report.
+
+
+\subsection{Auditor}
+\label{sec:method:auditor}
+
+The auditor independently verifies the environment state produced by
+the executor. After execution, it receives the original task
+$\mathcal{T}$, the task state $S_i$, the contract $c_i$, the prior
+audit reports referenced by the contract, and the executor report
+$o_i$. It does not receive the executor's raw interaction trajectory or
+internal reasoning. The auditor inspects the resulting environment
+$e_i$ and produces
+\begin{equation}
+\label{eq:auditor}
+v_i
+=
+\Phi_{\mathrm{aud}}
+\left(
+\mathcal{T},
+S_i,
+c_i,
+o_i;
+e_i
+\right),
+\end{equation}
+where $v_i$ is appended to the persistent audit history and returned to
+the manager before the next round.
+
+\paragraph{Independent environment inspection.}
+The auditor starts from a fresh context that excludes the executor's
+raw interaction trajectory and internal reasoning. It may use $o_i$ to
+locate relevant files, windows, logs, processes, or other outputs, but
+determines completion by independently comparing the resulting
+environment against the goal, acceptance criteria, and boundary
+constraints in $c_i$. A GUI auditor examines application and screen
+state through observation-oriented interactions, whereas a CLI auditor
+uses non-mutating commands and inspection tools to examine files,
+metadata, logs, processes, tests, and workspace state. In both cases,
+audit conclusions must be supported by evidence obtained directly from
+the environment rather than by the executor's completion claim.
+
+\paragraph{Read-only authority.}
+The auditor may change its observation view when necessary for
+inspection but cannot modify task-relevant environment state. It cannot
+create, edit, overwrite, move, or delete protected artifacts, execute
+state-changing commands, or perform GUI actions that alter the result
+under inspection. The harness monitors task-relevant workspace and
+artifact state throughout auditing; any detected mutation is recorded
+as an integrity violation, and the resulting report cannot support a
+completed task-state record.
+
+\paragraph{Audit-result construction.}
+The audit report $v_i$ records three classes of findings. First, it
+assigns a completion status of \textit{complete},
+\textit{incomplete}, or \textit{blocked} by evaluating the contract's
+acceptance criteria. Second, it assigns an integrity status of
+\textit{clean}, \textit{suspect}, or \textit{violation} by checking
+workspace mutations, artifact validity and provenance, and relevant
+deletion constraints. Third, it records the task-state updates supported
+by the inspection, including verified facts, supporting evidence, and
+remaining gaps.
+
+The auditor may propose changes to requirement, artifact, and fact
+records, but the manager determines how these findings are incorporated
+into $S_{i+1}$. Consequently, $o_i$ remains an unverified execution
+summary, whereas $v_i$ provides the environment-grounded evidence that
+may advance the persistent task state.

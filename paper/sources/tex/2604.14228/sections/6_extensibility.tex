@@ -1,0 +1,149 @@
+\section{Extensibility: MCP, Plugins, Skills, and Hooks}
+\label{sec:ext}
+
+A recurring design question for coding agents is how to structure the extension surface: a single unified mechanism, a small number of specialized mechanisms, or a layered stack with different context costs. The analysis here illustrates two design principles from \Cref{tab:principles}: \emph{composable multi-mechanism extensibility} and \emph{externalized programmable policy}. Returning to the running example, once Claude is trying to repair \file{auth.test.ts} and the earlier \code{npm test} request has been mediated by the permission system (\Cref{sec:auth}), the next question is what extension-enabled action surface is available for the repair. When a turn begins in Claude Code, the model sees not just built-in tools like BashTool and FileReadTool, but also database query tools from an MCP server, a custom lint skill from \file{.claude/skills/}, and tools contributed by an installed plugin. These arrive through four mechanisms that extend the agent at different points of the loop: MCP servers provide external tool integration, plugins package and distribute bundles of components, skills inject domain-specific instructions, and hooks intercept the tool execution lifecycle. Anthropic's documentation~\citep{anthropic2026howworks} presents a broader view that includes CLAUDE.md (\Cref{sec:context}) and subagents (\Cref{sec:subagent}) alongside the four mechanisms analyzed here. We treat CLAUDE.md and subagents in their own sections because they operate in different subsystems (context construction and delegation, respectively), but the context-cost ordering is architecturally significant: it reveals how each extension point trades off expressiveness against the bounded context window.
+
+\subsection{Four Extension Mechanisms}
+\label{sec:ext:mechanisms}
+
+\begin{figure*}[!t]
+  \centering
+  \begin{minipage}[t]{0.58\textwidth}
+    \vspace{0pt}
+\begin{lstlisting}[style=agentloop]
+# one turn of Claude Code's agent loop
+while not stopped:
+    # (*@\hi{\circled{a}}@*) (*@\hi{assemble}@*): build what the model sees
+    context = assemble(
+        system_prompt,     # instructions header
+        tool_schemas,      # callable tool signatures
+        history,           # prior turn messages
+        hook_additions,    # pushed in by hooks
+    )
+    # (*@\hi{\circled{b}}@*) (*@\hi{model}@*): pick the next action
+    action = model(context, tools)    # flat tool pool
+    if action.is_text_only():
+        stopped = run_stop_hooks(action)    # may veto
+        continue
+    # (*@\hi{\circled{c}}@*) (*@\hi{execute}@*): authorize and run the tool call
+    action, hook_decision = run_pre_tool_hooks(action)  
+    if not permitted(action, hook_decision):            
+        continue
+    result = execute(action)                            # tool runs here
+    result = run_post_tool_hooks(result)    # mutate/annotate
+    history.append(action, result)
+\end{lstlisting}
+    \vspace{4pt}
+
+    \footnotesize
+    \renewcommand{\arraystretch}{1.08}
+    \textbf{\hi{\circled{a}}~\hi{\texttt{assemble()}}: what the model sees}\\[2pt]
+    \begin{tabular}{@{}c@{\hspace{4pt}}p{0.58\linewidth}@{}}
+      \toprule
+      Element & What it does \\
+      \midrule
+      \texttt{CLAUDE.md} files & Loaded into context; files above the working directory load at startup, and subdirectory files load on demand \\
+      Skill descriptions & Advertises skills so the model calls \texttt{SkillTool} \\
+      MCP resources \& prompts & Non-tool content an MCP server pushes \\
+      Output style & Replaces the response-formatting system block \\
+      \texttt{UserPromptSubmit} hook & Inject context, or block, on every user turn \\
+      \texttt{SessionStart} hook & One-shot context injection at session start \\
+      \bottomrule
+    \end{tabular}
+  \end{minipage}%
+  \hfill
+  \begin{minipage}[t]{0.4\textwidth}
+    \vspace{0pt}
+    \footnotesize
+    \renewcommand{\arraystretch}{1.08}
+    \textbf{\hi{\circled{b}}~\hi{\texttt{model()}}: what the model can reach}\\[2pt]
+    \begin{tabular}{@{}c@{\hspace{4pt}}p{0.55\linewidth}@{}}
+      \toprule
+      Element & What it does \\
+      \midrule
+      Built-in tools & Read / Edit / Bash / \ldots\ shipped with the CLI \\
+      MCP tools & Tools from any MCP server, in the same flat pool \\
+      \texttt{SkillTool} & Meta-tool that launches a skill by name \\
+      \texttt{AgentTool} & Meta-tool that spawns a sub-agent recursively \\
+      \bottomrule
+    \end{tabular}
+    \vspace{12pt}
+
+    \textbf{\hi{\circled{c}}~\hi{\texttt{execute()}}: whether / how an action runs}\\[2pt]
+    \begin{tabular}{@{}c@{\hspace{4pt}}p{0.4\linewidth}@{}}
+      \toprule
+      Element & What it does \\
+      \midrule
+      Permission rules & Declarative \texttt{allow} / \texttt{deny} / \texttt{ask} per call \\
+      \texttt{PreToolUse} hook & Approve / block / rewrite a tool call \\
+      \texttt{PostToolUse} hook & Mutate output or inject context after a call \\
+      \texttt{Stop} hook & Force the loop to keep going at model stop \\
+      \texttt{SubagentStop} hook & Same, for sub-agents spawned via \texttt{AgentTool} \\
+      \texttt{Notification} hook & External side effects on user notifications \\
+      \bottomrule
+    \end{tabular}
+  \end{minipage}
+  \caption{Where Claude Code's extension mechanisms plug into the agent loop. The pseudocode on the left is a zoom-in of the \texttt{Agent Loop} block in Figure~1. Every agent loop has three injection points: \protect\hi{\protect\circled{a}}~\hi{\texttt{assemble()}} controls what the model sees, \protect\hi{\protect\circled{b}}~\hi{\texttt{model()}} controls what it can reach, and \protect\hi{\protect\circled{c}}~\hi{\texttt{execute()}} controls whether and how an action actually runs.}
+  \label{fig:agent-loop-extensions}
+\end{figure*}
+
+
+
+The mechanisms are implemented in distinct source directories (\Cref{fig:agent-loop-extensions}) and serve different integration patterns:
+
+\paragraph{MCP servers.}
+The Model Context Protocol is the primary external tool integration path. MCP servers are configured from multiple scopes: project, user, local, and enterprise, with additional plugin and \code{claude.ai} servers merged at runtime (\file{services/mcp/config.ts}). The MCP client (\file{services/mcp/client.ts}) supports multiple transport types: stdio, SSE, HTTP, WebSocket, SDK, plus IDE-specific variants (\code{sse-ide}, \code{ws-ide}) and an internal \code{claudeai-proxy}. Each connected server contributes tool definitions as \code{MCPTool} objects. Dedicated built-in tools \code{ListMcpResourcesTool} and \code{ReadMcpResourceTool} provide access to MCP resources.
+
+\paragraph{Plugins.}
+Plugins serve a dual role: they are both a packaging format and a distribution mechanism. The \code{PluginManifestSchema} (\file{utils/plugins/schemas.ts}) accepts ten component types: commands, agents, skills, hooks, MCP servers, LSP servers, output styles, channels, settings, and user configuration. The plugin loader (\file{utils/plugins/pluginLoader.ts}) validates manifests and routes each component to its respective registry: commands and skills surface through the \code{SkillTool} meta-tool, agents appear in definitions consumed by \code{AgentTool}, hooks merge into the hook registry, MCP and LSP servers fold into their standard configurations, and output styles modify response formatting. A single plugin package can therefore extend Claude Code across multiple component types simultaneously, making plugins the primary distribution vehicle for third-party extensions.
+
+\paragraph{Skills.}
+Each skill is defined by a \file{SKILL.md} file with YAML frontmatter. The \func{parseSkillFrontmatterFields} function (\file{loadSkillsDir.ts}) parses 15+ fields including display name, description, allowed tools (granting the skill access to additional tools), argument hints, model overrides, execution context (\code{'fork'} for isolated execution), associated agent definitions, effort levels, and shell configuration. Skills can define their own hooks, which register dynamically on invocation. Bundled skills are registered in-memory at startup. When invoked, the \code{SkillTool} meta-tool injects the skill's instructions into the context.
+
+\paragraph{Hooks.}
+The source code defines 27 hook events spanning tool authorization (\code{PreToolUse}, \code{PostToolUse}, \code{PostToolUseFailure}, \code{PermissionRequest}, \code{PermissionDenied}), session lifecycle (\code{SessionStart}, \code{SessionEnd}, \code{Setup}, \code{Stop}, \code{StopFailure}), user interaction (\code{UserPromptSubmit}, \code{Elicitation}, \code{ElicitationResult}), subagent coordination (\code{SubagentStart}, \code{SubagentStop}, \code{TeammateIdle}, \code{TaskCreated}, \code{TaskCompleted}), context management (\code{PreCompact}, \code{PostCompact}, \code{InstructionsLoaded}, \code{ConfigChange}), workspace events (\code{CwdChanged}, \code{FileChanged}, \code{WorktreeCreate}, \code{WorktreeRemove}), and notifications (\file{coreTypes.ts}, \file{coreSchemas.ts}). Of these, 15 have event-specific output schemas with rich fields supporting permission decisions, context injection, input modification, MCP result transformation, and retry control (\file{types/hooks.ts}). Persisted hook commands configured via settings and plugins use four command types: shell commands (\code{type: command}), LLM prompt hooks (\code{type: prompt}), HTTP hooks (\code{type: http}), and agentic verifier hooks (\code{type: agent}) (\file{schemas/hooks.ts}). The runtime additionally supports non-persistable callback hooks (\code{type: callback}) used by the SDK and internal instrumentation (\file{types/hooks.ts}). Hook sources include \file{settings.json}, plugins, and managed policy at startup; skill hooks register dynamically on invocation (\file{utils/hooks.ts}). The five tool-authorization events are detailed in \Cref{sec:auth:classifier}.
+
+\subsection{Tool Pool Assembly}
+\label{sec:ext:assembly}
+
+The \func{assembleToolPool} function at \file{tools.ts} is described in source comments as ``the single source of truth for combining built-in tools with MCP tools.'' The assembly follows a five-step pipeline:
+
+\begin{enumerate}[nosep]
+  \item \textbf{Base tool enumeration.} \func{getAllBaseTools} (\file{tools.ts}) returns an array of up to 54 tools: 19 are always included (such as \code{BashTool}, \code{FileReadTool}, \code{AgentTool}, \code{SkillTool}), and 35 more are conditionally included based on feature flags, environment variables, and user type. Anthropic-internal users get additional internal tools. Worktree mode enables \code{EnterWorktreeTool} and \code{ExitWorktreeTool}. Agent swarms enable team tools. When embedded search tools are available in the Bun binary, dedicated \code{GlobTool} and \code{GrepTool} are omitted.
+  \item \textbf{Mode filtering.} \func{getTools} (\file{tools.ts}) applies mode-specific filtering. In \code{CLAUDE\_CODE\_SIMPLE} mode, only Bash, Read, and Edit are available (or \code{REPLTool} in the REPL branch; plus coordinator tools if applicable). Each tool's \func{isEnabled} method is called for runtime availability checks.
+  \item \textbf{Deny rule pre-filtering.} \func{filterToolsByDenyRules} (\file{tools.ts}) strips blanket-denied tools from the model's view before any call.
+  \item \textbf{MCP tool integration.} MCP tools from \code{appState.mcp.tools} are filtered by deny rules and merged with built-in tools.
+  \item \textbf{Deduplication.} Tools are deduplicated by name, with built-in tools taking precedence over MCP tools.
+\end{enumerate}
+
+Both \file{REPL.tsx} (via the \code{useMergedTools} hook) and \file{AgentTool.tsx} (when building the worker tool set) invoke this function, ensuring consistent assembly across all execution paths. At request time, deferred tools may be hidden from the model's context until explicitly queried via ToolSearch (\file{tools.ts}).
+
+Agent-based extension (custom agent definitions via \file{.claude/agents/*.md} and plugin-contributed agents) is covered in \Cref{sec:subagent}, because agents differ fundamentally from the four mechanisms above: they create new, isolated context windows rather than extending the current one.
+
+\subsection{Why Four Mechanisms?}
+\label{sec:ext:why-four}
+
+Given that each additional extension mechanism increases the surface area developers must learn, a natural question is why Claude Code uses four distinct mechanisms rather than consolidating into one or two. The answer lies in the observation that different kinds of extensibility impose different costs on the context window, and a single mechanism cannot span the full range from zero-context lifecycle hooks to schema-heavy tool servers without forcing unnecessary trade-offs on extension authors.
+
+\begin{table}[h]
+  \centering
+  \small
+  \renewcommand{\arraystretch}{1.15}
+  \caption{What each extension mechanism uniquely provides. Context cost refers to how much of the bounded context window the mechanism consumes when active.}
+  \label{tab:ext-why-four}
+  \resizebox{\columnwidth}{!}{
+  \begin{tabular}{@{}llll@{}}
+    \toprule
+    Mechanism & Unique Capability & Context Cost & Insertion Point \\
+    \midrule
+    MCP servers & External service integration (multi-transport) & High (tool schemas) & \texttt{model()}:tool pool \\
+    Plugins & Multi-component packaging + distribution & Medium (varies) & All three points \\
+    Skills & Domain-specific instructions + meta-tool invocation & Low (descriptions only) & \texttt{assemble()}:context injection \\
+    Hooks & Lifecycle interception + event-driven automation & Zero by default & \texttt{execute()}:pre/post tool \\
+    \bottomrule
+  \end{tabular}}
+\end{table}
+
+As \Cref{tab:ext-why-four} summarizes, each mechanism trades deployment complexity for a different kind of extensibility. MCP servers provide runtime tool integration (the model gains new callable tools) at the cost of server management overhead and context budget consumed by tool schemas. Skills shape \emph{how} the agent thinks (not just what tools it has) at minimal context cost, since only frontmatter descriptions (not full content) stay in the prompt. Hooks provide cross-cutting lifecycle control (blocking, rewriting, or annotating tool calls) with no context footprint by default, though hooks can opt into injecting additional context. Plugins bundle any combination of the other three into distributable packages, acting as the packaging and distribution layer rather than a distinct runtime primitive. The graduated context-cost ordering (zero for hooks, low for skills, medium for plugins, high for MCP) means that cheap extensions can scale widely without exhausting the context window, while expensive ones are reserved for cases that genuinely require new tool surfaces.
+
+Some agent frameworks provide a single extension mechanism, typically a tool-only API where all customization arrives as additional callable tools. Others use two tiers, separating tools from configuration or instruction injection. Claude Code's four-mechanism approach can accommodate a broader range of extension patterns, from zero-context event handlers to full external service integrations, but it increases the learning curve developers face when deciding which mechanism to use for a given integration task.

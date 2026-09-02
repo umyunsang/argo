@@ -1,0 +1,58 @@
+\section{Subagent Delegation and Orchestration}
+\label{sec:subagent}
+
+Multi-agent orchestration is a key design dimension for coding agents, with choices spanning parent-child hierarchies, peer-based conversation frameworks~\citep{wu2024autogen}, and graph-structured workflow engines~\citep{langgraph2024}. Claude Code's delegation architecture implements the \emph{isolated subagent boundaries} principle from \Cref{tab:principles}, together with aspects of \emph{deny-first with human escalation} (permission override) and \emph{reversibility-weighted risk assessment} (subagent tool restrictions).
+
+When Claude determines that the auth test fix requires first exploring the authentication module's structure, it can delegate this exploration to a subagent. The delegation mechanism is the \code{Agent} tool (\file{AgentTool.tsx}), with \code{Task} retained as a legacy alias. The model invokes \code{Agent} with a structured input including the delegation prompt, an optional subagent type, and configuration for isolation mode, permission overrides, and working directory.
+
+\subsection{The Agent Tool and Delegation Criteria}
+\label{sec:subagent:tool}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{resources/pdf_figs/subagent.pdf}
+\caption{Subagent isolation and delegation architecture. The Agent tool dispatches to built-in subagents (Explore, Plan, general-purpose) or custom subagents, each running in an isolated context with rebuilt permission context and independent tool sets. The Agent tool dispatches along three axes: routing (teammate), isolation (remote, worktree), and lifecycle (async, sync).}
+\label{fig:subagents}
+\end{figure}
+
+The Agent tool input schema (\Cref{fig:subagents}) uses feature-gated fields, omitting optional parameters when their backing features are disabled. The \code{isolation} field offers \code{['worktree', 'remote']} for internal users and \code{['worktree']} for external users, determined at build time. The \code{cwd} field is gated by a feature flag. The \code{run\_in\_background} field is omitted when background tasks are disabled or when fork-subagent mode is enabled.
+
+Claude Code provides up to six built-in subagent types, depending on feature flags and entrypoint:
+
+\begin{itemize}[nosep]
+  \item \textbf{Explore}: primarily read/search-oriented investigation, with write and edit tools in its deny-list.
+  \item \textbf{Plan}: creates structured plans; execution proceeds through the standard permission model.
+  \item \textbf{General-purpose}: broadly capable, used when explicitly requested (note: omitting the type may route to the fork-subagent path instead, which reuses the parent's conversation context rather than isolating it).
+  \item \textbf{Claude Code Guide}: onboarding and documentation assistance, with its own \code{permissionMode} override.
+  \item \textbf{Verification}: runs validation checks (test suites, linting).
+  \item \textbf{Statusline-setup}: specialized for terminal status line configuration.
+\end{itemize}
+
+Beyond built-ins, users define custom subagents via \file{.claude/agents/*.md} files, and plugins contribute agent definitions via \file{loadPluginAgents.ts}. The markdown body of each file serves as the agent's system prompt, and YAML frontmatter specifies configuration fields including \code{description}, \code{tools} (allowlist), \code{disallowedTools}, \code{model}, \code{effort}, \code{permissionMode}, \code{mcpServers}, \code{hooks}, \code{maxTurns}, \code{skills}, \code{memory} scope, \code{background} flag, and \code{isolation} mode. JSON-formatted agent definitions support the same fields plus \code{prompt} as an explicit field (\file{loadAgentsDir.ts}). This means a custom agent can be a fully configured, isolated sub-system with its own tools, model, permissions, hooks, memory scope, and isolation mode. \code{AgentTool} sits alongside \code{SkillTool} in the base tool pool as a meta-tool that dispatches to these definitions, but the two differ fundamentally: \code{SkillTool} typically injects instructions into the current context window (with an opt-in \code{context: fork} mode that spawns an isolated sub-agent via the same \func{runAgent} machinery), while \code{AgentTool} always spawns a new, isolated one. The tradeoff is that most subagent invocations require a self-contained prompt, because the default path does not inherit the parent's conversation history (the fork-subagent path is an exception). Conversation-based frameworks that share full transcript histories avoid this cost but risk context explosion as the number of agents grows.
+
+\subsection{Isolation Architecture}
+\label{sec:subagent:isolation}
+
+Subagent isolation supports multiple modes (\file{AgentTool.tsx}):
+
+\begin{itemize}[nosep]
+  \item \textbf{Worktree}: Creates a temporary git worktree, giving the subagent its own copy of the repository to modify without affecting the parent's working tree.
+  \item \textbf{Remote} (internal-only): Launches in a remote Claude Code Remote environment, always running in the background.
+  \item \textbf{In-process} (default): Shares the filesystem with the parent but operates in an isolated conversation context.
+\end{itemize}
+
+The permission override logic for subagents (\file{runAgent.ts}) involves several specific rules. When a subagent defines a \code{permissionMode}, the override is applied unless the parent is already in \code{bypassPermissions}, \code{acceptEdits}, or \code{auto} mode, since those modes always take precedence because they represent explicit user decisions about the safety/autonomy trade-off. For async agents, the system determines whether to avoid prompts through a cascade: explicit \code{canShowPermissionPrompts} first, then \code{bubble} mode (always show, since they escalate to the parent terminal), then the default (sync agents show prompts, async agents do not). Background agents that can show prompts set \code{awaitAutomatedChecksBeforeDialog: true}, ensuring the classifier and hooks resolve before interrupting the user.
+
+These isolation modes occupy different points in a design space. Container-based isolation (used by SWE-Agent and OpenHands~\citep{yang2024sweagent,wang2024openhands}) provides stronger resource boundaries but requires container infrastructure. Context-only isolation (used by conversation-based frameworks like AutoGen~\citep{wu2024autogen}) shares the filesystem but separates conversation histories. Claude Code's worktree-based isolation provides workspace-level filesystem separation without introducing container orchestration, leveraging Git's built-in mechanism.
+
+When \code{allowedTools} is explicitly provided to \func{runAgent} (\file{runAgent.ts}), a two-tier permission scoping model applies. SDK-level permissions from \code{-{}-allowedTools} are preserved: ``explicit permissions from the SDK consumer that should apply to all agents.'' But session-level rules are replaced with the subagent's declared \code{allowedTools}. When \code{allowedTools} is not provided (the common \code{AgentTool} path), the parent's session-level rules are inherited without replacement.
+
+\subsection{Sidechain Transcripts}
+\label{sec:subagent:sidechain}
+
+Each subagent writes its own transcript as a separate \file{.jsonl} file with a \file{.meta.json} metadata file (\file{sessionStorage.ts}, \file{runAgent.ts}). This sidechain design means subagent histories are preserved for debugging and auditing but do not inflate the parent's session file. Only the subagent's final response text and metadata return to the parent conversation context; the full subagent history never enters the parent's context window, respecting the ``context as bottleneck'' principle.
+
+The summary-only return model is a deliberate context-conservation choice: conversation-based frameworks that share full transcript histories between agents risk context explosion as the number of agents grows. Even isolated-context parallelism carries substantial cost. Claude Code's agent teams consume approximately 7$\times$ the tokens of a standard session in plan mode~\citep{anthropic2025agentteams}, which makes summary-only return more critical when subagents are also in isolated contexts.
+
+For multi-instance coordination in agent teams, the harness uses file locking rather than a message broker or distributed coordination service~\citep{anthropic2025agentteams}. Each teammate has its own inbox JSON file (\file{utils/teammateMailbox.ts}); task assignments and other inter-agent messages are pushed into the recipient's inbox under a per-inbox lockfile (\file{utils/lockfile.ts}), with files stored at predictable filesystem paths. This trades throughput for two properties: zero-dependency deployment (no external infrastructure required) and full debuggability (any agent's state can be inspected by reading plain-text JSON files).
+

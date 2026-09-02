@@ -1,0 +1,81 @@
+%% ============================================================
+%% Appendix: System Implementation Details
+%% Ordered by pipeline stage: PI → Solver → Ablation → Paper Writer → Claim Verifier
+%% ============================================================
+
+\section{System Implementation Details}
+\label{app:system_details}
+
+\subsection{Problem Investigator}
+\label{app:pi_details}
+
+PI is a five-stage pipeline (plus two auxiliary stages), where each stage communicates via file-backed artifacts on disk.
+
+\paragraph{Stage 1: Citation Graph.}
+Starting from 2--4 seed papers, PI traverses the Semantic Scholar API (references and citations) up to 2 hops deep, producing a citation graph of approximately 2{,}000--5{,}000 candidate papers. % This stage involves no LLM calls and runs in 10--30 minutes, limited by API rate limits.
+
+\paragraph{Stage 2: Literature Filter.}
+An LLM scores each paper in the graph on two axes---methodology relevance and problem alignment (1--5 each)---and classifies papers into tiers: Core (both $\geq$4), Adjacent (one $\geq$4, other $\geq$3), Spark, or Noise. The resulting elite pool contains approximately 500 papers. A topic-relevance gate aborts the pipeline if fewer than 5 Core+Adjacent papers appear, preventing downstream drift from weak seeds.
+
+\paragraph{Stage 3: Multi-Round Investigation.}
+A Principal Investigator agent orchestrates specialist sub-agents across 3 rounds. Each round consists of candidate selection from the elite pool (Librarian agent), parallel PDF reading and structured note extraction (5 Researcher agents), and synthesis of findings into thematic research direction dossiers (SubdomainWriter agent). An IslandConsolidator agent merges redundant directions and retires low-quality ones after each round. The target is approximately 100 paper notes organized into 5--15 research directions. % This is the most expensive stage, typically running for 2--4 hours.
+
+\paragraph{Stage 4: Evaluation Protocol Audit and Targeted Literature Refresh.}
+Per-direction audit reports are generated and scored on a checklist rubric across multiple rounds until the direction passes.
+A focused mini citation crawl on the winning direction produces 20--30 additional paper notes, filling gaps identified during the audit.
+
+\paragraph{Stage 5: Experiment Brief Synthesis.}
+Directions are scored by seed relevance, then a section-by-section writer produces the final Experiment Brief through a multi-round critic loop (up to 5 rounds with section-level revision). The brief contains three sections: (1)~a research landscape with technique taxonomy and best-known results, (2)~a concrete experiment plan with baselines, metrics, and ablation design, and (3)~a literature context with 25--40 references traceable to paper notes extracted from the source PDFs.
+
+% The full pipeline runs in 3--6 hours per task with no human intervention. Default configuration uses \texttt{num\_expected\_papers}=100, \texttt{max\_hops}=2, and \texttt{min\_year}=2024.
+
+\subsection{Solver}
+
+The Solver consists of two agents.
+The \emph{Solution Development Agent} receives an idea and task-specific instructions, operates in a sandboxed environment with tools for file I/O, command-line execution, solution management, and knowledge base retrieval, and follows an iterative refinement loop---executing experiments, debugging errors, and optimizing validation metrics---while maintaining an experimental log.
+The \emph{Report Writing Agent} parses experimental artifacts to generate a technical report summarizing methodology and outcomes.
+
+\subsection{Ablation}
+
+Following PEE, the best-run selector filters out solutions flagged for specification violations and selects the highest-scoring remaining solution for further validation.
+An ablation agent identifies the solution's core components and proposes controlled experiments to isolate their contributions.
+These ablated versions are implemented and re-evaluated to quantify the performance impact of specific architectural or algorithmic choices.
+
+\subsection{Paper Writer}
+\label{app:paper_writer_pipeline}
+
+The Paper Writer is a five-stage pipeline that converts raw materials into a verified \LaTeX{} draft. The first four stages operate on a \emph{research representation}---a structured markdown narrative with inline evidence annotations---before any \LaTeX{} is generated, enforcing the ``provenance before prose'' principle described in \S\ref{sec:system:writer}.
+
+\paragraph{\textsc{Conceive}.}
+A single LLM call reads all assembled raw materials (PI brief, experimental log, evaluator scores, solver code, seed-paper abstracts) and produces the initial research representation. This document captures the story arc---problem, gap, approach, result, limitation---with every factual claim carrying an inline evidence tag binding it to a specific workspace artifact (log line, score file, citation key, or ablation entry). \textsc{Conceive} establishes the narrative structure but does not validate evidence chains. That is deferred to \textsc{Ground}.
+
+\paragraph{\textsc{Ground}.}
+Deterministic checks validate each evidence annotation against the raw materials: the reported score must match the best-run score from discovery, baselines are labelled \textsc{verified} (traceable to a PI brief entry) or \textsc{estimated} (unattributed ``leaderboard'' references are flagged), every referenced artifact must exist, all expected sections are present, and hyperbole counts and known score mismatches are recorded. Each claim receives a \textsc{supported}, \textsc{partial}, or \textsc{unsupported} label, and the overall grounding ratio (supported claims / total claims) is computed.
+
+\paragraph{\textsc{Critic}.}
+One LLM call audits story-level coherence: gap--approach alignment, internal contradictions, overclaims relative to evidence strength, missing comparisons, baseline fairness, and honest limitations. The critic returns \textsc{pass} or a list of \textsc{major}/\textsc{minor} issues.
+
+\paragraph{\textsc{Resolve}.}
+A single LLM call rewrites the representation against the \textsc{Ground} flags and \textsc{Critic} issues jointly: unsupported claims are dropped or softened, contradictions are resolved using the verified source, overclaims are calibrated, and missing sections are filled. The \textsc{Ground}$\to$\textsc{Critic}$\to$\textsc{Resolve} loop iterates for up to two rounds, terminating on convergence (zero flags) or plateau (the flag count stops decreasing). A grounding ratio that remains below a configured threshold aborts the run rather than producing a poorly grounded draft.
+
+\paragraph{\textsc{Compose}.}
+The grounded representation is handed to per-section writers that emit \LaTeX{} one section at a time, with each numerical or citation-bearing sentence committing to its evidence source at writing time. The composed draft then passes through the Claim Verifier (\S\ref{app:claim_verifier_rules}). A refinement pass consumes the verifier's findings, rewriting flagged sentences to match their evidence sources, removing unsupported claims, and stripping all inline evidence annotations from the final \LaTeX{}. Only a draft with no remaining blocking violations is promoted to the final paper.
+
+\subsection{Claim Verifier}
+\label{app:claim_verifier_rules}
+
+The Claim Verifier dispatches on the claim types defined in \S\ref{sec:coe}.
+The writer commits each claim's evidence via annotation tags---a line in the experimental log, a citation key, an internal ablation, a baseline from the PI brief, or an explicit ``unsourced'' marker---and the verifier maps that evidence onto the claim type's verification rule:
+
+\begin{itemize}\itemsep2pt \parskip0pt
+  \item \textbf{Numerical claims} are checked by numeric tolerance against the cited evidence (log line, ablation entry, or PI baseline), with a $\pm 3$-line window on log lines and unit-aware normalizations for percent-versus-fraction and millisecond-versus-second mismatches.
+  \item \textbf{Citation claims} are checked by resolving the cite key against the bibliography and then asking a one-shot LLM judge (JSON mode) whether the cited work's abstract supports the specific assertion.
+  \item \textbf{Methodological claims} are checked by substantive textual overlap against the cited region of the experimental log.
+\end{itemize}
+
+\noindent Claims tagged ``unsourced'' or carrying malformed annotations are dropped automatically. A break code is recorded for each for downstream reporting.
+
+%\subsection{Claim-Evidence Graph Format}
+%For every annotation the verifier emits one record: a claim id, a type tag, the section it appears in, the rendered sentence text, a structured value where recoverable, and an ordered evidence chain whose links each carry a source URI, content hash, extracted text, verification method, and pass/partial/fail status.
+%A verification summary attaches the appropriate break code when the chain is broken, distinguishing the failure modes catalogued in \cref{tab:coeaudit_checks}.
+%The sidecar \texttt{corrections.json} records the same failures in a form the Refiner consumes, so a failed chain produces both a diagnostic in the CEG and a directed edit on the draft.

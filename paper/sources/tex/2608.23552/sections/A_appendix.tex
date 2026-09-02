@@ -1,0 +1,80 @@
+\section{Example Out-of-Loop Experiments in the nanoGPT Speedrun}
+\label{app:labexp}
+Each excerpt below is an experiment an agent created and ran outside the benchmark's training script during its nanoGPT run (\cref{sec:nanogpt}), reproduced from the traces and trimmed for length.
+
+Kimi K3 re-derived Newton--Schulz iteration coefficients with a global optimizer, checked bf16 rounding bit-exactly:
+\begin{lstlisting}[language=Python]
+from scipy.optimize import differential_evolution
+grid_in = np.concatenate([np.linspace(0.02, 0.05, 10),
+                          np.linspace(0.05, 1.0, 190)])
+grid_over = np.linspace(1.0, 1.3, 20)
+
+def p_map(sig, a, b, c, iters=6):
+    x = sig
+    for _ in range(iters):
+        x = a*x + b*x**3 + c*x**5
+    return x
+
+def objective(params):
+    a, b, c = params
+    dev = np.max(np.abs(p_map(grid_in, a, b, c) - 1.0))
+    over = max(0.0, np.max(np.abs(p_map(grid_over, a, b, c))) - 1.15)
+    return dev + 5.0*over
+
+res = differential_evolution(objective,
+        [(1.0, 6.0), (-8.0, 0.0), (0.0, 5.0)],
+        maxiter=300, tol=1e-9, seed=0, polish=True)
+\end{lstlisting}
+
+DeepSeek V4 Pro built a calibrated toy of the training problem, with minibatch noise shaped by the true Kronecker Hessian and a natural-gradient oracle arm:
+\begin{lstlisting}[language=Python]
+"""Calibrated toy: Kron-quadratic + CORRECT Kron-Hessian
+minibatch noise. eps = Hl^{1/2} Z Hr^{1/2} / sqrt(n_eff).
+Ideal preconditioner: Ql = Hl^{-1/2}, Qr = Hr^{-1/2}."""
+G = Hl @ W @ Hr
+eps = Hl12 @ torch.randn(p, q) @ Hr12 / (n_eff ** 0.5)
+g = G + eps
+elif opt == "natgrad":   # oracle arm
+    El, Vl = torch.linalg.eigh(Hl)
+    Er, Vr = torch.linalg.eigh(Hr)
+    u = Vl @ (Vl.T @ d @ Vr /
+        (El[:, None]**0.5 * Er[None, :]**0.5)) @ Vr.T
+\end{lstlisting}
+
+GLM 5.3 debugged its SOAP implementation on CPU before any GPU screen:
+\begin{lstlisting}[language=Python]
+torch.manual_seed(0)
+for shape in [(768, 768), (3072, 768), (768, 3072)]:
+    p = torch.nn.Parameter((torch.randn(*shape) * 0.02).bfloat16())
+    opt = SOAP([p], lr=0.025)
+    for t in range(25):
+        p.grad = (torch.randn(*shape) * 0.01).to(torch.bfloat16)
+        opt.step()
+        if not torch.isfinite(p.data).all():
+            print(shape, 'NaN at step', t+1)
+            st = opt.state[p]
+            print('  L finite', torch.isfinite(st['L']).all().item(),
+                  'v finite', torch.isfinite(st['v']).all().item())
+            break
+\end{lstlisting}
+
+\section{Example Programmatic Orchestration}
+\label{app:orchestration}
+\begin{lstlisting}[language=Python]
+# Admit independent subagents; do not wait for answers here.
+review = await rlm("Audit the implementation. Reply with concrete issues.",
+                   name="reviewer")
+tests = await rlm("Run the test suite and classify failures.",
+                  name="tester")
+
+# Later, recover retained sessions and send a follow-up.
+children = await rlm.list_subagents()
+await agent_message.send(
+    "Also inspect error-handling edge cases.",
+    receiver_role="child", receiver_name=review.name)
+\end{lstlisting}
+The explicit reply path is intentional: a child is a persistent concurrent session, not a stateless completion returned by \rlmcall.
+
+\section{LLM Usage Disclosure}
+Large language models were used to assist with code development, writing refinement, and formatting during the preparation of this manuscript.
+All scientific claims, experimental design, analysis, and intellectual contributions are solely the work of the authors.
