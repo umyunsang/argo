@@ -1,16 +1,25 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** draft the human-label protocol for the 25-label calibration set (item sampling, per-element verdict form, disagreement handling), then run the four frozen confirmation tasks under the pinned backend to produce unscored artifacts.
+- **next_first_action:** collect the 25-label human-anchored calibration set under `paper/research/human-label-protocol.md`, sampling only from the 32 retained confirmation-task artifacts.
 
-- **last_updated:** 2026-09-02T22:48:10+09:00
+- **last_updated:** 2026-09-02T23:01:46+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 5 in progress — four unseen confirmation tasks frozen with anchors written before any artifact; judged scoring waits on the 25-label calibration set
+- **current_phase:** cycle 5 closed — 32-episode variance block EXECUTED; measured components reversed the repeat allocation; label protocol frozen
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
 
-### Cycle 5 (in progress) — confirmation set frozen
+### Cycle 5 — variance block EXECUTED, allocation reversed by measurement
+
+- **Executed:** 32 episodes on the four frozen confirmation tasks, 4 conditions x 2 repeats, all exit zero, zero canary leaks. Receipt `paper/experiments/variance-block-receipt.json`.
+- **Measured variance components of the coverage endpoint:** repeat residual **64.3 percent**, condition **22.6 percent**, task-by-condition **13.1 percent**, task **0.0 percent** (boundary estimate).
+- **This refuted my own pre-registered assumption.** `RD-2026-09-02-09D` had kept two repeats and stated the falsifier "if task variance dominates residual, add tasks instead". The measurement came out the other way, so the decision is superseded rather than defended.
+- **Allocation derived, not chosen:** at a fixed episode budget the standard error of a condition mean is `(repeats x interaction variance + residual) / (budget / conditions)`, which increases monotonically with repeats. The block therefore moves to the maximum number of tasks at one repeat, with a small repeated subset kept to re-estimate residual variance (`RD-2026-09-02-13A`). Projected paired MDE improves from about 0.049 to about 0.045 while quadrupling task coverage.
+- **Honest limits recorded:** 32 episodes give 3, 3, 9 and 16 degrees of freedom, the task component is a boundary estimate at zero, and coverage is per-task normalised, which suppresses between-task variance by construction.
+- **Label protocol frozen:** `paper/research/human-label-protocol.md` fixes element-level blinded labelling, stratified sampling, an overlap-agreement gate, and append-only records.
+
+### Cycle 5 (earlier) — confirmation set frozen
 
 - Four confirmation tasks frozen on sources disjoint from the pilot and excluded from their own released evidence packs: structure-versus-insight ablation, attribution of improvement to harness rather than model, instrument-change measurement under scarce labels, and budget and access control in optimization benchmarks.
 - Element checklists were written and frozen **before any artifact exists**, which is the property the pilot anchors could not have (`RD-2026-09-02-12A`).

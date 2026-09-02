@@ -116,7 +116,7 @@ Following `2608.01913`, search volume is not capability. Each episode is product
 
 No effect size is borrowed as if transportable. SCOPE, HEP, Arbor, and long-horizon studies use different tasks and endpoints. The development pilot estimates paired score SD, FEC discordance, task-family ICC, repeat variance, and judge–human disagreement. Confirmatory N is simulated from those values with family-level resampling.
 
-Resource planning uses `24 independent tasks × 4 conditions × 2 repeats = 192 episodes` as a hard current-cycle ceiling, not a predetermined sample. With two-sided familywise alpha 0.05 across two co-primary endpoints and 80% power:
+Resource planning uses a `192 episode` ceiling. The split between tasks and repeats is no longer assumed: a measured variance decomposition on 32 executed episodes puts the repeat residual at 64.3 percent and the task component at 0.0 percent, and at a fixed episode budget the standard error of a condition mean equals `(repeats x interaction variance + residual) / (budget / conditions)`, which increases monotonically with repeats. The block is therefore allocated to the maximum number of tasks at one repeat, with a small repeated subset retained only to re-estimate residual variance and detect flaky execution (`RD-2026-09-02-13A`, superseding `RD-2026-09-02-09D`). The projected paired minimum detectable effect on the coverage endpoint is about `0.045` at 48 tasks and one repeat, against about `0.049` at 24 tasks and two repeats. With two-sided familywise alpha 0.05 across two co-primary endpoints and 80% power:
 
 - at 24 paired tasks, the approximate continuous paired-score MDE is about `0.63 SD` before cluster/design inflation;
 - the 95% CI half-width for a standardized paired mean is about `0.42 SD` before inflation;
@@ -195,7 +195,8 @@ Confirmatory hard cap: 192 episodes ×32k = 6.144M treatment tokens; scoring cap
 | Routing/model variation | mechanism confound | fixed model in Study A; routing deferred |
 | Structured state delivered but unused | a null H-A confounds "does not help" with "never read" | manipulation probe quarantines episodes whose artifact never cites a decision-relevant state field |
 | Judge severity drift between versions | treatment effect confounded with rater bias | severity and halo diagnostics against a human anchor; pinned judge revision |
-| Repeat allocation chosen by convention | wasted episodes on the wrong variance source | pre-registered crossed variance decomposition before any confirmatory allocation |
+| Repeat allocation chosen by convention | wasted episodes on the wrong variance source | allocation now derived from a measured crossed decomposition; the earlier two-repeat plan was superseded when the measurement contradicted it |
+| Variance components estimated from a small block | allocation tuned to noise | 32 episodes give few degrees of freedom and the task component is a boundary estimate at zero, so the monitoring subset re-estimates residual variance during confirmation |
 
 ## 11. Design rationale and comparable experiments
 
