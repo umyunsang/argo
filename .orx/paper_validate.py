@@ -622,6 +622,9 @@ def main():
             + json.loads(
                 (ROOT / "paper/sources/arxiv-metadata-literature-round44-receipt.json").read_text(encoding="utf-8")
             ).get("records", [])
+            + json.loads(
+                (ROOT / "paper/sources/arxiv-metadata-literature-round46-receipt.json").read_text(encoding="utf-8")
+            ).get("records", [])
         )
         combined_metadata_ids = [x.get("source_id") for x in combined_metadata_records]
         duplicate_metadata_ids = sorted(k for k, v in collections.Counter(combined_metadata_ids).items() if v > 1)

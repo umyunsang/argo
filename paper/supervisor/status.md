@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** rebuild the verified-endpoint coverage numbers on the corrected verdict record, since four verdicts changed and the endpoint was computed on the originals.
+- **next_first_action:** commit the recomputation as a runnable script with fixtures, since it currently exists only as analysis and its numbers now appear in the manuscript.
 
-- **last_updated:** 2026-09-03T01:46:34+09:00
+- **last_updated:** 2026-09-03T01:51:22+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 27 closed — confidence predicts draw representativeness, not answer concentration; low-band record corrected with its counterevidence attached
+- **current_phase:** cycle 28 closed — endpoint recomputed on the corrected record after the recomputation itself was validated against the original
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 28 — the endpoint recomputed, and the check was wrong before the record was
+
+- **Gap picked:** four verdicts changed, and the verified endpoint had been computed on the originals.
+- **Validated the recomputation first.** A recomputation that has not reproduced the original is not a check. Running it on the original record reproduced the recorded variance shares and standard error exactly.
+- **That step immediately paid.** The recomputed minimum detectable effect disagreed with the record, `0.0571` against `0.0808`. Deriving the quantity showed **the record was right and my check was wrong** by a factor of √2, because a paired difference of two condition means carries that factor. After the fix, every recorded value reproduced.
+- **On the corrected record:** task share of variance rises **16.2% → 21.5%**, residual falls **83.8% → 78.5%**, condition and interaction remain **exactly zero**. Paired MDE moves `0.0808 → 0.0825`. Cue-versus-verified correlation falls `0.043 → 0.018`.
+- **The structural conclusion is unchanged:** with zero interaction the standard error still does not depend on how a budget is split between tasks and repeats.
+- **Limit stated:** four changed verdicts out of 192 is a small perturbation and says nothing about behaviour under a larger correction. The endpoint stays inadmissible for scoring until human labels exist.
 
 ### Cycle 27 — what confidence actually predicts, and a correction that carries its own counterevidence
 
