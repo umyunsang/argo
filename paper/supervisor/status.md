@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** extend the block with a third repeat on both tasks so the completion intervals narrow enough to be informative, or state the required block size from these intervals.
+- **next_first_action:** while Q-0007 is unanswered, apply the same precision planning to the quality endpoint so both outcomes have a stated block size rather than only completion.
 
-- **last_updated:** 2026-09-03T03:30:23+09:00
+- **last_updated:** 2026-09-03T03:33:28+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 47 closed — budget completion reported with denominators and intervals that refuse the obvious reading
+- **current_phase:** cycle 48 closed — the decisive block size is computed from measured cost; the spend is a declared question, not a drift
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 48 — how much more measuring, computed rather than guessed
+
+- **Gap picked:** the completion intervals are too wide to act on, and the choice was to extend the block or to state what extension is required.
+- **Refused the cheap option.** A third repeat costs about a dollar and moves the half-width from **0.327** to roughly **0.29** — it would buy the appearance of progress and change nothing that can be concluded.
+- **Computed the real requirement:** to reach a half-width of **0.15** at the lowest observed completion rate needs **29 episodes per condition, 116 in total**, at about **$18** using a cost per episode read from the executed receipt rather than assumed.
+- **That is six times everything this project has spent on model calls.** Rather than drift toward it in small steps, `Q-0007` records the choice with a default of **not spending without approval**, and the loop proceeds on that default.
+- **Committed as code, not a one-off:** 17 fixtures, 6 of 6 mutations caught — including "plan on a guessed cost when the receipt has none" and "use the highest rate instead of the lowest". One fixture was strengthened again after a removed guard still raised, from a square root of a negative number.
+- Claim checks now stand at 40.
 
 ### Cycle 47 — the rate is reported, and the reading is refused
 
