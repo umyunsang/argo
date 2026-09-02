@@ -1,0 +1,171 @@
+\section{Illustrative Cases, One per Class}
+\label{sec:cases}
+
+Table~\ref{tab:cases} summarizes one realization per failure class
+from \emph{our} pipeline during \emph{this} audit. Full per-cell
+chronologies, unfixed-acknowledged residuals, and the three
+additional benchmark-specific issues (shared-prefix MCQ letter
+tokens, \texttt{add\_instruction} contamination on ToxiGen, weak
+binary-task surface edits) are in Appendix~\ref{app:bugs}.
+
+\paragraph{F1 (silent-no-op).} \texttt{format\_change\_labels} wrote
+\texttt{item[`label\_style']}; the \emph{legacy} prompt renderer was
+patched to read it, but the \emph{canonical} MCQ scorer
+(\texttt{scoring\_canonical.py}) carried a hard-coded prompt builder
+that was never updated. Silent-no-op rate on the canonical scorer's
+prompt was 100\% for TruthfulQA and BBQ, compared to 0.2\% and 1.8\%
+measured against the legacy renderer (Appendix~\ref{app:autodiff},
+Table~\ref{tab:autodiff}). The gap between the two audit points is the
+core F1 evidence: an auto-diff against the prompt renderer alone is
+insufficient when renderer and scorer live in separate files.
+
+\paragraph{F2 (regex-extraction artefact).} On Qwen-2.5-7B
+$\times$ TruthfulQA, the legacy pipeline's free-form generation +
+regex extractor parsed only 44\% of items; 56\% defaulted to an
+incorrect answer. Format perturbations that shifted generation style
+shifted parseability itself, so $|\dfmt|$ tracked regex coverage
+rather than model behaviour. Canonical option-logprob scoring forces
+parseability~$=\!1.0$ by construction and is our G1-compliant fix.
+
+\paragraph{F3a--F3c (non-faithful scoring).}
+\emph{F3a:} Mistral-7B $\times$ CrowS-Pairs legacy accuracy was 0.99,
+which reads as ``excellent fairness'' but is in fact \emph{maximal}
+stereotypical preference: naive MCQ loading set
+\texttt{correct\_indices}$\!=\![0]$ pointing at \texttt{sent\_more}.
+PLL scoring on paired sentences~\cite{salazar2020masked} restores the
+intended scoring convention.
+\emph{F3b:} TruthfulQA MC2 returns
+\texttt{correct\_indices}$\!=\![0,\ldots,k{-}1]$; under any mild
+``prefer first option'' bias, the score is inflated
+(we observed \texttt{score\_original}$\!=\!1.000$ on an early
+canonical Qwen rerun). Switching to MC1 with deterministic per-item
+shuffle fixes it.
+\emph{F3c:} After moving ToxiGen to first-token log-probabilities, the
+scorer computed $\mathrm{lp}_{\mathrm{toxic}} =
+\mathrm{lp}_{\mathrm{non-toxic}} = -\infty$ on most items because
+neither target token fell in \texttt{top\_k}$\!=\!50$; the scorer
+defaulted to the majority class, producing $|\dfmt|=|\dsem|=0$
+exactly and $|\dattr|=0.2$ as a pure label-side artefact. \emph{We
+introduced this bug during the repair of F1}; we caught it only by
+inspecting per-cell meta log-probabilities. The fix is
+\texttt{targeted\_first\_token\_logprobs(prompt, token\_ids)}, which
+bypasses top-$k$ entirely.
+
+\paragraph{F4 (broken pairing).} Bootstrap that resamples originals
+and perturbations independently breaks per-item coupling: a cell's
+original-run score and its perturbed-run score are drawn from the
+same items under the intended estimator, and severing that pairing
+inflates variance on the difference without a predictable direction.
+F4 in this paper is evidenced by \emph{out-of-panel/legacy numbers
+plus a methodological argument}, not by a controlled in-panel
+ablation. The out-of-panel legacy-Llama cell on ToxiGen gave a CSR
+point estimate $\approx 9.5$ with 95\% CI width 26.4 under
+independent-resampling bootstrap; this cell is illustrative only.
+A like-for-like in-panel before/after is not available because the
+canonical pipeline removed the unpaired bootstrap outright (PREREG
+amendment (e), Appendix~\ref{app:repro}); paired-bootstrap CI widths
+in the canonical panel (Appendix~\ref{app:casetable},
+Table~\ref{tab:cell-validity}) run from 0.00 on degenerate cells up
+to 54.91 on Mistral\,$\times$\,XSTest (CSR 84.86, CI
+$[44.92, 99.83]$), but at distinct CSR magnitudes, so width
+comparisons across estimators are qualitative only.
+
+\paragraph{F5 (archetype mismatch).} Canonical Qwen-2.5-7B $\times$
+BBQ produces $|\dattr|\!=\!0.00$ at an unperturbed score of $0.34$
+(near-chance on a three-option task). Diagnostic reading: ``broken
+benchmark.'' Invariance reading: ``maximally fair model''---BBQ is
+designed so a fair model should \emph{not} change its answer under a
+demographic swap. A single scalar CSR cannot distinguish the two
+readings; no scoring repair resolves the ambiguity, because archetype
+is a property of the benchmark, not of the scorer.
+
+\begin{table*}[!t]
+\centering
+\footnotesize
+\caption{Five failure classes, one realization per class in our
+canonical Qwen-2.5-7B / Mistral-7B panel. ``Verdict'' uses the
+short labels of \S\ref{par:gate}.}
+\label{tab:cases}
+\begin{tabular}{p{0.04\textwidth}p{0.30\textwidth}p{0.20\textwidth}p{0.30\textwidth}}
+\toprule
+ID & Symptom in our pipeline & Fix & Governance lesson \\
+\midrule
+F1 & \texttt{change\_labels} was a 100\%
+silent-no-op on the canonical MCQ scoring path for TruthfulQA and BBQ
+(legacy renderer was patched; canonical scorer file
+\texttt{scoring\_canonical.py} was not). &
+Parametrise the canonical scorer's prompt builder. &
+Fixes must land on the scorer-consumed path; auto-diff against the
+prompt renderer alone is insufficient when renderer and scorer are
+separate files. \\
+\addlinespace
+F2 & Qwen$\times$TruthfulQA legacy parseability 0.44; the regex
+defaulted 56\% of items to incorrect, and perturbations that shifted
+generation style shifted parseability itself, so $|\dfmt|$ tracked
+regex coverage. &
+Switch to option logprobs (parseability $=1.0$ by construction). &
+Sensitivity numbers below parseability 0.95 measure regex coverage,
+not model behaviour; report parseability per cell. \\
+\addlinespace
+F3a & Mistral$\times$CrowS legacy accuracy 0.99 reads as
+``excellent fairness'' but is in fact \emph{maximal} stereotypical
+preference under naive MCQ loading
+(\texttt{correct\_indices}~$=[0]$ pointing at \texttt{sent\_more}). &
+Pseudo-log-likelihood over \texttt{choices[0]} and
+\texttt{choices[1]}~\cite{salazar2020masked}. &
+Benchmark conventions are load-bearing; a number reported without its
+convention statement inherits a construct inversion invisible in the
+number. \\
+\addlinespace
+F3b & TruthfulQA MC2 loader returns
+\texttt{correct\_indices}~$=[0,\ldots,k{-}1]$; under any mild
+``prefer first option'' positional bias the score is unfairly
+inflated (we observed \texttt{score\_original}~$= 1.000$ on a first
+canonical Qwen rerun). &
+Switch to MC1 with deterministic per-item shuffle. &
+Evaluation harnesses are part of the measurement instrument; cite the
+harness version, not just the benchmark. \\
+\addlinespace
+F3c & After moving ToxiGen to first-token-logprob scoring,
+$\mathrm{lp}_{\text{toxic}} = \mathrm{lp}_{\text{non-toxic}} = -\infty$
+on most items because neither target token fell in
+\texttt{top\_k}=50; the scorer defaulted to majority class, producing
+$|\dfmt| = |\dsem| = 0$ exactly and $|\dattr| = 0.2$ as pure
+label-side artefact. \emph{Introduced during repair of F1.} &
+\texttt{targeted\_first\_}\linebreak\texttt{token\_logprobs} that
+bypasses top-$k$ entirely. &
+Each fix adds a scorer path that can silently regress; without per-cell
+scorer-output inspection plus a targeted unit test, repair is
+indistinguishable from regression. \\
+\addlinespace
+F4 & Independent-resampling bootstrap on legacy out-of-panel Llama
+gave CI width 26.4 at $\csr \approx 9.5$
+(Appendix~\ref{app:bugs}); in the canonical two-model panel the
+largest CI width on any cell with non-trivial denominator is roughly
+one third of that. &
+Item-level paired bootstrap (resample items, carry all perturbations
+together). &
+Uncertainty estimation is an assurance-layer property; a CSR with a
+broken bootstrap has an error bar whose direction of bias is not
+predictable. \\
+\addlinespace
+F5 & Canonical Qwen$\times$BBQ produces $|\dattr|=0.00$ at original
+score $0.34$ (near-chance on a 3-option task). Diagnostic reading:
+``broken benchmark.'' Invariance reading: ``maximally fair model.''
+A single CSR cannot distinguish. &
+Report archetype alongside CSR (G5); refuse to interpret the ratio
+without it. &
+Archetype is a construct-validity property of the benchmark, not of
+the metric; a ratio that papers over it hides the reasoning step the
+reader most needs to see. \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+Of the seven realizations, six were latent in legacy code and the
+seventh (F3c) was self-introduced during the F1 repair sequence.
+This repair-phase regression is itself diagnostic: pipelines produce
+plausible publishable numbers long before their scorer paths are
+trustworthy, and the distinction between ``audit found no problem''
+and ``audit did not look at the right thing'' is not visible in the
+reported numbers.

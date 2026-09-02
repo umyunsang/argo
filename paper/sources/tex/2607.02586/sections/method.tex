@@ -1,0 +1,175 @@
+\section{Self-Audit Case Study: Method}
+\label{sec:method}
+
+\paragraph{Panel.} Two open-weight 7B instruction-tuned models
+(Qwen-2.5-7B-Instruct, Mistral-7B-Instruct-v0.3) against five safety
+benchmarks (TruthfulQA, BBQ, ToxiGen, CrowS-Pairs, XSTest), for
+$5 \times 2 = 10$ cells; 200 items per benchmark, deterministic
+decoding, single seed = 42, single template. Hardware, software, and
+the dropped-Llama provenance are in Appendix~\ref{app:panel}.
+
+\paragraph{Perturbations and scoring.} Three families per item---format,
+semantic, attribute---with three perturbations per item per family
+(detailed realisations in Appendix~\ref{app:pertfam}). Two scoring
+pipelines: a \emph{legacy} pipeline using uniform regex extraction for
+MCQ and first-token logits for ToxiGen / XSTest, and a
+\emph{canonical} pipeline using each benchmark's reference protocol
+(option logprobs for TruthfulQA MC1 and BBQ; PLL on paired sentences
+for CrowS~\cite{salazar2020masked}; targeted-token first-token
+logprobs for ToxiGen; a 10-pattern regex refusal classifier for
+XSTest). Per-pipeline scorer mappings, the legacy$\to$canonical
+fix list, and parse-failure handling are in
+Appendix~\ref{app:scoring}.
+
+\paragraph{Contrast Selectivity Ratio (CSR).}
+For each (item, family) we average the unsigned per-item score change
+over the family's $|F|=3$ perturbations and then over $N=200$ items:
+\[
+|\Delta_{\mathrm{fam}}|
+= \frac{1}{N} \sum_{i=1}^{N}
+  \frac{1}{|F|} \sum_{p \in F}
+  \left|\, s_i^{p} - s_i^{\mathrm{orig}}\, \right|.
+\]
+We use magnitudes because a signed-delta formulation cannot
+distinguish a construct flip from a sycophancy flip without additional
+signed-effect auditing (out of scope). The cell statistic is
+\[
+\csr = \frac{|\dattr|}{\max(|\dfmt|, |\dsem|, \varepsilon)},
+\quad \varepsilon = 0.01,
+\]
+where $\varepsilon$ is an engineering floor (not a statistical
+threshold) that keeps the ratio finite when both surface-family
+deltas are near zero. We report $\Pr(\csr > 1)$ as bootstrap support
+for the directional inequality $|\dattr| > \max(|\dfmt|, |\dsem|)$
+and \emph{not} as a frequentist $p$-value.
+\emph{What CSR does not claim.} A high CSR means the model responds
+more strongly to attribute perturbations than to format or semantic
+ones in \emph{magnitude}; it does not certify that those responses
+are in the construct-consistent direction. A
+\emph{confirmatory-selective} verdict under our gate therefore
+reports that $|\dattr|$ exceeds surface-family magnitudes---a
+necessary but not sufficient condition for construct sensitivity.
+Upgrading a selective verdict to construct-consistent sensitivity
+requires signed-effect validation (e.g., a human- or reference-label
+audit that construct flips produce direction-correct score changes)
+and is left to future work; see also the Limitations of
+Appendix~\ref{app:limitations}. Paired 1000-resample
+item-level bootstrap 95\% CIs are reported, following standard
+practice~\cite{efron1993bootstrap}; resampling is once per item with
+all three perturbations carried together (F4 repair). Threshold
+honesty (G3 = 0.02 versus a $p=0.5, n=200$ 2-SE of $\approx 0.07$;
+$\varepsilon$ provenance) is in Appendix~\ref{app:thresholds}.
+
+\paragraph{Six-point gate G1--G6 and status-assignment algorithm.}
+\label{par:gate}
+A cell is \emph{confirmatory} only if all six checks in
+Table~\ref{tab:checklist} pass; status labels follow the
+implemented / partial / proposed convention.\footnote{The metric
+was written ``Construct Sensitivity Ratio'' in the 2026-04-19
+prereg. After the E3 human audit was de-scoped, we invoked the
+pre-committed PREREG \S7 fallback and renamed it ``Contrast
+Selectivity Ratio''; the acronym CSR is retained, and
+construct-validity language is retracted from any claim that
+would have required E3 (Appendix~\ref{app:repro}).}
+Each cell is assigned exactly one status by the deterministic
+procedure below. Conditions are evaluated top-to-bottom and the
+first one that fires determines the status. \emph{Benchmark-level}
+conditions depend only on the (benchmark, scorer) pair;
+\emph{cell-level} conditions depend on the specific cell's gate
+outputs. We place numerical-gate failures (G2--G4) ahead of the
+benchmark-level \emph{scorer-unvalidated} and \emph{F5-ineligible}
+flags because a numerical-gate failure is the most actionable
+disclosure: it reports that the implemented gate actually tripped
+on this cell, a stronger and more specific statement than ``scorer
+confidence is low'' or ``the metric interpretation is
+archetype-ambiguous.'' When a cell satisfies several conditions at
+once (e.g.\ Qwen\,$\times$\,BBQ is F5 at the benchmark level
+\emph{and} fails G2 at the cell level), it is reported under the
+highest-priority condition that fires; the secondary flags are
+still surfaced in prose in \S\ref{sec:results}.
+\begin{enumerate}[leftmargin=1.4em,topsep=2pt,itemsep=1pt]
+\item \textbf{ineligible (F1-type)}---benchmark-level: the G1
+  instrumentation does not reach the scorer-consumed prompt for
+  this (benchmark, perturbation family) pair, so G1 cannot be
+  evaluated. \emph{Our panel:} CrowS-Pairs under PLL +
+  question-edit.
+\item \textbf{failed G2--G4}---cell-level: an implemented numerical
+  gate (G2 above-baseline, G3 non-trivial denominator, G4 paired
+  uncertainty) fails on this cell.
+\item \textbf{scorer-unvalidated}---benchmark-level, applied
+  when G2--G4 pass: the scorer for this benchmark has not been
+  validated against a reference or human label. \emph{Our panel:}
+  ToxiGen (first-token logprob targeting validated only on a
+  100-item tokenizer-coverage probe) and XSTest (10-pattern refusal
+  regex without a false-negative audit).
+\item \textbf{ineligible (F5-type)}---benchmark-level, applied
+  when G2--G4 pass and the scorer is validated: the benchmark is
+  archetype-mismatched under CSR-as-defined (invariance benchmark
+  penalised by a diagnostic ratio). \emph{Our panel:} BBQ.
+\item \textbf{exploratory}---cell-level: G2--G4 pass, scorer
+  validated, archetype aligned, but G5 (archetype disclosure) or
+  G6 (repair-regression) remains \textsc{proposed}.
+\item \textbf{confirmatory-selective} (paired-bootstrap CI on
+  CSR wholly above 1; contrastive \emph{magnitude}, not
+  direction) or \textbf{confirmatory-non-selective} (wholly below
+  1): G1--G6 all implemented and passed.
+\end{enumerate}
+Because G5 and G6 are \textsc{proposed} in this submission, no cell
+can reach \emph{confirmatory}; the case study contains no
+confirmatory cells \emph{by construction}, a procedural fact
+rather than an empirical verdict about benchmarks. The ten-cell
+bucket counts in \S\ref{sec:results} follow from this algorithm
+applied to each row of \texttt{cell\_validity.csv} via the raw
+verdict $\to$ paper bucket table in
+Appendix~\ref{app:verdict-mapping}.
+
+\begin{table*}[t]
+\centering
+\small
+\caption{Unified G1--G6 due-diligence gate / checklist (one set of
+identifiers used as both a decision procedure in this paper's case
+study and a disclosure tool for governance-evidence pipelines).
+Status is relative to our reference implementation
+\texttt{analyze\_canonical.py}.}
+\label{tab:checklist}
+\begin{tabular}{p{0.04\textwidth}p{0.18\textwidth}p{0.55\textwidth}p{0.10\textwidth}}
+\toprule
+ID & Name & Pass condition & Status \\
+\midrule
+G1 & Scorer-faithful audit &
+Per (benchmark, method) silent-no-op rate measured against the
+\emph{scorer-consumed} prompt is $<20\%$, and parseability $\geq
+0.95$ for any regex-based scorer (folds F2). Implemented for MCQ /
+classification; the PLL scorer reads \texttt{choices}, so audit of
+\texttt{question}-edits on CrowS is not yet instrumented. &
+Partial \\
+\addlinespace
+G2 & Above-baseline original &
+Unperturbed score exceeds a task-appropriate trivial baseline
+(uniform-choice for MCQ, majority-class for binary) by $\geq 2\,\mathrm{SE}$. &
+Implemented \\
+\addlinespace
+G3 & Non-trivial denominator &
+$\max(|\dfmt|, |\dsem|) \geq 0.02$ before \csr{} is reported. The
+$\varepsilon = 0.01$ floor inside the CSR formula is a separate
+engineering floor. &
+Implemented \\
+\addlinespace
+G4 & Paired uncertainty &
+Item-level paired bootstrap; independent resampling of originals and
+perturbations is prohibited. &
+Implemented \\
+\addlinespace
+G5 & Archetype disclosure &
+Each benchmark labelled \textsc{diagnostic}, \textsc{invariance}, or
+\textsc{mixed}; ratio metrics interpreted within archetype. &
+Proposed \\
+\addlinespace
+G6 & Repair-regression &
+Every scoring-path fix is accompanied by per-cell scorer-output
+inspection \emph{and} a unit test that fails on the targeted bug. We
+shipped tests for F1, F3c, F4. &
+Proposed \\
+\bottomrule
+\end{tabular}
+\end{table*}

@@ -1,14 +1,22 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** generate three additional low-confidence element judgements to top the calibration form up to 25 items, then hold judged scoring until labels return.
+- **next_first_action:** rewrite the manuscript Introduction and Proposed Method so they match the replaced endpoint and the reliability floor, since they still describe the design as of round 7.
 
 - **last_updated:** 2026-09-03T00:03:13+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 8 closed — verifier reliability measured, confidence floor set at 0.9, blinded 22-item calibration form emitted and awaiting labels
+- **current_phase:** cycle 9 closed — manuscript now reports the executed instrument evidence, including its own falsified endpoint
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 9 — the manuscript now reports what was executed
+
+- **Gap picked:** five cycles of executed instrument evidence existed and the manuscript reported none of it, which is the gap that matters most against the thesis objective.
+- **Literature loop:** 9 discovery calls, 5 new `FULL_PAPER_READ` records, 5 locators on construct-validity reporting, validity degradation across evaluation pipelines, audit failure modes, preregistration deviation, and negative-result publication.
+- **Executed:** the results section was rewritten to report the three executed blocks, the falsification of the first primary endpoint, the measured reliability of its replacement, and the two design parameters fixed by measurement. Ten new references were added and the bibliography was reordered to first-citation order.
+- **The section leads with the falsification rather than hiding it**, because publishing filters out negative results and models trained on that literature inherit the bias.
+- **Still no efficacy claim.** The section states explicitly that no treatment effect is estimated, that four preregistered decisions were superseded or falsified, that pilot tasks are development data, and that all element verdicts remain inadmissible as scores.
 
 ### Cycle 8 — is the verifier even stable?
 
