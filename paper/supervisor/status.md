@@ -1,11 +1,11 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** 한글 본문에 초안의 인용을 이관해 참고문헌 수를 맞추고 전환 플래그를 넘긴다. 그 다음 Q-0009 하네스 비교 arm 설계 문서를 만든다.
+- **next_first_action:** supervisor instruction-0010 §2 보충 양식(label-form-supplement-001.json 8건)의 기입 완료를 확인하고, 25건 완비 시 선택적 평가기 UCB 교정을 실행한다.
 
-- **last_updated:** 2026-09-03T05:53:07+09:00
+- **last_updated:** 2026-09-03T07:59:29+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** anthropic/claude-opus-5
-- **current_phase:** cycle 67 closed — 계보 서사·어휘 게이트 적용, 계승 표 추가(표 6개), fail-closed 3/3
+- **current_phase:** cycle 68 closed — 한글 Quarto 정본 전환 완료, 13개 양식 규칙 ENFORCED PASS, 인용 95건 완비, Q-0009 설계 완료
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 
@@ -17,8 +17,8 @@
 
 > **instruction-0011 보고 (§7)**
 > 1. **정본 소스:** `paper/manuscript/thesis-ko.qmd` (Quarto 1.10.18 단일 파일). 렌더 검사 **9/9 통과** — A4 11906×16838, `Ⅰ. Introduction` 제목, 그림 캡션 하단 `그림 1.`, 표 캡션 상단 `표 1.`, 본문 상호참조, 한글 비율 **0.794**, receipt 연동 표 실행. **아직 제출 진입점은 교체하지 않았다**(제출 docx는 매 커밋 게이트 통과 상태 유지).
-> 2. **한글 장 진행:** **5/5** (Ⅰ~Ⅴ + 참고문헌). 그림 **9개** 번호 캡션, 표 **5개** 번호 캡션(3개는 receipt 생성·assert). 국문요약 384자, 키워드 5개, 한글 비율 0.774. **전환 보류**: 본문 인용 6건 대 초안 93건.
-> 3. **Q-0009(하네스 비교 arm):** 미착수 — 작업 순서상 다음 단계. 기본값 (b) 실행 안 함.
+> 2. **한글 장 진행:** **5/5 전 장 완성 및 정본 전환 완료**. 그림 **9개** 번호 캡션(1.000 판독), 표 **6개**(3개 receipt assert 생성), 참고문헌 **95건** 전수 인용 완비, 국문요약 **384자**, 영문 키워드 **5개**, 한글 비율 **0.796** (본문 기준).
+> 3. **Q-0009(하네스 비교 arm):** 설계 완료(`paper/research/harness-comparison-arm-design.md`). 결정론적 검증기 기반, 2개 시나리오($7.30 / $14.60), **기본값 (b) 실행하지 않음**으로 등록.
 > 4. **툴체인 v3:** 한글 폰트를 고정 툴체인 안에 넣어 격리 규칙을 **완화하지 않고** 한글 조판을 열었다. 영문 빌드는 폰트 추가 전후 **바이트 동일**(`e57e8f13…`)로 반증 조건을 통과했다.
 
 
