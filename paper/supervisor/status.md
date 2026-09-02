@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** await Q-0007 on the 116-episode spend; meanwhile audit whether any manuscript claim rests on the 48 episodes that the admission rule made unscorable.
+- **next_first_action:** Q-0007 gates the only remaining executable expansion, so the next unblocked unit is a second-judge cross-check of the eight confirmation artifacts, which needs no new episodes.
 
-- **last_updated:** 2026-09-03T03:39:18+09:00
+- **last_updated:** 2026-09-03T03:41:39+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 50 closed — the executable arm is pre-registered and sealed before the data that would tempt it
+- **current_phase:** cycle 51 closed — every manuscript number derived from the unscorable blocks now carries its dependency, explicitly
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 51 — auditing the paper against its own admission rule
+
+- **Gap picked:** the admission rule made 48 episodes unscorable. Whether any manuscript claim still leaned on them, unmarked, had not been checked.
+- **Executed:** every number in the body derived from those blocks was located and its surrounding paragraph checked for language marking the dependency. Eleven of thirteen numbers were already labelled.
+- **Two were not:** the high-confidence reliability figures, 88.0% and 92.0%.
+- **They do not need a downgrade, for a reason worth stating.** The admission rule refuses to **score an episode** whose usage was never measured. Reliability characterises the **judge** — how far a verdict reproduces on the same item — which the artifacts can support even when the episodes cannot enter a score.
+- **The distinction is now in the paper**, not left to inference, so a reader can see why the variance components are provisional and these are not. Without it, both sets look equally supported.
+- **A guard against stretching it** is recorded as the falsifier: if a reliability figure is ever used as an episode score or as evidence about a condition, the distinction is being abused and the figure must be downgraded.
 
 ### Cycle 50 — the executable arm is pre-registered and sealed
 
