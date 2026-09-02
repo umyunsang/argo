@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** recompute the recorded verdicts for every low-confidence element judgement in the pool as a modal verdict over five repeats, so the stored record matches the adopted rule.
+- **next_first_action:** rebuild the verified-endpoint coverage numbers on the corrected verdict record, since four verdicts changed and the endpoint was computed on the originals.
 
-- **last_updated:** 2026-09-03T01:40:59+09:00
+- **last_updated:** 2026-09-03T01:46:34+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 26 closed — my own hypothesis about unlabelable items was refuted by measurement
+- **current_phase:** cycle 27 closed — confidence predicts draw representativeness, not answer concentration; low-band record corrected with its counterevidence attached
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 27 — what confidence actually predicts, and a correction that carries its own counterevidence
+
+- **Gap picked:** the modal rule was adopted for the low band, but the **mid band holds 112 of 192 judgements** and its treatment was undecided.
+- **Measured, not assumed:** ten mid-band items over five repeats gave modal share **0.86**, close to the low band's **0.88**. Within-item stability does not separate the bands.
+- **What separates them is representativeness of the recorded draw:** **9 of 10** in the mid band against **1 of 5** in the low band. So reported confidence predicts whether a single draw represents the item, not how concentrated the item's answer distribution is. The rule stays scoped below 0.7.
+- **Applied:** five low-band records and five calibration key entries rewritten to modal verdicts; **four verdicts changed**. Every `unclear` verdict in the whole pool was a low-confidence single draw, and all three resolved to a definite verdict, so that category is now empty. Every original draw is retained beside its replacement.
+- **Counterevidence recorded against my own new rule.** Majority vote has been shown to reduce per-problem accuracy on most hard problems for small models, and agreement can be high while the answer is wrong. The rule was applied to precisely the hardest items, so it could entrench a wrong answer.
+- **The falsifier is written to revert it:** if the human labels agree more often with the original single draws than with the modal verdicts, the correction made the record worse.
 
 ### Cycle 26 — the items are labelable; the recorded draw was not representative
 
