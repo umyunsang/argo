@@ -625,6 +625,9 @@ def main():
             + json.loads(
                 (ROOT / "paper/sources/arxiv-metadata-literature-round46-receipt.json").read_text(encoding="utf-8")
             ).get("records", [])
+            + json.loads(
+                (ROOT / "paper/sources/arxiv-metadata-literature-round48-receipt.json").read_text(encoding="utf-8")
+            ).get("records", [])
         )
         combined_metadata_ids = [x.get("source_id") for x in combined_metadata_records]
         duplicate_metadata_ids = sorted(k for k, v in collections.Counter(combined_metadata_ids).items() if v > 1)
@@ -1769,6 +1772,22 @@ def main():
             if proc.returncode != 0 or rebuilt != committed_digest:
                 errors.append("submission artifact is not reproducible from its committed builder")
 
+    dangling_references = []
+    if cfg.get("dangling_reference_scan"):
+        scan_cfg = cfg["dangling_reference_scan"]
+        pattern = re.compile(r'"((?:paper|experiments)/[^"*?\[\]]+?\.(?:json|md|csv|tex|docx|pdf|py))"')
+        for rel in scan_cfg["files"]:
+            source = ROOT / rel
+            if not source.is_file():
+                dangling_references.append({"in": rel, "reference": "(file missing)"})
+                continue
+            for match in pattern.finditer(source.read_text(encoding="utf-8", errors="replace")):
+                ref = match.group(1)
+                if not (ROOT / ref).exists():
+                    dangling_references.append({"in": rel, "reference": ref})
+    if dangling_references:
+        errors.append("receipt references a path that does not exist")
+
     submission_artifact = {}
     artifact_cfg = cfg.get("submission_artifact_gate")
     if artifact_cfg:
@@ -2063,6 +2082,7 @@ def main():
             "pdf_text_extraction_errors": pdf_text_extraction_errors,
             "pdf_token_failures": pdf_token_failures,
         },
+        "dangling_references": dangling_references,
         "submission_artifact": submission_artifact,
         "submission_artifact_rebuild": artifact_rebuild,
         "evidence_receipts": evidence_receipts,

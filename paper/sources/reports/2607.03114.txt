@@ -1,0 +1,587 @@
+
+Warning: orx 0.1.117 is outdated (latest 0.1.118). A newer release is available; upgrade to stay compatible with the API. Run `orx update` to upgrade.
+
+alphaXiv: https://www.alphaxiv.org/abs/2607.03114
+
+Towards Automatically Inferring Constraints to Identify Implicit
+Assumptions in Data Analysis
+Florian Sihler
+florian.sihler@uni-ulm.de
+Ulm University
+Germany
+Lars Pfrenger
+lars.pfrenger@uni-ulm.de
+Ulm University
+Germany
+Oliver Gerstl
+oliver.gerstl@uni-ulm.de
+Ulm University
+Germany
+Matthias Tichy
+matthias.tichy@uni-ulm.de
+Ulm University
+Germany
+Abstract
+High-level languages such as R or Python are used frequently to
+analyze and visualize data in the form of scripts or notebooks. How-
+ever, these artifacts suffer from reproducibility issues due to what
+we frame as implicit assumptions made by the authors. Such as-
+sumptions range from package versions and shapes of involved data
+tables, to manual and often undocumented setup steps. Within this
+work, we provide a unified, example-driven perspective on implicit
+assumptions in data analysis backed by an explorative proof-of-
+concept implementation. With this perspective, we propose the use
+of static analysis techniques to identify such assumptions and to
+make them explicit in the form of code constraints, focusing on the
+inclusion of data-analysis-specific issues. Such constraints can then
+be used to automatically transform these scripts into executable and
+reproducible artifacts, to check these assumptions at runtime, and to
+serve as documentation to support code reuse and comprehension.
+CCS Concepts
+• Software and its engineering → Maintaining software; • Theory
+of computation → Program analysis.
+Keywords
+Static Analysis, Dataflow Analysis, R Language
+1 Introduction
+There are many high-level data-analysis languages such as R, Python,
+MATLAB, and Julia which offer a sophisticated range of features
+for statistical tests and visualization [38, 10, 24]. Additionally, these
+languages benefit from notebook environments such as Jupyter
+Notebook [12] or Quarto [1], which support an interactive explo-
+ration and manipulation of data. These technologies support domain
+experts in conducting their analyses without training in software
+engineering principles [35]. In practice, however, analysis scripts [31,
+28] and notebooks [15, 22, 26] suffer issues in reproducibility and
+structure [30]. Various studies show that they lack executability [31,
+22, 26, 15] and hence reproducibility. These studies reveal that 65 %
+to 77 % of the analyzed artifacts fail to execute due to missing de-
+pendencies, wrong execution order, or bad coding practices [31].
+Moreover, research on code reuse in data science finds that 70 %
+to 80 % of the analyzed code snippets are clones of other snippets
+with 50 % containing no unique code at all [2, 16]. Code reuse is even
+more prevalent across different projects. This indicates significant
+reproducibility issues of data science code. Such artifacts are used
+frequently to help other researchers understand the applied methods
+and the steps conducted in the accompanied publication or to reuse
+parts within their own related analyses [17, 2]. Reasons for these
+difficulties are manifold. Ranging from finding the used versions of
+packages and the language, to external dependencies like resource
+files. Additionally, they may rely on previous steps or expect the
+dataset to have a specific shape [31]. While there is already some
+research on improving the reproducibility of data science scripts and
+notebooks, there is not yet a unified view on the various challenges
+that arise when trying to reproduce, replicate, or reuse these artifacts.
+In this work, we address this by framing these difficulties as implicit
+assumptions, similar to classical software development [18]. Addi-
+tionally, we propose the systematic use of static analysis techniques
+to identify and document these implicit assumptions in the form of
+constraints, e.g., by using abstract interpretation to infer the values of
+variables [5, 8]. Such an analysis may happen either in the context of
+the original analysis environment (cf. [9]) or retroactively when a re-
+searcher tries to reproduce, replicate, or reuse the artifact. The results
+can then be used to add checks to the program that serve as an explicit
+documentation and as a dynamic validation for each run of the script.
+Within the rest of this paper, we use the R programming language as
+a primary example to illustrate specific cases. Furthermore, we use it
+as a basis for an explorative proof-of-concept implementation of our
+idea on top of flowR, a static program analysis framework for R [29].
+However, the proposed approach and most of the challenges are
+inherent to data analysis and hence language-agnostic. Therefore,
+we include a brief overview of the generalizability of the approach.
+Finally, we conclude with the implications of our work as well as a
+list of next steps in Sections 4 and 5.
+2 Related Work
+To address issues of non-executable or non-reproducible research,
+several solutions have been proposed (cf. [27, 9]), including tools to
+gather executable code versions [13], recreate the execution order of
+notebook cells [36], provide linting recommendations [23], infer the
+environment of Python code [14, 41], and restore the execution en-
+vironment of notebooks [37]. Yet, neither do these tools address the
+potential interactions between assumptions, such as the version of
+an interpreter restricting the available libraries, nor do they provide
+a systematic approach to document these assumptions in the artifact.
+arXiv:2607.03114v1 [cs.SE] 3 Jul 2026
+
+, , Florian Sihler, Lars Pfrenger, Oliver Gerstl, and Matthias Tichy
+One widely used technique for inferring code constraints is abstract
+interpretation introduced by Cousot et al. [5]. It can be used to au-
+tomatically infer preconditions on the code [4] and statically check
+code contracts [19, 11], for example, to infer shapes of input data
+for data science scripts [34, 33]. Additionally, subsequent research
+by Pavle et al. presents a general static analysis framework for data
+science notebooks [21]. Furthermore, Negrini et al. propose a static
+analyzer for data transformations in Jupyter notebooks [20] and
+Dolcetti et al. introduce a high-level linter to identify code smells in
+data science scripts [8]. However, none of these approaches focus on
+identifying and documenting issues of reproducibility, but instead
+they target the detection of code smells and visualization errors.
+3 Constraint Inference
+This section explains our core idea of using constraint inference to
+identify implicit assumptions in data analysis scripts. We propose
+to differentiate between two scenarios for constraint inference: A
+preemptive analysis in the context of the original execution environ-
+ment with the original data available, and retroactive analysis when
+aspects of the original execution environment may be unknown
+or the original data may only be partially available. In the former
+case, the researcher may want to ensure that the analysis script is
+self-contained and complies with the fair principles [39]. This case
+is usually easier as we can use the current computing environment
+to infer package versions and the shape of used datasets [9]. For the
+latter case, we differentiate between three scenarios which benefit
+from the identification of implicit assumptions in research artifacts.
+A researcher may want to:
+(1) Reproduce the results of the original study.
+(2) Replicate the results with a different dataset.
+(3) Reuse parts within a different but related context [39].
+We use this section to introduce the general idea with a running exam-
+ple (3.1) and discuss the challenges alongside sketches of potential so-
+lutions of common assumptions like inferring package versions (3.2),
+script interdependencies (3.3), and data shape expectations (3.4).
+3.1 Running Example
+Consider the following example R script which reads a dataset from
+a csv file (L2), calculates a mean score (L5) grouped by age (L4),
+conducts a t-test (L6), and plots the results (L7, L8). This follows
+the common data analysis workflow outlined by Wickham [38]. Al-
+though the example is simple and artificial, it illustrates the common
+structure of data analysis scripts:
+1 library(ggplot2)
+2 data <- read.csv("data.csv")
+3 by_age <- data |>
+4 dplyr::group_by(age) |>
+5 dplyr::summarise(m = mean(score))
+6 t.test(score ~ group, data=grouped)
+7 ggplot(by_age, aes(x=age, y=m)) +
+8 geom_count()
+These 8 lines have the following ten implicit assumptions, which are
+common in real-world analyses [31, 15, 26]:
+A1 They require R version 4.1 or newer
+To support the native pipe operator: |> L3, 4
+A2 ggplot2 and dplyr must be installed
+Loaded as a library and accessed via :: L1, 4, 5
+A3 ggplot2 has to be at least version 2.0
+This version introduces geom_count.
+1 
+L8
+A4 The file data.csv must exist and be readable as a csv
+Loaded by read.csv, relative to the working directory L2
+A5 data must have the columns age and score
+They are used by group_by and summarise L4, 5
+A6 The score column must be numeric
+Or coercible to a number to work with mean L5
+A7 The variable grouped must exist in the environment
+It is used in the t-test and not defined within the script L6
+A8 grouped must contain a score and group column
+Used in the formula of the t-test L6
+A9 The group column of grouped must have two levels
+The t-test requires a factor with exactly 2 levels L6
+A10 The values in grouped conform to the t-test assumptions
+Independence, normal distribution, . . . [7] L6
+Some assumptions, like A10, are silent, meaning that they do not
+cause visible errors when violated but cause incorrect results, while
+others, like A2, can lead to runtime errors or warnings. However,
+they do not have to cause errors. For example, newer versions of
+ggplot2, dplyr, or R may introduce changes in aesthetics, handling
+of edge-cases, value coercion, or deprecated functions, which can
+lead to different results. Although it may be easy to identify these
+assumptions in the 8 example lines, this gets much harder for real-
+world scripts [28]. In the context of our simple example, a preemptive
+analysis can get the exact version of used packages, knows whether
+data.csv exists, the shape of the data, and more, just by reading the
+information from the environment and executing the script. In con-
+trast, a retroactive analysis is limited to inferring constraints about
+which package versions could have been used and what the data
+might have looked like. Yet, this can still be important in detecting
+conflicts or reconstructing executable environments for the analysis.
+3.2 Inferring Package Versions (A1–A3)
+Incorrect versions are one of the main issues in reproducing data
+analyses [3]. There is a wide range of solutions that help to collect
+the used package versions and their dependencies preemptively.
+2
+Yet, work on reconstructing such information retroactively is rare
+and either tries to obtain all package versions available at a given
+time [3] or analyze the API usage in notebooks [37]. Currently, there
+exists no advanced and holistic approach to retroactively infer pack-
+age versions using all of these information sources combined and
+document them in a machine readable format.
+• 
+Problem Statement. Given an analysis artifact, combined with
+the available evaluation data and meta information, generate the
+requirements for the computing environment. These requirements
+include the required packages, their versions, and indirect dependen-
+cies such as system libraries. If the original computing environment
+is available, this can be inferred preemptively [9]. Hence, the main
+challenge is to infer these constraints retroactively.
+• 
+Proposed Solution. To reconstruct the computing environment,
+we use a three-step approach: (𝑖) identify all dependencies required
+1
+If we use R version 4.4 or later, we need ggplot2 version 3.5 or later.
+2
+See cran.r-project.org/package=renv, cran.r-project.org/package=groundhog.
+
+Towards Automatically Inferring Constraints to Identify Implicit Assumptions in Data Analysis , ,
+within the artifact, (𝑖𝑖) uncover their potential origins and versions,
+as well as (𝑖𝑖𝑖) identify their system and interpreter constraints. In R,
+this includes loaded or attached libraries, those accessed via “::” (A2),
+and those included indirectly [3] (for example, with source or as
+part of a description file). For this we require more than call infor-
+mation. Common loading structures involve, e.g., mapping a vector
+of library names to the library function [28]. Hence, we need string
+and vector-aware domains to identify these patterns. Our proof-of-
+concept uses flowR’s dataflow graph to identify these patterns and
+effectively infers all libraries requested by a given R script, excluding
+only those with features not supported by flowR [29]. Next, the goal
+is to analyze the use of these packages within the artifact to infer pos-
+sible package versions. Here we work on tracking (𝑖) called functions
+and their signatures, (𝑖𝑖) used classes and global objects or constants,
+and (𝑖𝑖𝑖) reliance on loading effects such as the initialization of global
+variables. We can use this information to compare it with the avail-
+able packages, their API, and dependencies to match up the expected
+behavior with the available versions [37]. Considering only line 8
+of the running example, this helps us to infer a minimum version
+constraint for ggplot2 based on the use of geom_count (A1). Incor-
+porating ggplot2’s dependency on the R interpreter adds another
+constraint, requiring different versions based on the used version of
+R (A3). To infer package versions, we are currently working on adding
+type inference, which allows us to infer function signatures. Using
+this strategy, we can build a constraint system describing all possi-
+ble versions that may have been used in the original analysis. This
+system can be enriched with additional information, such as a date
+range in which the study was conducted. If this process yields only
+a single combination of possible versions and their dependencies,
+we can use these to generate a corresponding virtual environment.
+If multiple sets are possible, we can use the constraints to generate
+a set of possible environments to reproduce the analysis. This can
+then be combined with dynamic analysis, comparing the execution
+results, to identify the most likely environment fully automatically.
+• 
+Generalization. Assumptions like A1–A3 are also common prob-
+lems in other programming languages such as Julia or Python. How-
+ever, inferring the package versions is not only useful in hindsight.
+These techniques can also be applied in the context of the original
+computing environment or in scenarios where a machine-readable
+format of the computing environment is available. In such cases,
+the constraints can be used to check the compatibility of the stated
+requirements with the actual environment and uncover conflicts in
+the used API.
+3.3 Script Interdependencies (A4 and A7)
+Usually, research artifacts rely on multiple scripts or notebooks to
+conduct all of their analyses. However, similar to how individual
+notebook cells may depend on each other [13], these scripts tend to
+have implicit dependencies on each other. One script may produce
+the data that another script consumes (e.g., A4), or clean the existing
+data as a side-effect. In a language like R, scripts can even pass on
+variables if they are sourced in the same session. This can lead to
+cases like the use of grouped in the running example (3.1) which
+is not defined in the script itself (e.g. A7). While there exist some
+rudimentary solutions which identify global variables,
+3 
+they are
+3
+cran.r-project.org/package=globals
+restricted to single sources and do not incorporate any potential
+script interaction, files, or package dependencies. Similarly, while
+common notebook formats like Jupyter Notebooks or RMarkdown
+store the last output of a cell, they offer no way to automatically
+record artifact-wide relations or necessary re-executions of cells.
+• 
+Problem Statement. Given an analysis artifact and the available
+execution environment (3.2), identify implicit dependencies between
+the scripts and their code. Such dependencies may be enriched with
+the information about which scripts need to run within the same
+environment. Then, using these constraints, identify all potential
+execution orders, and their interactions. This is especially important
+in the case of ambiguity, in which a number of either scripts or cells
+could be executed first, but their effect on the global state is different.
+• 
+Proposed Solution. To identify dependencies between these scripts
+in the retroactive case, we propose a two-step approach. First, we
+build the program dependency graph of each script independently
+but follow explicit script inclusions (e.g.,source calls). With this, we
+automatically gain information about explicit dependencies, poten-
+tially undefined values and functions, globally defined identifiers,
+and files which are either written or read by the scripts. In the second
+step, we can use this information to create links between scripts. This
+also connects previously undefined variables and function calls with
+definitions of their identifiers, the loading of libraries to imported
+functions, library loads to their installation (3.2), and file reads with
+their creation. The resulting graph indicates:
+(1) Scripts without any implicit dependency on or to other scripts.
+Such scripts may be executed completely independently.
+(2) Scripts that may depend on other scripts. Those scripts should be
+executed before their dependents. The possible execution orders
+are the topological graph orderings.
+(3) Scripts that still have global variables or functions which are
+undefined, or that read or write files that do not exist.
+Granularity wise, this can also be applied to code cells in notebooks
+or even individual code-blocks such as function definitions. We have
+started to implement this approach in flowR [29] and evaluated it
+on 8,160 real-world R projects scraped from Zenodo, Havard Data-
+verse, JSS, and Figshare, with a total of 33,336 files. With this, we
+find that 14.6 % of projects contain implicit interdependencies. In
+the preemptive case, these dependencies can be solved by recording
+the execution order, including re-executions. Existing tools such as
+historyAsScript,
+4 
+fail to incorporate project-wide dependencies
+or multiple sessions. Hence, we propose to extend these tools to
+incorporate a project-wide view of the dependencies.
+• 
+Generalization. The concept of interdependencies of research
+scripts (assumptions like A4 or A7) or notebooks exists for every gran-
+ularity and essentially every language in the form of a reliance on
+external state like the connection to a database. Detecting such poten-
+tial interdependencies is also helpful to ensure that an analysis does
+not rely on the execution order of the scripts or any external state.
+3.4 Data Shape Expectations (A5, A6, A8–A10)
+In the real world, no data analysis artifact contains any kind of “unit
+tests” and quality assurance is rare [28, 35]. Similarly, these scripts al-
+most never validate that loaded data conforms to the expected shape.
+4
+cran.r-project.org/package=CodeDepends
+
+, , Florian Sihler, Lars Pfrenger, Oliver Gerstl, and Matthias Tichy
+They simply access the columns they “know” or expect to exist (A8)
+and assume that the data is in the correct format (A6). Some of these
+assumptions are checked implicitly by the language or function that
+is called. However, there is no way to detect that, for example, an as-
+signment intends to overwrite a column, that two measurements are
+assumed to be independent, or that the values should follow a normal
+distribution. Some explorative work already tries to leverage abstract
+interpretation to infer series types to detect high-level errors like the
+wrong plot type [8], and to infer types for visualization [40]. More
+recent work also focuses on the dynamic postulation and verification
+of statistical assumptions, indicating the relevance of this work [32].
+Yet, there is no sophisticated approach to infer such implicit assump-
+tions statically from the artifact itself and express them explicitly.
+However, such guards are integral to support the reuse of analysis
+artifacts in different contexts (e.g., newer versions of the dataset).
+• 
+Problem Statement. Take an analysis artifact including all avail-
+able files and infer the constraints that loaded datasets have to fulfill.
+Then, semi-automatically insert checks into the artifact to dynam-
+ically ensure that the loaded data conforms to the expected shape.
+• 
+Proposed Solution. We propose using a new set of abstract do-
+mains [6] to infer and track the shape of the data as it is loaded and
+manipulated by the scripts. This includes the identification of the
+data shapes (e.g., the number and names of the columns and their
+types), the constraints on the data (e.g., that values must be unique or
+follow a normal distribution), and the functions used with the data.
+This way, we can infer the expectations of functions, such as the
+requirements for a t-test (A10) or expected data shapes (A5), and add
+guards to the artifact to dynamically ensure that the preconditions
+and expectations are met. Moreover, we propose a semi-automatic
+approach to add additional constraints that can not be inferred di-
+rectly from the data, but that a researcher may add in a preemptive
+scenario (e.g., that the result of a function must lie within a given
+interval). So far, we added a data frame shape inference using ab-
+stract interpretation to flowR. We define an abstract domain to track
+column names, the number of columns, and rows of data frames.
+For this, we map concrete data frame functions to a set of abstract
+operations. A first evaluation of the implementation shows promis-
+ing results for tracking the shape data in analysis scripts. Yet, this
+requires a careful study of common functions to identify useful con-
+straints that can be inferred from the data and the analysis artifact.
+Additionally, not every constraint can be directly inferred from the
+data (e.g., the independence of two measurements).
+• 
+Generalization. Expectations on the shape of data are frequent
+and neither limited to data analysis nor to R [20, 32] sharing similar-
+ities to, e.g., taint tracking and type inference. Inferring the shape of
+data by tracking a known state and the operations on the data, can
+be applied to most scenarios which involve external data that may
+change over time. Similarly, the inferred constraints can also help
+with comprehension, e.g., by uncovering unexpected requirements.
+4 Conclusion
+Within this work, we introduce the idea of implicit assumptions as
+a novel, unified perspective on the difficulties in reproducing, repli-
+cating, and reusing data analysis artifacts. Based on this perspective,
+we envision a set of techniques to address these difficulties with the
+help of static code analysis, and to enrich these artifacts with the
+necessary information to dynamically ensure their reproducibility
+and reusability. We combine this with an explorative implementation
+on top of flowR which underlines the feasibility of our approach. Yet,
+these categories are by no means exhaustive. For example, research
+artifacts may rely on undocumented, manual setup steps or interac-
+tivity from the user, which hinder automated execution, and reduce
+the reproducibility of the results. Furthermore, such techniques are
+no universal solution as inferring these implicit assumptions is in-
+herently limited by Rice’s theorem [25]. Hence, we require thorough
+analyses of reproducible and irreproducible artifacts to identify com-
+mon patterns to use as heuristics for these techniques. Additionally,
+we need to consider a human-in-the-loop approach if the detection of
+an implicit assumption works, but can not be automatically resolved.
+However, even in these cases, we believe that the mere detection
+of implicit assumptions is still a valuable contribution, offering an
+interesting and valuable research direction.
+5 Future Plans
+So far, we have already started working on a proof-of-concept im-
+plementation of our idea on top of flowR [29] and intend to complete
+this implementation by adding best-effort support for the detection
+of all implicit assumptions mentioned in Section 3. To allow for ad-
+ditional constraints by users, we intend on adding a combination
+of a domain-specific language and the ability to detect violations of
+common assumptions as with stopifnot in R. Subsequently, we
+plan to evaluate the usefulness of our approach in three ways:
+• Take non-executable artifacts from public repositories and pub-
+lished studies (e.g., those found by Trisovic et al. [31]) and check
+how many of them can be made executable with our approach,
+comparing this to the related work (cf. [31, 15, 9]).
+• Take executable artifacts and use fuzzing on their datasets to
+produce problematic and unproblematic variations and to get an
+understanding of the effectiveness of the inferred constraints to
+prevent problems in reusing the artifact with different data.
+• Conduct a user study with R users to evaluate the usefulness of
+the inferred constraints as documentation for understanding and
+reusing the artifact by measuring their performance in understand-
+ing and reusing the artifact with and without the constraints.
+Acknowledgments
+This work was supported by the German Research Foundation (DFG):
+504226141. We extend our thanks to all flowR contributors, especially
+Julian Schubert and Johanna Scheck. Additionally, we thank Jan Vitek
+and all of the anonymous reviewers for their invaluable feedback.
+
+Towards Automatically Inferring Constraints to Identify Implicit Assumptions in Data Analysis , ,
+References
+[1] [SW] J.J. Allaire et al., Quarto version 1.4, Feb. 2024. doi:10.5281/zenodo.59
+60048, url: https://github.com/quarto-dev/quarto-cli.
+[2] 
+Lauren Cadwallader et al. 2022. A survey of researchers’ code sharing and
+code reuse practices, and assessment of interactive notebook prototypes.
+PeerJ, 10, (Aug. 2022), e13933. doi:10.7717/peerj.13933.
+[3] 
+Chung-hong Chan et al. 2023. RANG: reconstructing reproducible R com-
+putational environments. CoRR, abs/2303.04758, (June 2023), e0286761.
+arXiv: 2303.04758. doi:10.48550/ARXIV.2303.04758.
+[4] Cousot et al. 2013. Automatic inference of necessary preconditions. In
+VMCAI 2013. Roberto Giacobazzi, Josh Berdine, and Isabella Mastroeni,
+(Eds.) Vol. 7737. Springer, (Jan. 2013), 128–148. isbn: 978-3642358722. doi:1
+0.1007/978-3-642-35873-9_10.
+[5] Patrick Cousot et al. 1977. Abstract interpretation: A unified lattice model
+for static analysis of programs by construction or approximation of fix-
+points. In Principles of Programming Languages. ACM, (Jan. 1977), 238–252.
+doi:10.1145/512950.512973.
+[6] Patrick Cousot. 2021. Principles of abstract interpretation. MIT Press.
+[7] 
+Marie Delacre et al. 2017. Why psychologists should by default use welch’s
+t-test instead of student’s t-test. International Review of Social Psychology,
+30, 1, (Apr. 2017), 92–101.
+[8] Dolcetti et al. 2024. Towards a high level linter for data science. In NSAD
+’24. Vincenzo Arceri and Michele Pasqua, (Eds.) Association for Computing
+Machinery, New York, NY, USA, (Oct. 2024), 18–25. doi:10.1145/3689609.3
+689996.
+[9] Pierre Donat-Bouillud, Filip Křikava, Krynski Sebastián, and Jan Vitek.
+2025. R4R: Reproducibility for R. In 2025 ACM Conference on Reproducibility
+and Replicability. ACM. doi:https://doi.org/10.1145/3736731.3746156.
+[10] Dr Ossama Embarak, Embarak, and Karkal. 2018. Data analysis and visual-
+ization using python. Springer. isbn: 978-1484241080. doi:10.1007/978-1-48
+42-4109-7.
+[11] Fähndrich et al. 2010. Static contract checking with abstract interpretation.
+In FoVeOOS 2010. Bernhard Beckert and Claude March, (Eds.) Vol. 6528.
+Springer, (June 2010), 10–30. doi:10.1007/978-3-642-18070-5_2.
+[12] Brian E. Granger et al. 2021. Jupyter: thinking and storytelling with code
+and data. Comput. Sci. Eng., 23, 2, (Mar. 2021), 7–14. doi:10.1109/MCSE.202
+1.3059263.
+[13] 
+Andrew Head et al. 2019. Managing messes in computational notebooks.
+In CHI 2019. Stephen A. Brewster, Geraldine Fitzpatrick, Anna L. Cox, and
+Vassilis Kostakos, (Eds.) ACM, (May 2019), 270. doi:10.1145/3290605.33005
+00.
+[14] Eric Horton et al. 2019. Dockerizeme: automatic inference of environment
+dependencies for python code snippets. In ICSE 2019. Gunter Mussbacher,
+Joanne M. Atlee, and Tevfik Bultan, (Eds.) IEEE / ACM, (May 2019), 328–338.
+doi:10.1109/ICSE.2019.00047.
+[15] 
+Anaytul Islam et al. 2024. On the executability of R markdown files. In MSR
+2024. ACM, 254–264. doi:10.1145/3643991.3644931.
+[16] 
+Malin Källén et al. 2021. Jupyter notebooks on github: characteristics
+and code clones. Art Sci. Eng. Program., 5, 3, (Feb. 2021), 15. doi:10.22152
+/PROGRAMMING-JOURNAL.ORG/2021/5/15.
+[17] Andreas P. Koenzen et al. 2020. Code duplication and reuse in jupyter
+notebooks. In VL/HCC 2020. Michael Homer, Felienne Hermans, Steven L.
+Tanimoto, and Craig Anslow, (Eds.) IEEE, (Aug. 2020), 1–9. doi:10.1109
+/VL/HCC50065.2020.9127202.
+[18] Md Abdullah Al Mamun et al. 2011. Review and challenges of assumptions
+in software development. In AVICPS 2011.
+[19] 
+Bertrand Meyer. 1992. Applying "design by contract". Computer, 25, 10,
+(Oct. 1992), 40–51. doi:10.1109/2.161279.
+[20] Negrini et al. 2023. Static analysis of data transformations in jupyter note-
+books. In SOAP 2023. Pietro Ferrara and Liana Hadarean, (Eds.) ACM, (June
+2023), 8–13. doi:10.1145/3589250.3596145.
+[21] 
+Pavle et al. 2022. A static analysis framework for data science notebooks.
+In ICSE 2022. IEEE, 13–22. doi:10.1109/ICSE-SEIP55303.2022.9794067.
+[22] João Felipe Pimentel et al. 2019. A large-scale study about quality and re-
+producibility of jupyter notebooks. In MSR 2019. Margaret-Anne D. Storey,
+Bram Adams, and Sonia Haiduc, (Eds.) IEEE / ACM, (May 2019), 507–517.
+doi:10.1109/MSR.2019.00077.
+[23] João Felipe Pimentel et al. 2021. Understanding and improving the quality
+and reproducibility of jupyter notebooks. Empir. Softw. Eng., 26, 4, (May
+2021), 65. doi:10.1007/S10664-021-09961-9.
+[24] Prakash Prabhu et al. 2011. A survey of the practice of computational
+science. In SC 2011. Scott Lathrop, Jim Costa, and William Kramer, (Eds.)
+ACM, (Nov. 2011), 1–12. doi:10.1145/2063348.2063374.
+[25] Henry Gordon Rice. 1953. Classes of recursively enumerable sets and their
+decision problems. AMS, 74, 2, (Mar. 1953), 358–366. doi:10.1090/s0002-994
+7-1953-0053041-6.
+[26] Sheeba Samuel et al. 2024. Computational reproducibility of jupyter note-
+books from biomedical publications. GigaScience, 13, (Jan. 2024). doi:10.10
+93/gigascience/giad113.
+[27] 
+Md Saeed Siddik et al. 2025. A systematic literature review of software
+engineering research on jupyter notebook. (Apr. 2025). arXiv: 2504.16180
+[cs.SE]. doi:10.2139/ssrn.5239379.
+[28] Florian Sihler et al. 2024. On the anatomy of real-world R code for static
+analysis. In MSR 2024. ACM, (Apr. 2024), 619–630. doi:10.1145/3643991.364
+4911.
+[29] Florian Sihler and Matthias Tichy. 2025. Statically analyzing the dataflow
+of r programs. In OOPSLA ’25. Association for Computing Machinery, New
+York, NY, USA. doi:10.1145/3763087.
+[30] 
+Krishna Subramanian et al. 2020. Casual notebooks and rigid scripts: un-
+derstanding data science programming. In VL/HCC 2020. Michael Homer,
+Felienne Hermans, Steven L. Tanimoto, and Craig Anslow, (Eds.) IEEE,
+(Aug. 2020), 1–5. doi:10.1109/VL/HCC50065.2020.9127207.
+[31] 
+Ana Trisovic et al. 2022. A large-scale study on research code quality and
+execution. Sci Data, 9, 1, 60, 1. doi:10.1038/s41597-022-01143-6.
+[32] 
+Alexi Turcotte and Zheyuan Wu. 2025. Expressing and checking statistical
+assumptions. Proc. ACM Softw. Eng., 2, FSE, (June 2025), 2735–2758. doi:10
+.1145/3729391.
+[33] 
+Caterina Urban. 2023. Static Analysis for Data Scientists. In Challenges
+of Software Verification. Vol. 238. Springer Nature Singapore, (July 2023),
+77–91. isbn: 978-9811996009. doi:10.1007/978-981-19-9601-6_5.
+[34] 
+Caterina Urban. 2020. What programs want: automatic inference of input
+data specifications. CoRR, abs/2007.10688, (July 2020). arXiv: 2007.10688.
+doi:10.48550/arxiv.2007.10688.
+[35] 
+Melina C. Vidoni. 2021. Software engineering and R programming: A call
+for research. R J., 13, 2, 600. doi:10.32614/RJ-2021-108.
+[36] 
+Jiawei Wang et al. 2020. Assessing and restoring reproducibility of jupyter
+notebooks. In ASE 2020. IEEE, (Dec. 2020), 138–149. doi:10.1145/3324884.3
+416585.
+[37] 
+Jiawei Wang et al. 2021. Restoring execution environments of jupyter
+notebooks. In ICSE 2021. IEEE, (May 2021), 1622–1633. doi:10.1109/ICSE43
+902.2021.00144.
+[38] H. Wickham et al. 2016. R for data science: import, tidy, transform, visualize,
+and model data. O’Reilly Media, Inc, (Dec. 2016). https://openlibrary.org/b
+ooks/OL26836898M/R_for_Data_Science_Import_Tidy_Transform_Vis
+ualize_and_Model_Data.
+[39] Wilkinson et al. 2016. The fair guiding principles for scientific data man-
+agement and stewardship. Scientific Data, 3, 1, (Mar. 2016), 160018. doi:10.1
+038/sdata.2016.18.
+[40] Jingtao Xia et al. 2024. Refinement types for visualization. In ASE 2024.
+Vladimir Filkov, Baishakhi Ray, and Minghui Zhou, (Eds.) ACM, (Oct. 2024),
+1871–1881. doi:10.1145/3691620.3695550.
+[41] 
+Hongjie Ye et al. 2022. Knowledge-based environment dependency infer-
+ence for python programs. In ICSE 2022. ACM, (May 2022), 1245–1256.
+doi:10.1145/3510003.3510127.

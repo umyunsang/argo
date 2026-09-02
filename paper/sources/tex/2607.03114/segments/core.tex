@@ -1,0 +1,139 @@
+\def\sparagraph#1{\vspace{3pt}\par\smash{\raisebox{1pt}{\large\textbullet}}~\textit{#1.}~~\ignorespaces}
+\section{Constraint Inference}\label{sec:overview}
+This section explains our core idea of using constraint inference to identify implicit assumptions in data analysis scripts.
+We propose to differentiate between two scenarios for constraint inference: A \textit{preemptive} analysis in the context of the original execution environment with the original data available, and \textit{retroactive} analysis when aspects of the original execution environment may be unknown or the original data may only be partially available.
+In the former case, the researcher may want to ensure that the analysis script is self-contained and complies with the \FAIR principles~\cite{Wilkinson2016}. This case is usually easier as we can use the current computing environment to infer package versions and the shape of used datasets~\cite{donat2025r4r}.
+For the latter case, we differentiate between three scenarios which benefit from the identification of implicit assumptions in research artifacts. A researcher may want to:
+\begin{enumerate}[nosep]
+  \item \textit{Reproduce} the results of the original study. %\todo{reproduce to back up study}
+  \item \textit{Replicate} the results with a different dataset. % \todo{replicate with different data(set)}
+  \item \textit{Reuse} parts within a different but related context~\cite{Wilkinson2016}. % \todo{re-use (maybe snippet) in a different context}
+\end{enumerate}
+We use this section to introduce the general idea with a running example~(\ref{sec:running-example}) and discuss the challenges alongside sketches of potential solutions of common assumptions like inferring package versions~(\ref{sec:package-versions}), script interdependencies~(\ref{sec:script-interdependencies}), and data shape expectations~(\ref{sec:data-shape-expectations}). % and the identification of manual setup steps~(\ref{sec:manual-setup}). % alongside their requirements for static and dynamic analysis.
+\subsection{Running Example}\label{sec:running-example}
+\def\lref#1{L\ref{#1}}% \mtt{vermutlich nicht real?}
+Consider the following example R~script which reads a dataset from a \textsc{csv}~file~(\lref{c:read}),
+calculates a mean score~(\lref{c:summ}) grouped by age~(\lref{c:group}), conducts a t-test~(\lref{c:ttest}), and plots the results~(\lref{c:plot1},\;\lref{c:plot2}). This follows the common data analysis workflow outlined by Wickham~\cite{hadley2016r}. Although the example is simple and artificial, it illustrates the common structure of data analysis scripts:
+\begin{minted}[deletekeywords={t,c},escapeinside={|@}{@|}]{R}
+|@\label{c:ggplot}@|library(ggplot2)
+|@\label{c:read}@|da:c:ta <- read.csv("data.csv")
+|@\label{c:age}@|b:c:y_age <- da:c:ta |>
+|@\label{c:group}@|    dplyr::group_b:c:y(age) |>
+|@\label{c:summ}@|    dplyr::summarise(m = mean(score))
+|@\label{c:ttest}@|t.test(score ~ group, da:c:ta=grouped)
+|@\label{c:plot1}@|ggplot(b:c:y_age, aes(x=age, y=m)) + 
+|@\label{c:plot2}\label{c:last}@|    geom_c:c:ount()
+\end{minted}
+\def\expl#1#2{\textit{\color{gray}#1~\hfill#2}}
+These \ref{c:last}~lines have the following ten implicit assumptions, which are common in real-world analyses~\cite{trisovic_largescale_2022,DBLP:conf/msr/IslamAW24,10.1093/gigascience/giad113}: % daniel mietchen, table 4 e.g.
+\begin{enumerate}[label=A\arabic*,leftmargin=2em,ref=A\arabic*,nosep]
+  \item \label{a:version}They require R~version 4.1 or newer\\*\expl{To support the native pipe operator: \texttt{|>}}{\lref{c:age},\;\ref{c:group}}
+  \item \label{a:libraries}\texttt{ggplot2} and \texttt{dplyr} must be installed\\*
+    \expl{Loaded as a library and accessed via \texttt{::}}{\lref{c:ggplot},\;\ref{c:group},\;\ref{c:summ}}
+  \item \label{a:ggplot}\texttt{ggplot2} has to be at least version~2.0\\*
+    \expl{This version introduces~\texttt{geom\_count}.\footnote{\label{fn:gg35r44}If we use R version 4.4 or later, we need \href{https://github.com/tidyverse/ggplot2/issues/6152}{ggplot2 version 3.5} or later.}}{\lref{c:plot2}}
+  \item \label{a:datacsv}The file \textit{data.csv} must exist and be readable as a \textsc{csv}\\*
+  \expl{Loaded by \texttt{read.csv}, relative to the working directory}{\lref{c:read}}
+  \item \label{a:datacolumns}\textit{data} must have the columns \textit{age} and \textit{score}\\*
+  \expl{They are used by \texttt{group\_by} and \texttt{summarise}}{\lref{c:group},\;\ref{c:summ}}
+  \item \label{a:numeric}The \textit{score} column must be numeric\\*
+  \expl{Or coercible to a number to work with \texttt{mean}}{\lref{c:summ}}
+  \item \label{a:exist-in-env}The variable \textit{grouped} must exist in the environment\\*
+  \expl{It is used in the t-test and not defined within the script}{\lref{c:ttest}}
+  \item \label{a:datacolumns2}\textit{grouped} must contain a \textit{score} and \textit{group} column\\*
+  \expl{Used in the formula of the t-test}{\lref{c:ttest}} 
+  \item \label{a:levels}The \textit{group} column of \textit{grouped} must have two levels\\*
+  \expl{The t-test requires a factor with exactly 2 levels}{\lref{c:ttest}}
+  \item \label{a:assumptions}The values in \textit{grouped} conform to the t-test assumptions\\*
+  \expl{Independence, normal distribution,~\ldots~\cite{delacre2017psychologists}}{\lref{c:ttest}}
+\end{enumerate}
+\noindent Some assumptions, like~\ref{a:assumptions}, are silent, meaning that they do not cause visible errors when violated but cause incorrect results, while others, like~\ref{a:libraries}, \textit{can} lead to runtime errors or warnings. However, they do not have to cause errors. For example, newer versions of \textit{ggplot2}, \textit{dplyr}, or~R may introduce changes in aesthetics, handling of edge-cases, value coercion, or deprecated functions, which can lead to different results.
+Although it may be easy to identify these assumptions in the \ref{c:last}~example lines, this gets 
+much harder for real-world scripts~\cite{DBLP:conf/msr/SihlerPSTDD24}. % \mtt{steht das dort?}.
+In the context of our simple example, a preemptive analysis can get the exact version of used packages, knows whether \textit{data.csv} exists, the shape of the data, and more, just by reading the information from the environment and executing the script.
+In contrast, a retroactive analysis is limited to inferring constraints about which package versions \textit{could} have been used and what the data \textit{might} have looked like.
+Yet, this can still be important in detecting conflicts or reconstructing executable environments for the analysis.
+\subsection[Inferring Package Versions]{Inferring Package Versions (\ref{a:version}--\ref{a:ggplot})}\label{sec:package-versions}
+Incorrect versions are one of the main issues in reproducing data analyses~\cite{DBLP:journals/corr/abs-2303-04758}. There is a wide range of solutions that help to collect the used package versions and their dependencies preemptively.\footnote{See \href{https://cran.r-project.org/package=renv}{cran.r-project.org/package=renv}, \href{https://cran.r-project.org/package=groundhog}{cran.r-project.org/package=groundhog}.} Yet, work on reconstructing
+such information retroactively is rare and either tries to obtain all package versions available at a given time~\cite{DBLP:journals/corr/abs-2303-04758} or analyze the API usage in notebooks~\cite{DBLP:conf/icse/WangLZ21}.  %  to infer version constraints
+Currently, there exists no advanced and holistic approach to retroactively infer package versions using all of these information sources combined and document them in a machine readable format.
+\sparagraph{Problem Statement}
+Given an analysis artifact, combined with the available evaluation data and meta information, generate the requirements for the computing environment. These requirements include the required packages, their versions, and indirect dependencies such as system libraries.
+If the original computing environment is available, this can be inferred preemptively~\cite{donat2025r4r}.
+Hence, the main challenge is to infer these constraints retroactively.
+\sparagraph{Proposed Solution}
+To reconstruct the computing environment, we use a three-step approach: 
+\begin{inlist}[itemjoin*={{, as well as }}]
+  \item identify all dependencies required within the artifact
+  \item uncover their potential origins and versions
+  \item identify their system and interpreter constraints
+\end{inlist}.
+In~R, this includes loaded or attached libraries, those accessed via \enquote{\texttt{::}}~(\ref{a:libraries}), and those included indirectly~\cite{DBLP:journals/corr/abs-2303-04758} (for example, with \texttt{source} or as part of a \textsc{description} file).
+For this we require more than call information. Common loading structures involve, e.g., mapping a vector of library names to the \texttt{library} function~\cite{DBLP:conf/msr/SihlerPSTDD24}. Hence, we need string and vector-aware domains to identify these patterns. Our proof-of-concept uses \textit{flowR}'s dataflow graph to identify these patterns and effectively infers all libraries requested by a given R~script, excluding only those with features not supported by \textit{flowR}~\cite{floopsla}. 
+Next, the goal is to analyze the use of these packages within the artifact to infer possible package versions. Here we work on tracking \begin{inlist}
+  \item called functions and their signatures
+  \item used classes and global objects or constants
+  \item reliance on loading effects such as the initialization of global variables
+\end{inlist}.  
+We can use this information to compare it with the available packages, their API, and dependencies to match up the expected behavior with the available versions~\cite{DBLP:conf/icse/WangLZ21}.
+Considering only line~\ref{c:plot2} of the running example, this helps us to infer a minimum version constraint for \textit{ggplot2} based on the use of \texttt{geom\_count}~(\ref{a:version}). Incorporating \textit{ggplot2}'s dependency on the R~interpreter adds another constraint, requiring different versions based on the used version of R~(\ref{a:ggplot}).
+To infer package versions, we are currently working on adding type inference, which allows us to infer function signatures. % These can then be used to match signatures with those extracted from specific package versions.
+Using this strategy, we can build a constraint system describing all possible versions that may have been used in the original analysis.
+This system can be enriched with additional information, such as a date range in which the study was conducted. % This narrows the possible versions of packages and the interpreter as is done by the \textit{groundhog} package~\cite{groundhog2025}.
+If this process yields only a single combination of possible versions and their dependencies, we can use these to generate a corresponding virtual environment.
+If multiple sets are possible, we can use the constraints to generate a set of possible environments to reproduce the analysis. This can then be combined with dynamic analysis, comparing the execution results, to identify the most likely environment fully automatically.
+\sparagraph{Generalization} % Inferring Package Versions
+Assumptions like \ref{a:version}--\ref{a:ggplot} are also common problems in other programming languages such as Julia or Python.
+However, inferring the package versions is not only useful in hindsight.
+These techniques can also be applied in the context of the original computing environment or in scenarios where a machine-readable format of the computing environment is available.
+In such cases, the constraints can be used to check the compatibility of the stated requirements with the actual environment and uncover conflicts in the used API.
+\subsection[Script Interdependencies]{Script Interdependencies (\ref{a:datacsv} and \ref{a:exist-in-env})}\label{sec:script-interdependencies}
+Usually, research artifacts rely on multiple scripts or notebooks to conduct all of their analyses. However, similar to how individual notebook cells may depend on each other~\cite{DBLP:conf/chi/HeadHBDD19}, these scripts tend to have implicit dependencies on each other. One script may produce the data that another script consumes~(e.g.,~\ref{a:datacsv}), or clean the existing data as a side-effect. In a language like~R, scripts can even pass on variables if they are sourced in the same session. This can lead to cases like the use of \textit{grouped} in the running example~(\ref{sec:running-example}) which is not defined in the script itself~(e.g.~\ref{a:exist-in-env}). %  but may originate from another script
+While there exist some rudimentary solutions which identify global variables,\footnote{\href{https://cran.r-project.org/package=globals}{cran.r-project.org/package=globals}} they are restricted to single sources and do not incorporate any potential script interaction, files, or package dependencies.
+Similarly, while common notebook formats like Jupyter Notebooks or RMarkdown store the last output of a cell, they offer no way to automatically record artifact-wide relations or necessary re-executions of cells.
+\sparagraph{Problem Statement}
+Given an analysis artifact and the available execution environment~(\ref{sec:package-versions}), identify implicit dependencies between the scripts and their code.
+Such dependencies may be enriched with the information about which scripts need to run within the same environment. % indicate simple order constraints for the execution, that 
+Then, using these constraints, identify all potential execution orders, and their interactions. This is especially important in the case of ambiguity, in which a number of either scripts or cells could be executed first, but their effect on the global state is different. 
+\sparagraph{Proposed Solution}
+To identify dependencies between these scripts in the retroactive case, we propose a two-step approach. First, we build the program dependency graph of each script independently but follow explicit script inclusions (e.g.,\href{https://www.rdocumentation.org/packages/base/versions/3.6.2/topics/source}{\texttt{source}} calls).
+With this, we automatically gain information about explicit dependencies, potentially undefined values and functions, globally defined identifiers, and files which are either written or read by the scripts.
+In the second step, we can use this information to create links between scripts. % explicitly sourced
+This also connects previously undefined variables and function calls with definitions of their identifiers, the loading of libraries to imported  functions, library loads to their installation~(\ref{sec:package-versions}), and file reads with their creation.
+The resulting graph indicates: 
+\begin{enumerate}[nosep,leftmargin=*]
+  \item Scripts without any implicit dependency on or to other scripts. Such scripts may be executed completely independently.
+  \item Scripts that may depend on other scripts. Those scripts should be executed before their dependents. The possible execution orders are the topological graph orderings.
+  \item Scripts that still have global variables or functions which are undefined, or that read or write files that do not exist. % This may hint at required manual setup steps~(\ref{sec:manual-setup}) or missing data files.
+\end{enumerate}
+Granularity wise, this can also be applied to code cells in notebooks or even individual code-blocks such as function definitions.
+We have started to implement this approach in \textit{flowR}~\cite{floopsla} and evaluated it on \num{8160}~real-world R~projects scraped from Zenodo, Havard Dataverse, JSS, and Figshare, with a total of \num{33336}~files. With this, we find that~\qty[round-precision=1]{\fpeval{1194/8160 * 100}}{\percent} of projects contain implicit interdependencies. % By detecting and resolving these dependencies, we can now ensure that scripts are executed in the correct order.
+In the preemptive case, these dependencies can be solved by recording the execution order, including re-executions.
+Existing tools such as \texttt{\href{https://rdrr.io/cran/CodeDepends/man/historyAsScript.html}{history\-As\-Script}},\footnote{\href{https://cran.r-project.org/package=CodeDepends}{cran.r-project.org/package=CodeDepends}} fail to incorporate project-wide dependencies or multiple sessions.
+Hence, we propose to extend these tools to incorporate a project-wide view of the dependencies.
+\sparagraph{Generalization} % Script Interdependencies
+The concept of interdependencies of research scripts (assumptions like~\ref{a:datacsv}
+or~\ref{a:exist-in-env}) or notebooks exists for every granularity and essentially every language in the form of a reliance on external state like the connection to a database. % \mtt{ist das zum Problem, der Lösung oder beides?}
+Detecting such potential interdependencies is also helpful to ensure that an analysis does not rely on the execution order of the scripts or any external state. 
+\subsection{Data Shape Expectations (\ref{a:datacolumns}, \ref{a:numeric}, \ref{a:datacolumns2}--\ref{a:assumptions})}\label{sec:data-shape-expectations}
+In the real world, no data analysis artifact contains any kind of \enquote{unit tests} and quality assurance is rare~\cite{DBLP:conf/msr/SihlerPSTDD24,DBLP:journals/rjour/Vidoni21}. Similarly, these scripts almost never validate that loaded data conforms to the expected shape.
+They simply access the columns they \enquote{know} or expect to exist~(\ref{a:datacolumns2}) and assume that the data is in the correct format~(\ref{a:numeric}).
+Some of these assumptions are checked implicitly by the language or function that is called. %For example, by throwing an error if a requested column does not exist.
+However, there is no way to detect that, for example, an assignment \textit{intends} to overwrite a column, that two measurements are assumed to be independent, or that the values should follow a normal distribution.
+Some explorative work already tries to leverage abstract interpretation to infer series types to detect high-level errors like the wrong plot type~\cite{10.1145/3689609.3689996}, and to infer types for visualization~\cite{DBLP:conf/kbse/XiaLBC024}. More recent work also focuses on the dynamic postulation and verification of statistical assumptions, indicating the relevance of this work~\cite{10.1145/3729391}. Yet, there is no sophisticated approach to infer such implicit assumptions statically from the artifact itself and express them explicitly.
+However, such guards are integral to support the reuse of analysis artifacts in different contexts (e.g., newer versions of the dataset).
+\sparagraph{Problem Statement}
+Take an analysis artifact including all available files and infer the constraints that loaded datasets have to fulfill. % \mtt{zu redundant?}
+Then, semi-automatically insert checks into the artifact to dynamically ensure that the loaded data conforms to the expected shape.
+\sparagraph{Proposed Solution}
+We propose using a new set of abstract domains~\cite{cousot2021principles} to infer and track the shape of the data as it is loaded and manipulated by the scripts.
+This includes the identification of the data shapes (e.g., the number and names of the columns and their types), the constraints on the data (e.g., that values must be unique or follow a normal distribution), and the functions used with the data.
+This way, we can infer the expectations of functions, such as the requirements for a t-test~(\ref{a:assumptions}) or expected data shapes~(\ref{a:datacolumns}), and add guards to the artifact to dynamically ensure that the preconditions and expectations are met.
+Moreover, we propose a semi-automatic approach to add additional constraints that can not be inferred directly from the data, but that a researcher may add in a preemptive scenario (e.g., that the result of a function must lie within a given interval).
+So far, we added a data frame shape inference using abstract interpretation to \textit{flowR}. We define an abstract domain to track column names, the number of columns, and rows of data frames. For this, we map concrete data frame functions to a set of abstract operations. A first evaluation of the implementation shows promising results for tracking the shape data in analysis scripts.
+Yet, this requires a careful study of common functions to identify useful constraints that can be inferred from the data and the analysis artifact.
+Additionally, not every constraint can be directly inferred from the data (e.g., the independence of two measurements). % Hence, some have to be added semi-automatically by a researcher knowledgable of the study.
+\sparagraph{Generalization}
+Expectations on the shape of data are frequent and neither limited to data analysis nor to~R~\cite{DBLP:conf/pldi/NegriniSU23,10.1145/3729391} sharing similarities to, e.g., taint tracking and type inference.
+Inferring the shape of data by tracking a known state and the operations on the data, can be applied to most scenarios which involve external data that may change over time.
+Similarly, the inferred constraints can also help with comprehension, e.g., by uncovering unexpected requirements.

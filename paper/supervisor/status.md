@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** commit the recomputation as a runnable script with fixtures, since it currently exists only as analysis and its numbers now appear in the manuscript.
+- **next_first_action:** extend the dangling-reference gate to the context graph and protocol so every path recorded anywhere must resolve, not only paths inside experiment receipts.
 
-- **last_updated:** 2026-09-03T01:51:22+09:00
+- **last_updated:** 2026-09-03T01:56:41+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 28 closed — endpoint recomputed on the corrected record after the recomputation itself was validated against the original
+- **current_phase:** cycle 29 closed — every endpoint number in the manuscript is now produced by committed, mutation-audited code
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 29 — the analysis became code, and a dangling path surfaced
+
+- **Gap picked:** the manuscript printed numbers produced by ad-hoc session work.
+- **Executed:** the analysis is now a committed script with **22 fixtures** of three kinds — analytic cases whose components follow by construction, guard cases that must raise **with the correct cause**, and a regression case reproducing the earlier published receipt from the original record, an oracle that existed before the script.
+- **Two implicit conventions are now explicit in the code:** coverage counts only an exactly satisfied verdict, and the effect uses the paired difference standard error.
+- **Mutation audit: 5 of 5 caught**, but only after strengthening a guard fixture. One mutation removed the identifier guard and the code still raised, for a different reason, so the fixture passed. Guard fixtures now assert *why* an error was raised.
+- **A dangling path reference was found.** A receipt named `paper/experiments/calibration/element-verdicts-corrected.json`, which does not exist; the real file is in the variance-block directory. A new gate scans **46 receipt files** for path strings that do not resolve, and was proven by reintroducing the bad path.
+- **One source reviewed but not cited:** its TeX is a code-heavy conversion with no quotable prose, so no verifiable locator could be cut. Recorded rather than forced.
 
 ### Cycle 28 — the endpoint recomputed, and the check was wrong before the record was
 
