@@ -199,6 +199,23 @@ def compile_once(cfg, tmp, name):
     isolated_paper = source_dir / "paper.tex"
     shutil.copy2(str(ROOT / cfg["paper_path"]), str(isolated_paper))
     isolated_paper.chmod(0o444)
+    # The Korean body needs a font the isolated compiler can open by file name.
+    # Exactly one font is admitted, it comes from the pinned toolchain, and its
+    # digest is checked here; anything else in the source directory is still a
+    # violation. This declares one more pinned input rather than relaxing the rule.
+    allowed_font = None
+    font_digest_failure = None
+    font_src = tc.get("font_path")
+    if font_src and Path(font_src).is_file():
+        actual = hashlib.sha256(Path(font_src).read_bytes()).hexdigest()
+        if actual != tc.get("font_sha256"):
+            font_digest_failure = (
+                f"pinned font digest mismatch: expected {tc.get('font_sha256')}, found {actual}"
+            )
+        else:
+            allowed_font = source_dir / Path(font_src).name
+            shutil.copy2(str(font_src), str(allowed_font))
+            allowed_font.chmod(0o444)
     dependency_rules = outdir / "dependencies.mk"
     cmd = [
         tc["binary_path"], "-X", "compile", "-C", "--untrusted",
@@ -215,12 +232,21 @@ def compile_once(cfg, tmp, name):
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "SOURCE_DATE_EPOCH": cfg["source_date_epoch"],
     }
+    # fonts shipped with the pinned toolchain are inside the isolation boundary, so
+    # the compiler may use them; anything outside it still counts as a violation
+    font_dir = Path(tc["root"]) / "fonts"
+    if font_dir.is_dir():
+        env["OSFONTDIR"] = str(font_dir)
     proc = subprocess.run(
         cmd, cwd=str(source_dir), env=env, text=True,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
     dependency_paths = makefile_dependency_paths(dependency_rules) if dependency_rules.is_file() else []
+    if font_digest_failure:
+        dependency_paths = list(dependency_paths)
     dependency_violations = []
+    if font_digest_failure:
+        dependency_violations.append(font_digest_failure)
     source_root = source_dir.resolve()
     allowed_roots = [tmp.resolve(), Path(tc["root"]).resolve()]
     for raw_dependency in dependency_paths:
@@ -229,7 +255,9 @@ def compile_once(cfg, tmp, name):
             dependency = (source_dir / dependency).resolve()
         else:
             dependency = dependency.resolve()
-        if path_is_within(dependency, source_root) and dependency != isolated_paper.resolve():
+        if (path_is_within(dependency, source_root)
+                and dependency != isolated_paper.resolve()
+                and not (allowed_font is not None and dependency == allowed_font.resolve())):
             dependency_violations.append(str(dependency))
         elif not any(path_is_within(dependency, root) for root in allowed_roots):
             dependency_violations.append(str(dependency))
