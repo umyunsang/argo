@@ -32,3 +32,19 @@ not a usable comparison quantity. Dollar cost for identical work differed 12.03x
 with cache state alone. Per RD-2026-09-02-23A the block reports marginal tokens and
 states the floor separately.
 
+## 2026-09-02 — first measured episode cost, and a falsified assumption
+
+Two real episodes of a burned pilot task, same pinned backend, structured output mode.
+
+| condition | context tokens | marginal in+out | total | cost (USD) |
+|---|---:|---:|---:|---:|
+| C00 minimal | 51,596 | 385 | 51,981 | 0.01208 |
+| C11 scaffold + retrieval | 76,496 | 789 | 77,285 | 0.01287 |
+
+Episode total: $0.02495. Cumulative measured model cost: $0.09574. GPU credit units remain 0.
+
+The probe-derived fixed floor of 46,763 tokens did not hold. Context differs by 24,900
+tokens between conditions because the full condition mounts an evidence pack. RD-2026-09-02-23A
+is falsified and replaced by RD-2026-09-02-24A: context and marginal tokens are reported
+separately and neither is treated as a constant.
+

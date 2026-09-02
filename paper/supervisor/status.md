@@ -1,14 +1,24 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** re-run one already-executed episode in structured output mode to attach measured marginal-token cost to a real episode rather than to probes.
+- **next_first_action:** run repeats of one condition to test whether context tokens are stable within a condition, which is the falsifier of RD-2026-09-02-24A.
 
-- **last_updated:** 2026-09-03T00:50:06+09:00
+- **last_updated:** 2026-09-03T00:58:46+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 18 closed — episode cost is measured, and the measurement changed which cost quantity is admissible
+- **current_phase:** cycle 19 closed — the cost decision from cycle 18 was falsified by its own pre-registered falsifier one cycle later
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 19 — the previous cycle's cost decision was falsified by its own falsifier
+
+- **Gap picked:** the cost instrument had only ever been validated on synthetic probes in an empty directory.
+- **Executed:** one burned pilot task was run once in the minimal condition and once in the full condition, same pinned backend, structured output mode.
+- **The falsifier of `RD-2026-09-02-23A` fired.** That decision claimed a fixed context floor of 46,763 tokens. Real episodes measured **51,596 and 76,496 context tokens**, a difference of 24,900, with totals differing by a factor of **1.487**.
+- **Diagnosis:** the probes ran in an empty directory, so they measured harness context alone. A real episode also carries its mounted workspace, and the full condition mounts an evidence pack of 145,906 bytes. The floor was an artefact of how the instrument was probed.
+- **Recorded as falsified, not amended.** `RD-2026-09-02-23A` now carries `FALSIFIED_BY_MEASUREMENT` and `RD-2026-09-02-24A` replaces it: context tokens and marginal tokens are reported separately, neither treated as constant, dollar cost still excluded.
+- **Attribution limit stated, not implied:** the two episodes differ in both factors at once and each ran once, so nothing here attributes cost to retrieval or scaffold separately. One run scores one implementation, not an idea.
+- **Literature loop:** 9 discovery calls, 3 new `FULL_PAPER_READ` records. One discovery primitive returned nothing for the third objective; that is recorded rather than hidden by rewording the query.
 
 ### Second near miss — a receipt made stale by editing after validating
 
