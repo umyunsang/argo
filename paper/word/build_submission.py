@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -25,6 +26,8 @@ PAPER = ROOT / "paper.tex"
 SUMMARY = ROOT / "paper" / "korean-summary.txt"
 OUT = Path(os.environ.get("ARGO_DOCX_OUT", str(ROOT / "paper" / "word" / "graduation-thesis.docx")))
 REF = ROOT / "paper" / "word" / "reference.docx"
+QMD = ROOT / "paper" / "manuscript" / "thesis-ko.qmd"
+QUARTO = "/usr/local/bin/quarto"
 
 
 def fixed_epoch() -> int:
@@ -183,6 +186,16 @@ def apply_official_format(docx_path: Path, front_matter_heading: str) -> dict:
             label = re.sub(r"<[^>]+>", "", "".join(re.findall(r"<w:t[^>]*>(.*?)</w:t>", block, re.S)))
             if label.strip() == front_matter_heading:
                 return block
+            # The reference list is not a numbered chapter in the department form.
+            if label.strip().startswith("참") and "References" in label:
+                return block
+            # A canonical source may already carry its own chapter numeral. Adding a
+            # second one produced headings like "I. I. Introduction", so a heading that
+            # already begins with a numeral is counted and left alone.
+            if re.match(r"\s*[\u2160-\u216f]+\s*\.", label):
+                index["n"] += 1
+                applied["numbered_chapters"].append(label.strip())
+                return block
             if index["n"] >= len(ROMAN):
                 return block
             numeral = ROMAN[index["n"]]
@@ -229,20 +242,63 @@ def apply_official_format(docx_path: Path, front_matter_heading: str) -> dict:
     return applied
 
 
+def manuscript_source() -> str:
+    """Which canonical source the submission is built from.
+
+    The Korean source is complete in form but does not yet carry the citations the
+    draft carries, so the switch is held behind this flag rather than shipping a
+    submission with a shorter reference list than the work actually rests on.
+    """
+    try:
+        return json.loads(PROTOCOL.read_text(encoding="utf-8")).get("manuscript_source", "latex")
+    except Exception:
+        return "latex"
+
+
+def korean_summary_from_docx(path):
+    """Read the Korean summary back out of the artifact rather than a side file."""
+    import zipfile
+    with zipfile.ZipFile(path) as z:
+        text = re.sub(r"<[^>]+>", "", z.read("word/document.xml").decode("utf-8", "replace"))
+    start = text.find("국문요약")
+    stop = text.find("Keyword :")
+    if start < 0 or stop < 0 or stop <= start:
+        return ""
+    return " ".join(text[start + len("국문요약"):stop].split())
+
+
 def main() -> int:
     _, summary, keywords = front_matter()
-    numbered, n_refs = numbered_source(PAPER.read_text(encoding="utf-8"))
-    staged = ROOT / "paper" / "word" / "_numbered.tex"
-    staged.write_text(numbered, encoding="utf-8")
-    args = [PANDOC, "pandoc", str(staged), "-f", "latex", "-t", "docx", "-o", str(OUT)]
-    if REF.is_file():
-        args += ["--reference-doc", str(REF)]
-    conv = run(args)
-    if conv.returncode != 0:
-        print(conv.stderr[-800:]); return 1
-    staged.unlink(missing_ok=True)
-    inject_front_matter(OUT, summary, keywords)
-    applied = apply_official_format(OUT, "국문 요약")
+    n_refs = 0
+    if QMD.is_file() and manuscript_source() == "quarto":
+        # The Korean manuscript is the canonical source. Its summary, keywords,
+        # figures, tables and bibliography are written in the source itself, so
+        # nothing is injected afterwards.
+        conv = run([QUARTO, "render", QMD.name, "--to", "docx",
+                    "--output", "_submission.docx"], cwd=str(QMD.parent))
+        if conv.returncode != 0:
+            print(conv.stdout[-900:]); print(conv.stderr[-900:]); return 1
+        rendered = QMD.parent / "_submission.docx"
+        if not rendered.is_file():
+            print("quarto reported success but wrote no artifact"); return 1
+        shutil.copy2(str(rendered), str(OUT))
+        rendered.unlink(missing_ok=True)
+        shutil.rmtree(QMD.parent / ".quarto", ignore_errors=True)
+        summary = korean_summary_from_docx(OUT) or summary
+        applied = apply_official_format(OUT, "국문요약")
+    else:
+        numbered, n_refs = numbered_source(PAPER.read_text(encoding="utf-8"))
+        staged = ROOT / "paper" / "word" / "_numbered.tex"
+        staged.write_text(numbered, encoding="utf-8")
+        args = [PANDOC, "pandoc", str(staged), "-f", "latex", "-t", "docx", "-o", str(OUT)]
+        if REF.is_file():
+            args += ["--reference-doc", str(REF)]
+        conv = run(args)
+        if conv.returncode != 0:
+            print(conv.stderr[-800:]); return 1
+        staged.unlink(missing_ok=True)
+        inject_front_matter(OUT, summary, keywords)
+        applied = apply_official_format(OUT, "국문 요약")
     digest = hashlib.sha256(OUT.read_bytes()).hexdigest()
     rel = str(OUT.relative_to(ROOT)) if str(OUT).startswith(str(ROOT)) else str(OUT)
     print(json.dumps({"artifact": rel, "bytes": OUT.stat().st_size,
