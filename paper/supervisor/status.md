@@ -10,6 +10,10 @@
 
 ## Completed in current phase
 
+### Near miss recorded — a passing run that proved nothing
+
+While closing cycle 16 the staging list named a manuscript path that does not exist. `git add` aborted, **nothing was staged**, the commit failed, and the validation run then passed against the *previous* commit. The pass was real and worthless: it validated work that was not in the repository. The tell was `submission_artifact_rebuild` coming back empty, because the old commit had no rebuild check. The loop now refuses to continue when the head does not move after a commit, and a run is only accepted as evidence for work that the head actually contains.
+
 ### Cycle 16 — the process claim is now a number, and reproducibility is enforced
 
 - **Unit 1, reproducibility enforced.** The clean-clone comparison was folded into the validation gate: every run rebuilds the artifact from its committed builder into a temporary path and fails when the digest differs. Proven by tampering with one word in the committed artifact, which produced `reproducible: false` and a gate failure; restoring returned it to pass.
