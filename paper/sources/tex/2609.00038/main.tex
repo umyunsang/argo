@@ -1,0 +1,602 @@
+% trajectory-judge workshop paper.
+% Submission mode (anonymous, line numbers) is the style default; switch to
+% \usepackage[final]{neurips_2026} for the de-anonymized camera-ready.
+\documentclass{article}
+
+\IfFileExists{neurips_2026.sty}%
+  {\usepackage[preprint]{neurips_2026}}%
+  {\usepackage[margin=1in]{geometry}\usepackage{natbib}\newcommand{\And}{\quad}}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,calc}
+
+\input{numbers}
+
+\definecolor{cigray}{gray}{0.45}
+\newcommand{\ci}[1]{{\scriptsize\textcolor{cigray}{#1}}}
+\newcommand{\ftype}[1]{\texttt{#1}}
+\newcommand{\judge}[1]{\texttt{#1}}
+
+\title{trajectory-judge: What Outcome-Only LLM Judges\\Miss on Agent Trajectories}
+
+\author{%
+  Hadi Mohammadi\\
+  Utrecht University\\
+  \texttt{h.mohammadi@uu.nl}
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Outcome-only evaluation is the production default for LLM agents: show a judge the request and
+the final reply and ask whether it was handled well. The metric is structurally blind to an agent
+that reaches the right answer the wrong way. We measure that blind spot where ground truth is
+known by construction: a deterministic tool-using support-desk environment, a scripted oracle
+policy that always solves it, and a fault injector that breaks exactly one thing at a known
+step, stratifying faults by whether the customer-visible outcome survived (\emph{silent}) or
+not (\emph{loud}). Five judges (programmatic rules, outcome-only, step-rubric at two model
+sizes, and a self-consistency ensemble) are scored on detection, step localisation, fault
+typing, calibration, and cost over \tjNTraj{} trajectories. The outcome-only judge catches
+\tjOutcomeLoudPct{} of loud faults but \tjOutcomeSilentPct{} of silent ones while flagging
+\tjOutcomeFAPct{} of correct trajectories; a step-rubric judge reaches \tjStepQSilentPct{}
+silent recall with zero false alarms at $3\times$ the cost. No judge reads the final reply: an
+invented promise appended to an otherwise perfect trajectory evades the rules entirely and
+the step judge \tjStepQUnsupMissPct{} of the time, and self-consistency triples
+cost while improving nothing. We argue that judge evaluations must stratify recall by outcome
+survival, and release the environment, the injector, all raw verdicts, and an analysis
+pipeline that rebuilds every number offline.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+Agents that call tools are gated on outcome-level judgment. A model reads the user's request
+and the agent's final answer, decides whether the case was handled well, and that verdict
+feeds a dashboard, a release gate, or a reward signal. The failures that survive this filter
+are precisely the ones it cannot see: the agent that skipped a required eligibility check,
+acted against what a tool returned, or promised something no observation supports, whenever
+the final answer nevertheless came out right. A refund of the correct amount issued without
+ever checking eligibility reads, from the outside, exactly like the same refund issued
+correctly. These are the faults that reach production, because the metric meant to catch them
+is structurally blind to them.
+
+Evaluating the evaluator normally requires human labels, and the labeller is then the thing
+under test. We escape the circle by construction. A deterministic support-desk environment is
+solved by a scripted oracle policy that is provably correct (a test suite asserts it passes
+every process rule and reaches the expected outcome on every instance), and a fault injector
+then breaks exactly one thing at a known step and replays the trajectory so its observations
+stay internally consistent. Every trajectory therefore carries an exact label at zero
+annotation cost: faulty or not, at which step, of which type, and whether the customer-visible
+outcome survived. This paper holds the \emph{agent} fixed and puts the \emph{judges} on the
+bench: every judge error is attributable to the judge.
+
+The stratification by outcome survival is the move that makes the measurement possible.
+Pooled over all faults, the outcome-only judge's recall is a respectable-looking
+\tjOutcomePooledRecall{}. Split it, and the number decomposes into \tjOutcomeLoud{} on faults
+that broke the answer against \tjOutcomeSilent{} on faults that did not. The gap \emph{is}
+the result, and a single pooled recall averages it away.
+
+\textbf{Contributions.}
+(i)~A correct-by-construction testbed for judges of tool-using agents: a permissive
+environment with a strict checker, a six-type single-fault injector with known step and
+outcome-survival labels, and a rule-engine baseline whose coverage gaps are pinned by tests
+(\S\ref{sec:testbed}).
+(ii)~A controlled comparison of five judge designs on five axes (detection, localisation,
+typing, calibration, cost) with stratified bootstrap confidence intervals
+(\S\ref{sec:judges}--\S\ref{sec:results}).
+(iii)~Findings with deployment consequences: the quantified silent blind spot; a fault type,
+\ftype{unsupported\_claim}, that evades every judge including those shown the full
+trajectory; a negative result on self-consistency ensembling; and an 8B judge that is an
+always-say-faulty baseline wearing a judge's clothes (\S\ref{sec:analysis}).
+(iv)~A fully offline-reproducible artifact: raw verdicts are released, and every table,
+figure, and interval in this paper regenerates from them without a model call
+(\S\ref{sec:repro}).
+
+\section{Related work}
+\label{sec:related}
+
+\textbf{Reliability of LLM judges.} Model-as-judge evaluation is standard for open-ended
+outputs \citep{zheng2023judging,liu2023geval,gu2024survey}, and its pathologies are
+well documented: position and verbosity bias \citep{wang2023fair}, self-preference
+\citep{panickssery2024self}, objective failures on instruction-following comparisons
+\citep{zeng2024llmbar}, and misalignment that grows with task difficulty
+\citep{thakur2024judging}. That line audits judges of \emph{single responses} against human
+labels; we audit judges of \emph{multi-step tool trajectories} against labels correct by
+construction, so a flag on a clean trajectory is a false positive with nothing to argue about.
+The judge design itself (reasoning before verdict, a stated confidence) follows
+\citet{mohammadi2026evalmoraal}, and treating a model's labels as measurements that need their
+own reliability estimate follows \citet{mohammadi2025assessing}; \citet{mohammadi2026let} develops both at thesis length.
+
+\textbf{Agent benchmarks.} Benchmarks for tool-using agents score the agent, increasingly on
+the trajectory rather than the outcome alone: $\tau$-bench compares final database state
+\citep{yao2024tau}, AgentBench and WebArena score task success \citep{liu2024agentbench,
+zhou2024webarena}, AgentBoard tracks subgoal progress \citep{ma2024agentboard}, and recent
+work scores reasoning trajectories directly \citep{kim2025beyond,he2025trajectbench}. We
+invert the roles: the agent is a fixed oracle, and the evaluator is the system under test.
+
+\textbf{Failure attribution.} Locating the failing step or agent in a trace is an emerging
+task \citep{zhang2025whowhen,deshpande2025trail,cemri2025mast,ma2025failure}, and AgenTracer
+injects faults into successful trajectories to mint labelled error pairs at scale
+\citep{zhang2025agentracer}. Fault injection is the established part of our design; the delta
+is what is done with it: a five-way instrument comparison that separates detection from
+attribution and stratifies recall by outcome survival, which that literature does not report.
+
+\textbf{Process versus outcome supervision.} Process reward models show step-level feedback
+beats outcome-level feedback for training verifiers in mathematics
+\citep{lightman2024verify,uesato2022solving,wang2024mathshepherd}, and ProcessBench measures
+error localisation in reasoning chains \citep{zheng2024processbench,zhang2025lessons}. That
+agenda trains scorers where the final answer is checkable; we ask the measurement question
+underneath it, whether an off-the-shelf judge can see process faults \emph{at all} when the
+final answer is right, and find the answer depends on the judge's view, not its metric.
+
+\textbf{Calibration.} We score every judge's stated confidence with expected calibration
+error \citep{naeini2015obtaining,guo2017calibration}. Verbalized confidence can be usable
+\citep{kadavath2022language,tian2023just} but trends overconfident \citep{xiong2024can}; we
+add the evaluator-side result that an ensemble's vote share (the ``principled''
+alternative) is structurally coarser than a stated number at small $k$.
+
+\textbf{Mutation testing.} Seeding known defects to measure a detector is half a century old
+\citep{demillo1978hints,jia2011analysis}. Whether mutants substitute for real faults is the
+classic validity question \citep{just2014mutants}; \S\ref{sec:organic} answers it here:
+no for prevalence, yes for capability.
+
+\section{A testbed with ground truth by construction}
+\label{sec:testbed}
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw=black!60, rounded corners=2pt, align=center, inner sep=4pt,
+              minimum height=2.1em},
+  lab/.style={font=\scriptsize, midway, above, sloped},
+  arr/.style={-{Stealth[length=2mm]}, black!70}
+]
+\node[box] (inst) {support-desk instances\\ \scriptsize 6 strata, seeded};
+\node[box, right=8mm of inst] (oracle) {oracle policy\\ \scriptsize correct by construction};
+\node[box, above right=2mm and 8mm of oracle] (clean) {clean\\ \scriptsize $n=\tjNClean$};
+\node[box, below right=2mm and 8mm of oracle] (mut) {fault injection\\ \scriptsize 6 types, known step};
+\node[box, right=8mm of mut] (silent) {silent\\ \scriptsize $n=\tjNSilent$};
+\node[box, below=2.5mm of silent] (loud) {loud\\ \scriptsize $n=\tjNLoud$};
+\node[box, right=25mm of clean] (judges) {five judges};
+\node[box, right=8mm of judges] (axes) {detection $\cdot$ localisation\\ typing $\cdot$ calibration $\cdot$ cost};
+\draw[arr] (inst) -- (oracle);
+\draw[arr] (oracle) -- (clean);
+\draw[arr] (oracle) -- (mut);
+\draw[arr] (mut) -- node[lab] {outcome survived} (silent);
+\draw[arr] (mut) |- node[lab, pos=0.75] {outcome broke} (loud);
+\draw[arr] (clean) -- (judges);
+\draw[arr] (silent) -| ($(judges.south)+(0,-1mm)$) -- (judges.south);
+\draw[arr] (loud) -| (judges.south east);
+\draw[arr] (judges) -- (axes);
+\end{tikzpicture}
+\caption{Ground truth without annotation: the oracle is correct by construction and each
+mutation breaks exactly one thing, so every trajectory carries an exact label: faulty, step,
+type, and whether the customer-visible outcome survived.}
+\label{fig:pipeline}
+\end{figure}
+
+\textbf{Environment.} The environment is a customer-support desk with seven tools
+(\texttt{get\_customer}, \texttt{lookup\_order}, \texttt{get\_policy},
+\texttt{check\_eligibility}, \texttt{issue\_refund}, \texttt{escalate}, \texttt{reply}) and a
+written standard operating procedure: verify the customer, look up the order, read the policy
+for the item, confirm eligibility before moving money, refund exactly the authorised amount,
+escalate when not eligible, and reply asserting only what the observations support. Instances
+are generated in six strata: full-price refunds, restocking fees, expired windows,
+non-refundable items, orders belonging to a different customer, and orders already
+refunded, drawn round-robin from a single seeded stream (Appendix~\ref{app:env}).
+
+\textbf{The environment is permissive and the checker is strict.} \texttt{issue\_refund} will
+refund an order whose eligibility was never checked, exactly as a real payments API would.
+Nothing in the world stops an agent from skipping the process; only the rule checker says it
+was wrong. This is the load-bearing design choice: without it there would be no silent
+failures to measure, which is why it is pinned by a test
+(\texttt{test\_environment\_is\_permissive\_by\_design}) rather than stated in a comment.
+
+\textbf{Notation.} A trajectory $\tau=(g, s_0,\dots,s_{T-1}, a)$ pairs a goal $g$ and final
+answer $a$ with steps $s_t=(h_t, c_t, o_t)$: a thought, a tool call
+$c_t=(\mathrm{tool}_t,\mathrm{args}_t)$, and an observation $o_t$. Its label is
+$\ell(\tau)=(y, t^{*}, \phi, \omega)$: faulty or not, the failure step, the failure type
+$\phi\in\Phi$ ($|\Phi|=6$), and whether the customer-visible outcome matched the instance's
+expected outcome. A fault is \emph{silent} iff $y\wedge\omega$ and \emph{loud} iff
+$y\wedge\neg\omega$. A judge maps a \emph{view} of the trajectory to a verdict
+$(\hat y, \hat t, \hat\phi, \hat c, r)$ with stated confidence $\hat c$ and rationale $r$. The
+outcome-only view is $V_{\mathrm{out}}(\tau)=(g,a)$; the step view $V_{\mathrm{step}}(\tau)$
+is the full rendering. The two LLM judges in this paper differ in exactly this view and in
+nothing else.
+
+\textbf{Oracle.} The oracle is a fixed six-step script, identical across strata up to one
+branch: verify, look up, read the policy for the SKU \emph{returned by the lookup
+observation}, check eligibility, then refund the authorised amount if eligible and escalate
+otherwise, and reply. A test parametrised over all instances asserts it violates no rule and
+reaches the expected outcome; correctness is computed, not assumed.
+
+\begin{table}[t]
+\centering
+\caption{The six failure types. Each mutation edits the oracle's call list at a known step and
+replays it against a fresh environment, so a mutant is as internally consistent as a real run.
+Rule coverage is measured and pinned by a test, not estimated. The two zeros are the point: a
+plausible-but-wrong tool choice breaks no rule, and an invented sentence in the reply is not a
+rule violation at all; both need something that reads.}
+\label{tab:taxonomy}
+\small
+\begin{tabular}{@{}llccc@{}}
+\toprule
+Failure type & The single edit & Rules catch & Outcome survives & $n$ \\
+\midrule
+\ftype{skipped\_precondition} & refund without the eligibility check & 100\% & at full price & 50 \\
+\ftype{hallucinated\_argument} & policy fetched for an invented SKU & 100\% & always & 50 \\
+\ftype{ignored\_observation} & refund of an unauthorised amount & 100\% & never & 50 \\
+\ftype{premature\_stop} & truncated before acting or replying & 100\% & never & 50 \\
+\ftype{wrong\_tool} & re-fetches the order instead of the policy & \textbf{0\%} & always & 50 \\
+\ftype{unsupported\_claim} & invented promise appended to the reply & \textbf{0\%} & always & 50 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Fault injector.} Each mutation edits the call list only (one edit, one step) and
+then \emph{replays} the edited list against a fresh environment, regenerating every
+observation. A hallucinated SKU therefore genuinely fails its lookup; nothing is hand-written,
+and a test asserts the replayed observations are consistent with the calls.
+Table~\ref{tab:taxonomy} lists the six types. Injection is string-seeded per (instance, type),
+so the set is deterministic. One discipline matters enough to state: mutations are constructed
+to break exactly one rule. \ftype{skipped\_precondition}, for example, rewrites the refund
+amount to the order total specifically so the argument stays grounded in the lookup
+observation; otherwise a second rule would fire and the confusion matrix would measure the
+injector rather than the judge. The judged set is \tjNTraj{} trajectories: \tjNClean{} clean,
+\tjNSilent{} silent, \tjNLoud{} loud (\tjNPerType{} per type), deterministically shuffled so
+any prefix is a stratified sample.
+
+\textbf{The rule engine, and its two zeros.} A checker walks each trajectory once,
+maintaining a pool of grounded values seeded from the goal, and enforces eight rules over
+grounding, ordering, amounts, identity, and terminality (Appendix~\ref{app:checker}). It
+covers four of the six fault types at 100\% and two at exactly 0\%, structurally.
+\ftype{wrong\_tool} breaks no ordering or argument predicate: the checker has no notion of
+tool \emph{intent}. \ftype{unsupported\_claim} appends prose to the reply, and no rule reads
+the reply at all: prose is deliberately excluded from the grounding pool because identifiers
+ground and sentences do not. Both zeros are pinned by a test that fails if they ever change.
+This is the honest free baseline: the argument for LLM judges, stated as a measurement rather
+than an assertion.
+
+\section{Five judges}
+\label{sec:judges}
+
+\begin{table}[t]
+\centering
+\caption{The judges. The two single-pass LLM judges are the same judge with a different view:
+identical model, decoding, procedure text, taxonomy, and confidence instruction; the only
+free variable is whether the rendering includes the steps.}
+\label{tab:judges}
+\small
+\begin{tabular}{@{}lllll@{}}
+\toprule
+Judge & View & Model & Decoding & Confidence \\
+\midrule
+\judge{rules} & steps & --- & deterministic & two hand-set constants \\
+\judge{outcome (14B)} & $(g,a)$ & \texttt{qwen2.5:14b} & $T{=}0$, seed 7 & stated \\
+\judge{step (14B)} & full & \texttt{qwen2.5:14b} & $T{=}0$, seed 7 & stated \\
+\judge{step (8B)} & full & \texttt{llama3.1:8b} & $T{=}0$, seed 7 & stated \\
+\judge{selfcons $k{=}3$ (14B)} & full & \texttt{qwen2.5:14b} & $T{=}0.7$, seeds 7--9 & vote share \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:judges} lists the five judges \citep{qwen2025qwen,dubey2024llama}. The
+engineering that keeps the comparison fair is worth itemising. Both LLM judges receive the
+same standard operating procedure and the same failure taxonomy, word for word. Responses are
+decoded under a JSON schema (grammar-constrained), with \texttt{reasoning} as the first
+property: schema property order is generation order, so chain-of-thought is enforced by the
+grammar rather than requested politely. The context window is set explicitly
+(\texttt{num\_ctx}=8192) because the serving default would silently truncate a rendered
+trajectory, and a judge scoring the half it happened to see is a bug that reads as a finding.
+Confidence is clamped to $[0.5, 1.0]$; an unparseable response would vote \emph{clean} at
+confidence $0.5$ rather than be dropped (silently dropping it would quietly improve whichever
+judge fails most often), though none occurred. Judges cannot read the label. The outcome
+judge's prompt carries explicit de-biasing (``not being able to see the steps is not evidence
+of a failure''), so its false-alarm rate below is not an artefact of an under-specified
+prompt. The self-consistency ensemble \citep{wang2023selfconsistency} runs the step judge
+$k{=}3$ times at $T{=}0.7$ with a strict-majority vote; its confidence is the vote share,
+which at $k{=}3$ can express exactly two values, $2/3$ and $1$. All prompts and schemas are
+verbatim in Appendix~\ref{app:prompts}.
+
+\section{Metrics and uncertainty}
+\label{sec:metrics}
+
+\textbf{Detection} is binary at the trajectory level: precision, recall, and F1 over all
+\tjNTraj{} trajectories, plus the three-way partition that carries the paper: silent recall,
+loud recall, and the false-alarm rate on clean trajectories.
+\textbf{Localisation} is exact match on the failure step, scored only where both label and
+verdict carry a step \emph{and} the judge flagged the trajectory: the denominator is
+conditional on detection and therefore differs per judge (printed with every estimate; a judge
+that flags more gets a larger denominator).
+\textbf{Typing} is a six-class confusion restricted to genuinely faulty trajectories, scored
+as macro-F1. A false alarm is charged once, to precision, not a second time here; a flagged
+trajectory with no type named counts as missed, not as a free pass.
+\textbf{Calibration} is expected calibration error \citep{naeini2015obtaining} with ten
+equal-width bins, population-weighted, against the binary verdict; we also report Brier
+scores in Appendix~\ref{app:full}. Two disclaimers travel with the ECE column: the rule
+engine's confidence is two hand-set constants (its ECE scores those constants, not a model's
+self-assessment), and the ensemble's vote share has two possible values at $k{=}3$, so its
+ECE is a structurally coarser object than a single judge's.
+\textbf{Cost} is wall-clock seconds per trajectory on one workstation, with token counts
+from the serving layer in Appendix~\ref{app:full}.
+
+\textbf{Uncertainty.} Every interval in this paper is a 95\% stratified paired percentile
+bootstrap over trajectories \citep{efron1979bootstrap}: $B{=}10{,}000$ replicates, resampling
+within the eight design cells (clean; each failure type split by outcome survival) so the
+design margins are preserved, with one shared resample across all five judges per
+replicate, which is what licenses the paired deltas quoted in \S\ref{sec:analysis}.
+Proportions observed at $0$ or $1$ get exact Clopper--Pearson intervals instead (marked
+$\dagger$). The rule engine behaves identically on every trajectory within a design cell, so
+the design-conditioned bootstrap assigns its recalls no sampling variance; those entries are
+shown without brackets, because its coverage is structural (pinned by tests), not estimated.
+These intervals quantify resampling uncertainty over the fixed \tjNTraj{}-trajectory design,
+conditional on the generation seed and greedy decoding; they are not variance over
+environments, seeds, or model builds. The full procedure and all deltas are in
+Appendix~\ref{app:bootstrap}.
+
+\section{Results}
+\label{sec:results}
+
+\begin{table}[t]
+\centering
+\caption{Main results over the same \tjNTraj{} trajectories (\tjNClean{} clean /
+\tjNSilent{} silent / \tjNLoud{} loud). Brackets are 95\% stratified-bootstrap intervals
+($B{=}10{,}000$); $\dagger$ exact binomial; the rule engine's recalls carry no interval
+because they have no sampling variance under the design-conditioned bootstrap
+(\S\ref{sec:metrics}). Step-exact localisation is conditional on detection; its denominator
+is the subscript. \emph{Silent recall (faults the customer-visible outcome survived) is the
+column outcome-only evaluation cannot win.}}
+\label{tab:main}
+\small
+\setlength{\tabcolsep}{4.5pt}
+\begin{tabular}{@{}lcccccccc@{}}
+\toprule
+Judge & F1 & Silent & Loud & False alarms & Step exact & Type F1 & ECE & s/traj \\
+\midrule
+\judge{rules} & \tjRulesFone & \tjRulesSilent & \tjRulesLoud & \tjRulesFA & \tjRulesStepExact$_{(\tjRulesStepN)}$ & \tjRulesTypeF & \tjRulesECE & \tjRulesCost \\[-1pt]
+ & & & \ci{\tjRulesLoudCI$^\dagger$} & \ci{\tjRulesFACI$^\dagger$} & \ci{\tjRulesStepExactCI$^\dagger$} & & & \\[2pt]
+\judge{outcome (14B)} & \tjOutcomeFone & \tjOutcomeSilent & \tjOutcomeLoud & \tjOutcomeFA & n/a & \tjOutcomeTypeF & \tjOutcomeECE & \tjOutcomeCost \\[-1pt]
+ & \ci{\tjOutcomeFoneCI} & \ci{\tjOutcomeSilentCI} & \ci{\tjOutcomeLoudCI} & \ci{\tjOutcomeFACI} & & \ci{\tjOutcomeTypeFCI} & & \\[2pt]
+\judge{step (14B)} & \tjStepQFone & \tjStepQSilent & \tjStepQLoud & \tjStepQFA & \tjStepQStepExact$_{(\tjStepQStepN)}$ & \tjStepQTypeF & \tjStepQECE & \tjStepQCost \\[-1pt]
+ & \ci{\tjStepQFoneCI} & \ci{\tjStepQSilentCI} & \ci{\tjStepQLoudCI} & \ci{\tjStepQFACI$^\dagger$} & \ci{\tjStepQStepExactCI} & \ci{\tjStepQTypeFCI} & & \\[2pt]
+\judge{step (8B)} & \tjStepLFone & \tjStepLSilent & \tjStepLLoud & \tjStepLFA & \tjStepLStepExact$_{(\tjStepLStepN)}$ & \tjStepLTypeF & \tjStepLECE & \tjStepLCost \\[-1pt]
+ & \ci{\tjStepLFoneCI} & \ci{\tjStepLSilentCI} & \ci{\tjStepLLoudCI$^\dagger$} & \ci{\tjStepLFACI$^\dagger$} & \ci{\tjStepLStepExactCI} & \ci{\tjStepLTypeFCI} & & \\[2pt]
+\judge{selfcons $k{=}3$ (14B)} & \tjSelfconsFone & \tjSelfconsSilent & \tjSelfconsLoud & \tjSelfconsFA & \tjSelfconsStepExact$_{(\tjSelfconsStepN)}$ & \tjSelfconsTypeF & \tjSelfconsECE & \tjSelfconsCost \\[-1pt]
+ & \ci{\tjSelfconsFoneCI} & \ci{\tjSelfconsSilentCI} & \ci{\tjSelfconsLoudCI} & \ci{\tjSelfconsFACI} & \ci{\tjSelfconsStepExactCI} & \ci{\tjSelfconsTypeFCI} & & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:main} is the comparison; Figure~\ref{fig:silentloud} is its picture. Before
+interpreting either, one reading discipline: \emph{recall at or near a judge's false-alarm
+rate is not detection; it measures the judge's baseline willingness to say ``faulty''}, and loud
+recall plus a matching false-alarm rate is what an always-say-faulty judge gets for free.
+
+The outcome judge catches \tjOutcomeLoud{} \ci{\tjOutcomeLoudCI} of loud faults but only
+\tjOutcomeSilent{} \ci{\tjOutcomeSilentCI} of silent ones, while flagging \tjOutcomeFA{}
+\ci{\tjOutcomeFACI} of clean trajectories. The step judge at the same model reaches
+\tjStepQSilent{} \ci{\tjStepQSilentCI} silent recall with \emph{zero} false alarms across
+\tjNClean{} clean trajectories ($\dagger$ 95\% upper bound \tjFAUpperBound): of the
+\tjStepQFlags{} trajectories it flagged, all \tjStepQFlagsTrue{} were genuinely faulty. Its
+localisation is nearly exact (\tjStepQStepExact{} over its \tjStepQStepN{} scored cases) and
+its stated confidence is nearly honest (ECE \tjStepQECE{} against the outcome judge's
+\tjOutcomeECE). The rule engine is free, perfectly localised, never false-alarms, and types
+faults better than any model (\tjRulesTypeF{} macro-F1) because it never guesses. It
+still misses more than half the silent faults (\tjRulesSilent), with no better version
+possible: two of the six types are outside what rules can express. The 8B step judge flags
+\tjStepLFlags{} of \tjNTraj{} trajectories; its numbers are read in
+\S\ref{sec:capability-floor}. The ensemble triples cost (\tjSelfconsCost{} vs
+\tjStepQCost{} s/traj) and lands within noise of one greedy pass on every quality axis
+(\S\ref{sec:selfcons}).
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/fig2_silent_vs_loud.pdf}
+\caption{Recall split by whether the fault changed the answer, with 95\% intervals. The
+outcome-only judge's gap (\tjOutcomeLoud{} loud vs.\ \tjOutcomeSilent{} silent) is the blind
+spot; the step judge closes most of it at zero false alarms. Read the red $\times$ against the
+bars: a judge that flags everything scores perfect recall and is worth nothing.}
+\label{fig:silentloud}
+\end{figure}
+
+\begin{table}[t]
+\centering
+\caption{Detection recall per injected failure type ($n{=}\tjNPerType$ each), with the
+false-alarm anchor row. Read each column against its last row: recall at a judge's false-alarm
+rate is no signal, and the 8B column is uniformly $1.00$ \emph{including} the anchor row. Bold
+zeros are structural (\S\ref{sec:testbed}). Per-type intervals are in
+Appendix~\ref{app:full}.}
+\label{tab:pertype}
+\small
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Failure type & \judge{rules} & \judge{outcome} & \judge{step 14B} & \judge{step 8B} & \judge{selfcons} \\
+\midrule
+\ftype{wrong\_tool} & \textbf{\tjRulesWrongTool} & \tjOutcomeWrongTool & \tjStepQWrongTool & \tjStepLWrongTool & \tjSelfconsWrongTool \\
+\ftype{hallucinated\_argument} & \tjRulesHallucArg & \tjOutcomeHallucArg & \tjStepQHallucArg & \tjStepLHallucArg & \tjSelfconsHallucArg \\
+\ftype{skipped\_precondition} & \tjRulesSkippedPre & \tjOutcomeSkippedPre & \tjStepQSkippedPre & \tjStepLSkippedPre & \tjSelfconsSkippedPre \\
+\ftype{ignored\_observation} & \tjRulesIgnoredObs & \tjOutcomeIgnoredObs & \tjStepQIgnoredObs & \tjStepLIgnoredObs & \tjSelfconsIgnoredObs \\
+\ftype{premature\_stop} & \tjRulesPrematureStop & \tjOutcomePrematureStop & \tjStepQPrematureStop & \tjStepLPrematureStop & \tjSelfconsPrematureStop \\
+\ftype{unsupported\_claim} & \textbf{\tjRulesUnsupClaim} & \tjOutcomeUnsupClaim & \tjStepQUnsupClaim & \tjStepLUnsupClaim & \tjSelfconsUnsupClaim \\
+\midrule
+\emph{(false alarms on clean)} & \tjRulesFA & \tjOutcomeFA & \tjStepQFA & \tjStepLFA & \tjSelfconsFA \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.9\linewidth]{figures/fig3_calibration.pdf}
+\caption{Stated confidence against observed accuracy; marker area is proportional to bin
+population. Points below the diagonal are overconfidence. The outcome-only judge is most
+certain exactly where it is least right: \tjOutcomeConfNinetyTwo{} of its \tjNTraj{} verdicts
+sit at confidence \tjOutcomeModalConf, while the step judge's stated confidence is nearly honest (ECE
+\tjStepQECE{} vs.\ \tjOutcomeECE). The rule engine is drawn hollow: its confidence is two
+hand-set constants, not a measurement.}
+\label{fig:calibration}
+\end{figure}
+
+\section{Analysis}
+\label{sec:analysis}
+
+\subsection{The blind spot is structural, not a weak model}
+\label{sec:blindspot}
+
+The outcome and step judges are the same model, decoding, procedure, and taxonomy; the only
+difference is the view. Changing $V_{\mathrm{out}}$ to $V_{\mathrm{step}}$ moves silent recall
+from \tjOutcomeSilent{} to \tjStepQSilent{} (paired $\Delta = \tjDeltaStepOutcomeSilent$,
+95\% CI \tjDeltaStepOutcomeSilentCI) and false alarms from \tjOutcomeFA{} to zero. Within the
+outcome judge, the loud$-$silent gap is $\tjDeltaOutcomeLoudSilent$ \ci{\tjDeltaOutcomeLoudSilentCI}.
+The judge is not weak. The evidence it sees does not contain the failure: for three
+of the six fault types the mutated trajectory's reply is textually indistinguishable from the
+clean run's. Pooled recall would read \tjOutcomePooledRecall{}; the stratification is the
+measurement. An outcome-only judge that is also noisy (a third of correct trajectories
+flagged) is the worst pair to have in a metric people trust enough to gate releases on.
+\emph{Deployment consequence: report judge recall stratified by outcome survival, or the
+number will hide exactly the faults process supervision exists to catch.}
+
+\subsection{Case study: nobody reads the final answer}
+\label{sec:unsupported}
+
+\ftype{unsupported\_claim} follows the procedure perfectly and appends one invented sentence
+to the reply. The rule engine catches it $0\%$ of the time, structurally: no rule reads
+the reply. The step judge, which \emph{is} shown the reply and has the type in its taxonomy,
+catches \tjStepQUnsupClaim{} \ci{\tjStepQUnsupClaimCI}; the ensemble
+\tjSelfconsUnsupClaim{}. The outcome judge's \tjOutcomeUnsupClaim{} looks better until read
+against its \tjOutcomeFA{} false-alarm rate: barely above its baseline willingness to flag.
+One miss is diagnostic. On a trajectory whose reply ends with \emph{``I have also cancelled
+the subscription linked to this order''}, a subscription no observation mentions, the step
+judge walks all six steps, concludes \emph{``The agent's trajectory follows the procedure
+correctly, step by step: 1.\ Verified customer identity\ldots''}, and reports clean at
+confidence \tjCaseConf. Giving a judge the whole trajectory makes it better at everything except
+the failure that lives in the answer, where it gets \emph{worse}, because its attention goes
+to the steps. \emph{Deployment consequence: verifying the final reply against the evidence is
+its own task; run it as a separate pass rather than assuming the trajectory judge covers it.}
+
+\subsection{The capability floor}
+\label{sec:capability-floor}
+
+\judge{step (8B)} is the always-say-faulty baseline wearing a judge's clothes: it flags
+\tjStepLFlags{} of \tjNTraj{} trajectories, so its recall is $1.00$ nearly everywhere, its
+false-alarm rate is $1.00$, and its F1 of \tjStepLFone{} is the base rate of faults in the
+set (precision \tjStepLPrecision{} $\approx \tjNFaulty/\tjNTraj$). Its rationales average
+\tjStepLMeanTokens{} completion tokens against the 14B judge's \tjStepQMeanTokens{}: a
+boilerplate sentence, then the verdict. Same prompt, same schema, same grammar: this is a
+capability floor, not a prompting artefact. It stays in the table because a cheap local judge
+that looks excellent on recall alone is a mistake worth being able to point at.
+\emph{Deployment consequence: floor-check any candidate judge against the always-say-faulty
+baseline before trusting its recall.}
+
+\subsection{Self-consistency: three times the cost, nothing back}
+\label{sec:selfcons}
+
+The ensemble is the same step-rubric judge sampled three times with a majority vote. Against
+one greedy pass, every quality delta is within resampling noise (F1
+$\tjDeltaSelfconsFone$ \ci{\tjDeltaSelfconsFoneCI}, silent recall $\tjDeltaSelfconsSilent$
+\ci{\tjDeltaSelfconsSilentCI}, type F1 $\tjDeltaSelfconsTypeF$ \ci{\tjDeltaSelfconsTypeFCI},
+step localisation $\tjDeltaSelfconsStepExact$ \ci{\tjDeltaSelfconsStepExactCI}), while
+calibration is measurably \emph{worse} (ECE $\tjDeltaSelfconsECE$
+\ci{\tjDeltaSelfconsECECI}) and cost is deterministically $3\times$ (\tjSelfconsCost{} vs.\
+\tjStepQCost{} s/traj). The calibration result is the instructive one: vote share was
+supposed to be an \emph{estimate} where a stated confidence is not, but at $k{=}3$ it can
+express only two values; we observed exactly \tjSelfconsTwoThirds{} verdicts at $2/3$ and
+\tjSelfconsUnanimous{} at $1.0$. And voting sharpened nothing because the errors are not
+sampling noise: \ftype{unsupported\_claim} goes \tjStepQUnsupClaim{} $\to$
+\tjSelfconsUnsupClaim{}, meaning all three samples miss the same invented promises. This is a
+negative result and we publish it as one. \emph{Deployment consequence: before paying
+$k\times$ for an ensemble, check whether the judge's errors are stochastic; systematic misses
+vote together.}
+
+\subsection{Detecting a fault and naming it are different problems}
+\label{sec:attribution}
+
+The step judge detects nearly everything (F1 \tjStepQFone) and misattributes a third of what
+it detects (type macro-F1 \tjStepQTypeF). From its confusion matrix
+(Appendix~\ref{app:full}): it finds all \tjNPerType{} \ftype{hallucinated\_argument} cases
+and calls \tjStepQHallucAsWrong{} of them \ftype{wrong\_tool}. Fetching a policy for an
+invented SKU \emph{is} also a tool that does not serve the sub-goal, so part of this charge
+belongs to the taxonomy's boundary rather than the judge. \ftype{premature\_stop} scatters
+worse: of \tjNPerType{}, it names \tjStepQPremCorrect{} correctly, calls
+\tjStepQPremAsUnsup{} \ftype{unsupported\_claim} and \tjStepQPremAsSkipped{}
+\ftype{skipped\_precondition}, a defensible reading of a trajectory that stopped early and
+then asserted things it had not established. The rule engine types better
+(\tjRulesTypeF{}) because it never guesses. \emph{Deployment consequence: if verdicts route
+tickets or fill dashboard categories, evaluate attribution separately from detection; the
+headline detection number does not transfer.}
+
+\section{What faults occur organically}
+\label{sec:organic}
+
+Injected faults are uniform over six types by design. To check what the distribution looks
+like in the wild, we let \texttt{qwen2.5:14b} \emph{drive the agent} for \tjAgentN{} episodes
+under the same procedure text the judges receive, labelled by the rule engine (which is blind
+to two types, so these rates are lower bounds) and reported separately, never mixed into the
+controlled comparison. \tjAgentFaulty{} of \tjAgentN{} episodes are flagged or reach a wrong
+outcome; \tjAgentWrongOutcome{} break the customer-visible outcome and \tjAgentSilent{} are
+silent. Every rule-visible fault is a \ftype{premature\_stop}, concentrated where escalation
+is required (\tjAgentAlreadyRefundedFaulty{} of 10 \ftype{already\_refunded} episodes fail;
+\tjAgentWrongCustomerFaulty{} of 10 \ftype{wrong\_customer}); the model also re-escalates
+compulsively (\tjAgentEscalates{} \texttt{escalate} calls across \tjAgentN{} episodes) and
+runs \texttt{check\_eligibility} in only \tjAgentEligibilityEpisodes{} of \tjAgentN{}
+episodes. The organic distribution is nothing like uniform: the benchmark measures what a
+judge is \emph{capable of catching}, not how often each fault occurs in deployment
+\citep{just2014mutants}. Those are different questions, and only the first is answered here.
+
+\section{Limitations}
+\label{sec:limitations}
+
+\textbf{One environment, one domain.} A support desk with encoded preconditions is a friendly
+case \emph{for} step-level judging; open-ended coding or browsing agents have no comparable
+rule engine. If the blind spot is this large where rules can exist, domains without them are
+worse, not better. We measure only this one.
+\textbf{Injected faults are cleaner than real ones.} Each mutation breaks exactly one thing
+at one step; real trajectories fail in cascades, and \S\ref{sec:organic} shows the organic
+mix is a point mass, not uniform.
+\textbf{Local models only.} Everything runs on \texttt{qwen2.5:14b} and
+\texttt{llama3.1:8b}, so results reproduce without an API key. A frontier judge would very
+likely close part of the \ftype{unsupported\_claim} gap; this paper does not claim otherwise
+and does not measure it. The instrument is model-agnostic.
+\textbf{Confidence is self-reported} for single-pass judges; only the ensemble's is an
+estimate of anything, and that is visible in the ECE column.
+\textbf{Two types share a blurry border.} A policy fetched for an invented SKU is
+simultaneously an ungrounded argument and a wrong tool; charging the judge for the other
+reading overstates its attribution error somewhat. Detection is unaffected.
+\textbf{The judged set is not stratum-balanced} (\tjNRestocking{} of \tjNTraj{} trajectories
+sit in the restocking stratum, because two fault types can only be hosted there); scores are
+not stratum-marginalised.
+\textbf{``Silent'' is defined by the outcome the environment can see.} A refund of the right
+amount by the wrong route counts as outcome-correct here. A bank auditing the route would
+disagree, which is the point of measuring the route separately.
+
+\section{Reproducibility}
+\label{sec:repro}
+
+Every number in this paper regenerates offline. The released artifact carries the
+environment, oracle, injector, and judges; the \tjNTraj{} labelled trajectories and all
+\tjNVerdicts{} raw verdicts; and the analysis pipeline (bootstrap, tables, figures) with
+fixed seeds. Continuous integration rebuilds the published tables from the committed raw
+verdicts and fails on any drift, so the numbers cannot quietly stop matching the data they
+came from. Determinism is pinned by named tests: seeded instance generation, string-seeded
+mutation, byte-identical report rebuilds, and a deterministic shuffle under which any prefix
+of the dataset is a stratified sample. Code, data, and raw verdicts:
+\texttt{https://github.com/mohammadi-hadi/trajectory-judge}.
+
+\bibliographystyle{plainnat}
+\bibliography{refs}
+
+\clearpage
+\appendix
+\input{appendix}
+
+\end{document}

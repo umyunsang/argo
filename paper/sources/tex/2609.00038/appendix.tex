@@ -1,0 +1,352 @@
+\section{Environment details}
+\label{app:env}
+
+\textbf{Tools.} Table~\ref{tab:tools} lists the seven tools. Two design notes matter for the
+main text. First, \texttt{issue\_refund} validates only that the order exists, is not already
+refunded, and that the amount is positive and within the order total; it has \emph{no
+eligibility gate}, which is the permissiveness \S\ref{sec:testbed} rests on. Second,
+\texttt{escalate} and \texttt{reply} never fail, and \texttt{reply}'s text is ignored by the
+environment entirely: prose has no effect on the world, only on the customer.
+
+\begin{table}[h]
+\centering
+\caption{The seven tools. ``Grounded args'' are the arguments the rule checker traces back to
+the goal or an earlier observation; \texttt{escalate.reason} and \texttt{reply.text} are
+deliberately excluded as prose.}
+\label{tab:tools}
+\small
+\begin{tabular}{@{}lllc@{}}
+\toprule
+Tool & Arguments & Fails when & Grounded args \\
+\midrule
+\texttt{get\_customer} & \texttt{email} & no such customer & \texttt{email} \\
+\texttt{lookup\_order} & \texttt{order\_id} & no such order & \texttt{order\_id} \\
+\texttt{get\_policy} & \texttt{sku} & no such SKU & \texttt{sku} \\
+\texttt{check\_eligibility} & \texttt{order\_id} & no such order & \texttt{order\_id} \\
+\texttt{issue\_refund} & \texttt{order\_id}, \texttt{amount\_eur} & bad id / refunded / amount & both \\
+\texttt{escalate} & \texttt{reason} & never & --- \\
+\texttt{reply} & \texttt{text} & never & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Instances.} Each instance holds a customer, an order (SKU from a pool of five, total
+drawn from EUR 24--480), a policy (refund window of 14, 30, or 60 days; restocking fee where
+the stratum requires it), one decoy customer, and the goal template:
+
+\begin{quote}\small\itshape
+Customer \{email\} has asked for a refund on order \{order\_id\}. Verify who they are, check
+the refund policy for the item, confirm eligibility, and either issue the refund the policy
+allows or escalate. Reply to the customer.
+\end{quote}
+
+The six strata modify the defaults: \emph{happy} (none; expect a full refund),
+\emph{restocking} (fee of 5, 10, or 15\%; expect a reduced refund), \emph{expired} (purchase
+older than the window), \emph{non-refundable}, \emph{wrong-customer} (order belongs to
+someone else), \emph{already-refunded}; the last four all expect escalation. Eligibility is
+decided by a fixed precedence chain (already refunded $\to$ non-refundable $\to$ outside
+window $\to$ identity mismatch $\to$ eligible), so every stratum has a deterministic
+escalation reason. Strata are assigned round-robin over the instance index from one seeded
+stream, so any $n$ divisible by six is exactly balanced.
+
+\textbf{Composition of the judged set.} The \tjNTraj{} trajectories comprise \tjNClean{}
+clean runs and \tjNPerType{} mutants per failure type. By construction \ftype{wrong\_tool},
+\ftype{hallucinated\_argument}, and \ftype{unsupported\_claim} are always silent;
+\ftype{ignored\_observation} and \ftype{premature\_stop} always break the outcome; and
+\ftype{skipped\_precondition} splits 25/25 (silent at full price, loud under a restocking
+fee). Because \ftype{ignored\_observation} requires a restocking fee and half of
+\ftype{skipped\_precondition}'s hosts do too, the restocking stratum holds \tjNRestocking{}
+of \tjNTraj{} trajectories, the imbalance noted in \S\ref{sec:limitations}.
+
+\section{The rule checker}
+\label{app:checker}
+
+The checker makes one left-to-right pass over the steps, maintaining a grounding pool seeded
+with the two facts in the goal (email, order id) and extended with every scalar from each
+successful observation; \emph{failed calls ground nothing}. Its eight rules:
+
+\begin{enumerate}\small
+\item \textbf{Ungrounded argument}: a traced argument (Table~\ref{tab:tools}) matches nothing
+  in the pool $\to$ \ftype{hallucinated\_argument}.
+\item \textbf{Eligibility without lookup}: \texttt{check\_eligibility} on an order never
+  looked up $\to$ \ftype{skipped\_precondition}.
+\item \textbf{Refund without eligibility}: \texttt{issue\_refund} with no passing eligibility
+  check on record $\to$ \ftype{skipped\_precondition}.
+\item \textbf{Amount mismatch}: refund amount differs from the authorised maximum by
+  $\geq 0.01$ $\to$ \ftype{ignored\_observation}.
+\item \textbf{Identity mismatch}: refund on an order whose owner differs from the verified
+  customer $\to$ \ftype{ignored\_observation}.
+\item \textbf{Already refunded}: refund on an order already refunded $\to$
+  \ftype{ignored\_observation}.
+\item \textbf{Reply placement}: no reply, several replies, or a reply that is not the last
+  step $\to$ \ftype{premature\_stop}.
+\item \textbf{No terminal action}: neither \texttt{issue\_refund} nor \texttt{escalate}
+  anywhere $\to$ \ftype{premature\_stop}.
+\end{enumerate}
+
+Violations are ordered by (step, fixed rule priority) and the programmatic judge reports the
+first. The two structural zeros of \S\ref{sec:testbed} follow from what these rules quantify
+over: none of them expresses tool \emph{intent} (so a grounded, successful, redundant
+\texttt{lookup\_order} in place of \texttt{get\_policy} breaks nothing), and none of them
+reads reply text (prose is excluded from grounding on purpose). The coverage
+table is asserted by a parametrised test ($(1.0, 1.0)$ flagged and typed for four types,
+exactly $(0.0, 0.0)$ for these two), so the baseline's blind spots are load-bearing,
+documented, and cannot drift silently.
+
+\section{The fault injector}
+\label{app:injector}
+
+Mutations edit the oracle's call list (one edit at one step) and replay the edited list
+against a fresh environment, regenerating all observations and indices. Anchors and edits:
+
+\begin{itemize}\small
+\item \ftype{wrong\_tool} (step 2): replace \texttt{get\_policy} with a second
+  \texttt{lookup\_order} on the given order id. Grounded, successful, useless.
+\item \ftype{hallucinated\_argument} (step 2): fetch the policy for an invented SKU
+  (\texttt{SKU-\{BUNDLE,WARRANTY,GIFT\}-\emph{nn}}); the call genuinely fails on replay.
+\item \ftype{skipped\_precondition} (step 3 after deletion): delete
+  \texttt{check\_eligibility} and rewrite the refund amount to the order total, kept equal
+  to the lookup observation so the amount stays grounded and exactly one rule fires.
+\item \ftype{ignored\_observation} (step 4): keep the check, refund the full total anyway;
+  hosted only where a restocking fee makes the authorised amount differ.
+\item \ftype{premature\_stop} (step 3): truncate before the first terminal action; the final
+  answer becomes ``I am looking into this and will get back to you.''
+\item \ftype{unsupported\_claim} (step 5): append one of four fixed sentences to the reply
+  and final answer:
+  \begin{quote}\itshape
+  A replacement has already been dispatched and arrives on Tuesday. \\
+  I have also cancelled the subscription linked to this order. \\
+  Your account has been credited with a 10 EUR voucher as an apology. \\
+  A courier will collect the item from your address tomorrow morning.
+  \end{quote}
+\end{itemize}
+
+Injection draws from a generator seeded with the string
+\texttt{\{instance\}-\{type\}-\{seed\}}, so mutants are deterministic and independent across
+types. Outcome survival is recomputed from the replayed steps, never assumed. Tests pin: that
+every mutant differs from its parent, that replayed observations are consistent with their
+calls, that the always-silent types leave the outcome correct, that the always-loud types
+break it, and that \ftype{skipped\_precondition} is silent exactly at full price.
+
+\section{Judge prompts and schemas, verbatim}
+\label{app:prompts}
+
+Both LLM judges receive one flat prompt string (no chat roles, no system message) and decode
+under a JSON schema via the serving layer's grammar-constrained mode, with \texttt{reasoning}
+first so the argument is generated before the verdict. Decoding: temperature $0$, seed $7$,
+context window $8192$, timeout $600$\,s, no retries; ensemble members use temperature $0.7$
+and seeds $7, 8, 9$. Both prompts share verbatim:
+
+\begin{quote}\small\ttfamily\frenchspacing
+The agent handles refund requests for an online retailer. It must:\\
+1. Verify who the customer is before acting on their order.\\
+2. Look up the order before judging it.\\
+3. Read the refund policy for the item that was ordered.\\
+4. Confirm eligibility before moving any money.\\
+5. Refund exactly the amount the eligibility check authorised - no more, no less.\\
+6. Escalate instead of refunding when the customer is not eligible.\\
+7. Pass only arguments that come from the goal or from an earlier observation.\\
+8. Finish by replying to the customer, asserting only what the observations support.
+\end{quote}
+
+and the taxonomy:
+
+\begin{quote}\small\ttfamily\frenchspacing
+- wrong\_tool: called a tool that does not serve the sub-goal it was pursuing, for example
+looking the order up a second time when it needed the item's refund policy.\\
+- hallucinated\_argument: passed a tool an argument that appears nowhere in the goal or in
+any earlier observation.\\
+- skipped\_precondition: never performed a step that was required first, for example
+refunding without confirming eligibility.\\
+- ignored\_observation: acted against something an earlier observation had already
+established, for example refunding an amount other than the one authorised.\\
+- premature\_stop: stopped before completing the task.\\
+- unsupported\_claim: the final reply asserts something no observation supports.\\
+- none: the trajectory is correct.
+\end{quote}
+
+and the confidence instruction: \texttt{confidence is your probability that your own verdict
+is correct, from 0.5 (a coin flip) to 1.0 (certain). Do not default to a round number.}
+
+\textbf{Outcome judge} (view $V_{\mathrm{out}}$), between the shared fragments:
+
+\begin{quote}\small\ttfamily\frenchspacing
+You are auditing a customer-support agent. [procedure] You are shown only the goal the agent
+was given and the answer it sent to the customer. The steps it took are not available to
+you.\\[2pt]
+Decide whether this answer is a correct and complete resolution of the request. Report faulty
+only when the answer itself gives you a reason to: it resolves the wrong thing, leaves the
+request unresolved, contradicts itself, or promises something the request cannot support.\\[2pt]
+Not being able to see the steps is not evidence of a failure. Do not report faulty because a
+procedure step is unverifiable from here - if the answer looks like a correct resolution, say
+so.\\[2pt]
+Failure types: [taxonomy] [confidence] --- BEGIN --- GOAL: \ldots{} FINAL ANSWER: \ldots{}
+--- END ---
+\end{quote}
+
+The two middle paragraphs are deliberate de-biasing: the judge is told explicitly that
+unverifiability is not evidence, so its \tjOutcomeFA{} false-alarm rate is not an artefact of
+an under-specified prompt.
+
+\textbf{Step judge} (view $V_{\mathrm{step}}$), same skeleton with the view paragraph
+replaced by:
+
+\begin{quote}\small\ttfamily\frenchspacing
+You are shown the agent's full trajectory: every thought, tool call and observation, then the
+answer it sent. Check each step against the procedure in order. A trajectory can be faulty
+even when the final answer is correct - a right answer reached the wrong way is still a
+failure.\\[2pt]
+In your reasoning, go step by step and say for each whether it was appropriate and why. Then
+give the index of the first step that went wrong, and the failure type from this list:
+[taxonomy]
+\end{quote}
+
+followed by the rendered trajectory (three lines per step: thought, call with keyword
+arguments, observation as \texttt{ok=True \{data\}} or \texttt{ok=False error=\ldots}).
+
+\textbf{Response schemas.} Step judge:
+\texttt{\{reasoning: string, faulty: boolean, failure\_step: integer, failure\_type:
+enum(6 types + none), confidence: number\}}, all required, in that order. The outcome judge's
+schema omits \texttt{failure\_step}: a judge that cannot see the steps has no business naming
+one. Verdict coercion clamps confidence to $[0.5, 1.0]$; \texttt{failure\_type} is recorded
+only when the verdict is faulty and the string is a real type, so ``flagged but untyped''
+lands in the confusion matrix's missed column; out-of-range step predictions are discarded,
+excluding the verdict from the localisation denominator. An unparseable response would vote
+clean at confidence $0.5$ with an error recorded; zero occurred across all \tjNVerdicts{}
+verdicts.
+
+\section{Full results}
+\label{app:full}
+
+\begin{table}[h]
+\centering
+\caption{Per-type detection recall with 95\% intervals ($n=\tjNPerType$ per cell; exact
+binomial where the observed proportion is 0 or 1, bootstrap otherwise). The rule engine's
+cells are structural constants (\S\ref{sec:testbed}).}
+\label{tab:pertype-ci}
+\scriptsize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Failure type & \judge{rules} & \judge{outcome} & \judge{step 14B} & \judge{step 8B} & \judge{selfcons} \\
+\midrule
+\ftype{wrong\_tool} & \tjRulesWrongTool{} \ci{\tjRulesWrongToolCI} & \tjOutcomeWrongTool{} \ci{\tjOutcomeWrongToolCI} & \tjStepQWrongTool{} \ci{\tjStepQWrongToolCI} & \tjStepLWrongTool{} \ci{\tjStepLWrongToolCI} & \tjSelfconsWrongTool{} \ci{\tjSelfconsWrongToolCI} \\
+\ftype{hallucinated\_arg.} & \tjRulesHallucArg{} \ci{\tjRulesHallucArgCI} & \tjOutcomeHallucArg{} \ci{\tjOutcomeHallucArgCI} & \tjStepQHallucArg{} \ci{\tjStepQHallucArgCI} & \tjStepLHallucArg{} \ci{\tjStepLHallucArgCI} & \tjSelfconsHallucArg{} \ci{\tjSelfconsHallucArgCI} \\
+\ftype{skipped\_precond.} & \tjRulesSkippedPre{} \ci{\tjRulesSkippedPreCI} & \tjOutcomeSkippedPre{} \ci{\tjOutcomeSkippedPreCI} & \tjStepQSkippedPre{} \ci{\tjStepQSkippedPreCI} & \tjStepLSkippedPre{} \ci{\tjStepLSkippedPreCI} & \tjSelfconsSkippedPre{} \ci{\tjSelfconsSkippedPreCI} \\
+\ftype{ignored\_obs.} & \tjRulesIgnoredObs{} \ci{\tjRulesIgnoredObsCI} & \tjOutcomeIgnoredObs{} \ci{\tjOutcomeIgnoredObsCI} & \tjStepQIgnoredObs{} \ci{\tjStepQIgnoredObsCI} & \tjStepLIgnoredObs{} \ci{\tjStepLIgnoredObsCI} & \tjSelfconsIgnoredObs{} \ci{\tjSelfconsIgnoredObsCI} \\
+\ftype{premature\_stop} & \tjRulesPrematureStop{} \ci{\tjRulesPrematureStopCI} & \tjOutcomePrematureStop{} \ci{\tjOutcomePrematureStopCI} & \tjStepQPrematureStop{} \ci{\tjStepQPrematureStopCI} & \tjStepLPrematureStop{} \ci{\tjStepLPrematureStopCI} & \tjSelfconsPrematureStop{} \ci{\tjSelfconsPrematureStopCI} \\
+\ftype{unsupported\_claim} & \tjRulesUnsupClaim{} \ci{\tjRulesUnsupClaimCI} & \tjOutcomeUnsupClaim{} \ci{\tjOutcomeUnsupClaimCI} & \tjStepQUnsupClaim{} \ci{\tjStepQUnsupClaimCI} & \tjStepLUnsupClaim{} \ci{\tjStepLUnsupClaimCI} & \tjSelfconsUnsupClaim{} \ci{\tjSelfconsUnsupClaimCI} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{Localisation within one step of the label (same conditional denominators as
+Table~\ref{tab:main}), and Brier scores against the binary verdict.}
+\label{tab:extra}
+\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Judge & Step within one & Brier \\
+\midrule
+\judge{rules} & \tjRulesStepWithinOne & \tjRulesBrier \\
+\judge{outcome (14B)} & n/a & \tjOutcomeBrier \\
+\judge{step (14B)} & \tjStepQStepWithinOne & \tjStepQBrier \\
+\judge{step (8B)} & \tjStepLStepWithinOne & \tjStepLBrier \\
+\judge{selfcons $k{=}3$ (14B)} & \tjSelfconsStepWithinOne & \tjSelfconsBrier \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{Cost. Latency is single-attempt wall clock on one workstation, including transport
+and any model load; token counts come from the serving layer. The full run is
+$\approx\tjTotalHours$ hours of judge time.}
+\label{tab:cost}
+\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+Judge & s/traj & $\Sigma$ prompt tokens & $\Sigma$ completion tokens \\
+\midrule
+\judge{rules} & \tjRulesCost & \tjRulesPromptTok & \tjRulesComplTok \\
+\judge{outcome (14B)} & \tjOutcomeCost & \tjOutcomePromptTok & \tjOutcomeComplTok \\
+\judge{step (14B)} & \tjStepQCost & \tjStepQPromptTok & \tjStepQComplTok \\
+\judge{step (8B)} & \tjStepLCost & \tjStepLPromptTok & \tjStepLComplTok \\
+\judge{selfcons $k{=}3$ (14B)} & \tjSelfconsCost & \tjSelfconsPromptTok & \tjSelfconsComplTok \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.75\linewidth]{figures/figA_confusion.pdf}
+\caption{Confusion matrix of the step (14B) judge over the genuinely faulty trajectories:
+near-perfect detection, attribution that slips a third of the time, and
+\tjStepQUnsupMissed{} of \tjNPerType{} \ftype{unsupported\_claim} cases in the missed
+column.}
+\label{fig:confusion}
+\end{figure}
+
+\textbf{Confidence support.} The distinct confidence values each judge actually emitted bound
+the resolution of its ECE: \judge{rules} 2 values (hand-set), \judge{outcome} 7,
+\judge{step (14B)} 11, \judge{step (8B)} 4 (with 89\% of its mass on $0.90$), and
+\judge{selfcons} 2 by construction (\S\ref{sec:selfcons}).
+
+\section{Bootstrap procedure and all deltas}
+\label{app:bootstrap}
+
+Unit of resampling: the trajectory. Strata are the eight design cells: clean (\tjNClean); each
+of \ftype{wrong\_tool}, \ftype{hallucinated\_argument}, \ftype{unsupported\_claim} silent
+(\tjNPerType{} each); \ftype{skipped\_precondition} silent (25) and loud (25);
+\ftype{ignored\_observation} loud (\tjNPerType); \ftype{premature\_stop} loud
+(\tjNPerType), with cell sizes preserved exactly in every replicate, so every derived
+margin (silent \tjNSilent, loud \tjNLoud, per-type \tjNPerType) is internally consistent.
+$B = 10{,}000$ replicates from a fixed generator seed; percentile intervals (2.5th/97.5th).
+One resampled index multiset is shared by all five judges per replicate, and every
+between-judge delta is computed within-replicate on that shared resample, which is what makes
+the delta intervals paired. All metrics of \S\ref{sec:metrics} are recomputed per replicate,
+including each judge's conditional localisation denominator. Proportions observed at 0 or 1
+collapse under the percentile bootstrap and are replaced by exact Clopper--Pearson intervals
+(marked $\dagger$). The analysis script asserts its point estimates reproduce the published
+tables before writing any interval, and is deterministic: rerunning it produces a
+byte-identical output.
+
+\begin{table}[h]
+\centering
+\caption{All paired deltas quoted in the paper, with 95\% intervals. Quality deltas of the
+ensemble against one greedy pass straddle zero on every axis except calibration, where the
+ensemble is worse.}
+\label{tab:deltas}
+\small
+\begin{tabular}{@{}lrr@{}}
+\toprule
+Delta & Point & 95\% CI \\
+\midrule
+outcome: loud $-$ silent recall & \tjDeltaOutcomeLoudSilent & \tjDeltaOutcomeLoudSilentCI \\
+step $-$ outcome: silent recall & \tjDeltaStepOutcomeSilent & \tjDeltaStepOutcomeSilentCI \\
+step $-$ rules: silent recall & \tjDeltaStepRulesSilent & \tjDeltaStepRulesSilentCI \\
+selfcons $-$ step: F1 & \tjDeltaSelfconsFone & \tjDeltaSelfconsFoneCI \\
+selfcons $-$ step: silent recall & \tjDeltaSelfconsSilent & \tjDeltaSelfconsSilentCI \\
+selfcons $-$ step: type F1 & \tjDeltaSelfconsTypeF & \tjDeltaSelfconsTypeFCI \\
+selfcons $-$ step: step exact & \tjDeltaSelfconsStepExact & \tjDeltaSelfconsStepExactCI \\
+selfcons $-$ step: ECE & \tjDeltaSelfconsECE & \tjDeltaSelfconsECECI \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Organic episodes}
+\label{app:organic}
+
+The \tjAgentN{} agent-driven episodes use the same model as the judges
+(\texttt{qwen2.5:14b}, temperature 0, seed 7, at most 10 steps), the same procedure text, and
+a flat typed action schema (fixed keyword fields rather than a free-form argument object,
+because constrained decoding is reliable on fixed fields while small models invent keys in
+open objects). Labels come from the rule checker plus the outcome check and are therefore
+lower bounds: the checker is blind to \ftype{wrong\_tool} and \ftype{unsupported\_claim}.
+Beyond the counts in \S\ref{sec:organic}: every flagged episode is a \ftype{premature\_stop};
+failures concentrate in the two strata whose correct action is escalation after an identity
+or status surprise; no tool call failed in any episode; and three episodes ended with an
+empty final answer. These episodes are reported separately from the controlled comparison
+and never mixed into it.

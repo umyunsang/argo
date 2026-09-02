@@ -81,6 +81,14 @@ Execution-graded closed-loop replication is not part of this cycle. It is deferr
 1. **Redline-adjusted design score**: six SCOPE-style dimensions, with fatal flaws zeroing the affected dimension. The six components are always reported; the total cannot hide a trade-off.
 2. **FEC**: every main/ablation/analysis/resource/baseline/metric/uncertainty requirement is complete and no redline occurs.
 
+### Resolution and equivalence reporting
+
+Every pairwise contrast is reported against a pre-registered resolution target, and a contrast that cannot meet it is marked unresolved rather than null (`RD-2026-09-02-09B`). A non-significant structured-state contrast is additionally tested against a pre-registered equivalence margin with TOST on a task-clustered bootstrap, so absence of effect is a bounded claim rather than an absence of power.
+
+### Judge admission
+
+Rubric scores enter the analysis only after a calibration run on a human-anchored subset reports agreement, severity relative to the human anchor, and halo across dimensions; dimensions are scored in separate calls, and a step-level pass reviews trajectories for failures that are silent in the artifact (`RD-2026-09-02-09C`).
+
 ### Baselines
 
 - C00 is the minimal persistent free-planning baseline.
@@ -114,7 +122,7 @@ Therefore FEC is a protected co-primary validity outcome but may be estimation-o
 ## 7. Procedure and reproducibility
 
 1. Freeze task eligibility, release manifest, conditions, output schema, redlines, metrics, scorer, and budgets.
-2. Run failing-first hidden-evidence probes and deterministic fixture tests, including integrity probes that must fire on deliberately corrupted fixtures: edited or bypassed scoring code, released-task leakage into the scored artifact, and hardcoded metric values (`RD-2026-09-02-08C`, from `2602.15112`).
+2. Run failing-first hidden-evidence probes and deterministic fixture tests with `experiments/study_a/release_sandbox.py`, verified by `experiments/study_a/test_release_sandbox.py`, whose six probes must fire on deliberately corrupted fixtures: edited or bypassed scoring code, released-task leakage into the scored artifact, and hardcoded metric values (`RD-2026-09-02-08C`, from `2602.15112`).
 3. Create a separate experiment project with one fixed command: `/usr/bin/python3 experiments/study_a/run_episode.py`.
 4. Encode conditions only in committed configuration. C00 is baseline; C01/C10/C11 are co-equal first-round children.
 5. Start each episode in a clean capability sandbox; capture delivered prompt, tools, queries, graph mutations, output, tokens, and timestamps.
@@ -179,6 +187,9 @@ Confirmatory hard cap: 192 episodes ×32k = 6.144M treatment tokens; scoring cap
 | Graph overhead | lower score from interface burden | measure tool/time cost and graph errors; include C10/C11 comparison |
 | Benchmark-target anchoring | re-discovery not novelty | scope conclusions to experimental-design validity, not scientific discovery |
 | Routing/model variation | mechanism confound | fixed model in Study A; routing deferred |
+| Structured state delivered but unused | a null H-A confounds "does not help" with "never read" | manipulation probe quarantines episodes whose artifact never cites a decision-relevant state field |
+| Judge severity drift between versions | treatment effect confounded with rater bias | severity and halo diagnostics against a human anchor; pinned judge revision |
+| Repeat allocation chosen by convention | wasted episodes on the wrong variance source | pre-registered crossed variance decomposition before any confirmatory allocation |
 
 ## 11. Design rationale and comparable experiments
 
@@ -239,6 +250,10 @@ The active H-A–H-C hypotheses and deferred H-D each have at least three compar
 | dynamic model and workflow routing | `2608.06867`, `2607.08665v1`, `2608.00685`, `2607.09600v2` — FULL; deferred from Study A |
 | agent/tool/human protocol layers | `2606.19135`, `2606.09751`, `2308.08155` — FULL; official evolving specifications still require version pins |
 | RAG chunking, hybrid retrieval, reranking, adaptive orchestration | `2005.11401`, `2606.01240`, `2608.03860`, `2606.05658` — FULL |
+| manipulation probe and equivalence testing for a null | `2607.27250` — FULL |
+| scaffold elicitation gap and cost-per-correct reporting | `2606.08529` — FULL |
+| judge severity, halo, drift, and step-level review | `2608.29517`, `2609.00038` — FULL |
+| resolution targets, variance allocation, and power norms | `2605.30315`, `2607.13304`, `2010.06595` — FULL |
 | complexity-conditioned retrieval and retrieval decisions | `2403.14403`, `2310.11511` — FULL |
 | graph-indexed memory as a retrieval substrate | `2405.14831` — FULL |
 | execution-graded closed-loop research and integrity provisions | `2602.15112` — FULL; deferred Study C |
