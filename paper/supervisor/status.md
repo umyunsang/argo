@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** either implement ceiling enforcement in the runner or remove the unenforced ceilings from the confirmatory protocol, so the specification stops describing machinery that does not exist.
+- **next_first_action:** wire ceiling enforcement into the episode admission path so a violating episode cannot be scored, rather than being checked only after the fact.
 
-- **last_updated:** 2026-09-03T02:23:45+09:00
+- **last_updated:** 2026-09-03T02:27:09+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 34 closed — deriving the design constants exposed that three declared ceilings enforced nothing
+- **current_phase:** cycle 35 closed — ceilings now enforced at admission; the declared figure had no truth value until a quantity was named
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 35 — the ceiling had no truth value until a quantity was named
+
+- **Gap picked:** three declared ceilings enforced nothing. The choice was to implement or delete; I implemented.
+- **Enforcement at admission,** since a provider call cannot be capped from outside. A committed module checks measured usage, **requires the quantity to be named**, and treats an unmeasured quantity as a violation rather than a pass. 16 fixtures, 5 of 5 mutations caught.
+- **Applied to the six episodes with complete measured usage, the declared 32,000 gave opposite verdicts.** Read as **total tokens**: every episode inadmissible, exceeding by **4.7× to 20.3×**. Read as **marginal tokens**: every episode admissible, maximum **10,957**.
+- **So the number had no truth value on its own.** The verdict is decided entirely by a quantity the protocol never named.
+- **Total-token ceiling withdrawn**, not replaced with a guess, until it can be set from a measured distribution on the confirmatory task set. Marginal-token, call and wall-clock ceilings retained because measurement supports them.
+- **Limit stated:** these maxima come from six episodes on one burned task and would not generalise.
 
 ### Cycle 34 — the declared ceilings enforced nothing
 
