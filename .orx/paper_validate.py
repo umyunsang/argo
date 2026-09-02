@@ -1817,6 +1817,39 @@ def main():
             if proc.returncode != 0 or rebuilt != committed_digest:
                 errors.append("submission artifact is not reproducible from its committed builder")
 
+    preregistration = {}
+    prereg_cfg = cfg.get("preregistration_gate")
+    if prereg_cfg:
+        prereg_path = ROOT / prereg_cfg["path"]
+        if not prereg_path.is_file():
+            errors.append("preregistration missing")
+        else:
+            prereg = json.loads(prereg_path.read_text(encoding="utf-8"))
+            receipt_path = ROOT / prereg_cfg["confirmation_receipt"]
+            episodes_now = 0
+            if receipt_path.is_file():
+                episodes_now = len(json.loads(receipt_path.read_text(encoding="utf-8"))
+                                   .get("per_episode", []))
+            frozen_at_count = prereg.get("episodes_existing_at_freeze")
+            missing_fields = [f for f in prereg_cfg["required_fields"] if f not in prereg]
+            preregistration = {
+                "status": prereg.get("status"),
+                "episodes_existing_at_freeze": frozen_at_count,
+                "episodes_now": episodes_now,
+                "missing_fields": missing_fields,
+                "grew_since_freeze": episodes_now > (frozen_at_count or 0),
+            }
+            if missing_fields:
+                errors.append("preregistration is missing a required field")
+            if prereg.get("status") != "FROZEN":
+                errors.append("preregistration is not frozen")
+            # A preregistration may only be edited while the block it constrains has not
+            # grown. Once episodes exist beyond the frozen count, the document is fixed.
+            if episodes_now > (frozen_at_count or 0):
+                recorded = prereg.get("sealed_sha256")
+                if recorded != sha256_path(prereg_path):
+                    errors.append("preregistration changed after its block began to grow")
+
     evidence_chain = {"claim_level": None, "byte_level_receipt": None, "stale": None}
     chain_cfg = cfg.get("evidence_chain_gate")
     if chain_cfg:
@@ -2312,6 +2345,7 @@ def main():
         },
         "abstract_claims": abstract_claims,
         "evidence_chain": evidence_chain,
+        "preregistration": preregistration,
         "dangling_references": dangling_references,
         "external_artifacts": external_artifacts,
         "submission_artifact": submission_artifact,

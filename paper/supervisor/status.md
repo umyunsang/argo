@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** run the completion arm design forward under the default of Q-0007 by pre-registering its analysis before any further episodes, so the executable half is fully specified while the quality half waits on labels.
+- **next_first_action:** await Q-0007 on the 116-episode spend; meanwhile audit whether any manuscript claim rests on the 48 episodes that the admission rule made unscorable.
 
-- **last_updated:** 2026-09-03T03:36:11+09:00
+- **last_updated:** 2026-09-03T03:39:18+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 49 closed — half the plan is executable and costed; the other half is blocked by a single human input, and that is now stated by committed code
+- **current_phase:** cycle 50 closed — the executable arm is pre-registered and sealed before the data that would tempt it
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 50 — the executable arm is pre-registered and sealed
+
+- **Gap picked:** the completion arm had a costed block size but no fixed analysis, so the analysis could still be chosen after seeing data.
+- **Frozen before the data exists:** the document records that only 16 episodes existed at freeze, and names the confirmation receipt digest at that moment. Any block testing it must consist of episodes beyond those.
+- **What it fixes:** the hypothesis and its null with **no direction taken from the pilot**; a two-sided Fisher exact test with alpha 0.05, chosen because counts are small and one arm sits near a boundary; the size and its source receipt; an exclusion rule that **explicitly forbids removing an episode for its outcome**; a stopping rule with **no interim looks**; the falsifier; and what the arm cannot show.
+- **Only one arm was pre-registered.** Pre-registering the quality arm would fix an analysis that cannot be run, since it is blocked on human labels and an unbalanced design.
+- **Sealed and gated:** the document carries its own digest, and once the block grows beyond 16 episodes any change fails the gate. Three failing-first mutations fire — removing the stopping rule, downgrading the status to draft, and adding an episode while the document is unsealed.
+- **Honest limit recorded:** a preregistration written by the agent that will run and analyse the block constrains the analysis but does not make it independent. The seal proves the document did not change, not that it was wise.
 
 ### Cycle 49 — one half of the plan is executable, the other is blocked by one input
 
