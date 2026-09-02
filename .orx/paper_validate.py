@@ -272,6 +272,124 @@ def compile_once(cfg, tmp, name):
     }
 
 
+
+def thesis_form_gate(root, cfg, docx_path):
+    """Measure the twelve department-form rules, and enforce the achievable subset.
+
+    Every rule is measured on every run. A rule is enforced only when the manuscript
+    has reached the state in which it can pass; the rest report their current value
+    with the condition under which they start blocking. That distinction is recorded
+    per rule rather than implied, because a rule that cannot fail is a measurement
+    and calling it a check would overstate what this gate does.
+    """
+    import zipfile as _zip
+    spec = cfg.get("thesis_form_gate") or {}
+    figdir = root / "paper" / "figures"
+    ledger_path = figdir / "figure-ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8")) if ledger_path.is_file() else {"figures": []}
+    figs = ledger.get("figures", [])
+    tex = (root / "paper.tex").read_text(encoding="utf-8") if (root / "paper.tex").is_file() else ""
+
+    page_w = page_h = None
+    line_rule = None
+    if docx_path.is_file():
+        with _zip.ZipFile(docx_path) as z:
+            doc = z.read("word/document.xml").decode("utf-8", "replace")
+            try:
+                sty_xml = z.read("word/styles.xml").decode("utf-8", "replace")
+            except KeyError:
+                sty_xml = ""
+        mw = re.search(r'w:pgSz[^/]*w:w="(\d+)"', doc)
+        mh = re.search(r'w:pgSz[^/]*w:h="(\d+)"', doc)
+        page_w = int(mw.group(1)) if mw else None
+        page_h = int(mh.group(1)) if mh else None
+        # the effective default lives in docDefaults; a paragraph override in the
+        # body must not be read as if it were the document default
+        default_block = re.search(r"<w:pPrDefault>.*?</w:pPrDefault>", sty_xml, re.S)
+        ml = re.search(r'w:spacing[^/]*w:line="(\d+)"', default_block.group(0)) if default_block else None
+        if ml is None:
+            ml = re.search(r'w:spacing[^/]*w:line="(\d+)"', doc)
+        line_rule = int(ml.group(1)) if ml else None
+
+    by_chapter = {}
+    for f in figs:
+        by_chapter[f.get("chapter")] = by_chapter.get(f.get("chapter"), 0) + 1
+    referenced = sum(1 for f in figs if f.get("referenced_in_body"))
+    routed = sum(1 for f in figs if f.get("route") not in (None, "pending"))
+
+    rules = []
+
+    def rule(rid, title, measured, ok, enforced, becomes):
+        rules.append({"id": rid, "title": title, "measured": measured, "satisfied": bool(ok),
+                      "enforced": bool(enforced), "becomes_enforcing_when": becomes})
+
+    rule("G2", "A4 page size in the submission artifact",
+         {"page_width_twips": page_w, "page_height_twips": page_h, "a4_expected": [11906, 16838]},
+         page_w == 11906 and page_h == 16838, True, "enforced now")
+    rule("G2b", "double spacing in the submission artifact",
+         {"line_rule": line_rule, "expected_at_least": 480},
+         line_rule is not None and line_rule >= 480, True, "enforced now")
+    rule("G4", "figure specifications exist for every ledger entry",
+         {"figures": len(figs), "with_spec": sum(1 for f in figs if f.get("spec_sha256"))},
+         len(figs) > 0 and all(f.get("spec_sha256") for f in figs), True, "enforced now")
+    rule("G8a", "at least eight figures are specified",
+         {"count": len(figs), "minimum": 8}, len(figs) >= 8, True, "enforced now")
+    rule("G8b", "chapter coverage of figures",
+         {"per_chapter": by_chapter, "required": {"II": 1, "III": 3, "IV": 1}},
+         by_chapter.get("II", 0) >= 1 and by_chapter.get("III", 0) >= 3 and by_chapter.get("IV", 0) >= 1,
+         True, "enforced now")
+    rule("G12", "no forbidden public token appears in any figure specification or prompt",
+         {"scanned": len(list((figdir / "specs").glob("*"))) if (figdir / "specs").is_dir() else 0},
+         not any(t.lower() in p.read_text(encoding="utf-8", errors="replace").lower()
+                 for p in (figdir / "specs").glob("*") for t in cfg.get("public_output_gate", {}).get("forbidden_tokens", []))
+         if (figdir / "specs").is_dir() else False,
+         True, "enforced now")
+
+    korean = len(re.findall(r"[\uac00-\ud7a3]", tex))
+    latin = len(re.findall(r"[A-Za-z]", tex))
+    ratio = korean / (korean + latin) if (korean + latin) else 0.0
+    rule("G11", "body is written in Korean",
+         {"korean_ratio": round(ratio, 4), "required_at_least": 0.6},
+         ratio >= 0.6, False, "the Korean canonical manuscript replaces the English body")
+    rule("G1", "chapter order and exact chapter titles",
+         {"required": spec.get("chapter_titles", []), "present": [t for t in spec.get("chapter_titles", []) if t in tex]},
+         bool(spec.get("chapter_titles")) and all(t in tex for t in spec.get("chapter_titles", [])),
+         False, "the Korean canonical manuscript introduces the department chapter headings")
+    rule("G6", "Roman chapter numbers and Arabic section numbers",
+         {"roman_headings_found": len(re.findall(r"[\u2160-\u2164]\.", tex))},
+         len(re.findall(r"[\u2160-\u2164]\.", tex)) >= 5, False,
+         "the Korean canonical manuscript introduces numbered headings")
+    rule("G3", "at least ten A4 pages including figures and tables",
+         {"note": "measured on the built artifact once the Korean body exists"}, False, False,
+         "the Korean body and the figures are in the artifact")
+    rule("G5", "Korean summary within 500 characters and at most five English keywords",
+         {"note": "already enforced by the existing summary gate on korean-summary.txt"}, True, False,
+         "folded into this gate when the summary moves into the canonical manuscript")
+    rule("G9", "tables carry Korean titles above them",
+         {"tables_specified": 0, "minimum": 5}, False, False,
+         "the table set is specified in the ledger")
+    rule("G10", "references numbered in citation order with the department field order",
+         {"note": "citation order already enforced by the existing bibliography gate"}, True, False,
+         "the reference list is reformatted to the department example")
+    rule("G7", "English sentences capitalise only the first word",
+         {"note": "applies to labels, captions and reference titles"}, False, False,
+         "captions and labels are in the manuscript")
+
+    failures = [r["id"] for r in rules if r["enforced"] and not r["satisfied"]]
+    return {
+        "rules": rules,
+        "enforced_count": sum(1 for r in rules if r["enforced"]),
+        "measured_only_count": sum(1 for r in rules if not r["enforced"]),
+        "satisfied_count": sum(1 for r in rules if r["satisfied"]),
+        "failures": failures,
+        "figures_specified": len(figs),
+        "figures_referenced_in_body": referenced,
+        "figures_with_a_route": routed,
+        "honesty_note": ("rules marked enforced can fail this run; rules marked measured "
+                         "cannot, and are reported so the remaining distance is visible"),
+    }
+
+
 def main():
     cfg = json.loads(PROTOCOL_PATH.read_text(encoding="utf-8"))
     paper = ROOT / cfg["paper_path"]
@@ -2321,6 +2439,9 @@ def main():
             if not errors and first["pdf_path"].is_file():
                 shutil.copy2(str(first["pdf_path"]), str(ROOT / cfg["output_pdf"]))
 
+    form_gate = thesis_form_gate(ROOT, cfg, ROOT / "paper" / "word" / "graduation-thesis.docx")
+    for fid in form_gate["failures"]:
+        errors.append(f"thesis form rule {fid} failed")
     result = {
         "schema_version": "argo-thesis-paper-validation-result/v1",
         "status": "PASS" if not errors else "FAIL",
@@ -2376,6 +2497,7 @@ def main():
             "summary_format_failures": summary_format_failures,
             "official_format_failures": official_format_failures,
         },
+        "thesis_form": form_gate,
         "toolchain": tc_summary,
         "builds": builds,
         "deterministic_pdf": deterministic,

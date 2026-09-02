@@ -1,11 +1,11 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** repair the endpoint on the branch the evidence points at — re-derive coverage from whole-artifact judging with measured recall, and re-run the generalizability study on the repaired endpoint to see whether a condition component appears.
+- **next_first_action:** render the nine figures from their committed specs with the deterministic vector route, run the OCR label gate on each, and fill route/output/sha in figure-ledger.json.
 
-- **last_updated:** 2026-09-03T05:01:44+09:00
+- **last_updated:** 2026-09-03T05:11:47+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 59 closed — the manipulation took effect strongly; the judged endpoint sees none of it
+- **current_phase:** instruction-0009 form workstream opened; 6 form rules enforced and passing, Korean body not yet written
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
