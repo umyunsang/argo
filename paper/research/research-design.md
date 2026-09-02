@@ -1,6 +1,6 @@
 # Research design: harnessed LLM-agent system for autonomous R&D
 
-**Status:** preregistration-ready design; unexecuted; execution remains blocked by hidden-task isolation, independent scoring, and fixed-runner preflight.
+**Status:** preregistration-ready design. The instrument pilot has been **executed** (16 episodes, `paper/experiments/study-a-pilot-receipt.json`) and validated the instruments rather than any hypothesis. No treatment effect is estimated, and confirmation has not started.
 **Root design authority:** the root agent selected the questions, factors, endpoints, falsifiers, and resource ceilings from retained evidence; no empirical outcome has been observed.
 **Planning deadline:** department plan submission `2026-10-31` (user-confirmed).
 **Inputs:** `paper/research/capability-map.md`, `paper/research/autonomous-research-decision-ledger.json`, `paper/research/coding-harness-differentiation-matrix.md`.
@@ -54,7 +54,7 @@ The thesis asks:
 
 ### Controls
 
-Model revision, task packet, clean-session policy, output schema, 32k-token ceiling, 12-call ceiling, 45-minute ceiling, machine class, scorer revision, and zero target-evaluation calls during treatment are fixed. Dynamic model routing is not a Study A factor (`R-ROUTING-DEFER`): LLMRouter (`2608.06867`), budget-aware resample/reroute (`2607.08665`), controlled orchestration (`2608.00685`), and Agora (`2607.09600`) show that routing effects depend on task, budget, verifier, workflow, and backbone. Adding routing now would create at least eight conditions and confound the first two mechanisms.
+The treatment backend is pinned to one selector for every condition after a live availability probe, and rubric judging is reserved for a different provider family so judge and treatment do not share a blind spot (`RD-2026-09-02-10C`). Model revision, task packet, clean-session policy, output schema, 32k-token ceiling, 12-call ceiling, 45-minute ceiling, machine class, scorer revision, and zero target-evaluation calls during treatment are fixed. Dynamic model routing is not a Study A factor (`R-ROUTING-DEFER`): LLMRouter (`2608.06867`), budget-aware resample/reroute (`2607.08665`), controlled orchestration (`2608.00685`), and Agora (`2607.09600`) show that routing effects depend on task, budget, verifier, workflow, and backbone. Adding routing now would create at least eight conditions and confound the first two mechanisms.
 
 ## 4. Tasks, benchmarks, and data
 
@@ -69,6 +69,8 @@ Model revision, task packet, clean-session policy, output schema, 32k-token ceil
 Use four paper-derived dry-lab tasks from four distinct families, sampled by a fixed seed after eligibility filtering. An evaluator-owned preparation step releases only instructions, data, and permitted related work. The root agent does not inspect target studies or scoring rubrics. Target bytes must be absent from source archives, mounts, environment, links, caches, process arguments, and error channels.
 
 The 16-episode instrument pilot (`4 tasks × 4 conditions × 1 clean run`) validates only execution and measurement. Pilot tasks never enter development or confirmation.
+
+The pilot ran on 2026-09-02: 4 tasks x 4 conditions x 1 run, all 16 episodes exited zero, no withheld canary reached any workspace. It produced three instrument corrections rather than an effect. Fabrication redlines fired on 0 of 16 artifacts, so five deterministic structural-completeness checks were added and flag 13 of 16 (`RD-2026-09-02-10B`). The manipulation probe fired on 7 of 8 structured episodes whose scaffold was demonstrably filled, so it was respecified from verbatim echo to filled-field consumption plus carry-through (`RD-2026-09-02-10A`). All four pilot tasks are development data and are permanently excluded from confirmation.
 
 An attribution arm adds a controlled disclosure condition on a fixed two-task subset: the withheld target idea is stated in one sentence without resources, configuration, or code. Comparing disclosed and undisclosed episodes separates ideation failure from configuration failure (`RD-2026-09-02-08C`). Disclosed tasks are burned and never reused in confirmation.
 

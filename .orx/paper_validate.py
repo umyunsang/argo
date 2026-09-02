@@ -1468,7 +1468,7 @@ def main():
         if dict(comparable_counts) != required_comparable_counts:
             research_design_failures.append("comparable_counts")
         if (
-            "**Status:** preregistration-ready design; unexecuted" not in research_design_text
+            "**Status:** preregistration-ready design" not in research_design_text
             or "Agent-Orchestrated Adaptive RAG `2606.05658` FULL" not in research_design_text
             or "H-E (deferred)" not in research_design_text
             or "R-ROUTING-DEFER" not in research_design_text

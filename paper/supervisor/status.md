@@ -1,13 +1,26 @@
 # ARGO paper autonomous-research status
 
-- **last_updated:** 2026-09-02T22:01:22+09:00
-- **goal:** active — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
+- **next_first_action:** freeze four unseen confirmation tasks that are disjoint from the four burned pilot tasks, then re-validate the frozen structural checks on them.
+
+- **last_updated:** 2026-09-02T22:37:10+09:00
+- **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** standing loop; cycle 2 closed — all three pilot prerequisites EXECUTED and passing; pilot blocked only on task freeze and backend pin
+- **current_phase:** cycle 3 closed — 16-episode instrument pilot EXECUTED; three instrument corrections recorded; confirmation not started
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
 
+### Cycle 3 — instrument pilot EXECUTED
+
+- **Backend probe (live):** session provider `HTTP 429 usage limit reached`, reset in about 4.8 days; one hosted provider timed out at 240 s; one router `HTTP 402 insufficient credits`; two selectors answered. Treatment pinned to one selector, judging reserved for a different family (`RD-2026-09-02-10C`).
+- **Tasks frozen:** four design tasks built from retained sources with withheld targets isolated by the release sandbox, each with a released evidence pack of 12 excerpts for the retrieval conditions.
+- **Pilot executed:** 16 episodes, 4 tasks x 4 conditions, all exit zero, 1942.9 s total, 287,707 bytes of artifacts. Receipt `paper/experiments/study-a-pilot-receipt.json`.
+- **PF-1 hidden-task boundary held:** zero withheld canaries in all 16 artifacts.
+- **PF-2 the deterministic layer had no discrimination:** fabrication redlines fired on 0 of 16 real artifacts while firing on every corrupted fixture. Five structural-completeness checks were added and flag 13 of 16 (`RD-2026-09-02-10B`).
+- **PF-3 the manipulation probe was mis-specified:** all 8 structured episodes filled the scaffold, yet 7 of 8 never echoed the field name, so the probe fired on episodes whose state was consumed. Respecified to filled-field consumption plus carry-through (`RD-2026-09-02-10A`); consumption is now 5 of 8.
+- **Cost:** no GPU, no compute unit, 0 CU cumulative. Token usage is `UNMEASURED` because headless text mode emits no usage record; the confirmatory run must use json mode.
+- **Burned:** all four pilot tasks are permanently excluded from confirmation, two of them as the Q-0004 disclosure tasks.
+- **No effect is claimed.** Four cells with one run each cannot resolve any contrast, and the structural checks were specified after seeing these artifacts.
 ### Cycle 1 under the standing loop (instruction #0005)
 
 - **Gap picked:** the round-8 retrieval record had zero discovery loops, no design comparison existed, and no pilot prerequisite had been built.
@@ -58,7 +71,7 @@
 - Minimum executable unit proposed: 16-episode instrument pilot; no result claim.
 - ResearchClawBench runner pinned at `5bc7963f82b8cc4f13ea27e7524709e0d6a12a96`; workspace projection and missing sandbox guarantee recorded as separate code locators.
 - Public-paper hard exclusions applied; `paper.tex` hard-exclusion scan is zero.
-- 30-minute heartbeat active: `28b18ed8-647f-4144-a92d-f6e39e3b9c85`.
+- 30-minute heartbeat active: `c024a580-775d-4253-9249-e62de07a047a` (cron `*/30 * * * *`). The previous id `28b18ed8` was paused and is retired.
 
 ## Literature-map progress (preliminary anchor count / target ≥3 FULL reads)
 
@@ -84,11 +97,11 @@
 
 ## Next concrete actions
 
-1. Build the hidden-task release sandbox and the integrity probes as failing-first fixtures, since both are now specified by `RD-2026-09-02-08C`.
-2. Build the final Word thesis pipeline from the validated manuscript and visually inspect DOCX/PDF pagination, equations, references, and headings.
-3. Run one residual literature cycle for personalized-memory/privacy and official product/provenance specifications; do not reopen closed routing/protocol/RAG academic streams without a named gap.
-4. Design evaluator-owned hidden-task isolation, independent scoring calibration, and the separate fixed Study A runner without native runtime changes.
-5. Execute only the 16-episode instrument pilot after all three prelaunch gates pass; report no effect before immutable run evidence exists.
+1. Freeze four unseen confirmation tasks disjoint from the burned pilot set, and re-validate the frozen structural checks on them before any scoring.
+2. Build the human-anchored calibration subset so rubric scores become admissible; deterministic checks alone cannot carry the validity endpoint.
+3. Switch episode execution to the json output mode so per-episode token usage is measured rather than proxied.
+4. Estimate the confirmatory block cost from measured pilot durations and token usage, then open the GPU question again only if Study C is scheduled.
+5. Keep every claim scoped: the pilot validated instruments and estimated no effect.
 
 ## Blockers and questions
 

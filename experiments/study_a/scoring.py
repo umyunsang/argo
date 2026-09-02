@@ -19,6 +19,14 @@ from pathlib import Path
 
 DIMENSIONS = ("main_comparison", "ablation", "analysis", "resources", "metrics", "uncertainty")
 
+STRUCTURAL = {
+    "names_ablation": re.compile(r"\b(ablat|hold[- ]out one|leave[- ]one[- ]out|remove the .{0,30}component)", re.I),
+    "names_uncertainty": re.compile(r"\b(confidence interval|bootstrap|standard error|credible interval|permutation test|TOST|power analysis|mixed[- ]effects)\b", re.I),
+    "names_concrete_resource": re.compile(r"\b(SWE-bench|GAIA|CORD-19|HotpotQA|MuSiQue|BM25|BGE|Claude|GPT-|Qwen|Llama|Gemini|ICML|ICLR|ACL)\b"),
+    "names_primary_outcome": re.compile(r"\b(primary (outcome|endpoint|metric)|main (outcome|metric))\b", re.I),
+    "states_stopping_or_falsifier": re.compile(r"\b(stopping rule|stop(ping)? criteri|falsif|would refute|null result)\b", re.I),
+}
+
 REDLINES = {
     "fabricated_resource": re.compile(r"\b(?:dataset|model|corpus)\s+`?(?:TBD|XXX|placeholder|unknown)`?", re.I),
     "unexecuted_number": re.compile(r"\b(?:accuracy|f1|score|pass@\d+)\s*[:=]\s*0?\.\d+", re.I),
@@ -51,6 +59,44 @@ class Scored:
 
 def run_redlines(text: str) -> list[str]:
     return sorted(name for name, rx in REDLINES.items() if rx.search(text))
+
+
+def structural_gaps(text: str) -> list[str]:
+    """Deterministic completeness checks.
+
+    Added after the 2026-09-02 pilot, where fabrication redlines fired on 0 of 16
+    real artifacts while these checks flagged 13 of 16. Specified on pilot
+    artifacts, so pilot tasks are development data and are excluded from
+    confirmation (RD-2026-09-02-10B).
+    """
+    return sorted(name for name, rx in STRUCTURAL.items() if not rx.search(text))
+
+
+def state_use_report(state_text: str, design_text: str, field: str, scaffold_text: str) -> dict:
+    """Manipulation check, respecified after the pilot (RD-2026-09-02-10A).
+
+    Verbatim echo of the field name in the deliverable measured compliance, not
+    use: 8 of 8 structured episodes filled the scaffold while 7 of 8 did not echo
+    the name. Consumption is now evidenced by a filled field, and carry-through is
+    reported separately as a weak secondary signal.
+    """
+    filled = state_text.strip() != scaffold_text.strip()
+    value = ""
+    for line in state_text.splitlines():
+        if line.strip().startswith(field):
+            value = line.split(":", 1)[1].strip() if ":" in line else ""
+            break
+    tokens = [w.lower() for w in re.findall(r"[A-Za-z]{4,}", value)][:12]
+    carried = sum(1 for w in set(tokens) if w in design_text.lower())
+    return {
+        "scaffold_filled": filled,
+        "required_field_filled": bool(value),
+        "field_value": value[:200],
+        "carry_through_tokens": carried,
+        "carry_through_ratio": round(carried / len(set(tokens)), 3) if tokens else 0.0,
+        "verbatim_echo": field in design_text,
+        "consumed": bool(filled and value),
+    }
 
 
 def score_episode(ep: Episode, dimension_scorer) -> Scored:

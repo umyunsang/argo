@@ -66,6 +66,24 @@ def main() -> int:
     score_episode(clean, lambda d, t: calls.append(d) or 3)
     check("one_call_per_dimension", calls == list(DIMENSIONS), str(calls))
 
+    from scoring import state_use_report, structural_gaps  # noqa: E402
+    scaffold = "x:\n" + "sampling_frame:\n"
+    filled = "x: a\nsampling_frame: merged pull requests in three repositories\n"
+    design_good = "We sample merged pull requests from three repositories."
+    design_bad = "We sample whatever is convenient."
+    good = state_use_report(filled, design_good, "sampling_frame", scaffold)
+    bad_state = state_use_report(scaffold, design_good, "sampling_frame", scaffold)
+    check("state_use_detects_consumption", good["consumed"] and good["carry_through_ratio"] > 0.3, json.dumps(good))
+    check("state_use_detects_empty_scaffold", not bad_state["consumed"], json.dumps(bad_state))
+    weak = state_use_report(filled, design_bad, "sampling_frame", scaffold)
+    check("carry_through_separates_use_from_compliance", weak["consumed"] and weak["carry_through_ratio"] < good["carry_through_ratio"],
+          json.dumps(weak))
+    check("structural_gaps_flag_incomplete", "names_uncertainty" in structural_gaps("We will run an ablation on GAIA with a primary outcome and a stopping rule."),
+          str(structural_gaps("We will run an ablation on GAIA with a primary outcome and a stopping rule.")))
+    check("structural_gaps_silent_on_complete",
+          structural_gaps("Ablation on GAIA, primary outcome accuracy, bootstrap confidence interval, stopping rule fixed.") == [],
+          str(structural_gaps("Ablation on GAIA, primary outcome accuracy, bootstrap confidence interval, stopping rule fixed.")))
+
     passed = sum(1 for r in R if r["passed"])
     print(json.dumps({"suite": "study_a_scoring", "checks": len(R), "passed": passed, "results": R},
                      indent=2, sort_keys=True))
