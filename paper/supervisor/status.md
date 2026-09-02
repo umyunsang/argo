@@ -1,14 +1,22 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** rewrite the Conclusions section so its roadmap matches the instrument-first boundary, then regenerate the Word submission artifact from the validated manuscript.
+- **next_first_action:** embed the Korean summary and keyword line into the manuscript body so the Word artifact carries them, then verify Roman chapter numerals, double spacing, and page numbers against the official form.
 
-- **last_updated:** 2026-09-03T00:12:39+09:00
+- **last_updated:** 2026-09-03T00:21:27+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 10 closed — manuscript front matter aligned with the replaced instruments and the self-verification hazard stated explicitly
+- **current_phase:** cycle 11 closed — conclusions rewritten to the instrument boundary and the Word submission artifact built and structurally verified
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 11 — conclusions rewritten and the submission artifact built
+
+- **Counterevidence sweep first:** three discovery primitives searched specifically for evidence that cue-based checklist scoring is adequate, which would have reversed the endpoint replacement. Nothing supporting it was found, so the replacement stands.
+- **Conclusions rewritten:** the thesis now states that it set out to test an effect, reached the prior question of whether the instrument could be trusted, and stopped there. The contribution is named as methodological, and bounded by three limits including the calibration set the system cannot produce for itself.
+- **Word submission artifact built** from the validated manuscript and verified by parsing its own document XML rather than trusting the converter: correct top-level section order, 232 paragraphs, 50 headings, zero forbidden public names.
+- **A gate fired on ordinary language and was narrowed deliberately.** The inherited pattern blocked the word used for handing in a thesis. Rather than renaming artifacts or disabling the check, the pattern was narrowed to competition-specific forms and proved by fixture to still fire on every competition term (`RD-2026-09-02-17A`). Describing the gate then tripped it, so exact patterns now live in the hashed ledger and the graph points to them.
+- **Known gaps recorded, not hidden:** the Korean summary and keywords are not yet embedded in the manuscript body, the application-rendered PDF export timed out, and the page-format properties inherited from the reference document are unverified against the official form.
 
 ### Cycle 10 — front matter aligned, and the self-verification hazard named
 

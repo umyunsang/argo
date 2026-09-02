@@ -1,0 +1,1081 @@
+
+Warning: orx 0.1.117 is outdated (latest 0.1.118). A newer release is available; upgrade to stay compatible with the API. Run `orx update` to upgrade.
+
+alphaXiv: https://www.alphaxiv.org/abs/2608.08709
+
+AI Evaluation Should Measure Verification Cost, Not Correctness
+Alone
+∗
+Viviana Crescitelli
+1
+, Generoso Immediato
+†2
+, Fabio Persia
+3
+, and Stefania Costantini
+3
+1
+Hitachi, Ltd., Tokyo, Japan — viviana.crescitelli.mh@hitachi.com
+2
+Hitachi Rail, Naples, Italy
+3
+Department of Information Engineering, Computer Science and Mathematics, University of
+L’Aquila, Italy — {fabio.persia, stefania.costantini}@univaq.it
+August 2026
+Abstract
+The reliability of AI generative models is typically measured by output correctness, yet
+in practice it depends on the effort required to verify those outputs. We argue that current
+evaluation metrics overlook a critical failure mode: Verification-Cost Errors (VCEs), defined as
+incorrect input-output pairs that a declared fraction of the verifier population fails to identify
+within the verification budget available in a given deployment context. Unlike standard notions
+of “hallucination”, VCEs are defined operationally, by the failure of correct identification within
+budget rather than by any property of the output itself. Plausibility and authoritative presentation
+are hypothesised contributors to that failure, not defining conditions. To capture this asymmetry,
+we introduce the notion of verification cost relative to a deployment budget as an operational
+dimension that current evaluation does not routinely capture. The quantity is presented as
+a conceptual instrument rather than a finalized metric. Evidence from code generation and
+multi-modal document understanding shows that high benchmark accuracy can mask significant
+verification effort in practice. We therefore take the position that correctness alone is insufficient
+as a measure of reliability. AI evaluation should explicitly account for verification cost, reflecting
+whether errors can be detected under realistic resource constraints.
+1 Introduction
+Current evaluation of AI generative models is misaligned with real-world deployment risk. In fact,
+standard benchmarks focus on accuracy, but reliability in practice depends on the effort required to
+verify the model’s results. Consequently, models that perform well in benchmark tests may still,
+in practice, entail a significant verification burden. For instance, consider a code-generation model
+that produces a sorting function. The function passes all the provided tests, but fails in edge cases
+such as empty inputs or duplicate values that are not covered by the test suite. Generating the
+code takes seconds, but detecting the error requires constructing additional tests or performing
+manual inspection. In this setting, the cost of verification exceeds the cost of generation; however,
+∗
+Preprint, August 2026. © 2026 The Authors. Licensed under the Creative Commons Attribution 4.0 International
+License (CC BY 4.0)
+†
+Corresponding author: generoso.immediato@hitachirail.com — ORCID: 0009-0006-0294-6264.
+1
+arXiv:2608.08709v1 [cs.AI] 9 Aug 2026
+
+unfortunately, this asymmetry is not captured by standard evaluation metrics. Furthermore, several
+strands of prior work identify failure modes that can plausibly generate substantial downstream
+validation demands — AI safety failures, foundation-model risks, factual falsehoods, hallucinations,
+and failures of multi-step reasoning [Amodei et al., 2016, Bommasani et al., 2021, Lin et al., 2022, Li
+et al., 2023, Creswell et al., 2023] — although these works do not generally measure verification cost
+directly; as a result, we argue that the central limitation of current evaluation is not error frequency,
+but verification cost.
+Existing work has identified limitations in current evaluation practices, including distributional
+shifts, annotation artifacts, and data contamination [Liang et al., 2023, Kiela et al., 2021, Deng et al.,
+2024]. Research on hallucinations further shows that models can produce plausible continuations
+that are not factually correct [Lin et al., 2022, Li et al., 2023]. Complementary work indicates that
+explanations provided by AI can lead to inappropriate reliance and do not necessarily improve the
+combined performance of humans and AI [Bansal et al., 2021], and that generative systems shift
+the burden of verification onto users operating under constraints of time, expertise, and attention
+[Sariyar, 2026, Immediato, 2025]. Taken together, these observations point to a dimension that
+current evaluation omits: verification cost. Protocols that ignore it are incomplete, because reliability
+depends not only on correctness but on whether errors can be detected under realistic resource
+constraints. Our position is that AI evaluation should explicitly measure verification
+cost relative to a deployment verification budget, rather than correctness alone. More
+specifically, this paper points out what follows:
+• reliability cannot be measured by correctness alone; it must also take verification costs into
+account;
+• a critical class of failures arises when errors are difficult to detect under realistic constraints;
+• evaluation should explicitly measure the effort required to verify the model outputs.
+To formalize this perspective, we introduce a single construct: Verification-Cost Errors (VCEs),
+defined as incorrect input-output pairs that a declared fraction of the verifier population fails to
+identify within the verification budget available in a given deployment context. The remainder of
+this paper is organized as follows. Sections 2–3 diagnose the gap in current evaluation; Section 4
+frames verification as a computational and cognitive problem; Section 5 formalizes VCEs together
+with the success-probability and observed-burden measures; Section 6 proposes a verification-aware
+benchmarking methodology; Sections 7–9 discuss implications, alternative views, and limitations.
+2 What is Broken: Verification-Blind Evaluation
+Current evaluation protocols often operationalize correctness as agreement with reference answers,
+while leaving the cost of establishing that correctness largely unmeasured [Liang et al., 2023, Kiela
+et al., 2021, Gururangan et al., 2018, Deng et al., 2024].
+A critical class of failures occurs when outputs are plausible, consistent with the context, and
+difficult to refute. At first glance, these results appear to be correct, but verifying them requires
+considerable effort. This creates a mismatch between benchmark assumptions and real-world usage,
+where users must verify outputs under limited time and expertise constraints. As a result, evaluation
+pipelines systematically underestimate the risk of failure.
+Therefore, we focus throughout the paper on a subclass of interest, characterised along three
+observable dimensions: outputs that are (i) stylistically fluent, (ii) locally coherent, and (iii) authority-
+mimicking — that is, they reproduce the rhetorical and formatting conventions of expert discourse
+2
+
+without satisfying its constraints. These properties are hypothesised to raise the probability that
+verification fails within budget; they do not enter the definition given in Section 5, which is satisfied
+equally by an error that escapes detection because the task is intrinsically hard, because the available
+verifiers lack the relevant expertise, or because the tooling is inadequate. We next give the broader
+VCE class its operational definition in Section 5: a Verification-Cost Error is any incorrect input-
+output pair that a declared fraction of the verifier population fails to identify within the verification
+budget available in a given deployment context. Unlike qualitative typologies of model failure, this
+cost-asymmetric framing admits measurable proxies within the protocol proposed in Section 6.
+The deceptive nature of fixed benchmarks is most apparent in code generation.
+Models can exploit the sparse coverage of standard test suites: since benchmark performance within
+evaluated distributions does not guarantee robust generalization to omitted or out-of-distribution
+cases [Liang et al., 2023], generated code may appear “apparently correct” while retaining latent
+failures in the boundary cases that automated evaluation omits. Identifying these bugs requires the
+user to construct exhaustive test cases or perform a manual, line-by-line inspection — a verification
+effort that quickly exceeds the generation time, which is measured in fractions of a second. In
+production environments where exhaustive testing is infeasible, benchmark accuracy serves as a
+misleading indicator of reliability.
+Multi-modal documents understanding exhibits a parallel pathology: the “smoothing” of
+sensor noise into plausible but semantically distorted text. In OCR–LLM pipelines, minor character-
+level errors can be corrected by the language model, transforming sentences into syntactically
+valid but factually incorrect clauses—for instance, converting a conditional legal obligation into
+an unconditional one. Since the resulting output remains contextually consistent, identifying the
+error requires a careful manual comparison with the original source. Current extraction metrics, by
+focusing on character or word-level accuracy, fail to capture this semantic volatility and the resulting
+tax on human oversight.
+Retrieval-Augmented Generation (RAG) often exacerbates this asymmetry by providing
+a false veneer of grounded authority. While grounding is intended to improve reliability, models
+frequently misrepresent the retrieved content, by reversing causal relationships or overgeneralizing the
+results. RAG outputs may thus require users to verify not only the generated claim but also whether
+the cited or retrieved evidence actually supports it — an additional claim–source alignment task.
+Related evaluation and tool-augmentation work illustrates how factual claims may be decomposed
+into atomic units or supported through external computation [Min et al., 2023, Gao et al., 2023], but
+these mechanisms, in and of themselves, do not eliminate the need for downstream validation. These
+failures are compounded by human cognitive constraints; in fact, evaluators operating under limited
+attention may over-rely on outputs presented in a well-founded and authoritative style [Bansal et al.,
+2021]. Consequently, grounding mechanisms do not eliminate the verification gap; they can instead
+hide it behind a facade of credibility, as the evidence below illustrates. To this extent, Magesh et al.
+[2025] conducted the first preregistered evaluation of proprietary RAG-based legal AI tools and found
+that systems marketed as “hallucination-free” continue to generate hallucinations in 17% to 33% of
+cases. Essentially, the presence of retrieval grounding did not eliminate the verification burden, but
+rather restructured it, requiring users to assess the accuracy of citations rather than the truthfulness
+of statements themselves. Similarly, Dahl et al. [2024] profiled legal hallucinations across four major
+LLMs and documented a systematic tendency to counterfactual bias and overly confident responses —
+precisely the conditions that maximize verification cost. Direct measurement of the resulting burden
+is rarer, but not absent. In a randomized controlled trial, Becker et al. [2025] found that experienced
+open-source developers took 19% longer to complete real tasks when AI assistance was permitted,
+while estimating afterwards that it had made them 20% faster. The finding is specific to the tooling
+of early 2025 and the authors present it as such; what generalises is the shape of the result, namely
+3
+
+Task C
+g 
+C
+v 
+Typical Failure Mode
+Code Generation Low High Hidden edge-case bugs
+Factual QA Low High Plausible but false claims
+RAG Systems Medium High Misleading grounded outputs
+Document Understanding Low High OCR-induced semantic distortions
+Schema-constrained extraction Low Low Violations surface on automated validation
+Certificate-producing generation Low Low Outputs carry machine-checkable certificates
+Table 1: Illustrative asymmetry between generation cost (C
+g
+) and verification cost (C
+v
+). The regime
+C
+v 
+≫ C
+g 
+is what motivates the framework; the formal condition defining a Verification-Cost Error
+is given in Section 5 and is stated in terms of verification outcomes, not of this comparison. The
+last two rows illustrate the opposite scenario, in which an efficient decision-making process makes
+verification cheap (possibly C
+v 
+< C
+g
+): the asymmetry is a risk class, not a universal law.
+a measured cost that runs opposite to the perceived one — which is the condition our framework is
+designed to make visible. We note that these figures are hallucination rates rather than VCE rates:
+they document the practical setting that motivates our framework, not estimates of the quantities
+defined in Section 5.
+To sum up, the patterns highlighted in Table 1 suggest that verification-cost errors may not be
+isolated anomalies, but recurrent features of current generative and retrieval-augmented architectures.
+While scaling and capability studies document substantial gains in performance and apparent
+competence [Wei et al., 2022, Bubeck et al., 2023], they provide no direct evidence of a commensurate
+reduction in the effort required to falsify model outputs. In fact, benchmark gains may not result in
+a proportional reduction in the real-world labor required for certification.
+3 Limits of Current Framing
+Current reliability frameworks—hallucination, calibration, abstention, selective prediction, and
+benchmark robustness—only partially capture verification cost and rarely treat it as a first-class
+metric. They typically assume that errors are obvious upon inspection, an assumption that fails
+for a critical class of outputs: still, those that are plausible, internally consistent, and deceptively
+difficult to falsify. We consider five such framings in turn — hallucination, calibration, benchmarking,
+explanation, and tool augmentation — and show that each of them improves a certain aspect of
+reliability, without, however, quantifying the cost required to reach a conclusion. The recurrence
+of that gap across otherwise unrelated framings is itself the argument: it is pervasive rather than
+accidental. Verification cost is best read as one measurable axis within the broader landscape
+of AI reliability [Rabanser et al., 2026]: holistic evaluation efforts for models [Liang et al., 2023]
+and agents [Kapoor et al., 2026] already move beyond binary success metrics, yet none treats the
+cost of establishing a verdict as a first-class quantity. Our claim is accordingly narrower than
+a theory of reliability: verification cost is a missing, measurable dimension of it. We retain the
+term hallucination for continuity with the established literature, but use it cautiously: the term
+captures the surface phenomenology of a plausible but defective output, while leaving under-specified
+the operational question central to this paper, namely whether the failure can be detected within
+realistic verification constraints. This concern is consistent with the JORABP taxonomy proposed by
+Immediato [2025], which distinguishes Juicy Oranges—valid and reliably verifiable outputs; Rotten
+Apples—clearly incorrect outputs whose invalidity is readily evident; and Banana Peels—incorrect
+but highly plausible outputs whose detection imposes substantial epistemic and practical verification
+4
+
+burdens. The present paper later formalizes the Banana Peel concept through the VCE condition
+introduced in Section 5: an incorrect model response becomes deployment-relevant when a declared
+fraction of the verifier population fails to identify it within the available verification budget. Within
+the plausibility-focused subset described in Section 2, and not for the VCE class as a whole, the
+classification summary may serve as an operational proxy for the residual Banana Peel prevalence
+observed downstream of the generative system.
+Hallucination vs. Detectability. Defining failures as “hallucinations” is insufficient, since it
+prioritizes incorrectness over detectability. Although the literature focuses primarily on detecting
+factual errors [Lin et al., 2022, Li et al., 2023, Manakul et al., 2023], incorrect outputs may remain
+superficially plausible and difficult to distinguish from correct ones; the bottleneck thus shifts from
+error identification to external validation. Hallucination frameworks tell us whether a model is
+incorrect, but they say nothing about the effort required of the user to prove it. The metaphor itself
+deserves thorough analysis. Förster and Skop [2025] trace the genealogy of “hallucination” from its
+origins in computer vision—where it denoted the deliberate process of enhancing blurry photographic
+images—to its current deployment as an under-specified catch-all in NLP discourse. They argue that
+the metaphor anthropomorphizes models as “mad or infantile subjects”, simultaneously normalizing
+non-factual output and deflecting responsibility from designers onto the system itself. This discursive
+function compounds the verification problem: by framing errors as quasi-psychological phenomena,
+the hallucination metaphor obscures the structural cost asymmetry; to cope with this issue, in this
+paper we define the Verification-Cost Errors (VCEs, Section 5). In our perimeter, what matters
+operationally is not whether an output is a “hallucination” in some cognitive sense, but whether it
+can be falsified within the user’s resource budget.
+The Limits of Calibration. Calibration and uncertainty estimation offer only partial relief.
+While these methods align confidence with accuracy [Guo et al., 2017, Jiang et al., 2021] and can help
+prioritize where verification effort is allocated, they rely on an epistemic self-assessment that models
+often lack, and they do not lower the verification threshold itself. High-stakes outputs still demand
+exhaustive audit regardless of the level of reliability indicated by the model; calibration merely alerts
+us when we should be suspicious, without reducing the labor required for certainty. Probabilistic
+methods for detecting unreliable outputs represent a partial advance. In such a context, Farquhar
+et al. [2024] introduce semantic entropy—an entropy computed over meanings rather than token
+sequences—to detect a specific subclass of hallucinations they term confabulations: outputs that are
+both wrong and arbitrary. While effective within its scope, the method does not explicitly account for
+cases in which large language models (LLMs) make errors systematically and with confidence. This
+distinction is significant: it confirms that detectability depends on the type of failure mechanism, not
+merely on the presence of error—a principle that VCEs generalize by centering the cost of detection
+as the primary metric.
+Benchmark blindness. Benchmarks hide verification asymmetry by treating all errors as
+uniform. Standard evaluations measure agreement with references, [Liang et al., 2023, Kiela et al.,
+2021] but generally do not record the labor required to reach that agreement. Even granular methods,
+such as atomic fact verification [Min et al., 2023], paradoxically expand the scope of verification
+by forcing users to evaluate a fragmented list of sub-claims. Benchmark gains may therefore not
+translate proportionally into reductions in human oversight cost.
+The Explanatory Tax. We argue that explicit reasoning and explanations may actually
+worsen the verification burden. Chain-of-thought explanations need not faithfully reflect the process
+that produced the final answer [Lyu et al., 2023], yet they provide a semblance of logic that leads
+users to rely on them too heavily [Bansal et al., 2021]. As models scale [Kaplan et al., 2020, Wei
+et al., 2022, Bubeck et al., 2023], the perceptual gap between correct and deceptive outputs may
+narrow. In this context, interpretability may function as reassurance rather than as a diagnostic
+5
+
+instrument. Verification burden is also shaped by human cognitive constraints, including time
+pressure, attention limits, and explanation-induced overreliance [Bansal et al., 2021], which affect
+the verification capacity of human overseers in ways that current evaluation does not capture.
+Tool-Augmented Shifting. Finally, tool augmentation may relocate the verification cost
+rather than remove it. Although external tools can improve accuracy in structured tasks [Gao et al.,
+2023], we argue that they may also introduce additional artifacts — programs, executions, retrieved
+evidence, or tool outputs — that must themselves be validated. This creates a multi-stage verification
+recursive loop. Canonical treatments of deep learning and causal representation learning focus
+primarily on learning, generalization, and causal structure [Goodfellow et al., 2016, Schölkopf et al.,
+2021], rather than on the downstream human cost of validating individual outputs. Immediato [2025]
+argues that the co-pilot metaphor may install inflated expectations of AI competence while obscuring
+the verification responsibility that remains with the user. Unlike an aviation co-pilot—trained to
+the same standard, accountable under the same regulatory regime—an AI “co-pilot” is probabilistic,
+non-transparent, and incapable of assuming liability. The metaphor thus performs precisely the
+kind of trust inflation that maximizes the conditions for Verification-Cost Errors: users lower their
+verification effort in response to a framing that suggests shared competence.
+4 Verification as a Computational and Cognitive Problem
+Verification cost is a structural byproduct of the mismatch between generative sampling and formal
+validation. While model outputs are produced via low-cost forward inference, verification necessitates
+fundamentally different operations: backward reasoning, combinatorial search, or external grounding.
+This creates an intrinsic asymmetry in which generating a response is a computationally trivial task,
+whereas verifying it is not.
+Let us consider the Input and Output sets. Then, ∀x ∈ Input, and ∀y ∈ Output:
+• C
+g
+(x, y) denotes the generation cost;
+• C
+v
+(x, y) denotes the cost of determining correctness.
+In deployment settings, reliability is governed by the regime:
+C
+v
+(x, y) ≫ C
+g
+(x, y). (1)
+Where ≫ denotes a regime distinction rather than a fixed numerical threshold, indicating that
+verification costs dominate generation costs under realistic resource constraints.
+Thus, such a Verification Gap implies that an agent’s utility is limited not by its generative
+capacity, but rather by what the user can afford to audit. Natural language scales this imbalance:
+generating plausible prose is a low-latency sampling process, whereas verification demands multi-level
+retrieval or domain-specific expertise.
+We refer to the activity just described as Cognitive Verification: a form of epistemic validation
+in which humans do not certify the system itself, but rather evaluate the meaning, trustworthiness,
+and applicability of a specific machine-generated output [Immediato, 2025]. Cognitive verification
+often recruits the deliberative processes associated with System 2 [Kahneman, 2011] and echoes the
+symbol-grounding problem [Harnad, 1990]: models may lack the grounding that the user is called to
+supply, thereby shifting the burden of contextual validation and referential stabilization onto the
+individual.
+This burden falls on human verifiers whose time, attention, and expertise are limited (Sections 2–
+3); analyses based on systems theory sharpen the point. Sariyar [2026] proposes that LLMs function
+6
+
+as operators for general cognitive shortcuts—systems that stabilize communicative continuation (i.e.,
+prioritizing the likelihood of the next token over semantic truth) by producing contextually plausible
+outputs without epistemic commitment. Responsibility does not disappear in such an interaction; it
+migrates from the generator to the user and to the socio-technical infrastructure surrounding
+the output. This redistribution is structurally obscured by conversational interfaces that invite
+anthropomorphic interpretations. When connectability substitutes for justification, the result is what
+Sariyar [2026] refers to as normative flattening: fluency and stylistic adequacy are privileged over
+epistemic depth, thereby creating precisely the conditions under which Verification-Cost Errors
+proliferate.
+The relationship between model capability and verification cost is empirically unsettled. Greater
+fluency may make errors harder to detect by reducing surface markers of incorrectness; conversely,
+more capable models may produce outputs whose internal consistency aids verification (e.g., by
+yielding cleaner intermediate representations). We conjecture, but do not establish, that current
+scaling trends widen rather than narrow the verification gap [Wei et al., 2022, Bubeck et al., 2023],
+and that this is in itself an issue that verification-aware benchmarking could resolve. What is
+uncontroversial is the structural point: reliability is bounded not only by correctness, but also by
+the feasibility of verification under resource constraints, and this limitation is not routinely captured
+by current evaluation methods.
+5 Proposed Concept: Verification Cost
+Building on this asymmetry, we argue that evaluation must treat verification as a first-class metric
+rather than a binary assumption. Our novelty claim is narrow and deliberate. We identify a
+cross-cutting evaluation category: known failure modes—hallucinations, miscalibrated confidence,
+unfaithful chain-of-thought, and others—become operationally significant when a declared fraction
+of the verifier population cannot correctly identify them within the available verification budget.
+We do not claim a new failure phenomenon. Nor do we claim that evaluation has ignored cost as
+such: enterprise-oriented frameworks already report execution cost, latency and reliability alongside
+accuracy [Mehta, 2025], and programmes such as NIST GenAI study the gap between generation and
+automated detection [Iyer et al., 2025]. Those quantities are machine-side. What we operationalize is
+deployment-relative verification success and observed human verification effort, reported as separate
+evaluation dimensions and treated as measurable indicators of an otherwise latent verification cost.
+The distinction matters throughout: the cost of establishing correctness is the target of interest,
+while what the protocol observes is whether correctness was established within budget and how
+much effort the attempt absorbed. Verification cost is orthogonal to existing failure taxonomies in
+the sense that any of them can have low or high verification cost, and it is the cost dimension that
+determines whether known failures translate into deployment risk.
+Preliminary Definitions. Given the following sets and possible items:
+• CU as the set of Cost Units in which both generation and verification efforts can be measured;
+• depending on the considered domain, possible items u ∈ CU are human-minutes, FLOPs, or
+USD;
+• V 
+as the set of task- and deployment-dependent Verifiers, equipped with a probability distri-
+bution that reflects the population of verifiers operating in the deployment context;
+• 
+possible elements v ∈ V are human experts, audit procedures, or automated validation proto-
+cols. Throughout the paper, expressions of the form E
+v∼V 
+[·] denote expectations under this
+7
+
+distribution.
+• In the protocol developed in Section 6, however, V denotes a population of human verifiers.
+Several of its requirements — self-reported confidence as a stopping criterion, the option to
+declare an output unverifiable, verifier-experience metadata, agreement across verifiers — are
+specific to human-subject measurement, and the dimension the paper claims to operationalize
+is human verification effort. Automated validation procedures can be studied under an adapted
+protocol, but that adaptation lies outside the present operationalization.
+We provide the following preliminary definitions. ∀x ∈ Input, and ∀y ∈ Output:
+• C
+u
+g 
+(x, y) denotes the cost of generation in unit u ∈ CU ;
+• C
+u
+v 
+(x, y; v) denotes the cost of verifying y under verifier v ∈ V.
+• Two distinct quantities are latent in that phrase, and we separate them. The decision time is
+the effort expended until the verifier commits to a verdict, whatever that verdict turns out to
+be; the correct-verdict time is the effort expended until a verdict agreeing with the ground
+truth is reached. We take C
+u
+v 
+to denote the second: it is the cost of determining correctness,
+which is what the framework is about. The two coincide whenever the verdict is correct, and
+diverge exactly on the episodes discussed in Step 3 of Section 6. Where they diverge, C
+u
+v 
+is not
+observed and is not recoverable: a verifier who stops early with a mistaken verdict has told us
+nothing about how long a correct one would have taken. We therefore report C
+u
+v 
+only over the
+episodes in which a correct verdict was in fact reached, and carry the remaining episodes as
+outcomes in their own right rather than as imputed costs.
+For human-in-the-loop deployments, verification cost may be measured in u = human-minutes over a
+specified population of human verifiers, since deployment reliability is ultimately bounded by human
+oversight capacity (Section 4); for fully automated pipelines, u = FLOPs or u = wall-clock seconds
+may instead be appropriate. All formal constructs in this section are defined relative to a chosen
+u. More generally, the verification cost is not an intrinsic property of a model: it is a property
+of a model output evaluated according to a specific measurement specification (u, V, B, τ, q), with
+interface, tools, and protocol held fixed. All comparative claims in this paper are relative to such a
+specification. In addition, rather than assuming a unique target output, we define an acceptance
+relation A ⊆ Input × Output, where (x, y) ∈ A means that y is an acceptable output for input x;
+tasks admitting multiple correct outputs (e.g., program synthesis, where the same specification is
+satisfied by many programs) are thereby covered. Given a model output function g, understood as a
+realization of a generative system under a fixed configuration — prompt, decoding parameters and
+system snapshot — rather than as a deterministic map, since the same input may yield different
+outputs across runs, we define the set of incorrect input-output pairs as follows:
+IncorrectPairs = {(x, ˆy) ∈ Input × Output | ˆy = g(x), (x, ˆy) /∈ A}.
+Correctness is thus a property of the input–output pair, not of the output in isolation: the same
+output ˆy may be acceptable for one input and unacceptable for another.
+Verification-Cost Errors (VCEs). Verification cost is meaningful only in relation to a
+deployment verification budget. Let B denote the verification budget available in a given deployment
+context, expressed in the same unit u (e.g., the number of human-minutes a clinician, lawyer, or
+developer can realistically allocate per output). An earlier formulation declared a pair a Verification-
+Cost Error when its expected verification cost exceeded B. We do not retain that form, because a
+protocol that halts at the budget never observes by how much the cost exceeds it, so the condition is
+8
+
+not decidable from the evidence the protocol collects. We define the class instead on the outcome
+the protocol does observe. Let S
+B 
+(x, ˆy; v) be the indicator that verifier v reaches a verdict agreeing
+with the ground truth within the budget. Then, for a pre-registered threshold q,
+(x, ˆy) ∈ VCE
+B,q 
+⇐⇒ (x, ˆy) /∈ A ∧ Pr
+v∼V
+[S
+B 
+(x, ˆy; v) = 0] ≥ q.
+In words: the pair is incorrect, and at least a fraction q of the verifier population fails to establish that
+within the available budget. The definition is stated over the population, whereas an instantiation
+observes a finite sample of verifiers, so the empirical rule must be declared with the rest of the specifi-
+cation: the decision rule is pre-registered along with the estimator, and the full measurement specifica-
+tion accordingly comprises (u, V, B, τ, q, m, interval method, α, decision rule, tools, interface, dataset).
+Where we write P below we mean this specification in full; the shorter tuples are abbreviations for
+it. With the three verifiers of Step 4 the attainable proportions are coarse — 0, 
+1
+3 
+, 
+2
+3 
+, 1 — and a
+rule resting on the point estimate alone would be brittle. We therefore recommend a three-state
+classification: a pair is a Verification-Cost Error when the lower confidence bound on Pr[S
+B 
+= 0]
+reaches q, it is not one when the upper bound falls below q, and it is recorded as inconclusive
+otherwise. Whichever rule is adopted, the estimate, its uncertainty interval and the number of
+verifier observations are part of the reported result rather than an appendix to it, and the interval
+method and confidence level are declared with the rest of the specification. Two consequences must
+be faced rather than glossed. The first is that the three verifiers required in Step 4 are not enough
+to classify individual outputs: with q = 
+1
+2 
+and conventional two-sided 95% binomial intervals, three
+failures out of three yield a lower bound near 0.29 and no failures out of three an upper bound near
+0.71, so neither extreme resolves and every output is recorded as inconclusive. The requirement
+N ≥ 3 supports agreement reporting; the number of verifiers needed for output-level classification is
+a separate quantity, to be derived from the interval method, the confidence level, the threshold q
+and the proportion of inconclusive results one is willing to tolerate. Under the same conventions,
+resolution at q = 
+1
+2 
+begins at six verifiers per output for the two extreme outcomes — six failures
+out of six give a lower bound of about 0.54, and none out of six an upper bound of about 0.46 —
+although substantially larger samples are needed to control the overall share of inconclusive results
+when the underlying probability lies near q. The second is that a three-state classification does not
+yield a single rate. We therefore report the confirmed rate and the inconclusive rate over the same
+denominator, the incorrect outputs, and report the resulting classification envelope:
+r
+lower 
+= r
+confirmed
+, r
+upper 
+= r
+confirmed 
++ r
+inconclusive
+.
+This classification envelope summarises the output of the pre-registered decision rule: it is descriptive,
+not inferential. Because the per-output intervals carry no simultaneous coverage guarantee, a
+confirmed classification may be a false positive and a rejected one a false negative, so the envelope is
+neither a confidence interval for the true rate nor a bound that provably contains it; a guarantee
+about the underlying rate would require simultaneous inference or a hierarchical model over outputs,
+which we do not attempt here. Reporting the pair rather than a point value is nonetheless the honest
+form of the result when verifier coverage is thin, since it makes that thinness visible instead of hiding
+it in a rounded proportion. The threshold is a deployment parameter like B itself and is declared, not
+universal; q = 
+1
+2 
+reads as “at least half of the verifier population would not catch it”. Nothing in this
+definition requires knowing how long verification would have taken had it continued. This formulation
+has three advantages. First, it eliminates the undefined relation ≫ in favor of a bounded comparison.
+Second, it makes VCE deployment-relative: the same input-output pair may cross the VCE threshold
+as the available verification budget changes, holding the task, verifier population, interface, and
+cost unit fixed — e.g., a 5-minute versus a 60-minute review budget within the same clinical
+9
+
+deployment — which matches operational reality. Third, it yields observable success and burden
+measures, which are the primary indicators of deployment risk in this paper. This licenses a two-level
+reading. The occurrence of an individual VCE is a relational property of the pair (x, ˆy) under the
+declared measurement specification; it is not a property of the model. Within the plausibility-focused
+subclass of Section 2, such an event corresponds to a Banana Peel in the taxonomy of Section 3;
+outside it, a VCE may arise from task difficulty or from the limits of the verifier population without
+having any such character. The VCE classification summary — confirmed rate, inconclusive rate
+and envelope — measured under a fixed protocol P = (u, V, B, τ, q, tools, interface, dataset) is, by
+contrast, a comparative property of the model–protocol pair, in exactly the sense in which standard
+benchmarks attribute scores to models: under protocol P , a given system exhibits a confirmed VCE
+rate, an inconclusive rate, and the corresponding classification envelope. When dataset, verifier
+population, budget, tools, and protocol are held identical, differences in observed rates across models
+are conditionally associated with the evaluated system under that fixed protocol — residual variability
+from sampling, from run-to-run variation and from output–verifier interaction remains — and are
+therefore reported as model-level comparative indicators (Section 6, Step 6); no external validity
+across different protocols is implied.
+Temporal validity. The relativisation just described is synchronic, and one further consequence
+bears on how the quantity should be used. Several constituents of a measurement may drift over
+time: verifier populations accumulate experience with a system’s characteristic outputs, verification
+tooling improves, and budgets shift under organisational pressure. On the generation side, a deployed
+system is a service rather than a fixed artefact, since weights, decoding parameters, and system-level
+prompts may change while its name does not. A declared specification is therefore a specification at
+a time, and a verification-cost measurement carries a shelf life: direct comparison between systems
+requires either a common measurement window or a design that explicitly controls for changes in
+the evaluated system and in the protocol. It also follows that the system under evaluation must be
+kept distinct from the apparatus that evaluates it — the generation-side configuration is recorded
+alongside the protocol, not absorbed into it — since otherwise a comparison between two systems
+would become a comparison between two protocols.
+A related methodological risk deserves note. Evaluation artefacts may re-enter training corpora
+[Deng et al., 2024], and preference-based optimisation adapts generation to recurring patterns
+of human judgement. Verification cost may therefore exhibit co-adaptive dynamics, with both
+the evaluated system and the verifier population changing in response to earlier evaluation and
+deployment experience. We advance this as a risk that longitudinal study would be needed to
+characterise, not as an established mechanism; it is nonetheless the reason to treat verification cost
+as an indicator monitored over time rather than a figure certified once.
+Latent quantity and operational measures. Since deployment risk is governed by whether
+verification can be completed within an available budget, the budget-relative quantity
+Severity
+u
+B 
+(x, ˆy) = 
+E
+v∼V 
+[C
+u
+v 
+(x, ˆy; v)]
+B
+is the quantity of interest, but it is not a quantity a bounded protocol can observe, and neither is its
+restriction to the budget. An episode that ends at B without a verdict shows only that the cost
+exceeded the budget, not by how much; an episode that ends early with a mistaken verdict shows
+neither the cost nor its truncation, since the effort a correct verdict would have required was never
+expended. What the protocol does observe, in every episode and without exception, is the effort
+actually spent before the episode terminated. Writing E
+u
+d 
+for that quantity — the effort expended,
+in the chosen unit u, until termination, whichever of the four outcomes of Step 3 brings it about;
+for u = human-minutes it is simply the elapsed verification time — we report the observed budget
+10
+
+consumption
+OBC
+u
+B 
+(x, ˆy) = 
+E
+v∼V 
+[E
+u
+d 
+(x, ˆy; v)]
+B 
+∈ [0, 1],
+which is a measure of burden rather than of cost, and we name it accordingly: it says how much of
+the available oversight capacity an output consumes, not how much determining its correctness would
+require. The primary quantity remains the probability of success, Pr
+v∼V 
+[S
+B 
+(x, ˆy; v) = 1], whose
+complement enters the definition of the VCE class above. Neither alone is sufficient: an observed
+budget consumption near 1 may arise from many episodes ending just short of the budget or from
+many that exhaust it, and only the success probability together with its decomposition distinguishes
+costly but successful verification from termination without a correct verdict. Read together they
+say how much of the available oversight capacity an output consumes, and how often that capacity
+runs out. The earlier reading of a single ratio crossing unity is thereby retired: infeasibility is
+registered by the failure probability within budget, which the protocol observes directly, rather than
+by a magnitude it cannot. Both quantities are defined for any input-output pair (x, ˆy), but their
+interpretation depends on output correctness: for incorrect pairs the failure probability within budget
+is the VCE condition itself, since it is the probability that the error goes undetected within budget,
+and the observed budget consumption records how much of the available capacity the attempt
+absorbed; for correct pairs the same two quantities describe the burden of confirmation rather than of
+error detection. This distinction maps directly onto the stratified reporting introduced in Section 6,
+where outcomes and observed effort are reported separately for outputs that the ground truth marks
+correct and for those it marks incorrect.
+Complementary failure indicator. An expectation suppresses the heterogeneity of the verifier
+population, and the part it suppresses is the part that matters for deployment. We therefore report
+the failure probability
+Pr
+v∼V
+[S
+B 
+(x, ˆy; v) = 0] = 1 − Pr
+v∼V
+[S
+B 
+(x, ˆy; v) = 1] ,
+the share of the modeled verifier population that does not establish the truth of the matter within
+budget, and we decompose it into the three ways of failing that Step 3 distinguishes: an incorrect
+verdict returned within budget, exhaustion of the budget without a verdict, and a declaration that
+the output is unverifiable. The three are mutually exclusive and exhaustive of failure, so their rates
+sum to 1 − Pr[S
+B 
+= 1]. The decomposition is not cosmetic: the first is a failure of the verifier’s
+judgement under a plausible output, the second a failure of capacity, and the third an admission
+of insufficiency, and they call for different remedies. All three are read off the verification trace
+directly. The observed budget consumption says how much capacity an output absorbs on average;
+this indicator says for whom, and in what manner, the capacity proves inadequate.
+On the generation–verification ratio. The asymmetry motivating this paper invites an
+obvious index, the ratio of expected verification cost to generation cost, and an earlier formulation of
+this work carried one. We do not propose it as an indicator, for a reason that is dimensional rather
+than merely practical. A ratio requires both terms in a common unit, and only a unit that measures
+machine and human effort alike — wall-clock time, or money — satisfies that requirement; under
+u = human-minutes, which we recommend precisely because deployment reliability is bounded by
+human oversight capacity, generation has no cost at all and the ratio is undefined. The observation
+the ratio was meant to capture survives without it, in the qualitative asymmetry of Table 1 and in
+the regime distinction of Section 4. The quantities we propose for use are therefore the probability
+of correct verification within budget, the observed budget consumption, and the stratified reporting
+of Step 5.
+Three further features of the verification trace—(i) time-to-detection, (ii) counterexample complex-
+ity, and (iii) verification length—are recorded as secondary descriptors of how an episode unfolded.
+11
+
+They are not expressed in a common unit and are not interchangeable estimators of a single quantity;
+they characterise the shape of the verification effort rather than its magnitude.
+A recurring hypothesized pattern in high-verification-cost outputs is that they reproduce surface
+markers of expertise—structured explanations, domain-specific vocabulary, citations, and authorita-
+tive formatting—without any guarantee that the content is factually correct or actually supported
+by the cited evidence; we treat this as a testable hypothesis for verification-aware benchmarking,
+not as an established result. This pattern is self-masking at the interface level: each increment in
+fluency reduces the perceptual cues a verifier can rely on, so verification cost rises with apparent
+quality. We do not advance a specific training-dynamics mechanism for this pattern; explaining why
+next-token objectives may generate self-masking outputs remains a topic for future work.
+Having introduced VCEs and the operational measures that accompany them at a formal level,
+we now outline a benchmarking methodology that puts them into practice.
+6 Method: Verification-Aware Benchmarking
+The proposed method applies to generative systems broadly construed, including Large Language
+Models (LLMs) and Vision–Language Models (VLMs). Its purpose is not to define a finalized
+benchmark, but to establish a procedural foundation for benchmarking that explicitly accounts for
+verification cost. The procedure pairs a standardized reference layer with a recorded verification
+trace, governed by a deployment budget and reported with verifier controls.
+• Step 1 — Ground Truth (GT) and Dataset Standardization. Evaluation begins with
+the construction or selection of standardized datasets, together with their associated reference
+annotations. This reference layer constitutes the Ground Truth (GT), corresponding to the
+form of ground truth traditionally assumed in benchmark-based evaluation. GT is fixed a
+priori and shared across all models under evaluation. Its function is to ensure experimental
+comparability, rather than to guarantee ease of verification.
+• Step 2 — Model Execution and Verification Trace (VT). Standardized datasets are
+applied to the generative models under examination. For each model output, verification is
+performed by a verifier v. The aggregated record of these verification activities—verdicts,
+time-to-verdict, counterexamples produced, and self-reported confidence levels—constitutes the
+Verification Trace (VT) for that output. The VT is not a ground truth: it is a measurement
+over verifier behavior, distinct from but complementary to GT. The record must also fix the
+generation-side configuration under which the outputs were produced — model snapshot or
+version identifier, decoding parameters, and any system-level prompt — reported alongside
+the protocol rather than absorbed into it, since without it the resulting indicators cannot be
+attributed to a determinate system.
+• 
+Step 3 — Stopping Rule and Budget. Verification proceeds until one of: (a) the verifier
+reaches a verdict with self-reported confidence ≥ τ 
+1 
+(pre-registered, typically 0.9), (b) the
+deployment budget B is exhausted, or (c) the verifier declares the output unverifiable within
+budget. Outcomes (b) and (c) are recorded as budget-bounded non-verifications. Because
+a Verification-Cost Error requires the input-output pair to be incorrect (Section 5), such
+outcomes contribute to the VCE rate only for outputs independently classified as incorrect
+relative to GT or to the acceptance relation A; for outputs classified as correct they contribute
+instead to confirmation-outcome reporting, and outputs whose status is not independently
+1
+τ is a specifically defined threshold, such that τ ∈ R, 0 ≤ τ ≤ 1
+12
+
+resolved form a separate indeterminate category. That classification must be independent of
+the verification episode which the budget interrupted — GT fixed a priori (Step 1), or an
+acceptance relation established ex ante — since otherwise the same bounded process would be
+used both to detect an error and to establish that there is one. This stopping rule is what
+makes the observed verification effort a finite, well-defined quantity rather than an open-ended
+audit; it bounds the effort expended, not the effort that establishing correctness would have
+required. Two consequences of the stopping rule must be stated. The first is statistical:
+when an episode terminates because the budget is exhausted, what is observed is that no
+correct verdict was reached within B; the underlying correct-verdict time is not observed at all.
+Treating such an episode as though the cost equalled the budget, and averaging it together with
+completed ones, would bias the resulting figure downward — systematically, and precisely on
+the outputs the framework is about. Two terminations must moreover be kept apart, because
+they are not the same kind of event. Exhausting the budget is administrative censoring: it
+occurs at a time fixed in advance, independently of the output, and is handled by the usual
+conventions. A verifier who closes early with a mistaken verdict is not censored at all: the
+closure is a behavioural outcome that depends on the plausibility of the very output under
+study, so treating it as censoring would import an independence assumption the framework
+itself denies. The protocol accordingly records four mutually exclusive outcomes per episode
+— correct verdict within budget, incorrect verdict within budget, budget exhausted without
+verdict, and declared unverifiable — and reports the probability of the first, Pr[S
+B 
+= 1], as the
+primary quantity. Reporting that probability as a function of B, rather than a single threshold
+crossing, also avoids the information loss inherent in any binary cut. Such a curve, however, is
+not obtained by re-reading a trace collected under one budget: the announced budget may
+itself shape how a verifier allocates attention, so varying B does not merely truncate a fixed
+process. Comparisons across budgets require separate or randomised budget conditions, and
+a trace gathered under one declared budget supports the primary estimate for that budget
+alone. The second consequence is behavioural: the rule is exposed to a bias this paper itself
+documents. If fluent, authority-mimicking outputs induce unwarranted confidence in those who
+read them (Sections 2–3), a verifier may reach τ early on precisely the outputs whose defects
+are most expensive to expose, so that decision time, if mistaken for verification cost, would
+make the burden appear artificially low where it matters most. Inter-rater agreement does not
+detect this: a heuristic shared across the verifier population produces confident agreement, not
+disagreement, and would raise rather than lower the agreement statistic of Step 4. The protocol
+therefore requires that the verdicts recorded in the VT be compared against GT, and that
+the rate of premature closures — verdicts reaching τ yet disagreeing with GT — be reported
+alongside the operational measures. This rate is not merely a control on the instrument: an
+output that induces a confident and incorrect closure is the limiting case of the failure class
+this paper is concerned with, and measuring it is arguably the most informative thing the
+protocol does.
+• Step 4 — Verifier Control. To separate system-associated verification burden from verifier-
+skill variance, every protocol instantiation must include (i) a verification baseline measured on a
+held-out set of known-correct outputs, (ii) inter-rater agreement statistics (e.g., Krippendorff’s
+α) across N ≥ 3 verifiers per output, and (iii) verifier-experience metadata that supports
+stratified analysis. A population-level reading of the quantities defined in Section 5 additionally
+requires that the verifiers actually observed represent the declared distribution V. Recruitment,
+sampling or stratification design, eligibility criteria, and the extent of repeated participation
+across outputs are therefore part of what is pre-registered. Where verifiers are not sampled
+13
+
+representatively, the estimates are to be read as statements about the observed verifier panel
+and not about a wider population; and where the same verifiers assess many outputs, the model-
+level uncertainty must account for dependence within verifier, since treating such observations
+as independent understates it. Model-level indicators are reported in all cases, and accompanied
+by the agreement statistic rather than gated on it: results obtained below a pre-registered
+agreement threshold are flagged as “verifier-uncertain” and interpreted accordingly, but they
+are not withheld, since low agreement may itself be evidence that verification is difficult.
+Agreement alone, however, is a weak guarantee, and using it as a gate is weaker still. As Step 3
+notes, a heuristic shared across the verifier population produces confident agreement on exactly
+the outputs the framework targets, so a high coefficient may certify a systematically mistaken
+reading; conversely, a legitimately ambiguous task may be discarded for low agreement while
+carrying real information about verification difficulty. Three quantities should therefore be
+reported side by side rather than collapsed into an admission criterion: inter-rater agreement,
+verdict accuracy against GT, and the rate of premature closures. The agreement threshold
+governs how confidently a model-level aggregate may be stated; it does not establish that
+the aggregate is correct. This separation is partial, not complete: the known-correct baseline
+estimates a task- and verifier-dependent observed confirmation effort, and the excess observed
+on model outputs — under a fixed dataset, interface, tool access, verifier population, and
+protocol — is reported as a comparative, model-associated increment rather than a causal
+attribution, since confirming correct outputs and refuting incorrect ones may involve different
+procedures (Step 5).
+• 
+Step 5 — Stratified Reporting. Verification outcomes and observed effort are reported
+separately for GT-correct and GT-incorrect outputs, since confirming a correct output and
+refuting an incorrect one are distinct cognitive tasks with distinct effort profiles. The op-
+erationally relevant pair for VCE detection is the probability of correct refutation within
+budget, Pr[S
+B 
+= 1 | GT-incorrect], together with the observed budget consumption on that
+stratum; the corresponding expectations over C
+u
+v 
+are not reported, since the protocol does
+not observe them. Time to a correct verdict is reported only over the episodes in which one
+was reached, and always labelled conditional correct-verdict time among successful episodes,
+so that it is not mistaken for an estimate of the full distribution of the latent cost. Because
+the two strata are computed over disjoint sets of outputs, they yield indicators of different
+status. The observed budget consumption varies with B and therefore measures oversight
+effort against the capacity available in a deployment; the ratio of consumption across the two
+strata, E[E
+u
+d 
+| GT-incorrect]/E[E
+u
+d 
+| GT-correct]
+, instead characterises how much more effort
+refutation absorbs than baseline confirmation. The ratio is dimensionless, the unit u having
+cancelled, but it is not thereby budget-independent: B does not appear in it algebraically, yet
+it shapes the observed effort, since a larger budget allows episodes to run on where a smaller
+one would have terminated them. It is therefore comparable only under a common budget and
+otherwise harmonised protocols. Both quantities are read off observed effort and require no
+counterfactual. Governance frameworks that carry human oversight as an explicit cost term
+rather than as an implementation detail [Immediato, 2026] require precisely this distinction
+between the volume of oversight and its difficulty; reporting a single aggregate figure discards
+it.
+2
+2
+Concretely, Immediato [2025] decomposes that cost term as η
+1 
+· CognitiveVerification + η
+2 
+· EthicalOversight,
+where η
+1 
+and η
+2 
+scale the respective burdens, and Immediato [2026] restates the aggregate as an oversight workload
+H under a complexity factor η. Since the present paper adopts Cognitive Verification in that sense (Section 4), the
+budget-relative quantity is an estimator of the cognitive-verification burden alone; the ethical-oversight term lies
+14
+
+• Step 6 — Model-Level Reporting. For each generative model, verification outcomes and
+observed-effort estimates derived from VT are aggregated to yield the model-level observed
+budget consumption E[E
+u
+d 
+]/B, the probability of a correct verdict within budget, and the
+confirmed VCE
+B,q 
+rate together with the inconclusive rate and the resulting classification
+envelope, reported together with the stratified outcomes and observed effort of Step 5. These
+are not intended as universal scalar metrics; they are comparative indicators that reflect how
+strongly a given system shifts verification effort onto external evaluators. Where comparison
+must span deployments differing in cost unit, the ratio E[E
+u
+d 
+| GT-incorrect]/E[E
+u
+d 
+| GT-correct]
+of Step 5 is dimensionless and invariant under a common multiplicative rescaling of the chosen
+effort unit — minutes to seconds, say — but it is not invariant to a change in the underlying
+cost representation, since moving from human-minutes to a monetary unit reweights verifiers
+whose time is priced differently. It is not, however, a domain-free quantity, and we do not
+offer it as one: the budget shapes the observed effort it is built from, and task difficulty, error
+prevalence, the difficulty of establishing ground truth, tooling and verifier expertise continue to
+shape both strata. Comparison across deployments requires a common budget and otherwise
+harmonised protocols; absent those, no quantity proposed here transports.
+Illustrative instantiation (non-estimative). As a purely illustrative walk-through, consider
+code generation. GT is a curated set of tasks with reference test suites (Step 1); the specification
+fixes u = human-minutes, V as a population of professional developers with declared seniority
+metadata, B = 15 human-minutes per output, τ = 0.9, q = 
+1
+2 
+, Clopper–Pearson intervals at the
+95% level, and the three-state decision rule of Section 5, with the number of verifiers per output, m,
+fixed by a precision-planning step so that the tolerated share of inconclusive classifications is met,
+rather than set at the Step 4 minimum. For each model output, a verifier attempts confirmation or
+refutation until the stopping rule triggers, and the VT records the verdict, time-to-verdict, and any
+counterexamples (Steps 2–3); observed budget consumption, success probability, and the confirmed
+and inconclusive VCE rates with their envelope are then aggregated under the controls of Steps 4–6.
+All values above are specification choices, not findings: the walk-through shows how the constructs
+are instantiated and carries no empirical weight.
+Domain considerations. The deployment context shapes not only the values of GT, V, and B,
+but also the verification-outcome profile of VCEs. In safety-critical or high-accountability domains, B
+is structured by regulatory and accountability regimes, and a VCE can propagate into physical, legal,
+or institutional harm. In such settings, the relevance of the protocol is not merely methodological:
+adherence to structured verification practices carries direct industrial significance, as failures to
+detect VCEs may escalate from localized model errors into system-level risk, regulatory exposure,
+and operational harm. In organizational domains, B is shaped by internal processes, and undetected
+VCEs may accumulate as technical or epistemic debt. In open-ended creative domains, by contrast,
+B is often more elastic, and the cost of an undetected plausible error is more likely to be reputational,
+interpretive, or editorial than immediately physical or safety-critical. We do not claim that the
+framework applies uniformly across these regimes; rather, the protocol’s parameters (V, B, τ, q) are
+the loci at which domain-specific risk profiles enter the evaluation.
+Cost of instrumentation. The protocol is not free, and its cost is dominated by verifier time
+rather than compute. If m verifiers assess each of n outputs and Step 3 bounds each episode by B, the
+protocol consumes at most mnB units of verifier effort — verifier-minutes when u = human-minutes
+—, plus the baseline and calibration overhead of Step 4. The requirement m ≥ 3 supports agreement
+outside the scope of this protocol. Whether the dimensionless but budget-dependent observed-effort ratio is in turn
+a usable estimator of the corresponding complexity factor η
+1 
+is a further question, recorded here as a proposal for
+downstream work rather than as a result of this paper.
+15
+
+analysis; output-level classification may require a larger m, as Section 5 notes, and the instrumentation
+cost scales linearly with it. Two consequences follow. First, verification-aware evaluation is affordable
+at the scale of a curated, stratified subset rather than an exhaustive benchmark, and should be
+designed as such. Second, because the budget bounds each episode by construction, the total cost is
+bounded in advance: this is what distinguishes the procedure from an open-ended audit and makes
+it schedulable within an evaluation campaign.
+The method yields a verification-aware benchmarking procedure in which models can be compared
+not only by accuracy with respect to GT, but by the verification burden revealed through VT.
+The procedure is a domain-adaptable human-verification protocol: GT, V, and B are chosen to fit
+the deployment context, while the structural requirements—recording verification effort against a
+deployment budget, with verifier controls and stratified reporting—are fixed across instantiations. We
+leave concrete instantiations and empirical evaluation to future work. The protocol is thereby designed
+to support statistical replication relative to a declared, pre-registered measurement specification
+(u, V, B, τ, q): variability across verifiers is modeled and reported rather than eliminated, following the
+logic of replication used in many human-subject measurement protocols. Because that specification
+may itself drift, every reported result should additionally carry the date of measurement and the
+versions of the protocol and of the evaluated system configuration under which it was obtained, and
+instantiations should be repeated across releases rather than performed once. Verification outcomes
+and burden are accordingly proposed as indicators to be tracked over time, in the way reliability
+indicators are tracked in operational engineering practice, rather than as a certificate issued at a
+single point.
+7 Implications: Evaluation and System Design
+Introducing verification cost as a primary metric changes both evaluation and system design.
+Optimizing for correctness alone is insufficient when verification is expensive.
+Evaluation. Measured under constrained budgets, verification-aware evaluation separates errors
+that are trivial to detect from those that require substantial effort: in code generation it extends
+beyond test pass rates to the effort required to expose failures, and in factual generation to the effort
+required to validate claims against external sources.
+Evaluation should also target outputs that are difficult to falsify. Adversarial benchmarking
+exposes model weaknesses [Kiela et al., 2021], but does not prioritize high-verification-cost outputs.
+A verification-aware benchmark focuses on these cases, aligning evaluation with real deployment risk.
+System Design. Systems should minimize verification burden, not only error rates. This requires
+designing outputs that support efficient validation. One approach is to generate intermediate
+representations that are independently checkable, such as executable programs or structured claims.
+However, additional structure must reduce validation effort rather than shift it. Explanations should
+be evaluated by how they affect verification cost: they are valuable only when they reduce the effort
+needed to validate outputs. Uncertainty estimation should guide verification rather than signal
+correctness.
+8 Alternative Views
+A common assumption is that reliability can be improved within existing paradigms, treating
+correctness as primary and verification as derivative. We develop the three strongest alternatives to
+16
+
+our position and state, for each, why it leaves the cost dimension unmeasured despite its merits.
+Graded correctness and reward modeling. The most significant alternative argues that
+the correctness score itself should change: rather than supplementing a binary verdict with a cost
+metric, the evaluator should assign a continuous score that reflects how effectively core functionalities
+and edge cases are handled—a view consistent with reward modeling in RL optimization pipelines.
+We regard this alternative as complementary rather than competing. Moving correctness onto a
+continuous scale changes the codomain of the grader’s verdict; our dimension is the cost of producing
+that verdict, regardless of its scale. A graded score must, however, be determined by a verifier within
+a budget, and grading edge-case coverage is often the most time-consuming part. The two proposals
+complement each other naturally: a continuous grading scale presented alongside a verification trace.
+Calibration and selective prediction. A second alternative holds that models should flag
+their own unreliable outputs, concentrating human effort where confidence is low [Jiang et al., 2021,
+Yin et al., 2023]. Calibration indeed helps allocate verification effort, but it relies on an epistemic
+self-assessment that models often lack, and it does not lower the per-output cost of verification:
+high-stakes outputs demand audit regardless of reported confidence. Selective prediction reduces
+how often verification happens, not what it costs when it happens.
+Benchmark-centric improvement. A third alternative holds that richer datasets and holistic
+or adversarial evaluation will progressively capture the remaining failure modes [Liang et al., 2023,
+Kiela et al., 2021, Kapoor et al., 2026]. These efforts broaden what is measured, but continue
+to measure agreement with references while leaving unrecorded the labor required to establish
+that agreement; in deployment, correctness often requires external reasoning, domain expertise, or
+cross-source validation. Tool-based pipelines [Gao et al., 2023] similarly improve correctness while
+adding components whose outputs must themselves be validated, making verification multi-stage
+rather than cheaper.
+Each alternative improves what is measured; none measures the cost of measuring. Reliability fails
+not only when models are wrong, but also when errors cannot be detected efficiently, and evaluation
+remains misaligned as long as it accounts for correctness without accounting for verification cost.
+9 Concluding Remarks
+This article argues that correctness alone is not a sufficient metric for measuring reliability and
+that the AI evaluation should report not only correctness but also the verification results and the
+observed effort, in relation to a stated budget for verifying the implementation. The verification
+cost itself remains the latent target; what a bounded protocol can deliver are indicators of it. To
+this end, we introduced Verification-Cost Errors as the class of incorrect input-output pairs that
+a specified fraction of the verifier population fails to identify within that budget; an observed
+budget-consumption measure, supplemented by the probability of correct verification within budget
+and by its decomposition into the various ways in which verification fails, as operational metrics;
+and we have also introduced a benchmarking protocol based on a six-step verification process,
+featuring auditor checks and tiered reporting. These instruments are deliberately conceptual: verifier
+variance, unit choice, and the acceptance criterion are declared parameters of the measurement
+— not difficulties that we claim to have eliminated. Four directions follow. First, a controlled
+instantiation of the protocol that compares systems with similar accuracy in terms of measured
+verification burden. Second, standardized reporting norms — success probability within budget,
+observed budget consumption, and the confirmed and inconclusive VCE rates alongside accuracy
+— so that verification outcomes and observed burden become routine columns of evaluation tables.
+Third, integration with related programs: graded correctness and reward modeling, the emerging
+17
+
+science of agent reliability [Rabanser et al., 2026], governance metrics that carry an explicit human-
+oversight cost term, for which the stratified quantities of Step 5 would supply measured rather
+than stipulated inputs [Immediato, 2026], and the design of outputs that are cheap to verify by
+construction. Fourth, longitudinal measurement: since verifier populations, tooling, budgets, and
+the deployed systems themselves may all drift, what matters most is the trajectory of verification
+burden across successive releases, rather than a single measurement. Whether this trend is increasing,
+decreasing, or remaining stable as the systems become more accurate is an empirical question that
+can only be answered through verification-aware benchmarking conducted over the long term. If the
+purpose of the evaluation is to predict the deployment risk, it is necessary to measure the cost of
+verifying whether a result is correct.
+References
+Dario Amodei, Chris Olah, Jacob Steinhardt, Paul Christiano, John Schulman, and Dan Mané.
+Concrete problems in ai safety. arXiv preprint arXiv:1606.06565, 2016.
+Gagan Bansal, Tongshuang Wu, Joyce Zhou, Raymond Fok, Besmira Nushi, Ece Kamar, Marco Tulio
+Ribeiro, and Daniel S. Weld. Does the whole exceed its parts? the effect of ai explanations on
+complementary team performance. In Proceedings of CHI, 2021.
+Joel Becker, Nate Rush, Elizabeth Barnes, and David Rein. Measuring the impact of early-2025 AI
+on experienced open-source developer productivity. arXiv preprint arXiv:2507.09089, 2025. URL
+https://arxiv.org/abs/2507.09089.
+Rishi Bommasani, Drew A. Hudson, Ehsan Adeli, Russ Altman, Simran Arora, Sydney von Arx,
+Michael S. Bernstein, Jeannette Bohg, Antoine Bosselut, Emma Brunskill, et al. On the opportu-
+nities and risks of foundation models. arXiv preprint arXiv:2108.07258, 2021.
+Sebastien Bubeck, Varun Chandrasekaran, Ronen Eldan, Johannes Gehrke, Eric Horvitz, Ece Kamar,
+Peter Lee, Yin Tat Lee, Yuanzhi Li, Scott Lundberg, Harsha Nori, Hamid Palangi, Marco Tulio
+Ribeiro, and Yi Zhang. Sparks of artificial general intelligence: Early experiments with gpt-4.
+arXiv preprint arXiv:2303.12712, 2023.
+Antonia Creswell, Murray Shanahan, and Irina Higgins. Selection-inference: Exploiting large language
+models for interpretable logical reasoning. In Proceedings of ICLR, 2023.
+Matthew Dahl, Varun Magesh, Mirac Suzgun, and Daniel E. Ho. Large legal fictions: Profiling
+legal hallucinations in large language models. Journal of Legal Analysis, 16(1):64–93, 2024. doi:
+10.1093/jla/laae003.
+Chunyuan Deng, Yilun Zhao, Xiangru Tang, Mark Gerstein, and Arman Cohan. Investigating data
+contamination in modern benchmarks for large language models. In Proceedings of NAACL, 2024.
+Sebastian Farquhar, Jannik Kossen, Lorenz Kuhn, and Yarin Gal. Detecting hallucinations in large lan-
+guage models using semantic entropy. Nature, 630:625–630, 2024. doi: 10.1038/s41586-024-07421-0.
+Susanne Förster and Yarden Skop. Between fact and fairy: Tracing the hallucination metaphor in
+AI discourse. AI & Society, 2025. doi: 10.1007/s00146-025-02392-w.
+Luyu Gao, Aman Madaan, Shuyan Zhou, Uri Alon, Pengfei Liu, Yiming Yang, Jamie Callan, and
+Graham Neubig. Pal: Program-aided language models. In Proceedings of ICML, 2023.
+18
+
+Ian Goodfellow, Yoshua Bengio, and Aaron Courville. Deep Learning. MIT Press, 2016.
+Chuan Guo, Geoff Pleiss, Yu Sun, and Kilian Q. Weinberger. On calibration of modern neural
+networks. In Proceedings of ICML, 2017.
+Suchin Gururangan, Swabha Swayamdipta, Omer Levy, Roy Schwartz, Samuel R. Bowman, and
+Noah A. Smith. Annotation artifacts in natural language inference data. In Proceedings of NAACL,
+2018.
+Stevan Harnad. The symbol grounding problem. Physica D: Nonlinear Phenomena, 42(1–3):335–346,
+1990.
+Generoso Immediato. Philosophy of the Machines: A manifesto for humans in the age of artificial
+agents. Intersect: The Stanford Journal of Science, Technology, and Society, 19(1), 2025. URL
+https://ojs.stanford.edu/ojs/index.php/intersect/article/view/4359.
+Generoso Immediato. Epistemic gain in M-space: A metric for AI governance in complex systems.
+International Journal of Semantic Computing, 20(1):5–30, 2026. doi: 10.1142/S1793351X26410011.
+URL https://www.worldscientific.com/doi/10.1142/S1793351X26410011.
+Hari Iyer, Seungmin Seo, Lukas Diduch, Kay Peterson, George Awad, and Yooyoung Lee. 2024 NIST
+GenAI (pilot study): Text-to-text evaluation overview and results. Technical Report NIST AI
+700-1, National Institute of Standards and Technology, June 2025.
+Zhengbao Jiang, Jun Araki, Haibo Ding, and Graham Neubig. How can we know when language
+models know? on the calibration of language models for question answering. Transactions of the
+Association for Computational Linguistics, 9:962–977, 2021. doi: 10.1162/tacl_a_00407.
+Daniel Kahneman. Thinking, Fast and Slow. Farrar, Straus and Giroux, 2011.
+Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B. Brown, Benjamin Chess, Rewon Child,
+Scott Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. Scaling laws for neural language models.
+arXiv preprint arXiv:2001.08361, 2020.
+Sayash Kapoor, Benedikt Stroebl, Peter Kirgis, Nitya Nadgir, Zachary S. Siegel, Boyi Wei, Tianci
+Xue, Ziru Chen, Felix Chen, Saiteja Utpala, Franck Ndzomga, Dheeraj Oruganty, Sophie Luskin,
+Kangheng Liu, Botao Yu, Amit Arora, Dongyoon Hahm, Harsh Trivedi, Huan Sun, Juyong Lee,
+Tengjun Jin, Yifan Mai, Yifei Zhou, Yuxuan Zhu, Rishi Bommasani, Daniel Kang, Dawn Song,
+Peter Henderson, Yu Su, Percy Liang, and Arvind Narayanan. Holistic agent leaderboard: The
+missing infrastructure for AI agent evaluation. In Proceedings of ICLR, 2026.
+Douwe Kiela, Max Bartolo, Yixin Nie, Divyansh Kaushik, Atticus Geiger, Zhengxuan Wu, Bertie
+Vidgen, Grusha Prasad, Amanpreet Singh, Pratik Ringshia, Zhiyi Ma, Tristan Thrush, Sebastian
+Riedel, Zeerak Waseem, Pontus Stenetorp, Robin Jia, Mohit Bansal, Christopher Potts, and Adina
+Williams. Dynabench: Rethinking benchmarking in nlp. In Proceedings of NAACL, 2021.
+Junyi Li, Xiaoxue Cheng, Wayne Xin Zhao, Jian-Yun Nie, and Ji-Rong Wen. Halueval: A large-scale
+hallucination evaluation benchmark for large language models. In Proceedings of EMNLP, 2023.
+Percy Liang, Rishi Bommasani, Tony Lee, Dimitris Tsipras, Dilara Soylu, Michihiro Yasunaga, Yian
+Zhang, Deepak Narayanan, Yuhuai Wu, Ananya Kumar, et al. Holistic evaluation of language
+models. Transactions on Machine Learning Research, 2023.
+19
+
+Stephanie Lin, Jacob Hilton, and Owain Evans. Truthfulqa: Measuring how models mimic human
+falsehoods. In Proceedings of ACL, 2022.
+Qing Lyu, Shreya Havaldar, Adam Stein, Li Zhang, Delip Rao, Eric Wong, Marianna Apidianaki, and
+Chris Callison-Burch. Faithful chain-of-thought reasoning. In Proceedings of the 13th International
+Joint Conference on Natural Language Processing and the 3rd Conference of the Asia-Pacific
+Chapter of the Association for Computational Linguistics (Volume 1: Long Papers), pages 305–329.
+Association for Computational Linguistics, 2023. doi: 10.18653/v1/2023.ijcnlp-main.20. URL
+https://aclanthology.org/2023.ijcnlp-main.20/.
+Varun Magesh, Faiz Surani, Matthew Dahl, Mirac Suzgun, Christopher D. Manning, and Daniel E.
+Ho. Hallucination-free? assessing the reliability of leading AI legal research tools. Journal of
+Empirical Legal Studies, 22:216–242, 2025. doi: 10.1111/jels.12413.
+Potsawee Manakul, Adian Liusie, and Mark J. F. Gales. Selfcheckgpt: Zero-resource black-box
+hallucination detection for generative large language models. In Proceedings of EMNLP, 2023.
+Sushant Mehta. Beyond accuracy: A multi-dimensional framework for evaluating enterprise agentic
+AI systems. arXiv preprint arXiv:2511.14136, 2025. URL https://arxiv.org/abs/2511.14136.
+Sewon Min, Kalpesh Krishna, Xinxi Lyu, Mike Lewis, Wen-tau Yih, Pang Wei Koh, Mohit Iyyer,
+Luke Zettlemoyer, and Hannaneh Hajishirzi. Factscore: Fine-grained atomic evaluation of factual
+precision in long form text generation. In Proceedings of EMNLP, 2023.
+Stephan Rabanser, Sayash Kapoor, Peter Kirgis, Kangheng Liu, Saiteja Utpala, and Arvind
+Narayanan. Towards a science of AI agent reliability. In Proceedings of ICML, 2026. URL
+https://arxiv.org/abs/2602.16666.
+Murat Sariyar. Large language models as cognitive shortcuts: A systems-theoretic reframing beyond
+bullshit. Frontiers in Artificial Intelligence, 9:1681525, 2026. doi: 10.3389/frai.2026.1681525.
+Bernhard Schölkopf, Francesco Locatello, Stefan Bauer, Nan Rosemary Ke, Nal Kalchbrenner,
+Anirudh Goyal, and Yoshua Bengio. Toward causal representation learning. Proceedings of the
+IEEE, 2021.
+Jason Wei, Yi Tay, Rishi Bommasani, Colin Raffel, Barret Zoph, Sebastian Borgeaud, Dani Yogatama,
+Maarten Bosma, Denny Zhou, Donald Metzler, et al. Emergent abilities of large language models.
+Transactions on Machine Learning Research, 2022.
+Zhangyue Yin, Qiushi Sun, Qipeng Guo, Jiawen Wu, Xipeng Qiu, and Xuanjing Huang. Do large
+language models know what they don’t know? In Findings of ACL, 2023.
+20

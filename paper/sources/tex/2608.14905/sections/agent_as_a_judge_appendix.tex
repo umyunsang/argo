@@ -1,0 +1,653 @@
+% ==============================================================================
+% Appendix: Agent-as-a-Judge Details
+%
+% Everything from the original appendix that is NOT in the main-paper section.
+% The main paper (sec_judge_main_v2.tex) covers: motivation, human annotation /
+% IAA, Agent-as-a-Judge pipeline description, and validation table.
+% This appendix covers: design rationale, harness config, evidence package,
+% rubric and iron rules, writing standard, automated checker, labeling
+% protocol, regeneration loop, worked example, and full prompt template.
+% ==============================================================================
+
+\section{Agent-as-a-Judge Details}
+\label{app:agent-as-a-judge}
+
+This appendix documents the full implementation of the artifact-aware
+Agent-as-a-Judge introduced in \S\ref{sec:judge}: an autonomous agent that
+analyzes each trajectory for failure patterns across all \taxonomy lifecycle
+stages and categorizes them according to the taxonomy. Each verdict is a
+Markdown document, \texttt{analysis.md}, produced under a fixed rubric
+covering the six lifecycle stages (A--F) plus cross-stage dynamics (X), and
+passed through an automated structural/quantitative checker before being
+accepted. Annotation proceeds in two phases. In the \emph{free-form} phase
+the judge is given no pattern list and reports whatever defects it can
+evidence; this is the phase from which \taxonomy was inductively derived
+(\S\ref{sec:taxonomy}). In the \emph{labeling} phase each accepted issue
+is mapped to an \taxonomy pattern ID and root-cause pillar
+(\S\ref{app:evaluator:labeling}), and it is these labels that
+Figure~\ref{fig:failure-attribution} aggregates. Below we document the
+judge's execution harness, the evidence package it receives, the rubric
+and scoring-integrity rules it is instructed to apply, the per-issue
+writing standard, the automated checker, the labeling and human
+calibration protocol, and the self-healing regeneration loop that retries
+documents failing the checker.
+
+\subsection{Design Rationale}
+\label{app:evaluator:rationale}
+
+Three properties motivate using an agentic judge rather than a static
+rubric-matching classifier or a single LLM call on the transcript:
+
+\begin{itemize}
+  \item \textbf{Verification requires execution, not just reading.} Many
+  failure modes in autonomous research rollouts (unit/magnitude bugs,
+  degenerate optimization, evaluator-feedback fitting, silent train/test
+  leakage, and computation run on synthetic or toy substrates) are only
+  detectable by re-deriving a number from the rollout's own code and
+  ground truth, not by pattern-matching the transcript text. The judge is
+  therefore given the same execution environment as the rollout (a
+  sandboxed shell) and is instructed to re-run cheap, dependency-light
+  computations whenever a claim is both suspicious and not resolvable by
+  inspection alone (\S\ref{app:evaluator:rubric}, Iron Rule~2).
+
+  \item \textbf{Long, unstructured transcripts need a forcing function
+  for coverage.} A single free-form ``critique this trajectory'' prompt
+  reliably collapses onto whatever is most salient in the last few
+  thousand tokens. We instead fix a stage skeleton
+  (\S\ref{app:evaluator:rubric}) that the judge must fill in dedicated,
+  quota-gated sections, using extraction tooling
+  (\S\ref{app:evaluator:harness}) to navigate transcripts that can exceed
+  4M characters without reading them in full.
+
+  \item \textbf{A judge with no cross-checkable output is unfalsifiable.}
+  Because the judge itself can hallucinate or under-verify, every document
+  it produces is required to carry verifiable anchors (line numbers, file
+  names, exact numeric values) for its claims, and is passed through an
+  automated checker (\S\ref{app:evaluator:checker}) that specifically
+  penalizes vague, anchor-free, or template-recycled writing before a
+  document is accepted.
+\end{itemize}
+
+\subsection{Judge Execution Harness}
+\label{app:evaluator:harness}
+
+The judge is itself a Claude Code agent, invoked non-interactively with
+full \texttt{Bash}/\texttt{Read}/\texttt{Write}/\texttt{Edit} access inside
+a per-task scratch workspace, and \emph{no} network/search tools. Each
+task is a fresh, zero-history session: the judge sees only what is placed
+in its workspace for that one rollout, so its verdict cannot be
+contaminated by patterns it inferred from other rollouts in the same
+model/benchmark pool.
+
+\begin{table}[h]
+\centering
+\small
+\caption{Judge harness configuration. \bench comprises two pools
+corresponding to the two task regimes: an
+\emph{execution-feedback} pool (where a quantitative metric or human SOTA
+exists) and a \emph{fully open-ended} pool (no external signal). Both share
+this harness and differ only in pool-specific prompt injections}
+\label{tab:harness-config}
+\begin{tabular}{ll}
+\toprule
+Parameter & Value (execution-feedback pool) \\
+\midrule
+Judge model & claude-opus-5 (routed via OpenRouter) \\
+Reasoning effort & \texttt{xhigh} \\
+Max agent turns & 90 \\
+Wall-clock budget per task & 5400\,s (90\,min) nominal;\\
+ & extended to 12600\,s for tasks whose\\
+ & verification re-runs need more headroom \\
+Max regeneration attempts & 2 (per task, before the driver gives up;\\
+ & overridable with \texttt{--force-tasks}) \\
+Concurrency & 4--8 tasks in parallel \\
+Directories mounted read-only & benchmark repository root; the source\\
+ & run's task-definition / ground-truth root \\
+\bottomrule
+\end{tabular}
+
+\end{table}
+
+To make multi-megabyte execution logs tractable without truncating them,
+the judge is given a small extraction CLI (\texttt{traj\_tools.py}) rather
+than being told to parse logs itself:
+
+\begin{verbatim}
+traj_tools.py timeline    <log> --format <harness>   # tool-call timeline
+traj_tools.py files       <log> --format <harness>   # every file written,
+                                                       with provenance
+traj_tools.py reconstruct <log> --format <harness> --name <fragment>
+                                                      # replays Write+Edit
+                                                      # history to reconstruct
+                                                      # a file's final content
+\end{verbatim}
+
+The tool understands three distinct rollout-harness log formats (Claude
+Code stream-JSON, Gemini CLI NDJSON, Codex CLI structured JSONL) and
+normalizes them to a common timeline/file-provenance view. Reconstruction
+from the log is treated as a way to narrate \emph{how} a file evolved
+(false starts, abandoned versions); the judge is instructed that whenever
+the rollout's real final container filesystem is available on disk, that
+copy---not the log-reconstructed one---is definitive (Iron Rule~1,
+\S\ref{app:evaluator:rubric}).
+
+\subsection{Evidence Package Provided to the Judge}
+\label{app:evaluator:evidence}
+
+Artifact-aware annotation requires that the judge see what the rollout
+\emph{made}, not only what it \emph{said}. For every (model, task) pair,
+the driver therefore materializes a per-task judge workspace which contains evidence in Table~\ref{tab:evidence}.
+
+\begin{table}[h]
+\centering
+\small
+\caption{Evidence package materialized per task before the judge session
+starts. The combination of execution log, delivered filesystem, and sealed
+ground truth is what makes grounding failures such as C.1 (circular
+validation on a synthetic substrate) detectable at all; none of them leaves
+a signature in the final report.}
+\label{tab:evidence}
+\begin{tabular}{ll}
+\toprule
+Artifact & Role \\
+\midrule
+\texttt{problem\_readme.md}, & The task statement and data schema the\\
+\texttt{data\_description.md} & rollout itself was given. \\
+\texttt{<harness>.jsonl} & The rollout's complete execution log\\
+ & (the primary evidence base). \\
+\texttt{result.json} & Container-level execution status\\
+ & (\texttt{status}/\texttt{duration}/\texttt{returncode}) only---\\
+ & explicitly \emph{not} a quality signal. \\
+\texttt{submissions.jsonl} & Every call the rollout made to the\\
+ & benchmark's own scoring service, with\\
+ & the score returned each time (when present). \\
+\texttt{evaluator/} & The scoring service's real source code,\\
+ & copied verbatim from the benchmark\\
+ & definition---lets the judge check the\\
+ & rollout's method against the exact metric\\
+ & being computed, not just its stated name. \\
+\texttt{verification.md} & Human-written notes (paper provenance,\\
+ & held-out set construction, oracle score\\
+ & ceiling) where available. \\
+\texttt{agent\_code/} & The rollout's actual final container\\
+ & filesystem (its real \texttt{workspace/}),\\
+ & capped at 60 files / 1\,MB per file / 20\,MB\\
+ & total, source-suffix filtered. \\
+Sealed ground truth \& & Referenced by real host path (mounted\\
+raw task data & read-only) rather than copied---these can\\
+ & reach tens of GB per task---so the judge\\
+ & can query them on demand without a full\\
+ & read. \\
+\bottomrule
+\end{tabular}
+
+\end{table}
+
+\subsection{The Stage Rubric and Iron Rules}
+\label{app:evaluator:rubric}
+
+Every \texttt{analysis.md} must follow a fixed section skeleton (headings
+reproduced verbatim; stage labels A--F and X correspond to the \taxonomy stage
+axis of \S\ref{sec:taxonomy}):
+
+\begin{quote}\small
+\texttt{\# <title: task + one-line verdict>} \\
+\texttt{> Core Verdict} (2--4 sentences, the 2--3 sharpest findings) \\
+\texttt{\#\# Metadata} (task/model/harness, execution status, gold vs.\ agent observable) \\
+\texttt{\#\# Trajectory Arc} (ideation $\to$ retrieval $\to$ execution $\to$ result $\to$ conclusion, one narrative paragraph) \\
+\texttt{\#\# Credit Due} (genuine strengths---required, not optional) \\
+\texttt{\#\# A. Ideation \& Planning} \\
+\texttt{\#\# B. Retrieval \& Synthesis} \\
+\texttt{\#\# C. Execution \& Implementation} (heaviest stage) \\
+\texttt{\#\# D. Analysis \& Interpretation} \\
+\texttt{\#\# E. Writing \& Documentation} \\
+\texttt{\#\# F. Self-Verification \& Review} (guard against being fooled by an agent's own confident self-diagnosis) \\
+\texttt{\#\# X. Cross-Stage Dynamics} (error propagation, goal drift, right-for-the-wrong-reason outcomes) \\
+\texttt{\#\# Sentence-by-Sentence Checklist} (every key claim in the rollout's final report, marked pass / partial / fail) \\
+\texttt{\#\# Numerical Grounding Notes} (what was independently re-derived, and the result) \\
+\texttt{\#\# Retraction / Correction Log} (honest record of any self-corrected misjudgment) \\
+\texttt{\#\# One-Line Verdict}
+\end{quote}
+
+\paragraph{Depth standard.} The judge is instructed to cover
+\textbf{25--40 distinct issues} across all stages, each written as a
+\emph{paragraph}, not a bullet: \textbf{mechanism} (what the rollout
+concretely did) + \textbf{why it matters} + \textbf{the charitable/honest
+reading} + \textbf{verifiable evidence} (a log line number, file name,
+code identifier, or exact value). Each issue additionally carries a
+one-line trailer
+\texttt{[stage: <A--F,X> | root cause: <grounding | depth | integrity |
+robustness>]}, giving the two coordinates of the \taxonomy axes. In the
+free-form phase the judge assigns only these coordinates and never a
+pattern ID, so that pattern boundaries are induced from the annotations
+rather than presupposed by them. The calibration statistic is
+characters-per-issue $\geq 280$ (target $\geq 290$) on the whole
+document---a proxy for ``no issue is a one-line bullet.'' Genuinely limited
+rollouts (a single fatal bug, an unrecoverable infrastructure failure, a
+pure tautology) are explicitly allowed \emph{fewer} issues (16--20) as
+long as each is written deep (characters-per-issue $\geq 350$): depth is
+prioritized over hitting a raw count.
+
+\paragraph{Scoring-signal literacy.} In the execution-feedback pool, where
+the source benchmark provides a reward and a \texttt{reason} code, the
+judge must not treat \texttt{reward=0} as a quality signal by default:
+
+\begin{table}[h]
+\centering
+\small
+\caption{Reward/reason taxonomy the judge must disambiguate before treating
+a score as evidence of quality. This taxonomy is pool-specific; the
+open-ended pool has no such field, and quality there is established purely
+from internal evidence.}
+\label{tab:rewardreason}
+\begin{tabular}{lll}
+\toprule
+\texttt{reason} & Meaning & Quality signal? \\
+\midrule
+\texttt{judge\_unavailable} & Scoring infrastructure was down & No---rollout may be excellent \\
+\texttt{no\_decision} & Malformed/incomplete decision artifact & No---a delivery failure, not a science failure \\
+\texttt{soft[<observable>]} & Genuine score against the gold observable & Yes \\
+\bottomrule
+\end{tabular}
+
+\end{table}
+
+A related, high-frequency failure the judge is told to check explicitly
+is \emph{observable mismatch}: the rollout computes a plausible, correctly
+executed proxy quantity that is simply not the one the benchmark scores
+against (e.g.\ computing group delay when the gold metric is efficiency),
+which yields zero credit regardless of code quality.
+
+\paragraph{Iron Rules (\textit{non-negotiable}).} These
+codify lessons from earlier mis-judged trajectories in this project and
+are stated to the judge verbatim:
+
+\begin{enumerate}
+  \item \textbf{Follow code evolution to the final delivered artifact.}
+  Rollouts frequently contain multiple superseded versions (false starts,
+  abandoned fallbacks). Never indict the final conclusion using a version
+  the rollout itself discarded; when the final report explicitly states
+  what it did, prefer that over a misleading earlier draft.
+
+  \item \textbf{Sanity-check every task; re-run selectively, never
+  exhaustively.} A near-zero-cost order-of-magnitude/units check catches
+  most bugs (canonical examples we have caught this way: a protein--DNA
+  interface burial reported as 47\,\AA$^2$ where $>1000$ is expected --
+  almost certainly an nm$^2$/\AA$^2$ unit error; a water-dimer interaction
+  energy of $-0.16$ where $\sim-5$ is expected). Full re-execution is
+  reserved for cases where a number is both suspicious \emph{and}
+  unresolvable by inspection \emph{and} cheap to reproduce
+  (dependency-light, a few core lines, not the whole pipeline). Insight is
+  not synonymous with re-running: many of the sharpest findings in this
+  project were pure analytical derivations with zero re-execution.
+
+  \item \textbf{Give credit where due.} Honestly reported null results,
+  genuine mechanistic modeling, and self-caught bugs are real strengths
+  that must be written up with the same rigor as failures.
+
+  \item \textbf{Retract and log honestly.} If the judge itself misjudged
+  something upon further reading, it must record the retraction and the
+  lesson explicitly rather than silently editing it away.
+
+  \item \textbf{Judge each trajectory on its own terms.} No
+  cross-trajectory template conclusions.
+
+  \item \textbf{Check for answer contamination.} If a rollout fetches the
+  source paper's full text before modeling, its apparent ``independent
+  replication'' of the paper's conclusion may simply be reading the answer
+  first; any gold-adjacent fact that appears in text the rollout is shown
+  to have already read cannot be credited as an independent finding
+  (divergence from the paper, not mere disclosure, is what counts as
+  evidence of independence).
+
+  \item \textbf{Judge retrieval \emph{sufficiency}, not only retrieval
+  \emph{honesty}.} A separate failure mode from fabrication/contamination
+  is simply not searching for information the gold observable required
+  (e.g.\ skipping a dataset search and using ``no data'' as an excuse to
+  fall back to a synthetic model). This failure often disguises itself as
+  a downstream ideation defect.
+
+  \item \textbf{Verify every citation before crediting ``honest, no
+  fabrication.''} Grep each cited DOI/arXiv ID/title against the actual
+  retrieval log; an ID that never appears in a real search result but
+  shows up in the final report is a hallucinated citation, not a
+  formatting artifact.
+
+  \item \textbf{Don't be disarmed by a rollout's own eloquent
+  self-diagnosis.} Rollouts frequently \emph{name} their own core defect
+  in a review paragraph and then ship the finding unchanged.
+  ``Identified the mechanism'' $\neq$ ``addressed it.'' Credit for a
+  review stage is recorded only against what the rollout
+  \emph{independently found and then acted on}---naming a flaw without
+  correcting it is a problem to flag, not a strength to credit. This rule
+  is the operational definition behind pattern F.4.
+\end{enumerate}
+
+\subsection{Per-Issue Writing Standard}
+\label{app:evaluator:writing}
+
+Beyond the stage/quota structure, every numbered issue is required to
+satisfy:
+
+\begin{itemize}
+  \item At least one \emph{verifiable anchor}---a concrete number, a log
+  line index, a file name, or a code identifier---per issue.
+  \item A well-formed \texttt{[stage | root cause]} trailer, since
+  downstream aggregation into
+  Figure~\ref{fig:failure-attribution} depends on it.
+  \item A minimum length ($\geq 200$ characters); single-sentence bullets
+  are rejected or must be merged into a fuller issue.
+  \item No large verbatim pasting from \texttt{problem\_readme.md} or
+  \texttt{result.json}---pasting is explicitly not analysis and is
+  penalized as padding.
+  \item No templated/recycled phrasing across issues---every issue must
+  state a fact unique to that specific rollout.
+\end{itemize}
+
+\subsection{Automated Checker Script (\texttt{qa\_check\_analysis.py})}
+\label{app:evaluator:checker}
+
+Every generated \texttt{analysis.md} is passed through a deterministic
+Python checker before being accepted, rather than relying on a second LLM
+pass to judge the first judge. The checker enforces six independent gate
+classes, calibrated against the p10--p25 percentiles of a 134-document
+reference corpus (deliberately below the median, so as not to reject the
+same style of document the rubric targets):
+
+\begin{enumerate}
+  \item \textbf{Totals.} Whole-document character count, total numbered
+  issues, and characters-per-issue, each with a floor (nominal:
+  $\geq 16{,}000$ chars, $\geq 28$ issues, $\geq 300$ chars/issue; floors
+  scale to $0.6\times$ for pools/reasons that are naturally thin, e.g.\
+  infrastructure-failure trajectories).
+
+  \item \textbf{Section length.} A minimum character floor per required
+  section (Table~\ref{tab:sectionfloors}), so no single stage can be a
+  one-line stub while another stage is padded.
+
+  \item \textbf{Section breadth.} A minimum issue count for each stage
+  section (A: $\geq 3$, B: $\geq 4$, C: $\geq 10$, D: $\geq 3$, E:
+  $\geq 3$, F: $\geq 3$, X: $\geq 2$), so genuine coverage cannot be
+  concentrated in one stage.
+
+  \item \textbf{Issue thickness distribution.} The \emph{distribution} of
+  per-issue length is checked, not just its mean: documents are rejected
+  if more than 28\% of issues fall under 200 characters or more than 5\%
+  fall under 100 characters.
+
+  \item \textbf{Density / anti-padding.} A minimum count of
+  \emph{verifiable anchors} (code spans, numeric literals, file/line
+  references, DOI/arXiv identifiers) across the document, a minimum
+  fraction of issues carrying at least one anchor ($\geq 85\%$), a cap on
+  near-duplicate 60-character text shingles (catches templated filler,
+  $\leq 8\%$), and---when the task workspace is available to the
+  checker---a cap on verbatim-copied spans traced back to the source
+  artifacts ($\leq 20\%$ of document length) alongside a minimum count of
+  quoted spans that \emph{do} verifiably trace back to a real source file
+  (rewarding grounded quotation while penalizing wholesale copying).
+
+  \item \textbf{Label well-formedness.} Every numbered issue must carry a
+  parseable \texttt{[stage | root cause]} trailer with values drawn from
+  the fixed vocabularies; documents with unparseable or out-of-vocabulary
+  trailers are rejected, since stage-level attribution depends on them.
+\end{enumerate}
+
+\begin{table}[h]
+\centering
+\small
+\caption{Per-section character floors enforced by the automated checker.}
+\label{tab:sectionfloors}
+\begin{tabular}{lr}
+\toprule
+Section & Min.\ characters \\
+\midrule
+Core Verdict & 850 \\
+Metadata & 720 \\
+Trajectory Arc & 380 \\
+Credit Due & 760 \\
+A. Ideation \& Planning & 760 \\
+B. Retrieval \& Synthesis & 1020 \\
+C. Execution \& Implementation & 2550 \\
+D. Analysis \& Interpretation & 600 \\
+E. Writing \& Documentation & 640 \\
+F. Self-Verification \& Review & 640 \\
+X. Cross-Stage Dynamics & 520 \\
+Sentence-by-Sentence Checklist (min.\ 12 rows) & 1100 \\
+Numerical Grounding Notes & 600 \\
+Retraction / Correction Log & 340 \\
+One-Line Verdict & 210 \\
+\bottomrule
+\end{tabular}
+
+\end{table}
+
+A document that fails any gate is reported with the exact list of failed
+gates (e.g.\ \texttt{section too short:Analysis 480 < 600},
+\texttt{section too few issues:Execution 7 < 10}); this failure report is
+what drives the regeneration loop below.
+
+\subsection{\taxonomy Labeling and Human Calibration}
+\label{app:evaluator:labeling}
+
+Accepted documents are converted to structured labels in a second pass.
+Each numbered issue, together with its evidence anchor and its
+\texttt{[stage | root cause]} trailer, is presented to a labeling judge
+holding the \taxonomy pattern definitions, which assigns exactly one pattern ID
+or \texttt{none} where no pattern fits. The \texttt{none} rate was tracked throughout taxonomy development:
+patterns were added whenever a recurring unlabeled behavior emerged, and the
+taxonomy was frozen once further annotation produced no new pattern candidates
+(theoretical saturation, \S\ref{sec:judge:human}).
+
+A trajectory may exhibit multiple patterns, and each cell of
+Figure~\ref{fig:failure-attribution} counts distinct trajectories rather
+than issues.
+
+Calibration proceeds against human annotation on a stratified sample of
+50 trajectories spanning all eight model--harness combinations. Three
+experts independently annotated each sampled trajectory under the same
+rubric (inter-annotator agreement $\kappa = 0.85$); judge--human
+agreement at both the pattern and taxonomy-categorization levels is
+reported in \S\ref{sec:judge:validation} and
+Table~\ref{tab:judge-performance}. These figures are aggregate; we do not
+report per-pillar agreement at this time. Patterns anchored to concrete artifacts
+(R1, R4) are more reliably adjudicated than patterns requiring a
+judgment about the agent's reasoning (R2), so we treat R2 rates as
+lower-confidence throughout the analysis.
+
+\subsection{Self-Healing Regeneration Loop}
+\label{app:evaluator:loop}
+
+The driver (\texttt{generate\_analysis\_cc.py}) re-globs the benchmark's
+result directory on every pass, so newly completed rollouts are picked up
+automatically. For each (model, task):
+
+\begin{enumerate}
+  \item Skip if an accepted \texttt{analysis.md} already exists
+  (\texttt{--resume}).
+
+  \item Otherwise launch a fresh judge session
+  (\S\ref{app:evaluator:harness}); on completion, run the checker
+  (\S\ref{app:evaluator:checker}).
+
+  \item If the checker fails, the exact failed-gate list is injected back
+  into the next attempt's prompt with gate-specific remediation guidance
+  (e.g.\ \texttt{section too few issues} $\to$ ``go find real additional
+  problems in that stage, don't split one existing issue into three'';
+  \texttt{near-duplicate share} $\to$ ``delete the repeated boilerplate,
+  write specifics''), together with a hard requirement that the new
+  attempt have \emph{strictly more} issues than the last failed attempt
+  ($\geq$ previous $+5$) without discarding any previously-correct
+  finding.
+
+  \item After a fixed number of failed attempts on the same task, the
+  driver gives up on that task for the current pass (a cost
+  circuit-breaker) rather than silently retrying forever; a task can be
+  forced past this cap for a manual follow-up pass.
+
+  \item The loop repeats across the whole pool until every discoverable
+  task has an accepted document or the pass budget is exhausted.
+\end{enumerate}
+
+In practice, most failed first attempts fail on one of two patterns: (a)
+a borderline miss on a single length/issue-count gate, resolved by a
+fresh attempt; or (b) the judge's own in-session verification re-run
+(Iron Rule~2) exceeding the wall-clock budget before it can write up the
+remaining sections, resolved by extending the per-task timeout rather
+than by discarding the verification step.
+
+\subsection{Worked Example}
+\label{app:evaluator:example}
+
+The following (translated, lightly condensed) excerpt from an accepted
+\texttt{analysis.md} (task \texttt{echonet\_lvef}, model \texttt{sonnet-5})
+illustrates the mechanism+harm+charitable-reading+evidence issue format
+required by \S\ref{app:evaluator:writing}. The rollout designed a correct
+modeling approach, launched training in the background, and then ended its
+turn relying on an unverified scheduled-wakeup promise; the container was
+torn down before training finished, so zero predictions were ever
+submitted. The issue was labeled \texttt{[stage: X | root cause:
+robustness]} in the free-form phase and mapped to X.8 in the labeling pass.
+
+\begin{quote}\small
+\textbf{Core Verdict (excerpt).} ``This is a trajectory with \emph{zero
+delivery}, not a trajectory with poor scientific quality, and the two
+must be accounted for separately. \texttt{result.json}'s
+\texttt{status=success}, \texttt{returncode=0} only mean the container
+process exited cleanly\ldots\ the final \texttt{workspace/} contains only
+five files\ldots\ and a 0-byte \texttt{train.log}. [\ldots] The agent
+trusted the promise returned by \texttt{ScheduleWakeup}---`the harness
+will re-invoke you'---but the session ended before that wakeup ever fired,
+and the container, along with the training process, was destroyed with it.
+It outsourced its delivery responsibility to a tool guarantee it never
+verified and which was not even in its allow-listed tool set.''
+\end{quote}
+
+\begin{quote}\small
+\textbf{Credit Due (excerpt).} ``Its engineering validation was not
+perfunctory---it actually measured what it claimed. Three separate
+timing passes make the point: a synthetic-tensor benchmark first measured
+14.67\,s/step; rather than concluding `too slow, switch models,' it
+correctly identified this as CUDA kernel-compile warmup, re-measured at
+0.1007\,s/step after warmup, and then \emph{did not stop at that
+favorable synthetic number}---it re-measured end-to-end on real data
+through the full DataLoader and augmentation path, got 0.2156\,s/batch,
+and revised its own throughput estimate downward by $2.1\times$
+accordingly. This is the most researcher-like moment in the trajectory:
+distinguishing microbenchmark from end-to-end throughput, and defaulting
+to the more conservative number.''
+\end{quote}
+
+\subsection{Full Judge Prompt Template}
+\label{app:evaluator:fulltemplate}
+
+For exact reproducibility we reproduce the structure of the
+per-task instruction below.
+
+\begin{lstlisting}[style=prompt]
+# Task: write a comprehensive, information-dense analysis.md for ONE
+# agentic scientific-ML trajectory.
+
+You are doing a deep trajectory audit of one agentic-scientific-discovery
+rollout. This session analyzes exactly ONE trajectory -- judge it on its
+own terms, do not apply cross-trajectory template conclusions. You are
+fully autonomous: do not ask questions, work through to a finished
+deliverable.
+
+[If this is a redo after a failed quality gate: the exact list of failed
+ gates from the previous attempt is inserted here, with the hard
+ requirement that the new issue count be >= previous + 5.]
+
+## 0. Required reading (read fully before doing anything else)
+1. Framework: {onboarding path} -- follow its workflow, depth standard,
+   six-stage structure, and Iron Rules exactly. [Pool-specific
+   suppressions/overrides of individual Iron Rules are noted here --
+   e.g. for a pool with no retrieval tools, the citation/contamination
+   Iron Rules are marked not applicable.]
+2. [Optional] a worked exemplar analysis.md the required depth should match.
+
+## 1. This task's data (all in the current working directory)
+- meta.json -- task_id, model, harness format.
+- problem_readme.md -- the task statement the rollout itself received.
+- data_description.md -- data schema, if present.
+- result.json -- container execution status ONLY (status/duration/
+  returncode). This is NOT a quality signal -- do not conflate it with
+  a reward/reason field from a different pool.
+- [pool-specific scoring-integrity block -- see below]
+- evaluator/ -- the scoring service's real source, verbatim. Read it
+  line by line: figure out exactly what it scores, at what tolerance,
+  before judging whether the rollout's method actually matches that
+  logic or merely guessed the right output format.
+- verification.md -- human-written verification notes, if present (paper
+  provenance, held-out construction, oracle score ceiling). Read this
+  first; it often names the single most common systematic error on this
+  task.
+- sealed ground truth -- referenced at {real host path} via a read-only
+  mount, NOT copied (can be 100s of MB to tens of GB). Query it
+  selectively; never read it in full.
+- agent_code/ -- the container's actual final workspace, {N} files,
+  {M} skipped as non-source/oversized (real path: {src}). This is the
+  authoritative delivered code; log reconstruction is only used to
+  narrate how the rollout arrived at it.
+- {harness}.jsonl -- the rollout's full execution log ({K}k characters).
+  DO NOT read it in full -- use traj_tools.py timeline/files/reconstruct
+  to navigate, then sed -n/grep -n for the specific spans you need.
+
+## 2. [Pool-specific integrity section]
+[\bench pool:] There is no reward/reason taxonomy in this pool --
+quality judgment rests entirely on (a) internal evidence: code,
+execution log, numerical self-consistency, evaluator source logic; and
+(b) submissions.jsonl (if present) -- the real scored-submission history.
+Do not invent or borrow a reason field from a different pool's schema.
+
+## 3. Iron Rules for this task
+[Pool-specific selection/adaptation of the shared Iron Rules from
+ ONBOARDING(2).md -- e.g. for the \bench pool: retrieval-integrity
+ rules are marked not applicable (no retrieval tools exist in this
+ container); the evaluator-feedback-fitting rule (see
+ Sec.~\ref{app:evaluator:adaptation}) is elevated to the single most
+ important check for this task and MUST be written up as its own
+ standalone, evidenced issue.]
+- Follow multi-version code to the final delivered artifact.
+- Don't be fooled by a beautiful self-diagnosis that was never acted on.
+- Perfect/extreme scores get checked too: decompose them; check whether
+  they are propped up by privileged information (e.g. an evaluator
+  default value, a leaked starting condition) rather than a correct method.
+
+## 4. Output requirements -- hard gates, self-check before you finish
+### 4.1 Skeleton (all sections required, headings copied verbatim)
+[the fourteen headings from Sec.~\ref{app:evaluator:rubric}]
+### 4.2 Quota table (targets -- calibrated above the automated floor)
+[per-section target character count and target issue count --
+ see Table~\ref{tab:sectionfloors} for the corresponding pass/fail floor]
+### 4.3 How to write each issue (this is what "information density" means)
+Each issue = mechanism (what it concretely did) + why it's harmful +
+the honest/charitable reading + evidence, written as one full paragraph.
+- At least one verifiable anchor per issue: a number, a log line index,
+  a file name, a code identifier.
+- A one-sentence bullet does not count as an issue. Merge or expand
+  anything under ~200 characters.
+- Do not paste large verbatim spans from problem_readme.md/result.json --
+  pasting is not analysis and will be scored as padding.
+- Do not recycle templated phrasing -- every issue must state a fact
+  unique to this specific trajectory.
+### 4.4 Give full credit
+Genuine strengths must be written up with the same rigor as failures:
+honestly reported below-target results, genuinely independent
+verification design (held-out/cross-validation), self-caught bugs,
+honestly-flagged failed submissions, reproducible seeds and numbers.
+
+## 5. Where to write it
+{out_dir}/analysis.md (directory already created; write ONLY this file).
+State the one-line verdict in the H1 title itself.
+Before finishing, self-check: word count, issue count, that none of the
+six stages is perfunctory, that the checklist has enough rows. If it does
+not meet the bar, keep digging -- do not submit early.
+
+## 6. Boundaries
+Deliver only this one file. Do not modify anything else in the workspace,
+do not refactor anything. Do all verification/re-computation in your own
+main loop -- do not spawn sub-agents. You may independently re-run
+scoring logic locally when its dependencies are light (numpy/scipy/sympy-
+level); ground-truth/raw-data directories are read-only and must be
+queried selectively, never traversed in full.
+\end{lstlisting}

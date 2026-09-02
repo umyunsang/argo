@@ -1,0 +1,286 @@
+\UseRawInputEncoding
+
+\section{Data Construction Details}
+\label{app:extraction}
+\subsection{Task Extraction Prompt}
+
+%  Appendix: extraction prompts.  \input after \appendix.
+%  Referenced from Section 3 ("Extraction prompts ... are given in Appendix~\ref{app:extraction}").
+%
+%  Requires in the main preamble:
+%      \usepackage{listings}
+%      \usepackage{xcolor}
+%  If the paper already loads listings with a different style, drop the
+%  \lstdefinestyle block below and reuse the existing one.
+% ============================================================
+
+
+
+
+Each paper is converted into one task by a single language-model pass. The model is given the
+cleaned body text of the paper (truncated to $14{,}000$ characters; papers yielding fewer than
+$200$ characters of parsed text are dropped) and returns a JSON record holding the seven fields
+of Section~\ref{sec:taskconstruct}, a list of key claims, and a novelty-move label. The pass is
+a reconstruction, not an evaluation: the model reports what the paper itself states, and the
+record is treated as provisional until it passes the rater check described in
+Section~\ref{sec:taskconstruct}.
+
+\subsubsection{System prompt}
+
+\begin{lstlisting}[style=prompt]
+You are a computational-science researcher (any domain: chemistry, physics,
+materials, biology, etc.) reading a paper to extract its DISCOVERY PATTERN -- not
+to summarise it. You output strict JSON only, no prose around it. Be faithful to
+what the paper actually claims; never invent numbers. If a field is not stated,
+use an empty string or empty list. Quote real numbers WITH UNITS when the paper
+gives them. Do NOT force the paper into any particular subfield -- describe the
+system and quantities the paper is actually about.
+\end{lstlisting}
+
+\subsubsection{Extraction prompt}
+
+Placeholders in braces are substituted per paper: \texttt{\{moves\}} is the label set of
+Appendix~\ref{app:moves}, and \texttt{\{pid\}}, \texttt{\{title\}}, \texttt{\{narrative\}} are
+the paper's identifier, title, and cleaned body text.
+
+\begin{lstlisting}[style=prompt]
+Extract the discovery pattern of this paper as JSON with EXACTLY these keys:
+
+{
+  "premise_consensus": "the established prior understanding the paper builds on /
+     takes as given (from the introduction). What did the field already believe?",
+  "tension": "the gap, contradiction, or anomaly in that consensus that motivated
+     this work. This is the discovery seed -- what was unsatisfying or unknown?
+     Empty string if the paper is purely confirmatory.",
+  "motivation": "why resolving that tension matters (the stated goal).",
+  "method": "the approach taken to resolve it (e.g. DFT/MD/MLIP setup, experiment,
+     model, code). One or two sentences.",
+  "experiment": "what system was studied and what was actually computed/measured,
+     with key conditions/comparisons -- whatever they are for THIS paper
+     (molecule, surface, crystal, defect, interface, device, reaction, ...).",
+  "conclusion": "the terminal claim -- what the paper concludes. Be specific.",
+  "key_claims": [
+     {"claim": "a single concrete claim from the conclusions",
+      "kind": "quantitative" or "qualitative",
+      "observable": "the NAME of the physical quantity this claim is about,
+         snake_case, OPEN VOCABULARY using the paper's own quantity (e.g.
+         adsorption_energy, formation_energy, band_gap, reaction_barrier,
+         diffusion_coefficient, elastic_modulus, binding_affinity,
+         redox_potential, vibrational_frequency, conductivity, magnetic_moment,
+         lattice_constant, ...). Empty if purely qualitative with no measurable
+         quantity.",
+      "value": "the numeric value if quantitative, else a short phrase",
+      "unit": "the unit of value (eV, eV/atom, A, cm^-1, K, GPa, ...), empty if
+         dimensionless/none",
+      "computable": "yes if an independent first-principles/atomistic calc
+         (DFT/MD/MLIP/quantum-chem) or code could in principle re-derive this
+         quantity from the described system; else no"}
+  ],
+  "novelty_move": "classify the paper's primary move as ONE of: {moves}",
+  "novelty_rationale": "one sentence justifying the move label, grounded in the
+     tension+conclusion."
+}
+
+Rules:
+- "tension" is the most important field for discovery. A good tension reads like
+  "consensus said X, but Y was unexplained / measured wrong / never tested."
+  Do not restate the conclusion as the tension.
+- "observable" is OPEN -- name the quantity the paper actually reports; do NOT
+  shoehorn into adsorption/catalysis terms unless the paper is genuinely about
+  that.
+- key_claims: 1-4 items. Prefer claims that are quantitative AND computable=yes,
+  but keep the paper's real quantities regardless.
+- Output ONLY the JSON object.
+
+PAPER (id: {pid}, title: {title}):
+{narrative}
+\end{lstlisting}
+
+\subsubsection{Novelty-move label set}
+\label{app:moves}
+
+The model chooses exactly one label from the following list, given verbatim with the glosses
+below; replies that do not match a label are recorded as \textsc{other}.
+
+\begin{lstlisting}[style=prompt]
+consensus-overturn   prior consensus was wrong; this work flips it
+method-correction    a known method gives wrong answers; fix the method
+new-regime           extends a finding to a regime nobody measured
+                     (coverage / temperature / pressure / ...)
+mechanism            explains *why* an observed effect happens
+scaling-relation     finds a descriptor or relation predicting many systems
+reconciliation       resolves a contradiction between two prior results
+incremental          confirms or refines consensus without breaking it
+\end{lstlisting}
+
+
+\subsubsection{Target-anchored Optimization Tasks}
+The 30 target-anchored tasks follow the task-construction method of NatureBench~\citep{wang2026naturebench}: each task exposes an explicit objective---a published human state of the art or a computable metric---against which a rollout's submission is scored. Because these tasks inherit the source benchmark's selection, they are not restricted to the 2024-onward window applied to the open-ended subset (\S\ref{sec:taskconstruct}).
+\subsection{Agent Rollout System Prompt}
+\label{app:prompt:system}
+
+\begin{lstlisting}[style=prompt]
+# {{TITLE}}
+
+## Background (established consensus)
+{{PREMISE}}
+
+## The open question (tension)
+{{TENSION}}
+
+**Your task:** investigate this open question yourself, end-to-end, as a real research process 
+not just "compute one number and stop." This corpus spans many fields (physics, chemistry, biology,
+materials, medicine, geophysics, energy, industrial systems, scientific computing, ...), so there is
+no default method - work through the six stages below for real, in order. At each stage, record the
+specific artifact requested for `process_log` (schema below) as you go, not reconstructed
+afterward - it should reflect what you actually did and considered, including anything that didn't
+work or that you decided against.
+
+**A    Ideation** - Restate the tension in your own words, then commit to a specific, falsifiable
+hypothesis. Before moving on, name at least one other way you could have framed this question or
+approached it, and say why you picked this one instead. Also say concretely: what result, number,
+or comparison would tell you your hypothesis is WRONG   if nothing could tell you that, the
+hypothesis isn't ready yet.
+
+**B    Retrieval & Synthesis** - Use `WebSearch` / `WebFetch` (or your own domain knowledge where
+lookups aren't fruitful) to check what's already established about this specific question. For
+each source you actually use later (in Stage E), be able to say what it establishes and which
+specific claim of yours it supports   not just that it seemed topically related. Organize what you
+find before moving on; don't carry it forward as an unsorted pile.
+
+**C    Execution** - Choose whatever method actually answers THIS paper's own question   that could
+be a first-principles/quantum calculation, a molecular or agent-based simulation, a (micro)kinetic
+or rate model, a statistical or machine-learning model, a numerical/PDE solver, a phylogenetic or
+sequence analysis, a signal-processing pipeline, an econometric or optimization model, or something
+else entirely. Pick whatever the paper's own observable actually calls for, not whatever's most
+familiar to you. The sandbox has Python with network access   `pip install` whatever you need.
+Build the system/dataset, run it for real, and inspect actual output at each step; never fabricate
+a plausible-looking number. Say explicitly what you tested (which settings, scales, or conditions)
+and what you deliberately left untested, and note anything that broke, stalled, or needed a
+workaround along the way.
+
+**D    Analysis**   Interpret what you computed: does it support or refute the Stage-A hypothesis?
+Name at least one alternative explanation for your result other than the one you're going with, and
+say concretely why you ruled it out (or didn't). State how confident you are and what specifically
+that confidence is based on.
+
+**E    Writing**   The MOMENT you have a first grounded result, write a preliminary
+`/workspace/decision.json` (schema below)   it's the only artifact automated scoring reads, so get
+it down early and never block it on anything else. Then write `/workspace/report.md`: a real paper,
+the kind a scientist writes after actually finishing this investigation, with these sections:
+  - `## Abstract`   2-3 sentences: what you investigated, your method, and the key result.
+  - `## Introduction`   the tension/open question and your hypothesis (Stage A).
+  - `## Methods`   what you built or ran, and why it answers this question (Stage C).
+  - `## Results`   what you actually computed, with the real numbers.
+  - `## Discussion`   your interpretation, the alternative explanation you weighed, and your
+    confidence (Stage D).
+  - `## Limitations`   what you didn't test, and anything that broke or needed a workaround.
+  - `## Conclusion`   the one-paragraph takeaway.
+  - `## References`   each source you actually retrieved and read in Stage B, and what it
+    establishes. Don't list anything you didn't actually open and read; don't cite from memory.
+If you run low on turns or time, an unfinished report.md is fine, an unfinished decision.json is not.
+
+**F    Review**   Re-open and re-read report.md   not from memory   as a skeptical peer reviewer
+would. Append a `## Peer Review` section in the reviewer's voice (third person, e.g. "The authors
+claim X, but Y is not ruled out because..."): name the single weakest point in the argument, and
+what evidence would change the verdict. Mirror it into decision.json's `process_log.review`.
+
+**A GPU is attached to this sandbox** (check with `nvidia-smi` or `torch.cuda.is_available()' after
+`pip install torch`). If your method benefits from it   training/inference for an ML model,
+GPU-accelerated simulation, large batched computation   install a CUDA-enabled build and use it;
+CPU-only is completely fine if the method doesn't need one. Don't force GPU use where it doesn't fit.
+
+## Required output   two artifacts, written in this order, BEFORE you stop:
+1. `/workspace/decision.json' (schema below)   write a preliminary version the moment you have a
+   first grounded result. This is the ONLY artifact automated scoring reads.
+2. `/workspace/report.md'   a paper on the whole investigation (Stage E), plus its appended
+   `## Peer Review` section (Stage F).
+```json
+{
+  "problem": "the specific question you investigated (1 sentence)",
+  "hypothesis": "the falsifiable claim from Stage A, stated before you had results",
+  "system": {"description": "what you modeled or studied",
+             "spec": {"...": "machine-readable build hints   whatever fields make sense for your system"}},
+  "method": {"approach": "the method you actually used, in your own words (not a category label)",
+             "tools": "packages/engines/datasets used", "key_params": {}},
+  "observable": "the quantity you computed   name it however it's actually named in this field, using the paper's OWN quantity, not a generic placeholder",
+  "result": {"value": 0.0, "unit": "...", "details": {}},
+  "conclusion": "one-sentence finding that resolves the open question, grounded in YOUR computed result   hedge honestly if the evidence is weak (Stage F)",
+  "process_log": {
+    "ideation": {"alternative_framing_considered": "the other way you could have approached this",
+                 "falsification_check": "what result would have told you the hypothesis was wrong"},
+    "retrieval": {"sources": [{"source": "...", "establishes": "...", "supports_claim": "..."}],
+                  "synthesis_note": "how you organized what you found before moving on"},
+    "execution": {"settings_tested": ["..."], "deliberately_not_tested": ["..."],
+                  "issues_encountered": ["anything that broke, stalled, or needed a workaround"]},
+    "analysis": {"alternative_explanation_considered": "...", "why_ruled_out_or_not": "...",
+                 "confidence": "...", "confidence_basis": "what specifically that confidence rests on"},
+    "review": {"weakest_point": "...", "what_would_change_your_mind": "..."}
+  }
+}
+```
+**Write decision.json EARLY, report.md second**   write a preliminary decision.json as soon as
+you have a first computed estimate, keep refining it through Stages D-F, and only start report.md
+once decision.json exists   never let writing report.md delay it. Only re-executed, grounded
+results count   base your conclusion on what you actually computed, not a remembered literature
+value. Fill in `process_log` and report.md's `## Peer Review` section honestly   an incomplete or
+hedged entry is far more useful than a reconstructed one that just makes the process look clean.
+
+\end{lstlisting}
+\subsection{Rollout Environment and Hardware}
+  \label{sec:rollout-env}
+
+  All rollouts were executed on a single shared compute node equipped with
+  $8\times$ NVIDIA~B300 GPUs (Blackwell architecture, compute capability
+  \texttt{sm\_103}, $\sim$288\,GB HBM per card), 256~CPU cores, and 3\,TB of
+  system RAM, managed by SLURM. Each model--task rollout runs inside its own
+  isolated Docker container; per-container GPU visibility is pinned to the
+  node's SLURM-allocated physical device via \texttt{NVIDIA\_VISIBLE\_DEVICES}
+  under the NVIDIA container runtime, so containers never see GPUs outside their
+  lease.
+
+  \paragraph{Container image.}
+  Task containers are built on a common base image with PyTorch~2.11.0
+  compiled for CUDA~12.8 (\texttt{cu128}), required for Blackwell/B300
+  (\texttt{sm\_103}) support; earlier \texttt{cu118} builds fail on this
+  hardware with a ``no kernel image'' error. NumPy is pinned to 1.26.4 and all
+  pip dependencies are version-pinned for reproducibility.
+
+  \paragraph{Agent harness and sandbox.}
+  Each task is presented to the agent inside the container with a read-only
+  problem directory (\texttt{/task/problem}, held-out data) and a writable
+  scratch workspace (\texttt{/workspace}). Agents interact through one of three
+  CLI harnesses---Claude Code, Codex, or Gemini CLI---driving a ReAct-style
+  loop (\texttt{Bash}/\texttt{Read}/\texttt{Write}/\texttt{Edit} tools). 
+  
+  \paragraph{CPU/GPU scheduling.}
+  To co-locate many rollouts on one node, CPU-only tasks run unconstrained up to
+  a concurrency cap (\texttt{max\_workers}$=12$), while the
+  $15$ GPU-bearing tasks share a small pool of GPU slots
+  (\texttt{shared\_gpu\_slots}$=2$ per device). Each container is given up to
+  $32$ CPU cores and $150$\,GB RAM. A per-task wall-clock budget of $4$~hours
+  ($14{,}400$\,s, plus a $3{,}600$\,s environment-setup allowance) is enforced by
+  a watchdog that queries a time-remaining endpoint and gracefully stops the
+  container on expiry.
+
+  \paragraph{Model serving.}
+  The eight evaluated models (\texttt{glm-5.2}, \texttt{claude-sonnet-5},
+  \texttt{opus-4.8}, \texttt{deepseek-v4-pro}, \texttt{qwen3.7-max},
+  \texttt{minimax-m3}, \texttt{gemini-3.5-flash}, \texttt{gpt-5-mini}) are served
+  through OpenRouter behind a local Anthropic-/OpenAI-compatible gateway. No task-specific model fine-tuning is
+  performed; agents are prompted zero-shot.
+
+  \paragraph{Web Access}
+
+    Web access differs by subset. In \texttt{optimization}, internet access is
+    disabled in all containers: the Claude harness uses
+    \texttt{--disallowedTools WebSearch,WebFetch}, the Gemini harness a no-web
+    policy (\texttt{--policy /etc/naturebench/no-web.toml}), and the Codex harness
+    \texttt{web\_search=disabled}. In \texttt{open-ended}, agents are granted the
+    \texttt{WebSearch} and \texttt{WebFetch} tools. Because non-Anthropic models
+    served via OpenRouter cannot execute the Claude CLI's web-search sub-request
+    natively, that
+    single sub-request is routed through a transparent proxy to a genuine
+    Anthropic-backed search; all other turns are handled by the model under
+    evaluation. \add{We refer to this live-retrieval configuration as \emph{realsearch}: agents in the open-ended pool issue genuine queries against a real search backend and receive real retrieved content, as distinct from a \emph{search shim}, which returns model-generated text in place of retrieved results. Retrieval-integrity patterns (B.1, B.5, E.4) are therefore established against what the agent actually fetched, recorded in the retrieval log.}%
+
