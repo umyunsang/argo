@@ -171,3 +171,63 @@ def elements_needed(c: Components, target: float, n_methods: int, cap: int = 400
         if d_study(c, n_methods, n)["dependability_index"] >= target:
             return n
     return None
+
+
+def g_study_repeats(obs: dict, conditions, elements, n_repeats: int) -> dict:
+    """Condition x element with replicates, so error is estimated separately.
+
+    With more than one observation per cell the within-cell variation estimates
+    error directly, and the condition-by-element interaction is no longer
+    confounded with it. That is the whole reason for running repeats.
+    """
+    if n_repeats < 2:
+        raise DesignError(
+            f"separating interaction from error needs at least 2 repeats, got {n_repeats}"
+        )
+    if len(conditions) < 2:
+        raise DesignError(f"need at least 2 conditions, got {len(conditions)}")
+    if len(elements) < 2:
+        raise DesignError(f"need at least 2 elements, got {len(elements)}")
+    want = set(itertools.product(conditions, elements, range(n_repeats)))
+    missing = want - set(obs)
+    if missing:
+        raise DesignError(
+            f"design is not rectangular: {len(missing)} of {len(want)} cells are missing, "
+            f"first missing {sorted(missing)[0]}"
+        )
+    for k, v in obs.items():
+        if v not in (0, 1):
+            raise DesignError(f"observation at {k} is {v!r}; scores must be 0 or 1")
+
+    np_, ne, n = len(conditions), len(elements), n_repeats
+    grand = _mean(obs.values())
+    mp = {p: _mean(obs[(p, e, r)] for e in elements for r in range(n)) for p in conditions}
+    me_ = {e: _mean(obs[(p, e, r)] for p in conditions for r in range(n)) for e in elements}
+    cell = {(p, e): _mean(obs[(p, e, r)] for r in range(n))
+            for p in conditions for e in elements}
+
+    ss_p = ne * n * sum((mp[p] - grand) ** 2 for p in conditions)
+    ss_e = np_ * n * sum((me_[e] - grand) ** 2 for e in elements)
+    ss_pe = n * sum((cell[(p, e)] - mp[p] - me_[e] + grand) ** 2
+                    for p in conditions for e in elements)
+    ss_res = sum((obs[(p, e, r)] - cell[(p, e)]) ** 2
+                 for p in conditions for e in elements for r in range(n))
+
+    ms_p = ss_p / (np_ - 1)
+    ms_e = ss_e / (ne - 1)
+    ms_pe = ss_pe / ((np_ - 1) * (ne - 1))
+    ms_res = ss_res / (np_ * ne * (n - 1))
+
+    v_res = ms_res
+    v_pe = (ms_pe - ms_res) / n
+    v_p = (ms_p - ms_pe) / (ne * n)
+    v_e = (ms_e - ms_pe) / (np_ * n)
+    raw = {"condition": v_p, "element": v_e, "condition_element": v_pe, "residual": v_res}
+    clamped = {k: max(0.0, v) for k, v in raw.items()}
+    total = sum(clamped.values())
+    return {
+        "components": raw,
+        "negative_components": sorted(k for k, v in raw.items() if v < 0),
+        "clamped_share": {k: (v / total if total > 0 else 0.0) for k, v in clamped.items()},
+        "n_repeats": n,
+    }

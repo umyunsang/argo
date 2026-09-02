@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from gstudy import (  # noqa: E402
     Components, DesignError, check_rectangular, d_study, degrees_of_freedom,
-    elements_needed, g_study,
+    elements_needed, g_study, g_study_repeats,
 )
 
 FAILURES: list[str] = []
@@ -148,6 +148,52 @@ def main() -> int:
           d_study(c, 1, n - 1)["dependability_index"] < 0.8, str(n))
     check("an unreachable target returns None",
           elements_needed(Components(0.0001, 0.5, 0, 0, 0, 0, 0), 0.99, 1, cap=50) is None)
+
+    # --- the replicated two-facet design ------------------------------
+    CC = ["c00", "c01", "c10", "c11"]
+    EE = [f"e{i}" for i in range(6)]
+
+    def rbuild(fn, n=2):
+        return {(p, e, r): fn(p, e, r) for p in CC for e in EE for r in range(n)}
+
+    g = g_study_repeats(rbuild(lambda p, e, r: 1), CC, EE, 2)
+    check("replicated design on constant data gives zero everywhere",
+          all(abs(v) < 1e-12 for v in g["components"].values()), str(g["components"]))
+
+    g = g_study_repeats(rbuild(lambda p, e, r: 1 if p in ("c00", "c01") else 0), CC, EE, 2)
+    check("replicated design isolates a pure condition effect",
+          abs(g["components"]["condition"] - 1.0 / 3.0) < 1e-12,
+          f"expected 1/3, got {g['components']['condition']!r}")
+    check("a pure condition effect leaves no residual",
+          abs(g["components"]["residual"]) < 1e-12, str(g["components"]))
+
+    # repeats disagree inside every cell: that is error, not interaction
+    g = g_study_repeats(rbuild(lambda p, e, r: r % 2), CC, EE, 2)
+    check("within-cell disagreement lands in the residual",
+          g["components"]["residual"] > 0.2, str(g["components"]))
+    check("within-cell disagreement does not create a condition component",
+          g["components"]["condition"] <= 0.0 + 1e-12, str(g["components"]))
+
+    g = g_study_repeats(rbuild(lambda p, e, r: 1 if (p == "c11") != (e == "e0") else 0), CC, EE, 2)
+    check("a condition by element pattern lands in the interaction",
+          g["components"]["condition_element"] > 0.05, str(g["components"]))
+
+    check("clamped shares sum to one when anything is positive",
+          abs(sum(g["clamped_share"].values()) - 1.0) < 1e-12, str(g["clamped_share"]))
+
+    msg = raises(g_study_repeats, rbuild(lambda p, e, r: 1, 1), CC, EE, 1)
+    check("one repeat cannot separate interaction from error",
+          "at least 2 repeats" in msg, msg)
+
+    obs = rbuild(lambda p, e, r: 1); del obs[("c00", "e0", 0)]
+    msg = raises(g_study_repeats, obs, CC, EE, 2)
+    check("a missing replicate is refused and counted",
+          "not rectangular" in msg and "1 of 48" in msg, msg)
+
+    obs = rbuild(lambda p, e, r: 1); obs[("c00", "e0", 0)] = 2
+    msg = raises(g_study_repeats, obs, CC, EE, 2)
+    check("a non-binary replicate is refused with its value",
+          "must be 0 or 1" in msg and "2" in msg, msg)
 
     # --- guards, asserting the reason -----------------------------------
     obs = build(lambda p, m, e: 1); del obs[("c00", "span", "e0")]
