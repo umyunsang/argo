@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** audit the abstract and conclusions against the current results, since the paper has grown by many sections since they were written.
+- **next_first_action:** bind the remaining unbound numeric claims in the introduction and method sections to receipts, since the gate currently covers only the abstract.
 
-- **last_updated:** 2026-09-03T02:03:04+09:00
+- **last_updated:** 2026-09-03T02:08:18+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 30 closed — source-archive provenance repaired and gated after the first gate was shown to verify nothing
+- **current_phase:** cycle 31 closed — the abstract contradicted its own conclusions; rewritten against the record and gated
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 31 — the abstract said the work had not been done
+
+- **Gap picked:** the abstract was written before fifteen cycles of execution and never revisited.
+- **It contradicted its own conclusions.** The abstract stated that "the pilot and confirmatory study have not been executed", while the conclusions of the same document reported three executed blocks. It also still named the endpoint that had been falsified.
+- **Rewritten against the record:** the abstract now reports the three executed blocks, the falsified first endpoint at its measured false-positive rate of 0.969, the 14.4x cost-instrument understatement, the mutation audit that found four undetected fault classes, and the 28-decision census. It still states that no efficacy estimate exists and that judged scoring is inadmissible.
+- **Gated, not just fixed.** Six checks now forbid non-execution phrasing while executed receipts exist and read headline counts from the receipts themselves. Three failing-first mutations all fired: reintroducing the non-execution claim, dropping the pilot episode count, and stating a wrong false-positive rate.
+- **A duplicate source was caught by the commit guard.** This round re-ingested `arXiv:2608.25336`, which was already in the corpus under an existing bibliography key, producing a second locator, a second matrix row and a duplicate reference. The pre-commit validator refused on count mismatches; the duplicate was removed and the manuscript cites the existing entry.
+- **Limit stated:** the gate checks only the numbers it is told about, so a new unbound claim in the abstract would still pass.
 
 ### Cycle 30 — a provenance hole, and a gate that verified nothing
 

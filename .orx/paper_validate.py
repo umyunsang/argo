@@ -631,6 +631,9 @@ def main():
             + json.loads(
                 (ROOT / "paper/sources/arxiv-metadata-literature-round50-receipt.json").read_text(encoding="utf-8")
             ).get("records", [])
+            + json.loads(
+                (ROOT / "paper/sources/arxiv-metadata-literature-round52-receipt.json").read_text(encoding="utf-8")
+            ).get("records", [])
         )
         combined_metadata_ids = [x.get("source_id") for x in combined_metadata_records]
         duplicate_metadata_ids = sorted(k for k, v in collections.Counter(combined_metadata_ids).items() if v > 1)
@@ -1775,6 +1778,37 @@ def main():
             if proc.returncode != 0 or rebuilt != committed_digest:
                 errors.append("submission artifact is not reproducible from its committed builder")
 
+    abstract_claims = {"checked": 0, "failures": []}
+    claim_cfg = cfg.get("abstract_claim_consistency")
+    if claim_cfg:
+        paper_text = (ROOT / cfg["paper_path"]).read_text(encoding="utf-8")
+        start = paper_text.find("\\begin{abstract}")
+        stop = paper_text.find("\\end{abstract}")
+        abstract = paper_text[start:stop] if 0 <= start < stop else ""
+        if not abstract:
+            abstract_claims["failures"].append("abstract not found")
+        for forbidden in claim_cfg.get("forbidden_phrases", []):
+            abstract_claims["checked"] += 1
+            if forbidden.lower() in abstract.lower():
+                abstract_claims["failures"].append(
+                    f"abstract states {forbidden!r} while executed evidence exists")
+        for item in claim_cfg.get("numbers_from_receipts", []):
+            abstract_claims["checked"] += 1
+            receipt_path = ROOT / item["receipt"]
+            if not receipt_path.is_file():
+                abstract_claims["failures"].append(f"receipt missing: {item['receipt']}")
+                continue
+            obj = json.loads(receipt_path.read_text(encoding="utf-8"))
+            value = obj
+            for key in item["path"]:
+                value = value[key] if isinstance(value, dict) else value[int(key)]
+            rendered = item.get("render", "{}").format(value)
+            if rendered not in abstract:
+                abstract_claims["failures"].append(
+                    f"abstract does not state {rendered!r} from {item['receipt']}")
+    if abstract_claims["failures"]:
+        errors.append("abstract disagrees with the executed record")
+
     dangling_references = []
     external_artifacts = {"declared": 0, "verifiable": 0, "unverifiable": []}
     if cfg.get("dangling_reference_scan"):
@@ -2135,6 +2169,7 @@ def main():
             "pdf_text_extraction_errors": pdf_text_extraction_errors,
             "pdf_token_failures": pdf_token_failures,
         },
+        "abstract_claims": abstract_claims,
         "dangling_references": dangling_references,
         "external_artifacts": external_artifacts,
         "submission_artifact": submission_artifact,
