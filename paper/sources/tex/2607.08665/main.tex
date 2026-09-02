@@ -1,0 +1,717 @@
+\documentclass[journal]{IEEEtran}
+% ============================================================================
+% arXiv PREPRINT version: standard IEEE journal (IEEEtran, two-column), SOLE
+% author — matches the companion arXiv v2 (routing-oracle/paper_arxiv_v2):
+% \markboth running head "Preprint, July 2026" + journal-style page numbers.
+% Body matches paper_canonical (source of truth), incl. tab:sysconfig.
+% Results are auto-generated from experiments/results/*.csv via make_paper_assets.py
+% (tab_results.tex / tab_ablations.tex / tab_realcost.tex / tab_realverifier.tex
+%  + figs/) — regenerate assets after re-running experiments; do not hand-edit numbers.
+% ============================================================================
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{booktabs}
+\usepackage{array}
+
+\newcommand{\Oexp}{O^{\mathrm{exp}}}
+\newcommand{\Orepro}{O^{\mathrm{repro}}}
+\newcommand{\bestk}{\text{best-of-}K}
+
+\begin{document}
+
+\title{Resample or Reroute? Budget-Aware Test-Time Model Selection for Large Language Models}
+
+\author{Teng-Ruei~Chen%
+\thanks{T.-R. Chen is with the Institute of Bioinformatics and Systems Biology,
+National Yang Ming Chiao Tung University, Hsinchu 300, Taiwan, and also with
+Krixvon, Taipei 100, Taiwan (e-mail: ymchen.bi04g@g2.nctu.edu.tw).}}
+
+\markboth{Preprint,~July~2026}{Chen: Resample or Reroute?}
+
+\maketitle
+
+\begin{abstract}
+Routing among large language models (LLMs) trades response quality against
+serving cost, motivated by the reported gap between deployed routers and a
+per-instance oracle. Recent analysis shows that test-time \emph{resampling}
+can recover per-instance selection headroom that no single-commit router
+captures; however, that guarantee holds only under an idealized oracle
+equipped with correctness labels and an unconstrained budget, neither of which
+a deployed system has. To the best of our knowledge, no previous work treats
+resampling the committed model and rerouting to an alternative model as
+competing uses of a single per-query cost budget. Therefore, this work
+formulates \emph{budget-aware test-time model selection}: given a per-query
+budget and an imperfect verifier, allocate each unit of budget between
+resampling and rerouting so that expected correctness is maximized. An online
+\emph{resample-or-reroute} (RoR) allocation policy driven by estimated
+marginal correctness per unit cost is proposed, and its behavior is grounded in the recoverability asymmetry between
+selection and sampling. Replay experiments on newly regenerated multi-draw correctness
+tensors from an eleven-model open-weight pool over four benchmarks of
+differing difficulty show that the proposed RoR policy attains a favorable
+cost--quality Pareto front relative to single-route, one-commit-router,
+budget-aware best-of-$K$, cascade, and random-allocation baselines for the
+tested pools,
+with the largest gains on the most heterogeneous benchmark; an ablation
+further shows the gains are verifier-gated, shrinking as verifier quality
+degrades, and robustness replays under a provider price vector and a
+label-free agreement verifier delineate where the conclusions carry over.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Best-of-$K$ sampling, cost-aware inference, inference efficiency, large
+language models, model routing, model selection, test-time compute.
+\end{IEEEkeywords}
+
+
+\section{Introduction}\label{sec:introduction}
+\IEEEPARstart{S}{erving} a query with large language models (LLMs) increasingly
+means choosing \emph{how} to spend inference compute, not just \emph{which}
+model to call: inference-time cost and energy are first-class deployment
+constraints~\cite{argerich2024energy}, cost- and QoS-aware resource management
+for ML services is an established concern of serving
+infrastructures~\cite{khan2022mlcentric}, and the space of candidate models
+keeps broadening~\cite{shao2024surveyllm}. Model \emph{routing} promises to cut cost by sending each query
+to the cheapest model that can answer it, motivated by the large reported gap
+between a deployed router and a per-instance oracle that, in hindsight, always
+picks a correct model~\cite{routerbench,llmrouterbench,frugalgpt,routellm}.
+
+Two facts complicate this picture. First, under stochastic decoding the
+per-instance oracle is not a reproducible property: it is built from single
+draws, so part of the reported gap is single-draw label noise that
+\emph{no} single-commit router can capture, while the rest is genuine,
+recoverable specialist advantage~\cite{routinggapreal}. Second, that
+recoverable component can also be reached without any router at all: test-time
+\emph{resampling} (best-of-$K$ on one committed model) provably recovers the
+selection floor at the oracle's own budget~\cite{routinggapreal}. The catch is
+that this guarantee assumes access to correctness labels (a perfect verifier)
+and spends the oracle's budget; a real serving system has an \emph{imperfect}
+verifier and a \emph{fixed} cost budget per query.
+
+This work addresses the operational question these results leave open:
+\emph{given a per-query cost budget and an imperfect verifier, should a system
+resample the model it already committed to, or reroute to a different
+(possibly more expensive) model?} The question is cast as a budgeted
+correctness-maximization problem, and an online policy is proposed that
+allocates each unit of budget to whichever action---one more sample of a
+candidate, or the first sample of a new candidate---has the highest estimated
+marginal correctness per unit cost.
+
+The main contributions of this work are summarized as follows.
+\begin{itemize}
+  \item To the best of our knowledge, this is the first work to treat
+        resampling the committed model and rerouting to an alternative as
+        competing uses of a single per-query budget. This \emph{budget-aware
+        test-time model selection} problem is formalized as maximizing
+        expected correctness under a per-query cost budget with an imperfect
+        verifier (Section~\ref{sec:problem}).
+  \item An online \emph{resample-or-reroute} (RoR) allocation policy (a
+        marginal-gain greedy rule and a UCB variant) is proposed, together
+        with an oracle allocation that serves as a reference ceiling
+        (Section~\ref{sec:method}).
+  \item The policy's behavior is connected to the recoverability asymmetry
+        between selection and sampling established in the companion
+        analysis~\cite{routinggapreal} (Section~\ref{sec:theory}).
+  \item A system-level replay evaluation on four regenerated open-model pools
+        reports the cost--quality Pareto front against single-route,
+        one-commit-router, budget-aware best-of-$K$, cascade, and
+        random-allocation baselines, together with a
+        verifier-quality ablation (Sections~\ref{sec:setup}--\ref{sec:results}).
+\end{itemize}
+
+\textbf{Relation to the companion paper.} This work is a method-oriented
+follow-up to the theoretical study of the router-to-oracle
+gap~\cite{routinggapreal}; the differences are threefold: 1)~for the type of
+contribution, that work proves a decomposition and a recoverability asymmetry,
+whereas this work builds and evaluates a deployable policy; 2)~for the
+information assumptions, that work grants the recovery procedure oracle
+correctness labels at the oracle's own budget, whereas this work assumes only
+an imperfect verifier under a fixed per-query budget; and 3)~for the role of
+routing, that work adds no router by design, whereas this work actively
+decides between resampling and rerouting.
+
+The rest of this paper is organized as follows.
+Section~\ref{sec:related} reviews related work.
+Section~\ref{sec:problem} formulates the problem, and
+Section~\ref{sec:method} presents the resample-or-reroute policy.
+Section~\ref{sec:theory} grounds the policy theoretically.
+Sections~\ref{sec:setup} and~\ref{sec:results} report the experimental setup
+and results, Section~\ref{sec:discussion} discusses limitations, and
+Section~\ref{sec:conclusion} concludes this work.
+
+\section{Related Work}\label{sec:related}
+\textbf{Cost-aware routing and cascades.} FrugalGPT~\cite{frugalgpt} and model
+cascades escalate from cheaper to more expensive models under a confidence
+gate; learned routers such as RouteLLM~\cite{routellm} predict, per query, a
+single model to commit to; and Sheokand \emph{et al.}~\cite{sheokand2025brokered}
+escalate unresolved reasoning traces from a base model to a brokered layer of
+expert LLMs, a reflection-style variant of cascading. Budgeted cascades
+predate LLMs: Xu \emph{et al.}~\cite{xu2014classifier} learn classifier
+cascades that trade test-time evaluation cost against accuracy, and the
+reject-option literature~\cite{bartlett2008reject,hendrickx2024reject}
+formalizes paying a fixed cost to abstain rather than accept a likely-wrong
+prediction --- the primitive behind escalation. The same accept-or-escalate structure
+predates LLMs in two adjacent literatures: QoS-aware service selection chooses,
+per request, which functionally equivalent service to invoke under quality and
+cost constraints~\cite{zheng2011qosaware}, and adaptive edge offloading uses a
+calibrated early-exit confidence to decide whether to accept a cheap local
+prediction or escalate to a larger remote model~\cite{pacheco2023calibration},
+a decision studied broadly in the computation-offloading
+literature~\cite{mustafa2024dnnoffloading,gauttam2026edgeai}. These approaches
+optimize \emph{which} model to call
+but treat each call as a single draw. The proposed policy adds an orthogonal
+axis: spending budget on \emph{repeated draws} of the committed model, and
+choosing between that and rerouting.
+
+\textbf{Test-time sampling.} Best-of-$N$, self-consistency~\cite{selfconsistency},
+and test-time compute scaling~\cite{scalingtesttime} improve quality by drawing
+multiple samples and selecting among them; Farr
+\emph{et al.}~\cite{farr2025ensemble} aggregate ensemble disagreement into
+uncertainty estimates that flag unreliable LLM outputs, a verifier-style
+signal of the kind the proposed policy consumes. These works fix the model and
+scale samples; this work integrates sample scaling and model choice into one budgeted
+decision, and uses the recoverability asymmetry~\cite{routinggapreal} to explain
+\emph{when} resampling beats rerouting.
+
+\textbf{Routing benchmarks.} RouterBench~\cite{routerbench},
+RouterEval~\cite{routereval}, and LLMRouterBench~\cite{llmrouterbench} provide
+per-(query,\,model) correctness matrices we build on; we reuse and extend
+multi-draw regenerations of these pools. Reliability pitfalls of single-run
+evaluation are increasingly documented in the evaluation
+literature~\cite{sheikhi2026beyond}, including large score variance across
+prompt variants~\cite{mizrahi2024state} --- the same concern the multi-draw
+protocol addresses on the decoding axis.
+
+\textbf{Efficient LLM inference.} An orthogonal family of levers reduces the
+cost of each call rather than the allocation of calls: quantization,
+compression, and related techniques are surveyed in~\cite{mussa2025efficient},
+and inference-time energy profiling guides deployment
+choices~\cite{argerich2024energy}. A second orthogonal family
+operates at the serving-system layer: SLO-aware scheduling and provisioning of
+inference workloads~\cite{hu2026brownoutserve,xu2023igniter} decides
+\emph{how} to run the chosen model, whereas the proposed policy decides
+\emph{which} model to sample next. Both families compose with the proposed
+policy, which reallocates a fixed per-query budget across models and draws.
+
+Table~\ref{tab:positioning} positions this work against the related families:
+prior approaches either choose among models or spend repeated draws, but none
+treats the two as competing uses of one explicit per-query budget under an
+imperfect verifier.
+
+\begin{table*}[t]\centering\footnotesize
+\caption{Positioning against related approach families.}
+\label{tab:positioning}
+\begin{tabular}{lcccc}\toprule
+ & Chooses & Repeated & Per-query & Imperfect \\
+Approach family & among models & draws & budget & verifier \\ \midrule
+Learned routers~\cite{routellm} & \checkmark & -- & -- & -- \\
+Cascades~\cite{frugalgpt,xu2014classifier} & \checkmark (sequential) & -- & cost gate & confidence gate \\
+Best-of-$N$ / self-consistency~\cite{selfconsistency,scalingtesttime} & -- & \checkmark & fixed $N$ & selector needed \\
+LLM ensembles~\cite{farr2025ensemble} & \checkmark (parallel) & -- & -- & UQ signal \\
+Reject option~\cite{bartlett2008reject,hendrickx2024reject} & abstain/accept & -- & reject cost & confidence \\
+\textbf{RoR (this work)} & \checkmark & \checkmark & \checkmark & \checkmark (parametric) \\
+\bottomrule\end{tabular}\end{table*}
+
+\textbf{Best-arm identification.} Allocating draws to candidates connects to
+pure-exploration bandits~\cite{audibert2010,kaufmann2016}; this work borrows their
+marginal-value intuition but targets a budgeted correctness objective rather than
+identifying a single best arm.
+
+\section{Problem Formulation}\label{sec:problem}
+Consider a query $i$, a pool of models $\mathcal{M}=\{1,\dots,M\}$ with per-draw
+costs $c_1,\dots,c_M$, and a per-query cost budget $B$. Drawing a sample from
+model $m$ yields a candidate answer that is correct with (unknown) probability
+$p_{im}$. A (possibly imperfect) verifier $v$ scores candidates and is used both
+to \emph{select} a final answer and to \emph{guide} allocation; $v$ is not
+assumed to reveal ground-truth correctness. Table~\ref{tab:notation} summarizes
+the notation.
+
+\begin{table}[t]\centering
+\caption{Main notation.}
+\label{tab:notation}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{ll}\toprule
+Symbol & Meaning \\ \midrule
+$i$ & query index \\
+$\mathcal{M}$, $M$ & model pool and its size \\
+$c_m$ & cost of one draw from model $m$ \\
+$B$ & per-query cost budget \\
+$p_{im}$ & probability that one draw of $m$ answers $i$ correctly \\
+$k$ & recorded draws per (query, model) cell in the replay \\
+$v$, $q$ & verifier and its quality parameter \\
+$\bar{p}_m$ & offline (train-split) accuracy of model $m$ \\
+$n_{im}$, $w_{im}$ & draws of $m$ spent on query $i$, and how many verified correct \\
+$\hat{p}_{im}$ & posterior mean of $p_{im}$ during a query \\
+$s$ & prior pseudo-count in the belief update \\
+$\hat{a}$ & final answer returned by the policy \\
+\bottomrule\end{tabular}}\end{table}
+
+A policy $\pi$ observes the history of drawn candidates and their verifier
+scores and, at each step, chooses an action $a\in\{\textsc{resample}(m),
+\textsc{reroute}(m')\}$ (one more draw from an already-used model $m$, or the
+first draw from a new model $m'$) until the spent budget reaches $B$; it then
+returns a final answer $\hat{a}$. The objective is
+\begin{equation}
+\max_{\pi}\; \mathbb{E}\big[\,\mathbf{1}\{\hat{a}\ \text{correct}\}\,\big]
+\quad\text{s.t.}\quad \textstyle\sum \text{cost} \le B .
+\end{equation}
+We report performance as a cost--quality curve: expected correctness as a
+function of the average budget $B$, and compare policies by Pareto dominance.
+Note that the constraint binds per query, not in expectation over queries;
+with a verifier that stops a query early, the \emph{spent} cost can therefore
+be far below $B$, which is exactly the effect the cost axis of the Pareto
+curves measures.
+
+\section{Method: Resample-or-Reroute}\label{sec:method}
+The proposed resample-or-reroute (RoR) policy maintains, for each candidate
+model, a running estimate of its success probability on the \emph{current}
+query and its per-draw cost, and repeatedly spends the next unit of budget
+where the estimated return per unit cost is highest. This section presents the
+belief update, the allocation rule, the two variants, and the computational
+cost.
+
+\subsection{Per-Query Belief Update}\label{sec:belief}
+Let $\bar{p}_m$ denote model $m$'s offline accuracy, calibrated once on the
+train split. During a query $i$, after $n_{im}$ draws of model $m$ of which
+$w_{im}$ were verified correct, the policy scores $m$ by the posterior mean
+\begin{equation}\label{eq:belief}
+\hat{p}_{im}=\frac{s\,\bar{p}_m+w_{im}}{s+n_{im}},
+\end{equation}
+where the pseudo-count $s$ controls how strongly the offline prior anchors the
+estimate. The choice of $s$ implements the resample-or-reroute trade-off: with
+a small $s$, one or two failed draws pull $\hat{p}_{im}$ below a fresh model's
+$\bar{p}_{m'}$ and thereby trigger a reroute, whereas a run of successes keeps
+the policy resampling the committed model. For a model not yet tried on this
+query, $n_{im}=0$ and $\hat{p}_{im}=\bar{p}_m$, so rerouting competes on the
+offline prior alone. Section~\ref{sec:results} shows the policy is insensitive
+to $s$ over an order of magnitude.
+
+\subsection{Marginal-Gain Allocation Rule}
+At each step the policy takes the action with the highest estimated
+\emph{marginal correctness per unit cost}:
+\begin{equation}\label{eq:rule}
+a^\star=\arg\max_{a}\ \frac{\widehat{\Delta\mathrm{corr}}(a)}{\mathrm{cost}(a)},
+\end{equation}
+where $\widehat{\Delta\mathrm{corr}}$ estimates the increase in the probability
+that the finally selected answer is correct; under early stopping this is the
+probability $\hat{p}_{im}$ that the next draw of $m$ succeeds, so the rule
+reduces to $a^\star=\arg\max_{m\ \text{affordable}}\ \hat{p}_{im}/c_m$.
+Resampling model $m$ increases the chance that a verifier-selected answer from
+$m$ is correct (a $\bestk$-style lift); rerouting to $m'$ opens a new, possibly
+higher-$p$ candidate at a different cost. Both actions are scored on the same
+scale, which is what makes them competing uses of one budget rather than
+separate mechanisms.
+
+\subsection{Variants and Reference Ceiling}
+We consider a greedy variant and a UCB variant that adds an exploration bonus
+$\sqrt{2\ln(t+1)/(n_{im}+1)}/c_m$ at step $t$ to under-sampled models; an
+oracle allocation (with access to true $p_{im}$) provides a non-deployable
+upper bound. Algorithm~\ref{alg:ror} summarizes the greedy variant.
+
+\subsection{Computational Cost}
+Each step scores at most $M$ actions with $O(1)$ arithmetic per action, and a
+query takes at most $\lceil B/c_{\min}\rceil$ steps, so the per-query overhead
+is $O(M\,B/c_{\min})$ time and $O(M)$ memory --- negligible relative to a
+single LLM call. The policy is stateless across queries except for the $M$
+offline priors $\bar{p}_m$.
+
+\begin{algorithm}[t]
+\caption{Resample-or-Reroute (greedy)}
+\label{alg:ror}
+\begin{algorithmic}[1]
+\State \textbf{Input:} pool $\mathcal{M}$, costs $c_m$, budget $B$, verifier $v$
+\State spent $\gets 0$; draw one sample from the cheapest model; init $\hat{p}$
+\While{spent $< B$}
+  \For{each action $a$ (resample used $m$, or reroute to new $m'$)}
+    \State estimate marginal gain $\widehat{\Delta\mathrm{corr}}(a)$ and cost
+  \EndFor
+  \State take $a^\star=\arg\max_a \widehat{\Delta\mathrm{corr}}(a)/\mathrm{cost}(a)$
+  \State update $\hat{p}$; spent $\gets$ spent $+\ \mathrm{cost}(a^\star)$
+\EndWhile
+\State \Return answer maximizing verifier score across all drawn candidates
+\end{algorithmic}
+\end{algorithm}
+
+\section{Theoretical Grounding}\label{sec:theory}
+% Keep light; the heavy theory lives in the companion paper [routinggapreal].
+The recoverability asymmetry~\cite{routinggapreal} states that the per-instance
+selection floor is closed by no single-commit router but is recovered by
+resampling at the oracle's budget. The proposed policy inherits two consequences.
+First, when a committed model's reproducible success probability is high,
+resampling has larger marginal correctness-per-cost than rerouting, so the
+greedy rule prefers resampling---matching the asymmetry. Second, with an
+imperfect verifier the reachable correctness interpolates between the
+verifier-free aggregate and the labeled oracle bound
+($\Orepro\le O^{\mathrm{agg}}\le\Oexp$ in the companion paper's notation); we
+characterize this dependence empirically in Section~\ref{sec:results}.
+
+\section{Experimental Setup}\label{sec:setup}
+\textbf{Data.} We evaluate on newly regenerated multi-draw correctness tensors built
+with the companion protocol~\cite{routinggapreal}: for each of four benchmarks
+--- GSM8K (arithmetic, near-saturated), MATH-500 (competition math,
+intermediate), GPQA-Diamond (graduate science, hard and heterogeneous), and
+HumanEval+ (code generation, execution-scored) ---
+every (query, model) cell holds $k{=}30$ seed-aligned draws at $T{=}0.2$
+(top-$p$ $1.0$) from a pool of $11$ open-weight models spanning eight
+pretraining lineages (Mistral; Qwen~2.5 at 7B/14B/32B plus a Qwen-based
+DeepSeek-R1 distill; Phi-4; OLMo-2; Yi-1.5; Granite-3.3; Gemma-2; Llama-3.1).
+The first three benchmarks are exact-match scored; on HumanEval+ a draw is
+correct iff it passes the full EvalPlus test suite (per-draw pass@1). Sizes:
+$500$/$500$/$198$/$164$ queries.
+
+\textbf{Protocol.} Policies are replayed offline on the recorded draws: a
+``sample from model $m$'' consumes one of its $k$ pre-computed draws (without
+replacement, order randomized per trial). Queries are split 50/50; per-model
+priors and the best single model are calibrated on the train half; we report
+test-half accuracy averaged over $20$ random draw orderings, sweeping the
+per-query budget $B$. The replay is implemented in Python/NumPy and runs on
+CPU only, so every reported number is reproducible from the released tensors
+without model inference.
+
+Table~\ref{tab:settings} lists the experimental settings; parameters follow the
+companion protocol~\cite{routinggapreal}, and the budget grid spans from one
+draw of the cheapest model to six draws of the most expensive one.
+
+\begin{table}[t]\centering
+\caption{Experimental settings.}
+\label{tab:settings}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{ll}\toprule
+Setting & Value \\ \midrule
+Benchmarks (queries) & GSM8K (500), MATH-500 (500), GPQA-Diamond (198), HumanEval+ (164) \\
+Model pool & $M=11$ open-weight models, eight lineages \\
+Draws per cell & $k=30$, seed-aligned \\
+Decoding & $T=0.2$, top-$p$ $1.0$ \\
+Train/test split & $50/50$ (priors on train, results on test) \\
+Draw orderings & $20$ independent permutations per policy \\
+Budget grid & $12$ points in $[c_{\min},\, 6\,c_{\max}]$ \\
+Prior pseudo-count & $s=2$ (sensitivity in Table~\ref{tab:ablations}) \\
+Implementation & Python/NumPy replay, CPU only \\
+\bottomrule\end{tabular}}\end{table}
+
+\textbf{Generation environment.} The correctness tensors were produced by
+serving the eleven-model pool under vLLM at $T{=}0.2$ on the hardware and
+NVIDIA CUDA software in Table~\ref{tab:sysconfig} --- the vLLM/PyTorch build
+rests on NVIDIA's CUDA math and communication libraries (cuBLAS, cuDNN, NCCL)
+alongside CUTLASS and FlashInfer attention kernels; following the companion
+protocol's small-disk design, one model is resident at a time and its weights
+are evicted before the next is loaded. This concerns only how the tensors were
+\emph{generated}: the allocation replay analyzed in this paper is CPU-only
+(Table~\ref{tab:settings}) and reproduces every reported number from the
+released tensors without any model inference or accelerator.
+
+\begin{table}[t]\centering
+\caption{Generation environment (tensor production only; the allocation replay
+of this paper is CPU-only). Values are the audited runtime recorded by an
+automatic environment probe.}
+\label{tab:sysconfig}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{ll}\toprule
+Component & Value \\ \midrule
+CPU & AMD EPYC~7J13, $24$ vCPUs \\
+RAM & $64$\,GB \\
+GPU & $2\times$ NVIDIA GeForce RTX~4090, $24$\,GB each (Ada Lovelace, cc~$8.9$) \\
+OS & Ubuntu~$24.04$ LTS (kernel~$6.8$) \\
+NVIDIA driver & $580.159.03$ \\
+CUDA toolkit / runtime & $13.0$ (NVCC~$13.2$, NVRTC~$13.0$) \\
+NVIDIA math libraries & cuBLAS~$13.1$, cuDNN~$9.19$, cuSPARSELt~$0.8$ \\
+NVIDIA communication & NCCL~$2.28.9$, NVSHMEM~$3.4.5$ \\
+CUDA attention kernels & CUTLASS~$4.5$, FlashInfer~$0.6.12$ (vLLM backend) \\
+Framework & PyTorch~$2.11.0$, vLLM~$0.23.0$, Transformers~$5.12.1$ \\
+Serving & one model resident at a time (weights evicted between models) \\
+\bottomrule\end{tabular}}%
+\\[2pt]{\footnotesize Also installed as CUDA~13 build dependencies (pulled via
+\texttt{pip} by the PyTorch/vLLM build, beyond those above): cuFFT, cuRAND,
+cuSOLVER, cuSPARSE, cuPTI, nvJitLink, NVVM, NVTX, cuFile, and nvidia-ml-py; the
+complete environment probe ships with the released code.}\end{table}
+
+\textbf{Cost.} Per-draw cost is proxied by the model's parameter count in
+billions --- a monotone stand-in for \$-per-token serving cost. Replacing it
+with a measured price/latency vector is a deployment-specific calibration that
+does not change the mechanism (Section~\ref{sec:discussion}).
+
+\textbf{Verifier.} The main experiment assumes a reliable verifier: a policy
+stops as soon as a drawn answer is verified correct (early stopping), which is
+the setting where the recoverability asymmetry is fully available. Because raw
+language-model confidence is known to be poorly calibrated on question
+answering~\cite{jiang2021calibration}, a deployed verifier is imperfect; we
+therefore degrade the verifier parametrically: with quality $q$, final selection succeeds
+with probability $q\cdot\mathbf{1}\{\text{any drawn sample correct}\} +
+(1-q)\cdot(\text{fraction of drawn samples correct})$, interpolating between a
+perfect verifier ($q{=}1$) and a random pick over drawn samples ($q{=}0$), with
+no early stopping for $q<1$.
+
+\textbf{Baselines.} (i) \emph{single-route}: one draw of the most accurate
+model; (ii) \emph{router (one commit)}: a learned per-query router's committed
+model, one draw; (iii) \emph{budget-aware best-of-$K$}: the strongest
+single-model baseline --- it picks, per budget, the model maximizing expected
+best-of-$K$ accuracy and only resamples it; (iv) \emph{FrugalGPT-style
+cascade}: escalate cheap$\to$expensive, one draw each; (v) \emph{random
+allocation}; and (vi) \emph{oracle allocation}, a non-deployable ceiling that
+routes each query to the cheapest model with a correct draw.
+
+\section{Results}\label{sec:results}
+\input{tab_results}
+
+\begin{figure*}[t]\centering
+\includegraphics[width=\textwidth]{figs/fig_pareto.pdf}
+\caption{Cost--quality Pareto fronts on the four regenerated pools (verifier
+$q{=}1$; mean over 20 draw orderings). The policy (blue) dominates or matches
+every budget-scalable baseline across budgets on GSM8K, MATH-500, and GPQA; on
+the near-saturated HumanEval+ it leads at low budget but converges with cascade
+and random allocation at high budget (see text); the
+amber dashed line is the non-deployable oracle-allocation ceiling.
+Single-commit policies (star/plus) are budget-independent points ---
+Pareto-incomparable at the lowest GPQA budgets, overtaken beyond
+cost~${\sim}11$.}
+\label{fig:pareto}
+\end{figure*}
+
+\textbf{Regimes across benchmarks.} From Table~\ref{tab:results} and
+Fig.~\ref{fig:pareto}, the same mechanism pays off differently by regime.
+On \emph{saturated} GSM8K every budget-using policy approaches the ceiling
+(cascade and random reach ${\ge}0.992$; best-of-$K$ plateaus at $0.983$), so
+the margin is mostly cost: the proposed policy reaches $0.993$ at mean cost
+$9.2$, i.e.\ $24$--$34\%$ cheaper than the cascade ($12.1$) and budget-aware
+best-of-$K$ ($13.9$), and $3.5\times$ cheaper than single-routing the best
+model ($9.2$ vs $32.0$) while also being $2.7$~points more accurate ($0.993$ vs $0.966$). This
+is reasonable because on a near-saturated benchmark almost every model can
+eventually produce a correct draw, so the advantage comes from stopping early
+on cheap models rather than from finding a specialist. On \emph{intermediate}
+MATH-500 the policy is $2.1$~points above the strongest baseline at matched
+cost ($0.887$ vs $0.867$) and $10$~points above the one-commit router at
+$18\%$ lower cost. On \emph{hard, heterogeneous} GPQA-Diamond --- where the
+pool's specialists genuinely differ --- rerouting matters most: $0.968$ vs
+$0.861$ for best-of-$K$ at matched cost ($+10.7$~points), $+4.1$ over the
+cascade, and roughly $+40$~points over either single-commit policy. Note one
+exception: at the very lowest GPQA budgets (${\sim}8$, below one draw of most
+strong models) the single-commit points ($0.55$--$0.57$ at cost $8$) beat the
+policy's cheapest-first exploration ($0.35$ at cost $7$); the policy overtakes
+them once the budget affords a second draw (${\sim}11$). The overall ordering
+matches the companion analysis: the more heterogeneous the pool, the more of
+the gap is recoverable by moving budget \emph{between} models rather than only
+resampling one.
+
+On \emph{code} (HumanEval+) the picture resembles saturated GSM8K: at matched
+mid budget RoR reaches $0.952$, against $0.852$ for budget-aware best-of-$K$
+($+10.0$~points) and $0.858$ for single-routing the best model at lower cost.
+Here, though, the honesty cuts the other way. With a near-perfect execution
+verifier and a high union ceiling ($0.988$ oracle allocation), the two
+undirected budget-scalable baselines catch up at this budget --- the cascade
+ties RoR ($0.952$) and random allocation slightly exceeds it ($0.959$) ---
+because when almost every query is solvable by \emph{some} draw and verification
+is reliable, spreading draws widely eventually succeeds regardless of
+\emph{which} model is chosen. RoR's advantage on code is therefore concentrated
+at low budget (it matches single-routing at ${\sim}3.2\times$ lower cost) rather
+than in a high-budget accuracy ceiling; crucially,
+Table~\ref{tab:realverifier-code} shows this low-budget advantage is preserved
+under a realistic, imperfect code verifier, whereas the undirected baselines are
+not evaluated there because they lack a per-query stopping signal.
+
+\textbf{Distance to the ceiling.} From Table~\ref{tab:results}, oracle
+allocation attains $1.0$/$0.944$/$1.0$ at mean cost ${\sim}7$. For the tested
+pools, this suggests that knowing \emph{which} cheap model will succeed is
+worth more than additional blind budget; the gap between the blue curve and
+the amber line can accordingly be read as the value of a better router signal
+rather than of more sampling --- the two axes the framework separates.
+
+\begin{figure}[t]\centering
+\includegraphics[width=0.9\columnwidth]{figs/fig_verifier.pdf}
+\caption{Verifier-quality ablation: policy accuracy at matched mid budget as
+the verifier degrades from perfect ($q{=}1$) toward a random pick over drawn
+samples. The largest gains (GPQA) degrade fastest as verifier quality drops.}
+\label{fig:verifier}
+\end{figure}
+
+\textbf{The gains are verifier-gated.} From Fig.~\ref{fig:verifier},
+degrading the verifier shrinks the recovered advantage most where it was
+largest: at matched mid budget, GPQA falls $0.968\to0.710\to0.675$ as
+$q:1.0\to0.8\to0.6$ (MATH-500: $0.887\to0.811\to0.794$; GSM8K:
+$0.993\to0.979\to0.970$). At
+$q{=}0.6$ the policy still leads all deployable baselines on GPQA ($0.675$ vs
+$0.648$ budget-aware best-of-$K$, $0.509$ cascade), but on MATH-500 its margin inverts slightly
+against budget-aware best-of-$K$ ($0.794$ vs $0.803$) --- it is speculated
+that, when the verifier
+cannot be trusted, exploring alternative models buys less than concentrating
+draws on one strong model. This mirrors the companion paper's
+$\Orepro\le O^{\mathrm{agg}}\le\Oexp$ ordering: test-time
+recovery appears available roughly to the extent a deploy-time verifier is.
+
+\begin{figure*}[t]\centering
+\includegraphics[width=\textwidth]{figs/fig_pareto_q06.pdf}
+\caption{Cost--quality fronts of the budget-scalable policies under a degraded
+verifier ($q{=}0.6$; mean over 20 draw orderings). The cascade and random
+allocation degrade the most; budget-aware best-of-$K$ becomes the only
+competitive baseline, slightly overtaking RoR on MATH-500 while RoR keeps the
+lead on GPQA-Diamond.}
+\label{fig:pareto_q06}
+\end{figure*}
+
+\textbf{Degraded verifier, full front.} Fig.~\ref{fig:pareto_q06} repeats the
+whole budget sweep at $q{=}0.6$ rather than a single matched point. Two
+observations follow. First, the policies that spread budget across many models
+(cascade, random) lose the most --- at matched mid budget they fall to
+$0.509$/$0.507$ on GPQA and $0.625$/$0.637$ on MATH-500 --- which is reasonable
+because a weak verifier turns every extra candidate into a chance of selecting
+a wrong answer. Second, the concentrated policies degrade far less, and the
+ordering between RoR and budget-aware best-of-$K$ becomes benchmark-dependent
+(RoR ahead on GPQA, $0.675$ vs $0.648$; slightly behind on MATH-500, $0.794$
+vs $0.803$), consistent with the interpretation that rerouting pays only when
+the verifier can be trusted to recognize a specialist's correct answer.
+
+\textbf{Sensitivity and stability.} Table~\ref{tab:ablations} varies the two
+knobs the policy actually has, at a fixed per-query budget $B{=}26$. The prior
+pseudo-count $s$ changes accuracy by at most $1.7$~points over an order of
+magnitude ($s{=}0.5$ to $8$; GSM8K and MATH-500 are essentially flat), so the
+default $s{=}2$ is not tuned to the test set. Calibrating the offline priors
+on $30\%$ instead of $70\%$ of the queries costs at most $1.3$~points
+(GSM8K $0.983\to0.996$ over the sweep; GPQA $0.735\to0.744$), indicating the
+policy needs only a coarse ranking of the models, not precise accuracies.
+Across the $20$ draw orderings the standard deviation is
+$0.003$/$0.009$/$0.023$ on GSM8K/MATH-500/GPQA respectively --- small relative
+to the reported margins, though largest on GPQA, whose test half has only
+$99$ queries.
+
+\input{tab_ablations}
+
+\input{tab_realcost}
+
+\textbf{Real-price replay.} The parameter-count proxy preserves size ordering
+but not real serving economics, so we replay the whole $q{=}1$ sweep under a
+provider-calibrated price vector: the exact OpenRouter output price for the
+three pool models listed there, and the median output price of same-size-tier
+text models on the same catalog otherwise (7--9B \$0.15/M, $n{=}13$; 14--16B
+\$0.24/M; 30--34B \$0.458/M; accessed July 2026).\footnote{\texttt{openrouter.ai/api/v1/models};
+prices in \$ per million output tokens.} Real prices decouple cost from size:
+Phi-4 (14.7B, \$0.14/M) is cheaper than most 7--9B models, Llama-3.1-8B
+(\$0.03/M) is $5\times$ cheaper than same-size peers, and the 32B model costs
+only ${\sim}3\times$ the 7--9B median. From Table~\ref{tab:realcost}, the
+conclusions carry over under this snapshot: RoR reaches $0.992$ on GSM8K at
+\$0.06 (tying the cascade), leads MATH-500 with $0.903$ at \$0.42 against
+$0.800$ for best-of-$K$ and $0.870$ for the cascade, and leads GPQA with
+$0.970$ at \$0.31 against $0.919$/$0.929$. Notably, budget-aware best-of-$K$
+\emph{weakens} under real prices --- committing to one model is harder when
+price ordering no longer tracks ability --- while RoR, which reallocates
+per query, is less sensitive to the reshuffle. These numbers are specific to
+one provider snapshot; the replay itself re-runs in minutes on CPU for any
+other price vector.
+
+\input{tab_realverifier}
+
+\textbf{A real verifier: agreement-based verification.} Beyond the parametric
+$q$, we instantiate a verifier a deployed system can actually run:
+\emph{agreement} (self-consistency) --- a drawn sample counts as verified when
+its extracted answer matches another drawn sample, the query stops once any
+answer reaches a consensus of $A{=}2$ draws, and the final answer is the
+plurality cluster. No labels or reward model are involved. From
+Table~\ref{tab:realverifier}, the outcome splits by answer space. On GSM8K,
+whose free-form numeric answers rarely collide by chance, agreement is
+informative: RoR attains $0.958$ against $0.942$ for agreement-gated
+best-of-$K$, retaining a small lead. On MATH-500 the two are within a point at
+the larger budget ($0.789$ vs $0.787$). On GPQA, a four-option multiple-choice
+benchmark, agreement is nearly uninformative --- two wrong draws easily agree
+on the same letter --- and the ordering \emph{reverses} ($0.552$ vs $0.572$ at
+$B{=}26$), with RoR degrading as budget grows ($0.536$ at $B{=}58$) because
+exploring more models manufactures spurious consensus faster. This matches the
+parametric prediction that RoR's edge shrinks and can invert in the low-$q$
+regime, and yields a concrete deployment rule: agreement-based verification
+suffices for open-ended answer spaces, while multiple-choice tasks need a
+verifier stronger than consensus.
+
+\input{tab_realverifier_code}
+
+\textbf{A real verifier for code: partial test suites.} For HumanEval+ the
+natural deployable verifier is not agreement but a \emph{partial test suite}:
+the original HumanEval base tests are visible in the prompt (weak and gameable),
+while the held-out EvalPlus tests are the truth. Using base-test pass as the
+early-stopping signal and full-suite pass as ground truth
+(Table~\ref{tab:realverifier-code}), the measured false-accept rate is only
+$1.0\%$ --- a draw that clears the base tests almost always clears the full
+suite. RoR under this real verifier therefore nearly matches its
+perfect-verifier ceiling ($0.897$ vs $0.897$ at $B{=}26$; $0.918$ vs $0.921$ at
+$B{=}58$) and stays ahead of base-verified best-of-$K$ ($0.870$/$0.838$). This
+is the code counterpart to the rule above: where multiple-choice agreement is
+too weak to gate recovery, code ships with a reliable partial verifier, so the
+test-time recovery RoR exploits is available in practice, not just under an
+idealized oracle.
+
+\input{tab_latency}
+
+\textbf{Latency.} Cost is not the only deployment axis. RoR and the cascade are
+\emph{adaptive} --- each draw's outcome informs the next choice, so they incur a
+round-trip per draw --- whereas best-of-$K$ and single-route issue their draws
+in a single parallel batch. Table~\ref{tab:latency} reports the mean sequential
+rounds per query at matched budget. RoR is sequential ($2.5$ rounds on
+HumanEval+, $3.3$ on GPQA), i.e.\ higher latency than the one-round baselines,
+but it consistently uses \emph{fewer} rounds than the cascade while reaching at
+least its accuracy (HumanEval+ $2.46$ vs $2.87$; GPQA $3.32$ vs $3.59$). The
+adaptivity that buys accuracy is paid for in round-trips, and among the adaptive
+policies RoR is Pareto-efficient on the accuracy--latency trade-off.
+
+\textbf{UCB variant.} From Table~\ref{tab:results}, the exploration bonus is
+at best neutral: it ties the
+greedy rule on GSM8K, trails it slightly on MATH-500 ($0.876$ vs $0.887$ at
+matched cost), and loses on GPQA at low budgets ($0.603$ vs $0.744$ at mean
+cost ${\sim}14$). It is speculated that exploratory draws on a hard benchmark
+burn budget that greedy exploitation of the offline prior spends better.
+Hence, the greedy rule is recommended as the default.
+
+\section{Discussion}\label{sec:discussion}
+\textbf{Verifier dependence.} The policy assumes a usable verifier signal;
+where no better-than-random verifier exists, resampling cannot be steered and
+the advantage over the budget-aware best-of-$K$ baseline narrows or inverts
+(Fig.~\ref{fig:verifier}); the agreement instantiation of
+Table~\ref{tab:realverifier} exhibits both regimes on real data. The verifier model is parametric by design --- it
+isolates \emph{how much} verifier quality the mechanism needs; plugging in a
+concrete process-reward or execution verifier (e.g.\ unit tests for code,
+where $q\approx1$ holds naturally) is a direct instantiation rather than a new
+method.
+
+\textbf{Cost model.} Costs are proxied by parameter count, which preserves the
+pool's cost \emph{ordering} but not exact \$-ratios; re-running the replay with
+a deployment's own price/latency vector requires no new generation, only
+re-weighting --- Table~\ref{tab:realcost}
+demonstrates this with a provider price snapshot. Batched and latency-constrained serving, where draws of one
+query can be parallel, is left to future work.
+
+\textbf{Deployment considerations.} The policy's overhead is a few floating-point
+operations per step (Section~\ref{sec:method}), so the practical integration
+cost lies elsewhere: engineering a verifier signal (a reward model, execution
+tests, or agreement across draws), measuring the deployment's own price/latency
+vector, and deciding how much per-query latency the sequential draws may add.
+When the pool is homogeneous or the benchmark is near-saturated, the simpler
+budget-aware best-of-$K$ captures most of the benefit (Table~\ref{tab:results});
+the case for full RoR is strongest when models genuinely specialize and a
+trustworthy verifier exists.
+
+\textbf{Offline replay.} Replaying pre-computed draws is exact for
+correctness-based rewards under the companion protocol's seed-aligned
+generation, and makes every number reproducible from the released tensors on
+CPU; it does not capture prompt-adaptive behaviors (e.g.\ revising the prompt
+between draws).
+
+\section{Conclusion}\label{sec:conclusion}
+This work formulated the choice between resampling a committed LLM and
+rerouting to an alternative model as a single budgeted decision, proposed an
+online allocation policy driven by estimated marginal correctness per unit
+cost, and grounded its behavior in the recoverability asymmetry of the
+companion analysis. Replay experiments on four regenerated open-model pools
+showed that, across these benchmarks and for the tested pools and baselines, the
+proposed policy attains a favorable cost--quality Pareto front: it dominates or matches every
+budget-scalable baseline and overtakes the single-commit baselines once the
+budget affords a second draw, winning chiefly on cost where the benchmark is
+saturated and on accuracy where the pool is heterogeneous; the gains are
+verifier-gated, as the companion theory predicts. Robustness checks with a
+provider-price replay and a label-free agreement verifier show where these
+conclusions carry over (real prices; open-ended answer spaces) and where they
+weaken (consensus on multiple-choice tasks). In the future, a line of research
+is to instantiate stronger learned verifiers (e.g.\ process-reward models) and
+to extend the replay protocol to batched and latency-constrained serving.
+
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}

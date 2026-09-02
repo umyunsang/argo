@@ -1,0 +1,141 @@
+
+Warning: orx 0.1.117 is outdated (latest 0.1.118). A newer release is available; upgrade to stay compatible with the API. Run `orx update` to upgrade.
+
+alphaXiv: https://www.alphaxiv.org/abs/2608.21690
+
+This report provides a detailed analysis of the research paper "Context as an Environment: Programmatic Context Management for Long-Horizon Agents" by Lin et al., focusing on its contributions to large language model (LLM) agent context management.
+
+---
+
+### 1. Authors and Institution(s)
+
+The authors of this paper are:
+*   Yin Lin (Alibaba Group)
+*   Elaine Ang (Columbia University and Alibaba Group)
+*   Erkang Zhu (Alibaba Group)
+*   Bolin Ding (Alibaba Group)
+*   Jingren Zhou (Alibaba Group)
+
+### 2. How This Work Fits into the Broader Research Landscape
+
+Large Language Model (LLM) agents are increasingly deployed for long-running, complex tasks such as repository-level software engineering and extensive web research. These "long-horizon" tasks generate continuously accumulating interaction histories that quickly exceed the fixed context window of typical LLMs. Furthermore, the effective context that models can reliably utilize is often smaller than their nominal window, as reasoning and retrieval performance can degrade with increasing input length.
+
+The prevailing approaches to address this challenge fall into two main categories:
+1.  **Context Compression**: Methods that truncate stale interactions, discard tool outputs, or replace earlier trajectory segments with summaries. Examples include techniques reportedly used in production agents like Claude Code, Codex CLI, and Cursor. This approach is inherently lossy, as any detail not preserved in the compressed representation becomes inaccessible, even if the raw data still exists.
+2.  **External Memory Systems**: Systems that extract selected facts or episodes from the history into a separate store. These memories are later retrieved through semantic or structured interfaces. Similar to compression, this approach is lossy at the point of ingestion, as the decision of what to extract is made without foreknowledge of future informational needs, potentially omitting critical details required for complex future computations or exact historical evidence.
+
+Both context compression and external memory systems commit to a specific representation of history before all future requirements are known. This can be problematic for long-horizon tasks, which may necessitate access to precise historical evidence or the ability to perform non-trivial computations over past events (e.g., comparing tool outputs generated at different points in a trajectory). Such requirements are often unpredictable at the time of history ingestion or summarization.
+
+Scroll differentiates itself by proposing an alternative paradigm. Instead of compressing or pre-extracting information into a fixed memory representation, it treats the agent's entire history as an executable "Session Environment" that exists *outside* the model's immediate context window. This approach defers the decision of what information to present to the model until query time, allowing the LLM itself to programmatically manage its context. This enables the preservation of lossless historical ground truth while providing the flexibility for dynamic, demand-driven access and computation over the full interaction trajectory. The work aligns with the trend of making LLMs more capable of interacting with environments through code, extending this capability to managing their own internal state and memory.
+
+### 3. Key Objectives and Motivation
+
+The central objective of this research is to develop a context management system for long-horizon LLM agents that overcomes the limitations of existing lossy approaches. The motivation stems from several key challenges faced by current LLM agent designs:
+
+1.  **Bounded Context vs. Unbounded History**: LLM agents engaging in long-running tasks generate a continuous stream of interactions, observations, and tool outputs. This history quickly surpasses the fixed token limit of an LLM's context window. The primary motivation is to enable agents to operate effectively over extended trajectories without being constrained by this boundary.
+
+2.  **Loss of Information in Current Memory Systems**: Existing methods, whether through summarization (compression) or fact extraction (external memory), are inherently lossy. They irrevocably discard or simplify historical details at the time of processing. The core problem is that the specific information or computational operations required for future reasoning steps are often unknown at the moment history is recorded or processed. This means that potentially crucial "ground truth" details needed for complex tasks—such as comparing precise tool outputs from distant points in a trajectory, resolving contradictions, or tracking specific updates—might be unavailable to the agent. Scroll aims to provide a lossless record of all interactions.
+
+3.  **Inflexibility of Pre-defined Memory Representations**: When information is reduced to a summary or extracted into a structured memory store, its form and accessibility are largely fixed. This limits the agent's ability to dynamically query, transform, or reason over the raw history in novel ways as new informational needs arise. The motivation is to shift this responsibility from a pre-defined system policy to the agent itself, allowing it to programmatically construct its "working view" of the environment.
+
+4.  **Leveraging LLM's Code Generation Capabilities**: Current LLMs exhibit increasingly sophisticated code generation and execution abilities. The authors identify an opportunity to leverage this capability for context management. Instead of relying on static retrieval or compression algorithms, the motivation is to allow the LLM to write and execute code to search, retrieve, materialize, and compute over its own historical context, thereby making context management an integral part of the agent's reasoning process.
+
+5.  **Efficient Navigation and Recoverability for Evicted Context**: As the agent's working context must remain bounded, parts of the history inevitably move out of the immediate view. The objective is to design an eviction mechanism that does not destroy information but merely removes it from the *visible* context, ensuring it remains fully recoverable. Furthermore, the system aims to provide an efficient means to navigate and re-access this "off-context" history without requiring exhaustive searches through the entire log.
+
+In summary, the key objectives are to provide LLM agents with lossless, programmatically accessible, and durably stored long-term memory that can be dynamically managed by the agent itself, thereby enhancing their capabilities in long-horizon tasks.
+
+### 4. Methodology and Approach
+
+Scroll is designed as a context manager that treats an agent's session history as an executable Session Environment, rather than a serialized text stream within the LLM's prompt. The core principle is to empower the model to programmatically construct its own working view of this environment at each step.
+
+**4.1. Problem Formulation**
+The paper defines session state ($S_t$) after $t$ agent steps as a tuple $(L_t, P_t, V_t)$, where $L_t$ is the event sequence, $P_t$ contains the associated payloads, and $V_t$ is auxiliary derived state (e.g., a variable namespace). The challenge is to map this full session state to a bounded working view ($c_{t+1}$) for the next model call, given the LLM's context window limit ($C$). Unlike traditional methods that fix this map ($S_t \rightarrow c_{t+1}$) through lossy compression or extraction operators before future needs are known, Scroll defers this selection. The full state persists losslessly, and the map is a program ($\pi_t$) written by the model, executed on $S_t$, which updates $V_t$ and emits a bounded observation for $c_{t+1}$.
+
+**4.2. Persistent Session Environment**
+The Session Environment, realized as $(L_t, P_t, V_t)$, consists of three interconnected components:
+
+*   **Append-only Event Log ($L_t$)**: This is the durable, ground-truth record of all agent sessions, spanning session boundaries. Every interaction (user message, model response, tool call, tool result) appends a typed event with metadata (role, session/agent IDs, timestamps, tool state) and receives an immutable, monotonically increasing sequence number (`seq`). The implementation uses SQLite for event storage, and search defaults to BM25 for determinism and efficiency.
+
+*   **Durable Storage ($P_t$)**: This component handles the raw content or "payloads" generated during interactions, such as full tool results or artifacts. Small payloads are stored inline in SQLite, while larger ones are externalized to JSON or filesystem storage, with the event row retaining a bounded preview and a recovery pointer. Externalized payloads are accessed via lazy handles (e.g., `ToolResultRef`, `ArtifactRef`).
+
+*   **Persistent Runtime and Resident Namespace ($V_t$)**: A sandboxed Python kernel persists across model calls throughout a session. Its namespace maintains "environment objects," which are resident Python values and lazy handles, each with type, size, and provenance metadata. Tool invocations via a programmatic tool interface return Python objects that can be directly manipulated by subsequent programs. Before each model call, the harness prepends a "namespace digest"—a compact listing of resident variable names, types, and shapes (with small scalar values inlined)—to the prompt. The Python kernel operates in a fail-closed sandbox, restricting access to the Event Log (read-only) and limiting other system resources (database, filesystem, network, tools) to explicitly declared capabilities.
+
+**4.3. Programmatic Context Construction**
+Scroll employs a CodeAct-style interface, allowing the LLM to use executable Python for both task execution and context construction. A controlled capability object, `ms` (memory surface), provides the model with an interface to interact with durable history, abstracting the physical backend. The `ms` object exposes four primary operations:
+
+*   **LOCATE (`ms.search(query, k, ...)`**: Finds candidate Event Log records using BM25-ranked full-text search, along with structured filters for scope, kind, and time. Each hit includes its stable `seq` address.
+*   **MATERIALIZE (`ms.expand(seq)` / `ms.expand(seq_lo, seq_hi)`)**: Recovers exact turns or sequence spans from the Event Log, loading any externalized payload contents via lazy handles.
+*   **COMPUTE (Ordinary Python)**: Allows the model to use standard Python commands and permitted interfaces (database, filesystem, tools) to filter, join, aggregate, resolve updates, inspect artifacts, and construct derived state over the materialized data or resident variables.
+*   **EXPOSE (`print(value)`)**: Only output explicitly generated by a `print` statement within the model-written code is inserted by the harness as an observation into the next model's working view (context). All other computations and intermediate results remain in the persistent kernel's namespace.
+
+This design means the model issues `exec` actions containing Python code. This code performs operations within the Session Environment; only explicitly `print`ed results become part of the LLM's prompt for the subsequent turn.
+
+**4.4. Eviction and Off-Context Navigation**
+To manage the bounded working view, Scroll implements an eviction procedure (Algorithm 1) that activates when the view exceeds a budget ($\rho C$).
+
+*   **Eviction Process**:
+    1.  Live turns are first persisted to the Event Log.
+    2.  The active turn, the most recent tail of the context, and the newest tool results are protected from eviction.
+    3.  Completed tool payloads are initially "folded" by replacing their full content with just their `seq` pointers, reducing their token cost.
+    4.  If the view remains over budget, whole spans of the oldest completed interactions are selected and removed from the working view.
+
+*   **Recoverability**: A critical invariant is that eviction only removes information from the *working view*, never from the underlying Event Log. Evicted events remain verbatim in the Event Log under their stable `seq` addresses and can be materialized on demand via `ms.expand`.
+
+*   **Eviction Index**: To facilitate navigation to evicted history, Scroll maintains an eviction index within the working view. As part of each response, the model writes a short "headline" (task, verified state, next action, status), which is bound to the `seq` in the Event Log. When a span is evicted, its corresponding headlines enter a tiered index. This index is rolled up: each tier holds a maximum of $k$ blocks; when full, older blocks collapse to single lines and merge into the next tier. This structure provides fine-grained anchors for recent history and coarser ranges for distant history, allowing the agent to navigate directly to evicted regions rather than relying solely on keyword search. The index size grows logarithmically ($O(k \log_k n)$ blocks) with the number of evictions $n$.
+
+### 5. Main Findings and Results
+
+The evaluation of Scroll was conducted across two categories of long-horizon tasks: long-term memory retrieval and reasoning, and long-context reasoning and acting, using Qwen3.8-Max as the primary agent backbone.
+
+**5.1. Comparison with Existing Systems on Long-term Memory**
+Scroll was benchmarked against dedicated long-term memory systems on LongMemEval and BEAM.
+
+*   **LongMemEval_S**: Scroll achieved an accuracy of 94.8%. This result is competitive with the strongest reported systems, such as Exabase M-1 (96.4%), Mastra OM (94.9%), and Hindsight (94.6%).
+*   **BEAM_10M**: Scroll attained a judge score of 73.1%, surpassing the best published memory system (Exabase M-1, 68.0%) by 5.1 points.
+*   **Approach Comparison**: Existing memory systems typically follow a three-stage paradigm (ingestion-time extraction/summarization, query-time retrieval, and separate reader model). Scroll, by contrast, ingests raw history, composes retrieval code per question, and uses the same agent to write queries and produce the final answer. The results suggest that Scroll's query-time, programmatic approach is particularly effective in scenarios requiring exact historical records, precise ordering, or reconciliation of information, outperforming ingestion-heavy, fixed-pipeline methods in categories like knowledge update and contradiction resolution (Table 6).
+
+**5.2. Comparison of Context-Management Strategies on LOCA**
+On the LOCA benchmark, four agents—all using Qwen3.8-Max and the same toolset—were compared for their context-management strategies:
+*   **Summarization Agent**: A ReAct agent that periodically compacts history into a summary.
+*   **Retrieval Agent**: A ReAct agent with overflowing history evicted and accessible via a recall tool.
+*   **CodeAct Agent**: An agent interacting via programmatic tool calling.
+*   **Scroll (ours)**: The proposed system.
+
+At the largest environment description lengths:
+*   **128K tokens**: Scroll and the CodeAct Agent achieved the highest accuracy at 89.3%. Summarization and Retrieval Agents performed similarly at 86.7% and 88.0%, respectively.
+*   **256K tokens**: Scroll maintained 86.7% accuracy, showing the smallest performance drop (2.6 points) compared to 128K. The CodeAct Agent dropped to 85.3% (4.0 points drop). Summarization and Retrieval Agents experienced significantly larger drops, reaching 65.3% and 66.7% respectively (over 21 points drop).
+These results indicate that approaches binding intermediate results to environment objects (CodeAct, Scroll) demonstrate superior performance and stability as context grows, with Scroll showing the least degradation.
+
+**5.3. Backbone Model Generality**
+Scroll's effectiveness was evaluated across six different backbone models (Qwen3.8-Max, Qwen3.7-Max, Deepseek-v4-pro, GLM-5.2, Kimi-K2.7, Qwen3.6-35B-A3B), with consistent harness, tools, prompts, and context-management rules.
+*   All tested backbones were able to use Scroll.
+*   On `LongMemEval_S`, performance was relatively consistent across models, with even the smaller 35B model achieving 88.8%, within six points of the best (94.8%).
+*   On `BEAM_10M`, the performance gap widened slightly (58.1% to 73.1%).
+*   On `LOCA_256K`, the spread became substantial (22.7% to 86.7%). This suggests that tasks demanding longer trajectories and more complex program synthesis, as in LOCA, amplify differences in backbone model capability. Weaker models exhibited more execution errors or premature termination on aggregation-heavy tasks.
+
+**5.4. Ablation Study**
+An ablation study on `BEAM_10M` investigated the contributions of Scroll's core components:
+*   **Lossy Summarization**: Replacing the Event Log with summarized history (originals discarded) was the most detrimental, resulting in an overall score of 19.9%. This variant performed near-zero on tasks requiring exact historical values (e.g., information extraction, temporal reasoning, knowledge update), underscoring the importance of the lossless Event Log.
+*   **Scroll w/o REPL**: Exposing `ms` as ordinary tool calls without a persistent kernel (no in-kernel variable binding) led to a 7.3-point drop (65.8% vs. 73.1%). The impact was concentrated in abilities requiring evidence composition (knowledge update, instruction following), highlighting the value of the persistent kernel for intermediate computation.
+*   **Scroll w/o Index**: Removing the eviction index (relying solely on keyword search) resulted in a 1.8-point drop (71.3% vs. 73.1%). This affected tasks where evidence was scattered across history (preference following, summarization, event ordering), demonstrating the utility of the index for direct, position-based navigation.
+
+**5.5. Cost and Efficiency**
+Scroll manages context by exposing only a fraction of the corpus to the model. Ingestion does not involve additional LLM calls. Query-time filtering and computation occur within the Python kernel, with only explicit `print` output entering the context window. Median input tokens on `BEAM_10M` were 105K (approximately 1% of the corpus). Output tokens were an order of magnitude smaller than input across benchmarks. LOCA tasks, requiring full task completion, naturally involved longer trajectories than retrieval-only benchmarks.
+
+### 6. Significance and Potential Impact
+
+Scroll presents a re-conceptualization of context management for LLM agents, shifting from passive memory systems to an active, programmatic approach. Its significance and potential impact span several areas:
+
+1.  **Enabling True Long-Horizon Agents**: By providing a mechanism to manage historical context that is lossless, persistent, and external to the immediate prompt, Scroll addresses a fundamental scalability bottleneck for LLM agents. This allows agents to tackle tasks that require reasoning over extremely long interaction histories, far beyond the capabilities of context window extensions or conventional memory systems.
+
+2.  **Enhancing Reasoning Capabilities**: The executable Session Environment, particularly the persistent Python kernel, empowers LLMs to perform arbitrary computations, transformations, aggregations, and comparisons over historical data. This moves beyond simple retrieval of facts or summaries, enabling more sophisticated reasoning processes that can dynamically synthesize and analyze information from across an entire session or multiple sessions. This directly leverages the improving coding abilities of frontier LLMs.
+
+3.  **Guaranteed Recoverability and Ground Truth**: Unlike lossy compression or extraction methods, Scroll's design ensures that all original interaction events and payloads are preserved in the append-only Event Log. This "lossless ground truth" means that any detail, regardless of its perceived importance at the time of recording, remains available for future retrieval and analysis. This is critical for tasks requiring high fidelity or precise reconciliation of historical information, such as auditability or debugging.
+
+4.  **Improved Navigation and Awareness**: The eviction index, coupled with stable `seq` addresses and headlines, provides a structured mechanism for agents to navigate vast amounts of off-context history efficiently. This makes agents more "aware" of what information has been moved out of view and how to re-access it, moving beyond reliance on potentially imprecise keyword searches.
+
+5.  **Blueprint for Future Agent Architectures**: Scroll's formulation of context management as a programmable policy, where the LLM explicitly decides what to retrieve and expose, could serve as a model for future agent architectures. This approach could lead to more autonomous and intelligent agents that actively manage their cognitive resources, rather than passively receiving pre-processed information.
+
+6.  **Potential for Policy Distillation**: The authors identify a future direction to distill the context management policies learned by frontier models (i.e., when and how to write retrieval code, and what to print back) into smaller models through supervised fine-tuning or policy distillation. This could extend the benefits of Scroll to a wider range of LLMs, improving efficiency and accessibility.
+
+In essence, Scroll contributes a robust and flexible framework that treats an agent's history not as static text or a fixed database, but as a dynamic, executable environment. This shift enables LLM agents to maintain a comprehensive and adaptable understanding of their past, significantly expanding their potential for complex, long-duration tasks.

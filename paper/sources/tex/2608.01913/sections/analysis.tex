@@ -1,0 +1,251 @@
+\section{Diagnostic Analysis}
+\label{sec:analysis}
+
+We layer the analysis from coarse to fine. §\ref{sec:results-overview} first profiles what each agent achieves and at what cost; the rest of the section then answers six research questions:
+
+\noindent\textbullet\ \textbf{RQ1:} Which aggregate signal tracks accuracy --- search volume, context spend, or retrieval recall (§\ref{sec:results-attribution})?
+
+\noindent\textbullet\ \textbf{RQ2:} When an agent fails, did it never surface the evidence, or surface it and still answer wrong (§\ref{sec:results-failure})?
+
+\noindent\textbullet\ \textbf{RQ3:} Inside a trajectory, when does evidence arrive and what do the remaining turns contribute (§\ref{sec:results-mechanism})?
+
+\noindent\textbullet\ \textbf{RQ4:} How do stronger agents search differently (§\ref{sec:results-query})?
+
+\noindent\textbullet\ \textbf{RQ5:} Do these effects hold within the same question, with difficulty held fixed (§\ref{sec:results-synthesis})?
+
+\noindent\textbullet\ \textbf{RQ6:} Do the findings generalize to open-web search (§\ref{sec:results-openweb})?
+
+\subsection{Overall Performance and Effort Profile}
+\label{sec:results-overview}
+
+\emph{What does each agent achieve, and what does it cost?} Table~\ref{tab:overall} reports accuracy, mean gold recall, incomplete rate, and per-question effort: \texttt{search}/\texttt{visit} calls and final context. Accuracy ranges from gpt-oss-120b's $38.0\%$ to GLM 5.1's $74.1\%$; the frontier-scale tier, at $68.6\text{--}74.1\%$, sits above the mid-scale tier, at $38.0\text{--}55.2\%$, on both accuracy and mean gold recall. Effort does not follow accuracy. GLM 5.1 has the top accuracy with the lowest cost, a median of $14$ search calls and $52\,$K context, while gpt-oss-120b has the lowest accuracy and searches the most, with $33$ calls and $86\,$K context. Mean gold recall exceeds answer accuracy for every agent by $4.6\text{--}14.0$ points, so each agent surfaces more gold-qrels evidence than it converts into a correct answer. Tongyi-DR is the cost outlier: $38.0\%$ of its rollouts terminate without a final answer, overwhelmingly due to context-window overflow.
+
+\paragraph{Per-turn query batching decouples search volume from turn count.} Agents differ markedly in how many queries they issue within a reasoning turn. In Table~\ref{tab:overall}, GLM 5.1, Qwen3.5-35B-A3B, and Deepseek V4 Pro batch $1.5\text{--}1.9$ queries as parallel tool calls, whereas gpt-oss-120b, Kimi K2.6, and Tongyi-DR issue essentially one. Search \emph{turns}, the round-trips that pace context growth, therefore spread more than search \emph{calls}: GLM 5.1 and gpt-oss-120b differ by only $1.6\times$ in total queries but by $3.0\times$ in turns, $10.6$ versus $31.8$. Much of the turn-count spread is batching rather than search depth, a turn-efficiency lever revisited in §\ref{sec:results-query}.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figs/acc_vs_x.pdf}
+\caption{Cross-agent attribution. End-to-end accuracy vs.\ \emph{(a)} padded cumulative recall at $K = 25$, \emph{(b)} visit precision, \emph{(c)} mean final context size. Pearson $r$ in panel titles. Stability (bootstrap CI): recall $[0.96,1.00]$, visit precision $[0.37,0.62]$, context $[-0.06,0.35]$.}
+\label{fig:acc-vs-x}
+\end{figure*}
+
+\subsection{RQ1: Which Signal Tracks Accuracy?}
+\label{sec:results-attribution}
+
+\emph{When agents get a question right or wrong, which aggregate signals separate the two outcomes?} We compare three cross-agent candidates in Figure~\ref{fig:acc-vs-x} --- retrieval recall, visit precision, and context budget --- then ask how much search budget is needed before the relevant signal saturates.
+
+\paragraph{Setup.} We group a trajectory $\xi$ into \emph{episodes} $k = 1,\dots,M$, where each episode starts with one \texttt{search} call and includes the \texttt{visit}s before the next search. For question $q$, let $E(q)$ be the evidence-qrels set and $G(q) \subseteq E(q)$ the stricter gold-qrels set (§\ref{sec:signals}). The retrieval trace is then summarized as
+\begin{align*}
+R_k(\xi) &\subseteq E(q) && \text{evidence surfaced in episode } k,\\
+C_k(\xi) &= \bigcup_{j \le k} R_j(\xi) && \text{evidence surfaced up to episode } k,\\
+\Delta_k(\xi) &= C_k(\xi) \setminus C_{k-1}(\xi) && \text{new evidence added by episode } k.
+\end{align*}
+The cross-agent recall in Figure~\ref{fig:acc-vs-x}a is \emph{padded cumulative recall}:
+\[
+\mathrm{Recall}_K = \frac{1}{N}\sum_q \frac{|C_{\min(K,M)}(\xi)|}{|E(q)|}.
+\]
+It measures evidence-qrels recall by episode $K$, holding shorter trajectories at their final value. This differs from Table~\ref{tab:overall}'s gold recall, which uses $G(q)$. For gold-specific events, define $G^*_k(\xi) = C_k(\xi) \cap G(q)$ and $G^*(\xi) = G^*_M(\xi)$; the first gold hit occurs at the smallest $k$ with $G^*_k(\xi) \neq \emptyset$. Finally, $\mathrm{success}(\xi,q)=1$ iff the trajectory terminates with $a_T=(\textsc{answer},\hat{y})$ and $\hat{y}$ matches the gold answer.
+
+\paragraph{Accuracy tracks retrieval recall; no agent sits on the context-efficiency frontier.} The three aggregate metrics relate to accuracy very differently (Figure~\ref{fig:acc-vs-x}). Across agents, cumulative recall at $K = 25$ is the strongest correlate, with Pearson $r = 0.99$; visit precision is moderate at $r = 0.50$, with Qwen3.5-35B-A3B and Tongyi-DR lagging; final context size is essentially unrelated at $r = 0.16$. Since these are six-point correlations, we read them descriptively and rely on the within-question panel in §\ref{sec:results-synthesis} for inference. A paired bootstrap over the $830$ shared questions with $B = 10{,}000$, plus leave-one-agent-out, gives the intervals in Figure~\ref{fig:acc-vs-x}'s caption: recall stays at or above $0.96$ and exceeds context in every resample, context spans zero, and visit precision is fragile. Panel (c) makes the efficiency story concrete: only GLM 5.1 sits in the efficient upper-left, reaching $74.1\%$ accuracy at the lowest context budget on either statistic, $73\,$K mean and $52\,$K median, while gpt-oss-120b lands lower-right. Context efficiency is therefore an available lever, not one the strongest agents already optimize.
+
+\paragraph{A $K = 20$-episode cap retains up to $86\text{--}92\%$ of accuracy.} We estimate a budget-side upper bound by asking which successful full rollouts had already hit gold by episode $K$:
+\[
+\widehat{\mathrm{Acc}}_K =
+\frac{1}{N}\sum_q
+\mathbf{1}\{\mathrm{success}(\xi,q)=1 \ \wedge\  (G^*(\xi) = \emptyset \ \vee\ \exists k \le K: G^*_k(\xi) \neq \emptyset)\},
+\]
+with $N=830$.\footnote{This assumes the eventual answer is unchanged under early stopping; hard truncation may yield lower accuracy.} A question is therefore retainable if the full rollout answered correctly and either hit gold by episode $K$ or never hit gold at all, in which case the cap could not have cost it anything. As Figure~\ref{fig:traj-combined}c shows, $\widehat{\mathrm{Acc}}_K$ saturates as sharply as recall: $K = 20$ retains $86.3\text{--}92.4\%$ of each agent's accuracy, and $K = 40$ retains $97.0\text{--}99.8\%$. Since median rollouts use $14\text{--}33$ search calls in Table~\ref{tab:overall}, a $K = 20$ cap barely shortens the typical trajectory yet concedes at most $14\%$ of accuracy; §\ref{sec:results-mechanism} unpacks when gold actually lands within a trajectory.
+
+\subsection{RQ2: Retrieval vs.\ Utilization Gap}
+\label{sec:results-failure}
+\label{sec:results-oracle}
+
+\emph{When an agent is wrong, is it because it never surfaced the evidence or because it surfaced it and still answered wrong?} We call the first case a retrieval gap and the second a utilization gap, then analyze their distribution and intervention implications: retrieval-side fixes for RG, and a mix of reasoning and evaluation fixes for UG.
+
+\paragraph{Definitions.} Using $G^*(\xi)$ and $\mathrm{success}(\xi, q)$ from §\ref{sec:results-attribution}, we label each question:
+\begin{equation*}
+\begin{aligned}
+&\textbf{correct:} && \mathrm{success}(\xi, q) = 1, \\
+&\textbf{utilization gap:} && \mathrm{success}(\xi, q) = 0 \text{ and } G^*(\xi) \neq \emptyset, \\
+&\textbf{retrieval gap:} && \mathrm{success}(\xi, q) = 0 \text{ and } G^*(\xi) = \emptyset.
+\end{aligned}
+\end{equation*}
+Incompletes, where no $\hat{y}$ is emitted, are folded in by the same rule. RG points to query or retrieval-side fixes, while UG points to extraction or reasoning-side fixes. Figure~\ref{fig:failure-combined}a lays out the whole partition as a flow; panels b and c sharpen the per-agent split.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figs/failure_combined.pdf}
+\caption{Failure modes. \emph{(a)} Agent $\to$ retrieval state $\to$ outcome flow ($n = 4980$); the RG/UG split is \emph{which} retrieval state the incorrect flows leave. \emph{(b)} Per-agent outcome split (correct vs.\ RG $\mid$ UG), sorted by accuracy. \emph{(c)} Four-way error decomposition (directional / last-hop RG, true-extraction / boundary UG); warm = retrieval side, cool = utilization side.}
+\label{fig:failure-combined}
+\end{figure*}
+
+\paragraph{Retrieval gap dominates errors in five of six agents.} In Figure~\ref{fig:failure-combined}, RG accounts for $51.6\text{--}64.1\%$ of errors for five agents. Kimi K2.6 is the exception, with $52.0\%$ UG, consistent with its high mean gold recall of $78.2\%$. The balance is not pinned by accuracy: GLM 5.1 reaches $74.1\%$ accuracy and Tongyi-DR only $52.2\%$, yet their RG shares are within $6$\,pp, so very different agents can still call for similar retrieval-side interventions; conversely, Kimi K2.6 and Deepseek V4 Pro land within a point of each other in accuracy yet on opposite sides of the RG/UG split, so nearly identical leaderboard positions can call for opposite fixes. Restricting to answered-only trajectories sharpens two cases: Tongyi-DR's RG share falls from $56.9\%$ to $39.0\%$, because overflow incompletes had often already retrieved gold, and Kimi K2.6 falls from $48.0\%$ to $24.4\%$ RG.\footnote{Tongyi-DR's overflow subset is systematically harder: the other five agents score $10.5\text{--}59.0\%$ on it, well below their full-set figures, so Tongyi-DR's answered-only accuracy of $84.1\%$, against $52.2\%$ overall, partly reflects an easier residual.} §\ref{sec:results-mechanism} takes up the underlying post-gold redundancy.
+
+\paragraph{RG and UG each split into two subtypes that prescribe different fixes.} Each gap splits by \emph{how far} the trajectory got through the four retrieval states in Figure~\ref{fig:failure-combined}a. A retrieval gap is \emph{directional} when no evidence document is reached, so the agent never landed in the right topical neighborhood; it is \emph{last-hop} when evidence is reached but the gold-graded subset is missed. The fixes differ: hypothesis re-anchoring for the first case, terminal-query precision for the second. Directional RG dominates everywhere, accounting for $55\text{--}67\%$ of each agent's RG in Figure~\ref{fig:failure-combined}c and peaking at $66.7\%$ for Qwen3.5-35B-A3B. A utilization gap is a \emph{true extraction failure} when all gold was retrieved but the answer is still wrong, and a \emph{boundary} UG when only part of the gold was retrieved. Kimi K2.6 is the most extraction-bound, with $71.4\%$ true UG; gpt-oss-120b's UG is the most boundary-heavy at $43.2\%$, so its nominal RG/UG split under-counts retrieval failure.
+
+The subtype decomposition implies per-agent prescriptions: break initial-hypothesis anchoring for Qwen3.5-35B-A3B, which has the largest directional share; combine deeper terminal-step search with stronger answer integration for Kimi K2.6, which is jointly high on last-hop RG and true-extraction UG; and treat Deepseek V4 Pro as the most balanced case. Across agents, post-gold redundancy remains high: after the first gold hit, $57.9\text{--}74.0\%$ of later episodes add no new evidence. For Tongyi-DR, this wasted post-gold rate reaches $66.0\%$ and helps drive its $38.0\%$ overflow rate.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.52\linewidth]{figs/oracle_ladder.pdf}
+\caption{Oracle ladder. Real accuracy ($59.5\%$) plus the recoverable gain ($+28.0$\,pp, a joint retrieval$+$reader bound) reaches the Oracle-$E$ ceiling ($87.5\%$).}
+\vspace{-4mm}
+\label{fig:oracle-ladder}
+\end{figure}
+
+\paragraph{What drives the utilization gap?} A UG case means the agent \emph{found} gold evidence yet still answered wrong, either through genuine reasoning failure or benchmark/evaluation artifacts. We probe the distinction in two ways. First, we strip \texttt{search} and \texttt{visit} from the harness and inject $E(q)$ or $G(q)$ directly into a shared GPT-4o reader at temperature $0$. The ceilings are Oracle-$E = 87.5\%$ and Oracle-$G = 87.4\%$, only $0.1$\,pp apart, so evidence-set distractor density does not bind. The remaining \emph{Hard UG} is $12.5\%$ (Figure~\ref{fig:oracle-ladder}): queries even a strong reader fails on with the evidence in front of it. Per-agent Net Gain, Oracle-$E$ minus real accuracy, ranges from $+13.4$\,pp for GLM 5.1 to $+49.5$\,pp for gpt-oss-120b and tracks the qrels-RG ranking with Spearman $\rho > 0.95$. Because this oracle swaps in GPT-4o, Net Gain is a \emph{joint} retrieval$+$reader ceiling, not pure retrieval headroom.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figs/trajectory_combined.pdf}
+\caption{Episode-level mechanism. \emph{(a)} Episode-utility split per agent; redundant$+$unproductive = no-new-evidence share ($77.5\text{--}93.6\%$). \emph{(b)} Trajectory length by correctness: productive phase (up to $k^*$) plus wasted tail; incorrect trajectories are $1.9\text{--}2.9\times$ longer yet saturate at similar $k^*$. \emph{(c,d)} Upper-bound accuracy $\widehat{\mathrm{Acc}}_K$ and padded cumulative recall vs.\ $K$.}
+\label{fig:traj-combined}
+\end{figure*}
+
+Second, we classify each wrong answer by string similarity to the gold answer using normalized SequenceMatcher with substring containment: \emph{subtle} errors have similarity at least $0.85$ and differ only in capitalization or punctuation; \emph{format} errors fall between $0.6$ and $0.85$ and wrap correct content in extra exposition or markdown; \emph{misunderstanding} errors fall below $0.6$. Kimi K2.6 has the largest format-or-subtle rate among answering agents at $19.9\%$, with GLM 5.1 at $18.6\%$ and Qwen3.5-35B-A3B at $17.7\%$ close behind. This is essentially a free loss: stripping markdown and normalizing case would recover roughly that fraction without touching search or reasoning. Tongyi-DR's near-total misunderstanding rate of $99.0\%$ is instead an artifact of the ``No answer found.'' string emitted by overflow incompletes. UG is thus heterogeneous: part genuine reasoning failure, part systematic evaluation artifact.
+
+\paragraph{Retrieval gap is a query-side, not retriever-side, failure.} Is RG an agent-side query-formulation failure or a retriever-side recall-ceiling failure? All six agents share the same Qwen3-Embedding-8B with top-$K{=}5$ results (§\ref{sec:signals}), yet mean gold recall ranges from gpt-oss-120b's $52.0\%$ to GLM 5.1's $78.7\%$. A $26$-point spread on a fixed retriever can only be query-side. The retriever sets an absolute ceiling that bounds all agents alike, but the variance and per-agent leverage are in query formulation, which §\ref{sec:results-query} takes up in detail.
+
+\subsection{RQ3: Episode-Level Mechanism}
+\label{sec:results-mechanism}
+\label{sec:results-efficiency}
+\label{sec:results-utility}
+
+\emph{What does each trajectory look like turn by turn, and what produces the outcomes above?} We read four local properties: episode utility, productive-episode position, visit selectivity, and correct-vs-incorrect contrast.
+
+\paragraph{$77\text{--}94\%$ of episodes add no new evidence; waste is not uniform across queries.} With $R_k$, $C_k$, and $\Delta_k$ from §\ref{sec:results-attribution} and $k^*(\xi) = \max\{k : \Delta_k(\xi) \neq \emptyset\}$, each episode is \emph{productive} if $\Delta_k \neq \emptyset$, \emph{redundant} if $R_k \neq \emptyset$ but $\Delta_k = \emptyset$, and \emph{unproductive} if $R_k = \emptyset$. Figure~\ref{fig:traj-combined}a shows that only $6\text{--}23\%$ of episodes are productive; $20\text{--}29\%$ are redundant and $50\text{--}70\%$ unproductive, so $77.5\text{--}93.6\%$ add no new evidence. Waste is not uniform: $8\text{--}24\%$ of questions return zero productive episodes, from Kimi K2.6 low to gpt-oss-120b high, while the median productive count is only $2\text{--}3$ everywhere. The result is a zero-productive tail needing reformulation plus a low-productivity bulk needing stopping rules.
+
+\paragraph{Useful evidence concentrates in the early episodes.} Productive episodes concentrate early (Figure~\ref{fig:traj-combined}c,d). By $K \approx 25$, cumulative recall reaches $\mathrm{Recall}_K \in [0.47, 0.70]$, with roughly half already accumulated in the first five episodes. The first-gold-hit step is sharper: by $K = 5$, $28.8\%$ of Tongyi-DR trajectories and $51.9\%$ of GLM 5.1 trajectories have retrieved gold; by $K = 25$, every agent is within $4\text{--}10$\,pp of its gold-hit plateau, $59.6\text{--}86.0\%$, and by $K = 40$ within $1\text{--}5$\,pp. The remaining never hit gold at any budget: what an agent misses early it rarely recovers late. Overall, a trajectory either lands on gold early or not at all; this is why early caps cost little.
+
+\paragraph{Visit precision is per-question bimodal: visits are all-on-target or all-off-target.} Visit precision $\Pr[d \in E(q) \mid (\textsc{visit}, d)]$ is the click-model analogue of search-result quality applied to the agent's own clicks.\footnote{In our closed-corpus regime, visit precision coincides numerically with the visit-level redundant rate; we frame as click precision because that interpretation generalizes to the open-web setting.} It varies sharply across agents (Figure~\ref{fig:acc-vs-x}b; Table~\ref{tab:overall}). Tongyi-DR is the volume-vs-selectivity outlier, opening $3.81$ documents per question at $49.5\%$ precision; the selective frontier cluster opens at most $1.8$ at roughly $80\%$ precision or better. Per question, the distribution is strongly bimodal: for the frontier cluster, $71\text{--}79\%$ of questions achieve $100\%$ precision and $10\text{--}16\%$ land at $0\%$; for Tongyi-DR, only $28.1\%$ hit $100\%$ and $32.5\%$ land at $0\%$. A snippet-level gate would help where the agent clicks blindly, not uniformly.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figs/context_composition_abs.pdf}
+\caption{Per-agent context budget by source. Bar length is median final context; segments are the per-source split (character-count proxy). Search snippets dominate ($66\text{--}85\%$); visit content is a minority ($2\text{--}16\%$); reasoning fills the rest.}
+\vspace{-2mm}
+\label{fig:context-composition}
+\end{figure}
+
+\begin{table*}[t]
+\centering
+\small
+\caption{Double dissociation between two query styles on two questions where GLM 5.1 and Kimi K2.6 disagree (\textcolor{teal}{$\checkmark$}/\textcolor{red}{$\times$}; \emph{Turns} = search-bearing turns, \emph{Srch} = search calls).}
+\label{tab:query-case}
+\begin{tabular}{@{}cl cc >{\raggedright\arraybackslash}p{0.55\linewidth}@{}}
+\toprule
+& Agent & Turns & Srch & Characteristic query move \\
+\midrule
+\multicolumn{5}{@{}p{0.97\linewidth}@{}}{\emph{Q1 --- name the entity at the end of a constraint chain: a $2020$ article author (fixed publication cadence) interviewed by the co-creator of a Tribeca audio selection} \;(gold \textbf{All Fives})} \\
+\addlinespace[2pt]
+\textcolor{teal}{$\checkmark$} & GLM 5.1 & 19 & 37 & \emph{Anchor-then-verify}: alternate \texttt{add\_constraint}/\texttt{drop\_constraint} to fix the interviewer, isolate the author (Anjuan Simmons), and converge ($0$ repeats). \\
+\textcolor{red}{$\times$} & Kimi K2.6 & 90 & 90 & \emph{Never anchors}: guesses the game and the life skill (``Animal Crossing,'' ``patience,'' \ldots\ across $54$ fresh pivots) and exhausts its budget without the author. \\
+\addlinespace[5pt]
+\multicolumn{5}{@{}p{0.97\linewidth}@{}}{\emph{Q2 --- identify a US state from four clues ($5$th-tallest capital building, $2.1\%$ population growth, governor's marriage year, borders a neighboring-country region), then name its state bird} \;(gold \textbf{Mountain Bluebird} --- the state is Idaho)} \\
+\addlinespace[2pt]
+\textcolor{teal}{$\checkmark$} & Kimi K2.6 & 37 & 37 & \emph{Enumerate-then-check}: sweep candidate states and capitals (Austin, Olympia, Sacramento, Phoenix, \ldots), test each clue, converge on Idaho $\to$ Mountain Bluebird. \\
+\textcolor{red}{$\times$} & GLM 5.1 & 20 & 38 & \emph{Anchors a misreading}: reads ``borders a region of a neighboring country'' as licensing a foreign answer, commits to Uttarakhand, India, rationalizes every remaining clue to fit, and reports Himalayan Monal. \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\paragraph{Incorrect trajectories are $2\times$ longer than correct ones but saturate at similar $k^*$.} Aggregate median $k^*$ is tight across agents, from $3$ for Qwen3.5-35B-A3B to $9$ for Tongyi-DR and Kimi K2.6, but median wasted tail $M-k^*$ diverges from $1$ episode for GLM 5.1 to $19$ for gpt-oss-120b; Tongyi-DR's mean wasted tail of $15.0$ is the proximate driver of its overflow. Splitting by correctness (Figure~\ref{fig:traj-combined}b) sharpens this: incorrect trajectories are $1.9\text{--}2.9\times$ longer than correct ones in mean $M$, yet their $k^*$ arrives only $0.6\text{--}6.7$ episodes later. The real gap is the wasted tail, $3.0\text{--}6.1\times$ longer on incorrect trajectories. Gold recall on incorrect trajectories drops from roughly $92\%$ on the correct set to $27\text{--}45\%$, and $48\text{--}64\%$ of them never surface a gold-bearing document at all. The long wasted tail is therefore \emph{rational continuation under failed retrieval}, not simply a stopping failure: the agent keeps searching because it lacks the answer, but its queries cannot surface gold at any budget. The prescription splits: \emph{query reformulation triggered by saturation-without-gold} for the RG majority, and saturation stopping for the UG subset, where post-gold redundancy of $58\text{--}74\%$ bounds the reclaim.
+
+\paragraph{Accumulated search snippets, not visited documents, dominate the context budget.} The wasted tail is paid for in context tokens, so we ask \emph{which} text fills the window. Bucketing every message by source shows search snippets occupying $66\text{--}85\%$ of context, visit content only $2\text{--}16\%$, and reasoning $3\text{--}25\%$ (Figure~\ref{fig:context-composition}). Tongyi-DR is the extreme at $85.0\%$ snippets: its overflow is the cumulative cost of many top-$K$ searches, not the documents it opens. Visit gating reclaims precision but little budget; the bigger lever is upstream snippet management, including deduplication, top-$K$ trimming, and aging out earlier-episode snippets whose evidence has already been integrated. The pattern reproduces on the open web (§\ref{sec:results-openweb}), so it is not a fixed-corpus artifact.
+
+\subsection{RQ4: Query Strategy Analysis}
+\label{sec:results-query}
+
+\emph{The mechanism so far is about how much agents search and where the evidence lands; does the way they query separate strong from weak?} For every search step, we classify the reformulation move by token overlap with the previous query: \texttt{repeat} for Jaccard overlap at least $0.85$, \texttt{pivot} below $0.25$, and \texttt{add}/\texttt{drop\_constraint} in between. We read these moves with the redundancy counters in Table~\ref{tab:query-discipline} and correlate each with accuracy using Spearman $\rho$ over six agents, descriptively here and formalized within-question in §\ref{sec:results-synthesis}. The headline: \emph{effort does not explain the gap}. The weakest agent, gpt-oss-120b at $38.0\%$, issues the most searches, $31.8$ search-turns, and volume runs the wrong way for an effort story, anti-correlated with accuracy at $\rho = -0.77$; what tracks accuracy is query \emph{cleanliness} and \emph{yield}.
+
+\paragraph{Redundant re-querying is the cleanest behavioral predictor of failure.} gpt-oss-120b is the one genuine offender: it re-issues near-identical consecutive queries on $5.0\%$ of moves, while the other five stay at or below $1.5\%$ \texttt{repeat}. Across agents, \texttt{repeat} rate is the strongest non-mechanical behavioral correlate of accuracy, with $\rho = -0.83$. Tongyi-DR's raw \texttt{repeat} rate of $4.8\%$ looks like a second offender, but it is an artifact of malformed calls: its scaffold passes \texttt{query} as a JSON \emph{array}, which the harness's single-string schema rejects. That mismatch, not empty retrieval, explains its $11.3\%$ \emph{Bad-call} rate; excluding rejected calls drops genuine \texttt{repeat} to $1.5\%$, squarely in the clean range reported in Table~\ref{tab:query-discipline}. We read \emph{Bad-call} as a harness--scaffold mismatch rather than a retrieval-strategy signal, with the caveat that roughly one in nine intended Tongyi-DR searches never reaches the retriever; its $38\%$ overflow is instead driven by post-gold redundancy and snippet volume (§\ref{sec:results-mechanism}).
+
+\paragraph{Fewer reasoning hops, via parallel query batching --- but this is a style, not a law.} The strongest agent is also the most economical: GLM 5.1 resolves a query in $10.6$ search-turns and Qwen3.5 in $12.4$, compared with $27\text{--}32$ for gpt-oss-120b, Tongyi-DR, and Kimi K2.6. The lever is batching: GLM 5.1 and Qwen3.5 fire $1.87$ and $1.74$ queries \emph{per turn}, trying several angles before reacting once, whereas the other three issue about one query per turn. Batching correlates positively with accuracy at $\rho = +0.75$. Still, turn economy is a style, not a requirement: Kimi K2.6 reaches $69.2\%$ over $27$ serial turns, brute-forcing breadth where GLM 5.1 triangulates. This is why raw search-turn count remains a confounded predictor.
+
+\begin{table}[t]
+\centering
+\small
+\setlength{\tabcolsep}{3pt}
+\caption{Per-agent query-strategy profile on BrowseComp-Plus.  \emph{Q/turn}: queries per search turn ($>1$ = parallel batching); \emph{Pivot}: share of moves that jump to a new angle; \emph{Repeat}: share of near-identical consecutive queries; \emph{Bad-call}: share of malformed search calls.}
+\label{tab:query-discipline}
+\begin{tabular}{lcccccc}
+\toprule
+        & Acc  & Search  & Q/    & Pivot & Repeat & Bad  \\
+Agent   & (\%) & turns   & turn  & (\%)  & (\%)   & (\%) \\
+\midrule
+gpt-oss-120b           & 38.0 & 31.8 & 1.00 & 46.6 & 5.0 &  0.3 \\
+Tongyi-DR              & 52.2 & 27.7 & 1.00 & 58.3 & 1.5 & 11.3 \\
+Qwen3.5-35B-A3B        & 55.2 & 12.4 & 1.74 & 44.1 & 0.4 &  0.0 \\
+Deepseek V4 Pro        & 68.6 & 19.3 & 1.49 & 55.9 & 0.3 &  0.0 \\
+Kimi K2.6              & 69.2 & 27.1 & 1.01 & 70.1 & 0.8 &  0.0 \\
+GLM 5.1                & 74.1 & 10.6 & 1.87 & 47.5 & 0.0 &  0.0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Trying new angles is not the waste --- failing to \emph{land} them is.} One might expect weaker agents to thrash through more dead-end pivots. They do not: \texttt{pivot} rate is not negatively correlated with accuracy, with $\rho = +0.31$, and the most pivot-heavy agent, Kimi K2.6 at $70\%$, is among the strongest. What separates strong from weak is whether new angles \emph{land} on evidence. Gold coverage broadly tracks accuracy, from $59.6\%$ to $86.0\%$ (§\ref{sec:results-mechanism}), even though pivot rates do not order the agents. gpt-oss-120b spends the most search-turns and pivots on nearly half its moves, yet converts that motion into gold least often.
+
+\paragraph{Case studies: neither query style dominates.} The two styles are agent-level tendencies visible in Table~\ref{tab:query-discipline}: Kimi K2.6 pivots the most, at $70\%$ of moves, and surfaces the most unique documents in its search results, $60.5$ per question, giving it a breadth-first style, whereas GLM 5.1 commits faster by anchoring and verifying a candidate entity. Neither style is uniformly better. Across the $830$ questions, GLM 5.1 is correct where Kimi K2.6 fails on $109$, and Kimi K2.6 is correct where GLM 5.1 fails on $68$. Table~\ref{tab:query-case} reads one case in each direction. Anchoring wins when the right entity is anchorable: in Q1, GLM 5.1 isolates the author in $19$ turns while Kimi K2.6 burns $90$ without converging. It \emph{backfires} when the model commits to a misread clue: in Q2, GLM 5.1 reports a Himalayan bird for what is actually Idaho, while Kimi K2.6's breadth-first sweep lands the right answer with a near-identical search count, $38$ versus $37$. Each style has a failure mode, so which pays off is set by the question, not model strength alone.
+
+\subsection{RQ5: Why Strong Agents Win}
+\label{sec:results-synthesis}
+
+\emph{Do the recall and query-discipline effects hold within the same question, or do they merely proxy generic model capability?} The cross-agent correlations of §\ref{sec:results-attribution} and §\ref{sec:results-query} are descriptive over six points. To separate capability from behavior, we pool the $830$ questions into an agent$\times$question panel with $4{,}919$ usable trajectories after dropping too-short runs, then fit linear probability models with \emph{question fixed effects}: every comparison is between agents answering the same question. Predictors are $z$-scored and include malformed-call-corrected \texttt{repeat}/\texttt{pivot} shares, queries per turn, and log search calls; standard errors cluster by question.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figs/panel_mediation.pdf}
+\caption{Within-question test: \emph{(a)} P(correct) on the $366$ gold-hit-disagreement questions; \emph{(b)} agent edge over gpt-oss-120b (question FE) before (open) / after (filled) recall control --- $56\text{--}60\%$ absorbed.}
+\vspace{-2mm}
+\label{fig:panel-mediation}
+\end{figure}
+
+\paragraph{Retrieval mediates the outcome, within the question.} On the $366$ questions where agents disagree about whether gold evidence was retrieved, the retrieving agents answer correctly $73.8\%$ of the time, while the others answer correctly only $2.2\%$ on those same questions (Figure~\ref{fig:panel-mediation}a). The near-zero $2.2\%$ bounds closed-book answering: agents almost never succeed without retrieving gold, so recall is not merely a proxy for parametric knowledge, though it cannot separate query skill from knowledge-informed querying. In the regression, cumulative gold recall dominates with a $+30$\,pp effect per SD and $t = 34$, an order of magnitude above every behavioral coefficient. Retrieval also carries the bulk of the \emph{identity} advantage: controlling for recall absorbs $56\text{--}60\%$ of each stronger agent's conditional edge over gpt-oss-120b in Figure~\ref{fig:panel-mediation}b.
+
+\paragraph{Query discipline acts through retrieval; search volume is a symptom.} The behavioral signature of §\ref{sec:results-query} decomposes cleanly on the panel. \texttt{repeat} predicts retrieval failure within the question, reducing gold-hit probability by $1.9$\,pp per SD with $t = -3.4$; its association with correctness vanishes once recall is controlled, and it loses significance under agent fixed effects. Search \emph{volume} is strongly negative within the question: where agents disagree, the correct ones issue on average $14$ fewer search calls while achieving $54$\,pp higher gold recall, and the coefficient survives restricting to answered-only trajectories. We read this associationally: an agent searches long \emph{because} it is failing at least as much as the reverse. \texttt{pivot} is null throughout; per-turn batching is the one behavior whose positive effect survives agent fixed effects and recall control, adding $+2\text{--}4$\,pp per SD.
+
+\subsection{RQ6: External Validity on Open Web}
+\label{sec:results-openweb}
+
+\emph{Is the coverage--effort dissociation an artifact of the fixed corpus and qrels supervision?} We re-run the same ReAct harness on a different benchmark and retrieval regime: a $200$-question sample of BrowseComp-en \citep{Wei2025BrowseCompASimple} answered against a live commercial open-web search API, using the four agents that ran to completion within budget. Because the open web has no qrels, an \emph{LLM judge} supplies the relevance signal: for each question, it decomposes the information need, labels whether every \texttt{search}/\texttt{visit} surfaces a \emph{critical new fact}, and judges whether the gathered facts are jointly \emph{sufficient}. \emph{Coverage} is the share of questions judged sufficient; an error is a \emph{retrieval gap} when sufficiency is never reached and a \emph{utilization gap} otherwise. Answer accuracy keeps the same GPT-4o protocol.
+
+\ifcompact\else
+\begin{table}[t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\caption{Open-web replication on BrowseComp-en ($200$ questions, live web search). \emph{RG/UG}: retrieval-gap / utilization-gap share of errors under the LLM sufficiency judge; \emph{Calls}/\emph{Visits}: mean per question.}
+\label{tab:openweb-overall}
+\begin{tabular}{lccccc}
+\toprule
+Agent & Acc (\%) & RG/err (\%) & UG/err (\%) & Calls & Visits \\
+\midrule
+Qwen3.5-35B-A3B        & 30.5 & 88.4 & 11.6 & 67.7 &  7.4 \\
+Tongyi-DR              & 42.5 & 86.1 & 13.9 & 77.4 & 25.2 \\
+\midrule
+GLM 5.1                & 64.0 & 84.4 & 15.6 & 64.7 & 11.5 \\
+Deepseek V4 Pro        & 61.5 & 68.1 & 31.9 & 81.0 & 11.1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+\fi
+
+\paragraph{The headline replicates.} Across the four agents run to completion on the open web\ifcompact\else, shown in Table~\ref{tab:openweb-overall}\fi, accuracy tracks judged coverage and is flat against effort. GLM 5.1 has the top accuracy at $64.0\%$ with the fewest calls, about $65$ per question; Deepseek V4 Pro spends the most, $81$ calls per question, for slightly lower accuracy at $61.5\%$; and the two mid-scale agents, Tongyi-DR and Qwen3.5-35B-A3B, remain below $45\%$, at $42.5\%$ and $30.5\%$. With only four agents, the correlations are directional, but accuracy--coverage has $r = 0.99$ while accuracy--calls has $r = 0.12$. As in the main study, retrieval gap dominates errors, accounting for $68\text{--}88\%$ of them. The reformulation move-share is identical across the correct/incorrect split, so what separates outcomes is whether a trajectory reaches \emph{sufficient evidence}, not how it queries. The snippet-dominated budget also reproduces.
+
+\paragraph{The qrels-free utility axes behave consistently across benchmarks.} The episode-utility decomposition of §\ref{sec:results-mechanism} can be reconstructed without qrels because the LLM usefulness judge labels each episode, search step, and visit as \emph{productive}, \emph{redundant}, or \emph{unproductive}. On BrowseComp-Plus, productive$+$redundant share correlates with accuracy most strongly at the \emph{episode} level, where $r = 0.71$, weakening through search steps at $r = 0.63$ to visits at $r = 0.51$. This is the qrels-free echo of recall-over-precision (§\ref{sec:results-attribution}). The four-agent open-web check in Figure~\ref{fig:axes-compare} is directionally consistent but underpowered for the ordering, so we lean on BrowseComp-Plus for that.
+
+\ifcompact
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figs/prod_axes_compare_compact.pdf}
+\caption{Accuracy vs.\ productive$+$redundant share of search / visit steps on BrowseComp-en.}
+\label{fig:axes-compare}
+\end{figure}
+\else
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figs/prod_axes_compare.pdf}
+\caption{Cross-benchmark check of the qrels-free episode-utility axes. Accuracy vs.\ the productive$+$redundant share at episode / search-step / visit-step granularity, for \emph{(top)} BrowseComp-en (open web, $n = 4$) and \emph{(bottom)} BrowseComp-Plus (qrels, $n = 6$). Pearson $r$ per panel. The episode-level share is the strongest correlate on BrowseComp-Plus; the open-web row is directionally consistent but underpowered.}
+\label{fig:axes-compare}
+\end{figure*}
+\fi

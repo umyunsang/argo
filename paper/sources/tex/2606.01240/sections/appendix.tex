@@ -1,0 +1,157 @@
+\subsection{SPC Repair Analysis}
+
+\subsubsection{Definition of Semantic Fragmentation}
+We define \say{semantic fragmentation} as the following situation. 
+\textit{The retrieved text block that is syntactically complete, but semantically insufficient to independently support the information required by the user's query.} 
+Semantic fragmentation is not equivalent to text truncation or grammatical incompleteness.
+In actual RAG scenarios, a large number of evidence blocks satisfy common syntactic integrity heuristics (e.g., ending with a terminating punctuation mark, sufficient length), but still lack key entities, preconditions, or logical relationships, thus preventing the generative model from completing reliable reasoning based on this evidence (see Section~\ref{sec:SPC}).
+
+
+\subsubsection{Heuristic Integrity Rule and Its Limitations}
+In conventional RAG systems, the semantic integrity of chunks is typically determined by the following  heuristic rules:
+\begin{itemize}
+    \item Text ends with a terminal punctuation mark (e.g., \say{.}, \say{?}, \say{!});
+    \item Text contains paired quotation marks, parentheses, or other symbols;
+    \item Text length exceeds the minimum token threshold.
+\end{itemize}
+These rules effectively filter clearly truncated text blocks, but they only focus on surface syntactic structures and cannot identify hidden semantic gaps. 
+From the ablation experiment (Table~\ref{tab:genmod}), we observe that even when evidence blocks meet the above heuristic conditions, semantic fragmentation still occurs frequently and significantly affects the performance of multi-hop reasoning and evidence-sensitive tasks. 
+
+
+
+\subsubsection{Example of Semantic Fragmentation and SPC Repair}
+We conduct manual analysis on HotpotQA and ELI5 on several types of semantic fragmentation with their corresponding SPC repair examples.
+
+\pb{Unresolved Co-Reference.}
+Original chunk:
+\textit{He then announced his resignation shortly after the investigation concluded}. 
+The heuristic rule will judge this text as semantically complete for being syntactically correct and having sufficient length.
+Meanwhile, SPC judges the text as having a confidence level of semantic integrity output by SLM as lower than the threshold $\delta=0.5$.
+SPC will judge the text as semantically impaired because there is an unresolved pronoun \say{He} and the referent cannot be determined within the current chunk. 
+The text repaired by SPC is as follows: \textit{After weeks of public pressure and an investigation into financial misconduct, Prime Minister John Smith announced his resignation}.
+The repaired text restored the reference object and thus can independently support reasoning of \say{who and why}.
+
+
+\pb{Truncated Premise.}
+Original chunk: 
+\textit{As a result, the policy was widely criticized by experts.}
+SPC will give a confidence level of $\delta=0.5$ due to the absence of the key premise needed for the conclusion.
+The text repaired by SPC is as follows:
+\textit{After the government abruptly raised fuel taxes, the policy was widely criticized by experts for increasing living costs}.
+
+
+\pb{Broken Causal.}
+Original chunk: 
+\textit{This led to a significant shift in public opinion.}
+SPC will judge this text as fragmented because the indicator \say{This} lacks reference, and thus, creating inconsistent semantic relationship.
+The text repaired by SPC is as follows:
+\textit{The prolonged economic downturn led to a significant shift in public opinion against the ruling party.}
+
+\pb{Interrupted Argument.}
+Original chunk: 
+\textit{The main reasons include economic pressure, social factors.}
+SPC will judge this text as fragmented because the enumeration is not expanded, and the information granularity is insufficient to support reasoning.
+The text repaired by SPC is as follows:
+\textit{The main reasons include rising economic pressure from inflation and growing social dissatisfaction with labor policies.}
+
+\subsubsection{Analysis on Multi-Level Thresholding}\label{sec:threshold}
+The SPC module leverages two levels of semantic auditing, chunk damage detection, and evidence coverage audit.
+Chunk-level detection (with $\delta$ threshold) is used to determine whether a single evidence chunk is semantically complete.
+In practice, SLM outputs a semantic completeness confidence level score in the range of ([0,1]) for each chunk.
+When this $\delta < 0.5$ the chunk is determined to be semantically impaired, triggering the local backtracking repair process of SPC.
+Meanwhile, evidence coverage audit (with $\epsilon$ threshold) is utilized to determine whether the current evidence set covers the key information elements required by the query (see Equation~\ref{eq:kie}). 
+If $\epsilon < 0.6$, then the element is considered not covered and in the current evidence set and is converted into a new query to trigger the next round of RAG.
+These mechanisms ensure reparation of local semantic loss through damage detection at the chunk level and supplementation of global information insufficiency through a new retrieval round.
+
+
+
+
+
+
+
+
+
+\subsection{Iteration and Stopping Conditions}\label{sec:iter}
+InSemRAG leverages an iterative retrieve-and-check mechanism, performing semantic repair to ensure complete information supplementation.
+In each iteration, InSemRAG performs the following operations:
+\begin{itemize}
+    \item retrieves evidence chunk based on input query, then screens the candidate evidence,
+    \item leverages SPC to repair damaged evidence chunks,
+    \item determines whether the evidence covers key information elements required to support the query,
+    \item if some elements are not covered in the evidence, InSemRAG will convert those into new queries to trigger next iteration.
+\end{itemize}
+
+\pb{Empirical Analysis.}
+We evaluate the actual iterative behavior of InSemRAG on HotpotQA and ELI5 benchmarks.
+Table~\ref{tab:iter} presents the distribution of samples going through the iteration series.
+
+\begin{table}[!htb]
+\small
+    \centering
+    \begin{tabular}{|c|c|c|c|}
+    \hline
+        \textbf{Dataset} & \textbf{1\textsuperscript{st} iter} & \textbf{2\textsuperscript{nd} iter} & \textbf{3\textsuperscript{rd} iter} \\
+        %\cline{3-8}
+        \hline
+        HotpotQA & 72\% & 23\% & 5\% \\
+        ELI5 & 65\% & 27\% & 8\% \\
+        \hline
+    \end{tabular}
+    \caption{Distribution of samples across retrieval rounds.}
+    \label{tab:iter}
+\end{table}
+
+\noindent
+We observe that, in general, the iterative retrieval mechanism in InSemRAG stops after one to two iterations.
+Samples that need more iterations typically correspond to complex problems with highly dispersed information.
+Thereby, we set the maximum iteration round to be three to control the mechanism latency.
+
+
+
+
+\subsection{Analysis On Dynamic Channel Weighting}\label{sec:weight}
+The IAR module passes the input query through SLM that predicts the weight of different retrieval channels $\textbf{w}=\left[\alpha,\beta,\gamma\right]^T$ to dynamically fuse multiple retrieval signals.
+To analyze the behavioral patterns of dynamic weights, we manually classified some queries and roughly divided them into the following three categories (not strictly mutually exclusive and are only used for analysis):
+\begin{itemize}
+    \item entity-centric query, targeting well-defined entities, such as a person, place, organization, or specific event;
+    \item explanatory query, focusing on conceptual explanations, cause analysis, or high-level descriptions;
+    \item multi-hop reasoning query, integrating multiple evidence segments or reasoning across documents to obtain the answer.
+\end{itemize}
+
+
+\begin{figure}
+    \centering
+    \includegraphics[width=\linewidth]{figures/weight.png}
+    \caption{Distribution of channel weighting across different query types.}
+    \label{fig:channel}
+\end{figure}
+\begin{comment}
+\begin{table}[!htb]
+\small
+    \centering
+    \begin{tabular}{|c|c|c|c|}
+    \hline
+        \textbf{Query} & \textbf{Dense $\alpha$} & \textbf{Sparse $\beta$} & \textbf{Expanded $\gamma$} \\
+        %\cline{3-8}
+        \hline
+        Entity-centric & 0.28 & 0.52 & 0.20 \\
+        Explanatory & 0.55 & 0.18 & 0.27 \\
+        Multi-hop & 0.42 & 0.24 & 0.34 \\
+        \hline
+    \end{tabular}
+    \caption{Distribution of channel weighting across different query types.}
+    \label{tab:channel}
+\end{table}
+\end{comment}
+
+\noindent
+Figure~\ref{fig:channel} presents the weight distribution of retrieval channels for each query type.
+We observe that entity-centric queries rely more on a sparse retrieval channel to improve term exact matching ability, and explanatory queries rely on dense retrieval to expand semantic coverage.
+Meanwhile, multi-hop reasoning queries exhibit balanced weight among three retrieval channels to balance recall and semantic coherence.
+These results indicate that dynamic channel weighting has an interpretable correspondence with the semantic features of the query.
+Note that our weighting analysis does not provide strict guarantees on all queries due to the subjective classification of the query, where different annotation standards may lead to minor differences in weight distribution results.
+Furthermore, the prediction results of dynamic weights rely on the SLM's understanding of query semantics, and its behavior may be influenced by model size and prompting methods. 
+Nevertheless, we observed in the experiments that the overall trend remained consistent across different SLM settings.
+
+
+

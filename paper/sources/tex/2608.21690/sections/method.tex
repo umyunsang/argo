@@ -1,0 +1,145 @@
+\section{Scroll Context Manager}
+\label{sec:method}
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=0.98\textwidth]{sections/fig/scroll_system_image.pdf}
+    \caption{
+    Overview of Scroll. Scroll keeps the full session in a persistent, executable Session Environment; model-written code retrieves and computes over it via \texttt{exec}, and \texttt{print} selects the working view exposed to the next model call.
+    }
+    \label{fig:scroll}
+\end{figure*}
+
+We introduce Scroll, a context manager for long-horizon LLM agents. The key insight is that an agent's accumulated history should not be serialized into the model's prompt but should instead be treated as \emph{an environment that the model programmatically interacts with}. The prompt then carries only a working view, while the session lives outside the context window without loss. We first formalize the problem this design addresses (\S\ref{sec:formulation}), then describe the Session Environment (\S\ref{sec:session-environment}), the programmatic interface through which the model constructs its own context (\S\ref{sec:programmatic-context}), and the eviction mechanism that keeps the working view bounded while preserving recoverability (\S\ref{sec:recoverable-eviction}). 
+
+\subsection{Problem Formulation}
+\label{sec:formulation}
+
+\paragraph{Session state and working view.}
+An agent session produces a growing sequence of \emph{events}
+$e_1, e_2, \ldots$ (user messages, model responses, tool calls, tool
+results), each with an associated \emph{payload} (its raw content, e.g., a
+full tool output). We write the session state after $t$ agent steps as
+\begin{equation}
+    S_t = (L_t,\; P_t,\; V_t),
+\end{equation}
+where $L_t$ is the event sequence with per-event metadata, $P_t$ the payloads referenced by $L_t$, and $V_t$ auxiliary derived state (in Scroll, a variable namespace; in other systems, a memory store or summary buffer). 
+Each model call, however, consumes a \emph{working view} $c_t$ with $|c_t| \le C$ tokens, where $C$ is the model's nominal context window.
+The \emph{context-management problem} is to choose, at every step, the next view: the map $S_t \mapsto c_{t+1}$.
+
+\paragraph{When the selection is made.}
+Existing approaches fix the map $S_t \mapsto c_{t+1}$ before future needs are known: compression applies a lossy operator $\phi$ as the trajectory grows, $c_{t+1} = \phi(c_t,\, e_{t})$, deciding which information survives when each segment is compacted; external memory applies an extraction operator $\psi$ at ingestion, $V_{t} = \psi(V_{t-1}, e_{t})$, fixing what is stored and how it can later be retrieved. Either way, the reduced representation replaces the history it summarizes, so anything it omits is unrecoverable.
+
+Scroll instead defers selection to query time. The full state $S_t$ persists losslessly outside the context, and the map $S_t \mapsto c_{t+1}$ is a \emph{program} $\pi_t$ the model writes at step $t$: the program executes on $S_t$, updates $V_t$, and emits a bounded observation for the next call. The model decides what to recall, compute, and expose; the harness makes those decisions safe via durable storage, stable addressing, and sandboxed execution.  Because the policy is expressed as code, it inherits the full generality of programs and improves with the backbone's coding ability, at no change to the harness.
+
+
+
+
+\begin{table}[t]
+\centering
+\footnotesize
+\begin{tabular}{@{}p{0.16\linewidth}p{0.32\linewidth}p{0.43\linewidth}@{}}
+\toprule
+\textbf{Operation} & \textbf{Interface} & \textbf{Role} \\
+\midrule
+\textsc{Locate}
+&
+\texttt{ms.search(query, k, ...)}
+&
+Find candidate Event Log records via BM25-ranked full-text search and
+structured scope, kind, and time filters; each hit carries its stable
+\texttt{seq} address.\\
+\textsc{Materialize}
+&
+\texttt{ms.expand(seq)} \newline
+\texttt{ms.expand(seq\_lo, seq\_hi)}
+&
+Recover exact turns or sequence spans, and load externalized payload
+contents behind lazy handles. \\
+\textsc{Compute}
+&
+Ordinary Python and permitted database, filesystem, and tool interfaces
+&
+Filter, join, aggregate, resolve updates, inspect artifacts, or construct
+derived state. \\
+\textsc{Expose}
+&
+\texttt{print(value)}
+&
+Return the selected projection as a bounded observation; everything else
+stays in the kernel. \\
+\bottomrule
+\end{tabular}
+\caption{The model-facing interface factorizes context construction into
+location, materialization, computation, and exposure.}
+\label{tab:memory-surface}
+\end{table}
+
+
+\subsection{Persistent Session Environment}
+\label{sec:session-environment}
+
+Scroll realizes $S_t$ as a \emph{Session Environment} (Figure~\ref{fig:scroll}, right), with three components corresponding to $L_t$, $P_t$, and $V_t$.
+
+\paragraph{Append-only Event Log ($L_t$).}
+The Event Log is the durable, ground-truth record of an agent's sessions: a single append-only log that spans session boundaries. Every interaction appends a typed event carrying the metadata future queries need---role, session and agent identifiers, timestamps, and tool state---and receives its immutable, monotonically increasing \texttt{seq}. Our implementation stores events in SQLite. Search defaults to BM25 rather than embeddings: it is deterministic and requires no index-time model calls. 
+
+\paragraph{Durable storage ($P_t$).}
+A payload is the raw content an interaction produced, such as a full tool result or a generated artifact. The log records that the interaction occurred but need not store every byte of it in the event row: small payloads remain inline in SQLite, while large ones are moved into JSON or artifact storage on the filesystem, with the row retaining a bounded preview and a recovery pointer. Externalized payloads are accessed through lazy handles (\texttt{ToolResultRef}, \texttt{ArtifactRef}).
+
+\paragraph{Persistent runtime and resident namespace ($V_t$).}
+A sandboxed Python kernel persists across model calls throughout the session; its namespace holds \emph{environment objects}: resident Python values and lazy handles, each carrying type, size, and provenance metadata identifying the events it derives from. 
+Tool invocations issued through the programmatic tool interface~\citep{ptc} return Python objects that later programs can operate on.
+The harness prepends to every call a \emph{namespace digest}: a short listing of each resident variable's name, type, and shape, with small scalar values shown inline. Model-authored code runs in a fail-closed sandbox: the Event Log is read-only from the kernel, and database, filesystem, network, and tool access are limited to capabilities the harness explicitly declares.
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=0.7\textwidth]{sections/fig/scroll_dataflow.pdf}
+    \caption{
+    Programmatic context construction. Three \texttt{exec} turns compute over resident state in the kernel; only \texttt{print} output crosses into the next model context/working view. 
+    }
+    \label{fig:dataflow}
+\end{figure*}
+
+\subsection{Programmatic Context Construction}
+\label{sec:programmatic-context}
+
+Scroll uses a CodeAct-style interface~\citep{codeact} for both task execution and context construction. A controlled capability object, \texttt{ms}, forms the model-facing \emph{memory surface} over durable history, abstracting the physical backend behind four operations (Table~\ref{tab:memory-surface}).
+
+Figure~\ref{fig:dataflow} traces the trip-planning task of Figure~\ref{fig:scroll} through three \texttt{exec} cells. Cell~1 binds full tool results to the resident variables \texttt{flights} and \texttt{routes} in the Python kernel, printing only a few rows. Cell~2 searches the Event Log for stated preferences; the matching previews and \texttt{seq} addresses enter the working view, revealing the user's preference for economy cabins and toll-free routes.
+Cell~3 expands the two events for the verbatim record, filters and ranks the resident variables accordingly, and prints the two preference turns alongside the cheapest economy flight and the fastest toll-free route. The bulk tool results never enter the working view; every call is appended to the Event Log with its full result, addressable by \texttt{seq}.
+
+\subsection{Eviction and Off-Context Navigation}
+\label{sec:recoverable-eviction}
+
+The working view must stay bounded as the session grows. Scroll bounds it with an eviction procedure (Algorithm~\ref{alg:eviction}) that triggers whenever the working view exceeds a budget $\rho C$. 
+The procedure first persists any live turns to the Event Log and protects the active turn, the recent tail, and the newest tool results. The remainder is evicted in increasing order of recovery cost: completed tool payloads are folded first, since a single \texttt{seq} pointer suffices to recover them; whole spans are removed only if the view remains over budget.
+What leaves the view is not lost: it stays verbatim in the Event Log, and the procedure's one invariant is that everything it removes stays addressable.
+
+\begin{algorithm}[t]
+\caption{Recoverable context eviction}
+\label{alg:eviction}
+\begin{algorithmic}[1]
+\Input working view $c$, Event Log $\mathcal{L}$, eviction index $\mathcal{I}$, budget $\rho C$, tier width $k$
+\Output bounded $c$ and updated $\mathcal{I}$; removed spans stay recoverable from $\mathcal{L}$
+\If{$|c| > \rho C$}
+  \State $\mathcal{L} \gets \Call{Persist}{c, \mathcal{L}}$
+    \Comment{live turns become durable}
+  \State $R \gets \Call{Protected}{c}$
+    \Comment{active turn, recent tail, newest tool results}
+  \State $c \gets R \,\cup\, \Call{FoldPayloads}{c \setminus R}$
+    \Comment{payloads $\to$ \texttt{seq} pointers}
+  \State $E \gets \Call{SelectSpan}{c \setminus R,\; |c| - \rho C}$
+    \Comment{oldest completed span above budget}
+  \State $c,\ \mathcal{I} \gets \Call{EvictToIndex}{c,\; E,\; \mathcal{H}[E]}$
+    \Comment{$E$ leaves the view; its headlines enter $\mathcal{I}$, shown in place}
+  \State $\mathcal{I} \gets \Call{RollUp}{\mathcal{I},\, k}$
+\EndIf
+\State \Return $(c, \mathcal{I})$
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Headlines as navigation anchors.}
+Lexical search recovers an evicted span only when the agent recalls its wording; Scroll therefore also maintains \emph{landmarks} for position-based navigation. As part of each response, the model writes a short \emph{headline}---task, verified state, next action, and a status---which Scroll binds at append time to the \texttt{seq} assigned by the Event Log, yielding a map $\mathcal{H}$ from address to headline. When a span is evicted, its headlines enter a tiered index (Figure~\ref{fig:scroll}). 
+A flat index would grow linearly with the session, so Scroll rolls it up: each tier holds at most $k$ blocks; when a tier fills, the newest block retains full detail while the $k-1$ older ones collapse to one line each and merge into the next tier.
+After $n$ evictions, the index occupies $O(k \log_k n)$ blocks, providing fine anchors for recent history, coarse ranges for distant history, each backed by a \texttt{seq} span.
