@@ -107,3 +107,17 @@ One episode was refused for exceeding the declared call ceiling, 18 against 16. 
 the full condition, which uses the most calls in every observation. The ceiling was left
 where measurement placed it and the violation is treated as an outcome.
 
+## 2026-09-03 — judging cost measured both ways
+
+Three items judged both ways by the same judge in structured output mode.
+
+| path | mean total tokens | mean cost |
+|---|---:|---:|
+| span-based | 56,676 | $0.02682 |
+| full artifact | 90,309 | $0.04320 |
+
+Ratio 1.61. Projected judging cost for a 116-episode block at six elements each:
+span only $18.67, full only $30.07, full plus a twenty percent
+span subsample $33.8. This belongs to the quality arm and does not
+change the pending completion-arm question. GPU credit units remain 0.
+

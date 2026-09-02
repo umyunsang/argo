@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** decide whether the endpoint retrieval is repaired or replaced by whole-artifact judging, and cost both against the measured overturn rate before choosing.
+- **next_first_action:** re-score the eight confirmation artifacts under whole-artifact judging so the endpoint of record has a coverage figure computed the way the design now specifies.
 
-- **last_updated:** 2026-09-03T03:52:31+09:00
+- **last_updated:** 2026-09-03T03:56:40+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 54 closed — the endpoint bias is measured: 7 of 18 pipeline negatives overturn under a wider view
+- **current_phase:** cycle 55 closed — retrieval removed from the endpoint rather than repaired, on measured cost and a measured failure rate
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 55 — remove rather than repair, decided on measured numbers
+
+- **Gap picked:** the endpoint drops about two in five true positives at the retrieval stage. Repair or removal had to be chosen, and costed.
+- **Measured the cost both ways**, three items judged span-based and whole-artifact by the same judge in a mode that reports usage: **$0.02682** against **$0.04320**, a ratio of **1.61**.
+- **Repair rejected on the shape of the failure**, not on cost. Three of the four no-span misses were a single element stated in wording the cues do not match, and poor spans fail at a similar rate, so widening cues trades one silent miss for another with no recall measurement to bound it.
+- **Decision:** whole-artifact judging becomes the primary path; the cheaper span verdict is retained on a **20% subsample** as a drift check, so disagreement between the two stays visible rather than assumed away.
+- **The trade is stated as a trade.** Full-artifact judging has no accuracy measurement of its own, so a measured, directional failure mode is being exchanged for an unmeasured one. That is defensible only because the removed one is quantified.
+- **Projected quality-arm judging cost** for a 116-episode block: $18.67 span-only, $30.07 full-only, $33.80 with the subsample. This does not change `Q-0007`, which covers the completion arm and needs no judging at all.
 
 ### Cycle 54 — the other half of the failure, and the size of the bias
 
