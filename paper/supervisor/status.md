@@ -1,11 +1,11 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** build_submission.py 진입점을 quarto render로 바꾸고 제출 docx가 artifact 게이트와 재현성 receipt를 통과하는지 확인한다. 깨지면 되돌리고 Q를 올린다.
+- **next_first_action:** Ⅲ장(제안 방법)을 qmd에 쓰고 그림 3개와 표 1개를 더 붙인 뒤 렌더 검사를 다시 돌린다.
 
-- **last_updated:** 2026-09-03T05:42:43+09:00
+- **last_updated:** 2026-09-03T05:46:21+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** anthropic/claude-opus-5
-- **current_phase:** cycle 64 closed — 툴체인 v3로 한글이 PDF에 실제로 렌더되고, Quarto 정본 원고가 양식 검사 9/9 통과
+- **current_phase:** cycle 65 closed — 한글 정본 Ⅰ·Ⅱ장, 국문요약·키워드·참고문헌·표 2개까지 렌더 12/12 통과
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 
@@ -17,7 +17,7 @@
 
 > **instruction-0011 보고 (§7)**
 > 1. **정본 소스:** `paper/manuscript/thesis-ko.qmd` (Quarto 1.10.18 단일 파일). 렌더 검사 **9/9 통과** — A4 11906×16838, `Ⅰ. Introduction` 제목, 그림 캡션 하단 `그림 1.`, 표 캡션 상단 `표 1.`, 본문 상호참조, 한글 비율 **0.794**, receipt 연동 표 실행. **아직 제출 진입점은 교체하지 않았다**(제출 docx는 매 커밋 게이트 통과 상태 유지).
-> 2. **한글 장 진행:** **1/5** (Ⅰ장 집필). 표 **1개**(분산 성분, receipt에서 생성·assert). 그림 1개 삽입.
+> 2. **한글 장 진행:** **2/5** (Ⅰ·Ⅱ장). 표 **2개**(둘 다 receipt에서 생성·assert), 그림 2개 참조, 참고문헌 **93건** 이관 완료. 국문요약 **384자**(≤500), 영문 키워드 **5개**.
 > 3. **Q-0009(하네스 비교 arm):** 미착수 — 작업 순서상 다음 단계. 기본값 (b) 실행 안 함.
 > 4. **툴체인 v3:** 한글 폰트를 고정 툴체인 안에 넣어 격리 규칙을 **완화하지 않고** 한글 조판을 열었다. 영문 빌드는 폰트 추가 전후 **바이트 동일**(`e57e8f13…`)로 반증 조건을 통과했다.
 
