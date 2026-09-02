@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** extend the dangling-reference gate to the context graph and protocol so every path recorded anywhere must resolve, not only paths inside experiment receipts.
+- **next_first_action:** audit the abstract and conclusions against the current results, since the paper has grown by many sections since they were written.
 
-- **last_updated:** 2026-09-03T01:56:41+09:00
+- **last_updated:** 2026-09-03T02:03:04+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 29 closed — every endpoint number in the manuscript is now produced by committed, mutation-audited code
+- **current_phase:** cycle 30 closed — source-archive provenance repaired and gated after the first gate was shown to verify nothing
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 30 — a provenance hole, and a gate that verified nothing
+
+- **Gap picked:** the path gate only covered experiment receipts. Extending it to the graph, protocol, locators and source receipts immediately found a dangling artifact.
+- **Root cause is structural.** This checkout is a **linked worktree** whose shared exclude blocks the `paper/` directory, so files are tracked only when staged explicitly. Under that rule **911 paper files are tracked but zero source archives are** — every recorded archive path was absent from a clean checkout.
+- **Resolution, not concealment:** upstream archives are external re-fetchable artifacts. The quoted evidence is committed as extracted text for **all 114** archives (419 tex files, 91 full-text and 114 report captures tracked). Every archive record must carry a fetch address and a digest.
+- **Verified by re-fetch:** three archives and one PDF were re-fetched and reproduced their recorded digests **exactly**, including the originally missing PDF at 5,885,207 bytes.
+- **My first gate verified nothing.** It scanned a character window around each reference, so a record could satisfy it by borrowing a neighbour's address and digest. The failing-first test stripped one record and **did not fire**. The check now walks the parsed structure so both must sit in the same record, and the same test then fired.
+- **Limit stated:** a re-fetch depends on the upstream service still serving that version. The digest proves identity when a fetch succeeds; it cannot substitute for bytes if it does not.
 
 ### Cycle 29 — the analysis became code, and a dangling path surfaced
 

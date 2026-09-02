@@ -628,6 +628,9 @@ def main():
             + json.loads(
                 (ROOT / "paper/sources/arxiv-metadata-literature-round48-receipt.json").read_text(encoding="utf-8")
             ).get("records", [])
+            + json.loads(
+                (ROOT / "paper/sources/arxiv-metadata-literature-round50-receipt.json").read_text(encoding="utf-8")
+            ).get("records", [])
         )
         combined_metadata_ids = [x.get("source_id") for x in combined_metadata_records]
         duplicate_metadata_ids = sorted(k for k, v in collections.Counter(combined_metadata_ids).items() if v > 1)
@@ -1773,6 +1776,7 @@ def main():
                 errors.append("submission artifact is not reproducible from its committed builder")
 
     dangling_references = []
+    external_artifacts = {"declared": 0, "verifiable": 0, "unverifiable": []}
     if cfg.get("dangling_reference_scan"):
         scan_cfg = cfg["dangling_reference_scan"]
         pattern = re.compile(r'"((?:paper|experiments)/[^"*?\[\]]+?\.(?:json|md|csv|tex|docx|pdf|py))"')
@@ -1781,10 +1785,53 @@ def main():
             if not source.is_file():
                 dangling_references.append({"in": rel, "reference": "(file missing)"})
                 continue
-            for match in pattern.finditer(source.read_text(encoding="utf-8", errors="replace")):
+            text = source.read_text(encoding="utf-8", errors="replace")
+            for match in pattern.finditer(text):
                 ref = match.group(1)
                 if not (ROOT / ref).exists():
                     dangling_references.append({"in": rel, "reference": ref})
+            # Upstream source archives are large and re-fetchable, so they are recorded
+            # rather than committed. Each one must still carry a fetch url and a digest
+            # IN THE SAME RECORD. An earlier version scanned a character window around
+            # the reference, which let a record borrow a neighbour's url and digest and
+            # therefore proved nothing; the check now walks the parsed structure.
+            external_prefix = scan_cfg.get("external_artifact_prefix")
+            if external_prefix:
+                try:
+                    parsed = json.loads(text)
+                except json.JSONDecodeError:
+                    parsed = None
+
+                def walk(node):
+                    if isinstance(node, dict):
+                        refs = [v for v in node.values()
+                                if isinstance(v, str) and v.startswith(external_prefix)]
+                        for ref in refs:
+                            if (ROOT / ref).exists():
+                                continue
+                            external_artifacts["declared"] += 1
+                            has_digest = any(
+                                k.endswith("sha256") and isinstance(v, str) and len(v) == 64
+                                for k, v in node.items())
+                            has_url = any(
+                                k.endswith("url") and isinstance(v, str)
+                                and v.startswith(("http://", "https://"))
+                                for k, v in node.items())
+                            if has_digest and has_url:
+                                external_artifacts["verifiable"] += 1
+                            else:
+                                external_artifacts["unverifiable"].append(
+                                    {"in": rel, "reference": ref})
+                        for v in node.values():
+                            walk(v)
+                    elif isinstance(node, list):
+                        for v in node:
+                            walk(v)
+
+                if parsed is not None:
+                    walk(parsed)
+    if external_artifacts["unverifiable"]:
+        errors.append("external source artifact recorded without a fetch url and digest")
     if dangling_references:
         errors.append("receipt references a path that does not exist")
 
@@ -2083,6 +2130,7 @@ def main():
             "pdf_token_failures": pdf_token_failures,
         },
         "dangling_references": dangling_references,
+        "external_artifacts": external_artifacts,
         "submission_artifact": submission_artifact,
         "submission_artifact_rebuild": artifact_rebuild,
         "evidence_receipts": evidence_receipts,
