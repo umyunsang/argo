@@ -5,6 +5,14 @@
 - 대상: argo-paper-root
 - 근거: 사용자 결정(21:30 KST "웹 gpt로 진행 못하겠다, argo-paper-root 세션에서 진행"), `prime-agent list`(argo-paper-root working), `git status`(paper/evidence-matrix.csv 0바이트), status.md(last_updated 15:49, validation run 3fe2958b in flight), handoff-2026-09-02.md
 
+## 0. 연구 위임의 범위 (사용자 원 지시, 이 지시 전체에 우선)
+
+사용자 원 지시(2026-09-02, 원문):
+
+> exa플러그인을 이용해 alphaXiv/OpenResearch 설치하고 사용법 확인해. 자율연구 엔진은 openresearch로 진행할거야. 너가 깊이 추론해서 스스로 연구를 설계하고, 연구 가설이나 조건, 방법 등 모든 요소를 직접 설정해야 하고, 근데 이걸 또 그냥 정하는게 아니야 깊이 있는 추론과 인사이트를 통해 선택을 해야하고, 그 선택에 대해 근거까지 있어야 해. 비슷한 실험 찾아보고, method 찾아보고, 쓸만한 레퍼런스 찾아보고, 자료정리도 해야해. 또한 이 모든 걸 다른 ai 에이전트들도 인지하고 작업할 수 있게 context graph로 스스로 작성해서 그래프 맵을 구축해야 해. 관련 선행 연구를 찾아서 그 근거를 바탕으로 하나의 온전한 실험 설계안으로 정리 구축하고 실험을 진행하는거야. 비슷한 연구들이 어떤 식으로 실험을 설계했는지 비교 경쟁하여 추론하고 인사이트를 확보하며 자율 연구를 진행하는거야.
+
+적용: 이 세션에는 exa 플러그인이 없으므로 "설치와 사용법 확인"은 로컬 `orx`(openresearch-cli)로 한다. `orx version --check`, `orx skill`, `orx discover keyword|embedding|openalex --help`, `orx paper --help`, `orx create-experiment --help`, `orx exp --help` 출력을 확인해 `paper/research/orx-usage.md`에 정리하고, 이후 문헌 검색은 `orx discover`, 전문 취득은 `orx paper`, 실험은 `orx create-experiment`/`orx exp`로만 한다. 나머지 항목(스스로 설계, 근거 있는 선택, 비슷한 실험·method·레퍼런스 탐색과 자료 정리, 다른 에이전트가 읽을 수 있는 context graph, 선행 연구 기반 온전한 실험 설계안, 실험 실행, 비슷한 연구와의 설계 비교·경쟁)은 instruction-0003 §0 적용 원칙 1~4와 §3-2~§3-7이 구체 절차다.
+
 ## 1. 상황
 
 1. 웹 GPT 인계는 취소됐다. 웹 GPT가 만든 이관 저장소, 조건 브랜치 4개, 스텁 실행, locator는 정본에 들어오지 않았고 앞으로도 들여오지 않는다. 이 세션이 정본 브랜치 `orx/integrate-harness-evaluation-counterevidence-and`에서 계속 진행한다.
