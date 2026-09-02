@@ -1,14 +1,24 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** measure whether the two judges share a retrieval failure, since both saw the same spans and a shared miss would look like agreement.
+- **next_first_action:** measure the filter recall on items where it did return a span, since only the no-span items have been checked and a poor span could fail the same way invisibly.
 
-- **last_updated:** 2026-09-03T03:45:41+09:00
+- **last_updated:** 2026-09-03T03:49:15+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 52 closed — the confidence floor replicated on unseen tasks; the judge is still not claimed reliable in general
+- **current_phase:** cycle 53 closed — the high-recall filter assumption under the endpoint is falsified
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 53 — testing the recorded limit broke the endpoint assumption
+
+- **Gap picked:** the previous cycle recorded that both judges saw the same retrieved spans, so a shared retrieval failure would look like agreement. That limit was tested rather than left standing.
+- **Executed:** the nine items where cue retrieval returned **no span** — scored `not_satisfied` without any model call — were re-judged by both models on the **full artifact**.
+- **Result:** both judges call **4 of 9** satisfied; at least one calls **5 of 9**. The agreement on those items was a shared retrieval failure, not a judgement.
+- **This falsifies an assumption the endpoint rests on.** Cue matching was demoted to a *high-recall* candidate filter precisely so verification could do the deciding. A filter that misses at least four of nine makes the endpoint **understate coverage silently**, because no model is ever called on a miss.
+- **Consequences applied:** a no-span result is now recorded as **unresolved**, not as a negative verdict; the retrieval step must have measured recall before the endpoint is used for scoring; and `RD-2026-09-02-14A` carries the falsified assumption.
+- **Scope stated:** only items where retrieval returned *nothing* were checked. Items with a poor span could fail the same way and remain invisible.
+- The earlier agreement figures are unaffected: the cross-judge replication had already excluded these nine from its denominator.
 
 ### Cycle 52 — the floor was tested on material it had never seen
 
