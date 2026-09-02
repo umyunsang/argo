@@ -142,7 +142,7 @@ def ocr_tiles(png_path: Path, tesseract: str = TESSERACT) -> str:
     reader.
     """
     from PIL import Image
-    flat = flatten_for_ocr(png_path)
+    flat = flatten_for_ocr(png_path).resolve()
     im = Image.open(flat)
     w, h = im.size
     texts = []
@@ -164,9 +164,9 @@ def ocr_tiles(png_path: Path, tesseract: str = TESSERACT) -> str:
 
 
 def ocr_labels(png_path: Path, tesseract: str = TESSERACT) -> str:
-    flat = flatten_for_ocr(png_path)
+    flat = flatten_for_ocr(png_path).resolve()
     out = subprocess.run([tesseract, str(flat), "stdout", "--psm", "11", "--dpi", "300"],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, errors="replace")
     return out.stdout
 
 
