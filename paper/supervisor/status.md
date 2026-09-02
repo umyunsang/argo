@@ -17,6 +17,7 @@
 - **Repaired, not deleted:** every affected archive was re-fetched and accepted **only on a digest match**, then re-extracted. All 190 restored; zero missing afterwards. This also exercised the external-artifact policy on **16 sources** rather than the 4 spot checks recorded earlier.
 - **Two conventions, both recorded.** Rewriting the lists to repository paths broke a receipt contract expecting archive member names; keeping member names left strings that look like repository paths. Both are now recorded, and the reference scan was made **structural** so it trusts the key rather than the shape of the string.
 - **Failing-first check:** a placeholder value under a path-named key made the gate fire.
+- **The clean clone caught the repair being incomplete.** Restoring the files locally left them uncommitted, because this worktree excludes the paper directory and only receipt-named files were being staged. The local run passed while the clean clone reported **298** dangling references. Tracked files under the source tree went from **484 to 782**, and the clean clone then reported zero. Restoring a file locally is not repairing the record.
 
 ### Cycle 37 — the rule was applied to the data that motivated it
 
