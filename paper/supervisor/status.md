@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** record the design constants and configuration ceilings in a receipt so the numbers that are currently unbindable become bindable.
+- **next_first_action:** either implement ceiling enforcement in the runner or remove the unenforced ceilings from the confirmatory protocol, so the specification stops describing machinery that does not exist.
 
-- **last_updated:** 2026-09-03T02:20:01+09:00
+- **last_updated:** 2026-09-03T02:23:45+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 33 closed — 29 two-sided claim bindings; two candidate bindings rejected rather than loosened
+- **current_phase:** cycle 34 closed — deriving the design constants exposed that three declared ceilings enforced nothing
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 34 — the declared ceilings enforced nothing
+
+- **Gap picked:** the design constants were stated in prose and bound to nothing.
+- **Derived, not restated.** Copying prose values into a receipt would have made the gate pass while proving nothing, so the constants were derived from the builder, the runner and the executed receipts.
+- **The derivation contradicted the manuscript.** The paper described a *32,000-token ceiling, a 12 tool-call ceiling and a 45-minute wall time* as governing the work. All three governed nothing: the builder that produced every executed episode emits **no ceiling fields**, the runner only **type-checks** that a configuration declares them, and **no executed receipt records a token ceiling**.
+- **What actually applied:** the pinned invocation at a fixed reasoning level with a **900-second** wall-clock limit and no token or call ceiling.
+- **Corrected in the paper**, separating the specified confirmatory protocol from what the executed blocks applied, and the 900-second limit is now bound two-sidedly. 31 claim checks pass.
+- **One source had no TeX**, so its text was extracted with the pinned `pdftotext` and the locator records that derivation rather than hiding it.
 
 ### Cycle 33 — coverage raised from 15 to 29 bindings, by refusing two
 
