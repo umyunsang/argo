@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** write paired suites for the three instrument modules that still have none: the adversarial validity check, the pilot builder, and the element verifier.
+- **next_first_action:** re-score the 32 retained variance-block artifacts with the now-audited scoring and verification instruments, since every earlier score came from unaudited code.
 
-- **last_updated:** 2026-09-03T01:19:20+09:00
+- **last_updated:** 2026-09-03T01:24:38+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 22 closed — instruments audited by mutation; four faults were undetectable before, all are caught now
+- **current_phase:** cycle 23 closed — every instrument module now has a mutation-audited suite
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 23 — the last three instruments got suites, held to the same standard
+
+- **Gap picked:** three instrument modules had no paired suite at all — the adversarial validity check, the pilot builder, and the element verifier.
+- **Executed:** all three now have suites whose expected values come from each module's stated contract, not from its current output. Then **21 further mutations** were injected.
+- **20 caught.** The 21st was shown by executing both variants side by side to be an **equivalent mutant**: the branch it changed cannot produce a different result once the evidence directory is absent. No fixture was invented to force a difference that does not exist.
+- **A new fixture was wrong in the same old way.** It asserted the judge's model selector is shell quoted; a safe selector is correctly passed through unquoted. The assertion was my assumption again, and it was replaced by a check on an unsafe selector.
+- **The judge has no reliable oracle**, so its suite asserts the deterministic shell around the model through an injected runner and never makes a live call.
+- **No instrument module now lacks a suite.** The honest limit stands: a mutation set chosen by the author of the code can still miss a fault class that neither the code nor the mutations consider.
 
 ### Cycle 22 — the instruments were audited by mutation, not by reading
 
