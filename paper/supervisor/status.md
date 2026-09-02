@@ -1,14 +1,30 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** Q-0007 gates the only remaining executable expansion, so the next unblocked unit is a second-judge cross-check of the eight confirmation artifacts, which needs no new episodes.
+- **next_first_action:** measure whether the two judges share a retrieval failure, since both saw the same spans and a shared miss would look like agreement.
 
-- **last_updated:** 2026-09-03T03:41:39+09:00
+- **last_updated:** 2026-09-03T03:45:41+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 51 closed — every manuscript number derived from the unscorable blocks now carries its dependency, explicitly
+- **current_phase:** cycle 52 closed — the confidence floor replicated on unseen tasks; the judge is still not claimed reliable in general
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 52 — the floor was tested on material it had never seen
+
+- **Gap picked:** reliability was measured on the variance block. Reliability is a property of an instrument *on material*, so transfer had to be measured, not assumed.
+- **Executed:** all 48 element judgements over the eight first-repeat confirmation artifacts, judged independently by two models from **different provider families**.
+- **Raw agreement fell** to 0.667 from 0.703, because six items produced an unparsed verdict from one judge and are counted as **disagreements rather than dropped**. Excluding those: 0.788 with kappa 0.492, above the earlier figures.
+- **The stratification replicated exactly** — and that is the result that matters:
+
+| band | agreement |
+|---|---|
+| both above 0.9 | **12 / 12** |
+| middle | 14 / 18 |
+| below 0.7 | **0 / 9** |
+
+- **The part of the instrument actually used held on unseen tasks.** Nothing here supports calling the judge reliable in general; below the floor the two judges disagree on roughly a third of items.
+- **A limit is recorded that could inflate this:** both judges received the same prompt and the same retrieved spans, so a shared retrieval failure would look like agreement.
 
 ### Cycle 51 — auditing the paper against its own admission rule
 
