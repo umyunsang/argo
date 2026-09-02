@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** re-score the eight confirmation artifacts under whole-artifact judging so the endpoint of record has a coverage figure computed the way the design now specifies.
+- **next_first_action:** re-examine whether the paired detectable effect is still meaningful now that a method choice dominates it, since a design sized to detect 0.0825 cannot be interpreted under an instrument that moves 0.188.
 
-- **last_updated:** 2026-09-03T03:56:40+09:00
+- **last_updated:** 2026-09-03T04:00:56+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 55 closed — retrieval removed from the endpoint rather than repaired, on measured cost and a measured failure rate
+- **current_phase:** cycle 56 closed — the scoring method moves the endpoint by 2.3x the effect the design was sized to detect
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 56 — the instrument moves the endpoint more than the effect it was built to find
+
+- **Executed:** all 48 element judgements over the eight confirmation artifacts re-scored on the full artifact, compared with the span-based verdict on the same items.
+- **Mean coverage rises from 0.542 to 0.729**, a shift of **0.188**. Seventeen of forty-eight verdicts change — **13 negative to satisfied, 4 the other way** — so removing retrieval is not simply a looser rule.
+- **The size is the finding.** The paired detectable effect on this endpoint is **0.0825**, so the scoring method moves the reading by about **2.3x** the smallest effect the design was sized to detect. An instrument choice of that magnitude does not modify the comparison; it dominates it.
+- **Per-condition coverage is deliberately withheld.** Two artifacts per condition cannot separate a condition from a task, and the shift is a property of the instrument, not of any condition.
+- **Admissibility unchanged:** these verdicts remain inadmissible for scoring, because no human-anchored calibration set exists. They describe what the instrument reads, not what an episode scored.
+- Claim checks now stand at 47.
 
 ### Cycle 55 — remove rather than repair, decided on measured numbers
 
