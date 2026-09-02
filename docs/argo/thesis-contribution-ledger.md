@@ -12,7 +12,7 @@ Internal architecture work may carry one contribution tag for repository review:
 | `RE_DERIVED` | Independently motivated from literature and revalidated under an ARGO protocol. | A public method claim requires prior work plus an executed, scoped experiment; internal derivation history is omitted. |
 | `MODIFIED` | An inherited component whose contract or behavior ARGO changed. | Track the implementation delta internally; only the generic intervention and matched result may enter the manuscript. |
 | `ORIGINAL_ARGO` | A new ARGO mechanism with no equivalent in the base. | Do not use this tag as manuscript authority; originality requires public prior-art review and executed ablations. |
-| `EXTERNAL_ORACLE` | OpenResearch, DACON, or another external system supplies lifecycle or evaluation facts. | Keep external authority and scope explicit; internal lifecycle details remain outside the manuscript. |
+| `EXTERNAL_ORACLE` | An external system supplies lifecycle or evaluation facts. | Keep external authority and scope explicit; internal lifecycle details remain outside the manuscript. |
 
 ## Initial component ledger
 
@@ -24,7 +24,7 @@ Internal architecture work may carry one contribution tag for repository review:
 | Continual Harness prompts/memories/skills/subagent specs | `INHERITED` | Continual Harness and Prime Agent papers, base source |
 | ARGO research-object taxonomy and evidence graph | `RE_DERIVED` / `MODIFIED` candidate | Compare EviGraph, claim-aware observability, XScientist, and ScientistOne; isolate immutable answered-run, exact-contrast, and authority semantics; implement and test |
 | Exact protocol fingerprint and comparability gate | `UNCLASSIFIED` candidate | Compare matched-budget and inaccessible-held-out protocols from Rethinking Harness Evaluation and HarnessOpt-Bench; formalize the residual; add cross-language and unmatched-comparison tests |
-| OpenResearch receipt boundary | `MODIFIED` / integration | OpenResearch contract, capability boundary, identity tests |
+| External research-engine receipt boundary | `MODIFIED` / integration | Public contract, capability boundary, identity tests |
 | Research-refine versus engine-refine separation | `RE_DERIVED` / `MODIFIED` candidate | Compare RSEA, Evo-Bench, Regimes, and Autogenesis; implement disjoint scientific/engine state, matched-budget noninterference, rollback, and inaccessible held-out evaluation |
 | Paper claim/citation/run lineage | `RE_DERIVED` / `MODIFIED` candidate | Compare EviGraph, claim locking/observability, XScientist, and ScientistOne; isolate retained-byte, exact-contrast, authority, and immutable-build semantics |
 | ARGO TUI and CLI | `MODIFIED` | Native product diff and usability/recovery evaluation |
@@ -33,7 +33,7 @@ Tags are provisional until source archaeology and experiments confirm them. A ne
 
 ## Public-paper exclusion boundary
 
-The public paper centers the necessity, literature-derived architecture, falsifiers, and executed evaluation of a generic harnessed LLM-agent system. It has no implementation/provenance section for product migration. Prime-to-ARGO lineage, repository archaeology, internal contracts, code commits, oracle records, OpenResearch internals, supervisor artifacts, and instance operations are excluded. Reproducibility may name only public foundations, public research engines, and the minimum condition settings needed to rerun an experiment.
+The public paper centers the necessity, literature-derived architecture, falsifiers, and executed evaluation of a generic harnessed LLM-agent system. It has no implementation/provenance section for product migration. Prime-to-ARGO lineage, repository archaeology, internal contracts, code commits, internal validation records, research-engine internals, control-plane artifacts, and instance operations are excluded. Reproducibility may name only public foundations, public research engines, and the minimum condition settings needed to rerun an experiment.
 
 ## Claim record
 

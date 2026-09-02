@@ -1,0 +1,1367 @@
+
+Warning: orx 0.1.117 is outdated (latest 0.1.118). A newer release is available; upgrade to stay compatible with the API. Run `orx update` to upgrade.
+
+alphaXiv: https://www.alphaxiv.org/abs/2608.01913
+GitHub: https://github.com/liuqi6777/search_agent
+
+Diagnosing Search Behavior and Failure Modes in Long-Horizon
+Search Agents
+Qi Liu
+qiliu6777@gmail.com
+Renmin University of China
+Beijing, China
+Jiaxin Mao
+maojiaxin@gmail.com
+Renmin University of China
+Beijing, China
+Fengbin Zhu
+fengbin@nus.edu.sg
+National University of Singapore
+Singapore
+Tat-Seng Chua
+dcscts@nus.edu.sg
+National University of Singapore
+Singapore
+Abstract
+Deep search agents answer difficult information-seeking questions
+by iteratively issuing search queries to gather supporting evidence,
+but it remains unclear whether and how greater search effort leads
+to better answers. We study these questions through a trajectory-
+level diagnosis of long-horizon search agents. Using human-annotated
+document-level relevance judgments, we evaluate the evidence re-
+trieved at each search step and separate two stages of agent be-
+havior: what evidence an agent retrieves and how effectively it
+uses that evidence. This distinction further allows us to decompose
+failures into retrieval gaps, where the necessary evidence is never
+found, and utilization gaps, where relevant evidence is retrieved but
+not used correctly. With the retrieval model and evaluation harness
+held fixed, we compare six agents on BrowseComp-Plus and further
+validate our findings on BrowseComp with an open-web search
+API. Across settings, we find that search effort and answer quality
+are only weakly aligned. Answer accuracy is better correlated with
+the quality of retrieved evidence, especially cumulative retrieval
+recall, than with the number of searches or the amount of context
+consumed. Useful evidence often appears early in the trajectory,
+yet agents tend to continue searching, producing a long tail of
+low-yield retrieval steps. At the query level, exploratory reformula-
+tions remain useful, but the best-performing agents issue far fewer
+redundant queries.
+Overall, by systematically characterizing the search behavior
+and failure modes of long-horizon search agents, this work points
+to practical directions for building better deep research systems,
+including stronger query formulation, more effective evidence se-
+lection and context management, and stopping criteria based on
+whether sufficient supporting evidence has been retrieved.
+1
+1 Introduction
+Deep search agents, such as OpenAI Deep Research and Tongyi
+DeepResearch [26], are LLM-based systems for long-horizon infor-
+mation seeking and answering complex and multi-hop questions,
+where evidence is scattered across documents and must be searched
+for, checked, and synthesized before a conclusion holds [23]. The
+agent reasons, searches, reads what comes back, and decides turn
+by turn what to look for next, until it can commit to an answer [25].
+Over one question, an agent may sustain retrieval and reasoning
+1
+Code and data at https://github.com/liuqi6777/search_agent
+over tens of steps, and this long-horizon capacity is what separates
+it from single-shot retrieval-augmented generation.
+However, evaluation practice has not caught up with these ad-
+vances. Progress is still reported primarily through final-answer
+metrics, such as answer accuracy on BrowseComp [28], while the
+trajectory that produces the answer remains an opaque byproduct.
+This poses concrete challenges for diagnosing agent behavior and
+developing improvement strategies: 1) Wasted effort is mistaken
+for capability. Long horizons and heavy tool use are routinely
+showcased as strengths, yet an effective and efficient search agent
+should instead adapt its search effort to what the problem genuinely
+requires: searching more only when the problem calls for it, not as
+a default behaviour. 2) Bottlenecks get misdiagnosed. A wrong
+answer may read as “the agent could not find the evidence,” so the
+fix is more or better search. Yet some errors occur with the decisive
+evidence already in hand, and more search cannot repair them.
+Differentiating between error types is essential for prescribing
+the right fix. 3) Persistence and floundering look the same.
+Trajectories often run long after new evidence stops arriving, yet
+the score cannot tell late turns that are closing in on an answer from
+those that never anchor on the right direction, the very distinction
+between needing to search deeper and needing to search better.
+To bridge this gap, we propose a diagnostic framework that
+opens up the trajectory itself. By grounding every step in human-
+annotated, document-level relevance, it measures retrieval-side and
+reasoning-side behaviour directly, and analyzes search agents from
+coarse to fine granularity. Specifically, we organize our analysis
+into three key perspectives: 1) Outcome attribution: which signal
+actually tracks final accuracy: search effort or gold-evidence recall?
+2) Failure-mode taxonomy: every error is sorted into a retrieval
+gap (supporting evidence never found) or a utilization gap (evidence
+found but still incorrect). 3) Trajectory mechanism and query
+strategy: each trajectory is followed episode by episode, tracking
+how the agent searches and when and where evidence arrives.
+We conduct our analysis with six agents, spanning two scale
+tiers: three mid-scale (Tongyi DeepResearch [26], Qwen3.5-35B-
+A3B [21], gpt-oss-120b [19]) and three frontier-scale (Kimi K2.6
+[13], GLM 5.1 [32], Deepseek V4 Pro [9]). All are run under the
+same ReAct framework, tools, and retriever on BrowseComp-Plus
+[6], whose fixed corpus and human-annotated qrels supply the
+relevance grounding; we further validate the main conclusions on
+BrowseComp [28] with open-web search.
+arXiv:2608.01913v1 [cs.AI] 3 Aug 2026
+
+Liu et al.
+Our analysis distills into five findings, which trace a single thread
+from symptom through mechanism to prescription:
+1) More effort does not buy more accuracy. Across the six
+agents we analyze, neither search volume nor context spend pre-
+dicts accuracy; if anything, the more accurate agents are also the
+cheaper ones (§4.2).
+2) What does track accuracy is retrieval recall. Accuracy
+follows how much of the gold evidence an agent’s queries cumula-
+tively retrieve; on the same question, the agent that retrieves the
+gold evidence answers correctly most of the time, while the agent
+that misses it almost never does (§4.2, §4.6).
+3) Failures split into two gaps with opposite fixes. When
+agents do fail, the error is either a retrieval gap — the evidence
+was never surfaced — or a utilization gap — it was surfaced, yet
+the answer still went wrong. Agents at nearly identical accuracy
+can sit at opposite ends of this balance, so the fix is per-diagnosis
+rather than per-leaderboard: better queries repair the former, better
+verification the latter (§4.3).
+4) Evidence early or never, then a wasted tail. The great
+majority of search episodes add no new evidence, and the waste is
+not spread evenly: whatever evidence a trajectory will surface, it
+surfaces in the early episodes. Correct runs assemble their evidence
+early and stop soon after; incorrect runs surface only part of it, or
+none at all, yet keep searching far longer without recovering the
+rest — their extra length is a wasted tail, not late progress (§4.4).
+5) Stronger agents search cleaner, not more. The behavioral
+signature of strength is query discipline: redundant re-queries are
+rare but mark failure. Query strategy is not decisive: agents favor
+different styles, from broad pivoting to anchor-and-verify, and what
+counts is whether queries land on evidence (§4.5).
+Together, the findings argue that the next gains lie not in deeper
+search but in better-directed search (§5): 1) For weaker agents,
+fix the queries: improve query direction and search strategy, so
+that the agent recognizes when a hypothesis has failed and pivots
+to a new angle, instead of re-asking near-paraphrases of queries
+that already failed. 2) For stronger agents, shift effort to ver-
+ification: the strongest agent already sits near the oracle-reader
+ceiling; the headroom that remains lies in verification and answer
+normalization, not in more retrieval. 3) For both, improve at the
+harness level: snippet-stream management so old results do not
+dominate the context window, visit gating against low-value page
+opens, and evidence-driven stopping in place of fixed budgets.
+The paper contributes (i) a diagnostic framework for search
+agents grounded in relevance; (ii) a controlled comprehensive study
+of six agents and the five findings above, tracing search behavior
+and failure modes from coarse to fine; and (iii) a planned release of
+trajectories and code to support follow-up analysis.
+2 Related Work
+Deep research agents and their evaluation. Deep research agents
+extend ReAct [30] to long-horizon information seeking by inter-
+leaving search, document fetching, and synthesis [23, 29]; recent
+systems include proprietary [13] and open variants [10, 14, 17, 26]
+alongside search-enhanced reasoning frameworks [15, 16], with a
+parallel training literature on trajectory synthesis, RL for search-
+augmented reasoning, and tool-call efficiency [3, 12, 27]. Progress is
+reported as end-to-end accuracy on BrowseComp [28]. Our work is
+orthogonal: rather than building or evaluating an agent end-to-end,
+we open the trajectory and ask which steps pay off.
+Analyzing agent search behavior. Recent works examine what
+happens during search rather than only at its endpoint. Ning et al.
+[18] characterize 14M+ requests from DeepResearchGym [7] at log
+scale but without per-query relevance supervision; Chen et al. [6]
+provide the human-annotated qrels we build on, but use them to
+compare retrieval backends rather than diagnose the agent’s pro-
+cess; AgentIR [5] shows reasoning traces are themselves retrieval
+signals, motivating the snippet-first reading our findings support;
+other process-level work studies confidence / stopping calibration
+and trajectory-level evaluation [4, 20, 24], and reasoning–action
+pathologies in which agents over-reason relative to acting [8]. None
+combines the three properties our diagnosis requires — per-query
+document-level qrels, multiple agents, and a single shared harness and
+retriever — the conjunction that makes the retrieval-vs.-utilization
+attribution deterministic (decided by qrels rather than an LLM judge)
+and comparable across agents.
+3 Setup
+3.1 Agent Settings
+ReAct paradigm. We focus on agents that follow a ReAct-style
+[30] search-and-reason loop. Given a question 𝑞, an agent’s policy
+𝜋
+𝜃 
+produces, at each step 𝑡, a reasoning trace 𝜏
+𝑡 
+and an action 𝑎
+𝑡 
+con-
+ditioned on the running history ℎ
+𝑡 
+= (𝑞, 𝜏
+1
+, 𝑎
+1
+, 𝑜
+1
+, . . . , 𝜏
+𝑡 −1
+, 𝑎
+𝑡 −1
+, 𝑜
+𝑡 −1
+):
+(𝜏
+𝑡 
+, 𝑎
+𝑡 
+) ∼ 𝜋
+𝜃 
+(· | ℎ
+𝑡 
+). Each action is either a tool call or a terminal
+answer; non-terminal actions yield an observation 𝑜
+𝑡 
+= T (𝑎
+𝑡 
+) from
+the environment T , which is appended to the history. A trajectory
+is the resulting finite sequence 𝜉 = (𝜏
+1
+, 𝑎
+1
+, 𝑜
+1
+, . . . , 𝜏
+𝑇 
+, 𝑎
+𝑇 
+), ending
+either with a terminal answer or with an early termination due to
+a step cap, context overflow, or tool error.
+Tool interface. The tool interface contains two tools, search and
+visit. Both tools are routed to a local backend over the official
+BrowseComp-Plus corpus. The search tool issues a query 𝑞
+′ 
+and
+returns the top-𝐾=5 results retrieved by Qwen3-Embedding-8B
+[33]. Each result contains the document id, retrieval score, and a
+snippet truncated to 512 tokens. The visit tool fetches the full
+document text given a document id.
+Agents. We evaluate six agents in two scale tiers. All six have
+open weights, so the study never mixes open and closed systems
+and every rollout is in principle reproducible; what separates the
+tiers is model scale, and with it how we serve them. The mid-scale
+tier comprises Tongyi DeepResearch [26], Qwen3.5-35B-A3B [21],
+and gpt-oss-120b [19], none above roughly 120B total parameters;
+we serve their released checkpoints locally. The frontier-scale tier
+comprises Kimi K2.6 [13], GLM 5.1 [32], and Deepseek V4 Pro [9],
+each substantially larger and reached through its provider’s API. All
+six run through the same ReAct harness, which exposes search and
+visit as native tools and records reasoning traces, tool calls, tool
+returns, and the final answer per question. Each rollout is capped
+at 128 turns and 150 minutes; hitting either cap without an answer
+is recorded as incomplete, as analyzed in §4.3. The models use their
+recommended sampling parameters.
+
+Diagnosing Search Behavior and Failure Modes in Long-Horizon Search Agents
+Table 1: Overall performance and per-question effort/cost on BrowseComp-Plus. Acc: accuracy; Gold Rec.: mean gold-document
+recall; Inc.: incomplete rate; Q/turn: queries per search turn (> 1 = batching); effort/cost columns are median (mean).
+Agent Acc (%) Gold Rec. (%) Inc. (%) Search Visit Ctx (K) Q/turn
+gpt-oss-120b 38.0 52.0 12.8 33 (32) 1 (1.8) 86 (83) 1.00
+Tongyi-DR 52.2 64.2 38.0 30 (28) 3 (3.8) 84 (77) 1.00
+Qwen3.5-35B-A3B 55.2 63.0 1.3 19 (22) 1 (1.6) 66 (74) 1.74
+Deepseek V4 Pro 68.6 75.4 0.7 21 (29) 2 (1.8) 72 (89) 1.49
+Kimi K2.6 69.2 78.2 16.5 22 (27) 1 (1.2) 68 (93) 1.01
+GLM 5.1 74.1 78.7 9.8 14 (20) 2 (1.6) 52 (73) 1.87
+3.2 Benchmark and Evaluation Signals
+We instantiate our analysis on BrowseComp-Plus [6], a depth-
+oriented information-seeking benchmark of 830 English questions
+paired with a fixed corpus and human-annotated qrels. We adopt
+it as our sole benchmark because it is the only public benchmark
+in this regime that provides the per-query, document-level rel-
+evance judgments our framework requires. Holding the corpus,
+retriever interface, and supervision signal fixed across agents iso-
+lates behavioral differences from setup confounds. Over the fixed
+∼100K-document corpus, each question has an average of 6.10
+evidence-graded documents and 2.90 gold-graded documents; the
+gold set is a strict subset of the evidence set.
+BrowseComp-Plus’s qrels come in two layers: a broader evidence-
+qrels set covering documents with topical relevance to the question,
+and a stricter gold-qrels set covering documents whose content
+is sufficient to derive the gold answer. We use both, but for dif-
+ferent diagnoses. In the cross-agent attribution and episode-level
+mechanism analyses of §4.2–4.4, 𝐸 (𝑞) denotes the evidence-qrels
+set; a retrieved document counts as evidence iff its corpus docu-
+ment id appears in 𝐸 (𝑞), regardless of surface relatedness. For the
+failure-mode classification in §4.3, we use the stricter gold-qrels
+set 𝐺 (𝑞) ⊆ 𝐸 (𝑞), since calling a wrong answer a utilization failure
+requires that the trajectory have surfaced evidence sufficient to
+derive the right answer.
+Both qrel signals are deterministic and independent of LLM judg-
+ing, so the retrieval-side metrics in §4.4 and the failure classification
+in §4.3 are not confounded with answer-judging noise. End-to-
+end answer correctness is the only judgment task in our pipeline.
+Following the official BrowseComp protocol, GPT-4o judges each
+prediction against the BrowseComp-Plus gold answer with binary
+correct/incorrect labels; we use gpt-4o-2024-08-06 at tempera-
+ture 0. End-to-end correctness therefore rests on this single judge,
+while the retrieval-side metrics do not, localizing any judge noise
+to the accuracy axis alone.
+4 Diagnostic Analysis
+We layer the analysis from coarse to fine. §4.1 first profiles what
+each agent achieves and at what cost; the rest of the section then
+answers six research questions:
+• RQ1: Which aggregate signal tracks accuracy — search volume,
+context spend, or retrieval recall (§4.2)?
+• RQ2: When an agent fails, did it never surface the evidence, or
+surface it and still answer wrong (§4.3)?
+• RQ3: Inside a trajectory, when does evidence arrive and what do
+the remaining turns contribute (§4.4)?
+• RQ4: How do stronger agents search differently (§4.5)?
+• RQ5: Do these effects hold within the same question, with diffi-
+culty held fixed (§4.6)?
+• RQ6: Do the findings generalize to open-web search (§4.7)?
+4.1 Overall Performance and Effort Profile
+What does each agent achieve, and what does it cost? Table 1 reports
+accuracy, mean gold recall, incomplete rate, and per-question ef-
+fort: search/visit calls and final context. Accuracy ranges from
+gpt-oss-120b’s 38.0% to GLM 5.1’s 74.1%; the frontier-scale tier, at
+68.6–74.1%, sits above the mid-scale tier, at 38.0–55.2%, on both ac-
+curacy and mean gold recall. Effort does not follow accuracy. GLM
+5.1 has the top accuracy with the lowest cost, a median of 14 search
+calls and 52 K context, while gpt-oss-120b has the lowest accuracy
+and searches the most, with 33 calls and 86 K context. Mean gold
+recall exceeds answer accuracy for every agent by 4.6–14.0 points,
+so each agent surfaces more gold-qrels evidence than it converts
+into a correct answer. Tongyi-DR is the cost outlier: 38.0% of its
+rollouts terminate without a final answer, overwhelmingly due to
+context-window overflow.
+Per-turn query batching decouples search volume from turn count.
+Agents differ markedly in how many queries they issue within a rea-
+soning turn. In Table 1, GLM 5.1, Qwen3.5-35B-A3B, and Deepseek
+V4 Pro batch 1.5–1.9 queries as parallel tool calls, whereas gpt-
+oss-120b, Kimi K2.6, and Tongyi-DR issue essentially one. Search
+turns, the round-trips that pace context growth, therefore spread
+more than search calls: GLM 5.1 and gpt-oss-120b differ by only
+1.6× in total queries but by 3.0× in turns, 10.6 versus 31.8. Much
+of the turn-count spread is batching rather than search depth, a
+turn-efficiency lever revisited in §4.5.
+4.2 RQ1: Which Signal Tracks Accuracy?
+When agents get a question right or wrong, which aggregate signals
+separate the two outcomes? We compare three cross-agent candi-
+dates in Figure 1 — retrieval recall, visit precision, and context
+budget — then ask how much search budget is needed before the
+relevant signal saturates.
+Setup. We group a trajectory 𝜉 into episodes 𝑘 = 1, . . . , 𝑀, where
+each episode starts with one search call and includes the visits
+before the next search. For question 𝑞, let 𝐸 (𝑞) be the evidence-qrels
+set and 𝐺 (𝑞) ⊆ 𝐸 (𝑞) the stricter gold-qrels set (§3.2). The retrieval
+
+Liu et al.
+30 40 50 60 70
+Cumulative recall Recall
+K = 25 
+(%)
+30
+40
+50
+60
+70
+80
+End-to-end accuracy (%)
+gpt-oss-120b
+Qwen3.5-35B-A3B
+Tongyi-DR
+Kimi K2.6
+GLM 5.1
+Deepseek V4 Pro
+(a) Acc vs. retrieval recall (r = 0.99)
+40 50 60 70 80 90
+Visit precision Pr[d E(q) visit] (%)
+30
+40
+50
+60
+70
+80
+gpt-oss-120b
+Qwen3.5-35B-A3B
+Tongyi-DR
+Kimi K2.6
+GLM 5.1
+Deepseek V4 Pro
+(b) Acc vs. visit selectivity (r = 0.50)
+60 65 70 75 80 85 90 95 100
+Mean final context per trajectory (K tokens)
+30
+40
+50
+60
+70
+80
+gpt-oss-120b
+Qwen3.5-35B-A3B
+Tongyi-DR
+Kimi K2.6
+GLM 5.1
+Deepseek V4 Pro
+efficient
+inefficient
+(c) Acc vs. context budget (r = 0.16)
+Figure 1: Cross-agent attribution. End-to-end accuracy vs. (a) padded cumulative recall at 𝐾 = 25, (b) visit precision, (c) mean final
+context size. Pearson 𝑟 in panel titles. Stability (bootstrap CI): recall [0.96, 1.00], visit precision [0.37, 0.62], context [−0.06, 0.35].
+trace is then summarized as
+𝑅
+𝑘 
+(𝜉) ⊆ 𝐸 (𝑞) evidence surfaced in episode 𝑘,
+𝐶
+𝑘 
+(𝜉) =
+Ø
+𝑗 ≤𝑘
+𝑅
+𝑗 
+(𝜉) evidence surfaced up to episode 𝑘,
+Δ
+𝑘 
+(𝜉) = 𝐶
+𝑘 
+(𝜉) \ 𝐶
+𝑘 −1 
+(𝜉) new evidence added by episode 𝑘.
+The cross-agent recall in Figure 1a is padded cumulative recall:
+Recall
+𝐾 
+= 
+1
+𝑁
+∑︁
+ 
+𝑞
+|𝐶
+min(𝐾,𝑀 ) 
+(𝜉)|
+|𝐸 (𝑞)| 
+.
+It measures evidence-qrels recall by episode 𝐾, holding shorter
+trajectories at their final value. This differs from Table 1’s gold
+recall, which uses 𝐺 (𝑞). For gold-specific events, define 𝐺
+∗
+𝑘 
+(𝜉) =
+𝐶
+𝑘 
+(𝜉) ∩ 𝐺 (𝑞) and 𝐺
+∗ 
+(𝜉) = 𝐺
+∗
+𝑀 
+(𝜉); the first gold hit occurs at the
+smallest 𝑘 with 𝐺
+∗
+𝑘 
+(𝜉) ≠ ∅. Finally, success(𝜉, 𝑞) = 1 iff the trajec-
+tory terminates with 𝑎
+𝑇 
+= (answer, 
+ˆ
+𝑦) and 
+ˆ
+𝑦 matches the gold
+answer.
+Accuracy tracks retrieval recall; no agent sits on the context-efficiency
+frontier. The three aggregate metrics relate to accuracy very differ-
+ently (Figure 1). Across agents, cumulative recall at 𝐾 = 25 is the
+strongest correlate, with Pearson 𝑟 = 0.99; visit precision is mod-
+erate at 𝑟 = 0.50, with Qwen3.5-35B-A3B and Tongyi-DR lagging;
+final context size is essentially unrelated at 𝑟 = 0.16. Since these are
+six-point correlations, we read them descriptively and rely on the
+within-question panel in §4.6 for inference. A paired bootstrap over
+the 830 shared questions with 𝐵 = 10,000, plus leave-one-agent-out,
+gives the intervals in Figure 1’s caption: recall stays at or above
+0.96 and exceeds context in every resample, context spans zero,
+and visit precision is fragile. Panel (c) makes the efficiency story
+concrete: only GLM 5.1 sits in the efficient upper-left, reaching
+74.1% accuracy at the lowest context budget on either statistic, 73 K
+mean and 52 K median, while gpt-oss-120b lands lower-right. Con-
+text efficiency is therefore an available lever, not one the strongest
+agents already optimize.
+A 𝐾 = 20-episode cap retains up to 86–92% of accuracy. We esti-
+mate a budget-side upper bound by asking which successful full
+rollouts had already hit gold by episode 𝐾:
+d
+Acc
+𝐾 
+= 
+1
+𝑁
+∑︁
+ 
+𝑞
+1{success(𝜉, 𝑞) = 1 ∧ (𝐺
+∗ 
+(𝜉) = ∅ ∨ ∃𝑘 ≤ 𝐾 : 𝐺
+∗
+𝑘 
+(𝜉) ≠ ∅)},
+with 𝑁 = 830.
+2 
+A question is therefore retainable if the full rollout
+answered correctly and either hit gold by episode 𝐾 or never hit
+gold at all, in which case the cap could not have cost it anything.
+As Figure 4c shows, 
+d
+Acc
+𝐾 
+saturates as sharply as recall: 𝐾 = 20
+retains 86.3–92.4% of each agent’s accuracy, and 𝐾 = 40 retains
+97.0–99.8%. Since median rollouts use 14–33 search calls in Table 1,
+a 𝐾 = 20 cap barely shortens the typical trajectory yet concedes
+at most 14% of accuracy; §4.4 unpacks when gold actually lands
+within a trajectory.
+4.3 RQ2: Retrieval vs. Utilization Gap
+When an agent is wrong, is it because it never surfaced the evidence
+or because it surfaced it and still answered wrong? We call the first
+case a retrieval gap and the second a utilization gap, then analyze
+their distribution and intervention implications: retrieval-side fixes
+for RG, and a mix of reasoning and evaluation fixes for UG.
+Definitions. Using 𝐺
+∗ 
+(𝜉) and success(𝜉, 𝑞) from §4.2, we label
+each question:
+correct: success(𝜉, 𝑞) = 1,
+utilization gap: success(𝜉, 𝑞) = 0 and 𝐺
+∗ 
+(𝜉) ≠ ∅,
+retrieval gap: success(𝜉, 𝑞) = 0 and 𝐺
+∗ 
+(𝜉) = ∅.
+Incompletes, where no 
+ˆ
+𝑦 is emitted, are folded in by the same
+rule. RG points to query or retrieval-side fixes, while UG points
+to extraction or reasoning-side fixes. Figure 2a lays out the whole
+partition as a flow; panels b and c sharpen the per-agent split.
+Retrieval gap dominates errors in five of six agents. In Figure 2,
+RG accounts for 51.6–64.1% of errors for five agents. Kimi K2.6
+is the exception, with 52.0% UG, consistent with its high mean
+gold recall of 78.2%. The balance is not pinned by accuracy: GLM
+5.1 reaches 74.1% accuracy and Tongyi-DR only 52.2%, yet their
+RG shares are within 6 pp, so very different agents can still call
+for similar retrieval-side interventions; conversely, Kimi K2.6 and
+Deepseek V4 Pro land within a point of each other in accuracy yet
+on opposite sides of the RG/UG split, so nearly identical leaderboard
+positions can call for opposite fixes. Restricting to answered-only
+trajectories sharpens two cases: Tongyi-DR’s RG share falls from
+2
+This assumes the eventual answer is unchanged under early stopping; hard truncation
+may yield lower accuracy.
+
+Diagnosing Search Behavior and Failure Modes in Long-Horizon Search Agents
+GLM 5.1
+Kimi K2.6
+DS V4 Pro
+Qwen3.5
+Tongyi-DR
+gpt-oss
+Correct
+60%
+Incorrect
+40%
+UG
+RG
+Agent Retrieval state Outcome
+(a) Agent retrieval state outcome
+All gold
+Partial
+Evid., no gold
+No evid.
+40 20 0 20 40 60 80
+errors (RG | UG) correct (%)
+gpt-oss-120b
+Tongyi-DR
+Qwen3.5-35B-A3B
+Deepseek V4 Pro
+Kimi K2.6
+GLM 5.1
+384022
+522721
+552916
+691715
+691516
+741313
+CorrectRGUG
+(b) Per-agent outcome split
+0 20 40 60 80 100
+Share of all errors (%)
+38
+33
+42
+31
+27
+30
+26
+24
+21
+21
+21
+22
+20
+25
+21
+28
+37
+33
+16
+18
+16
+20
+15
+16
+Directional Last-hop True extr. 
+Boundary
+(c) Four-way error decomposition
+Figure 2: Failure modes. (a) Agent → retrieval state → outcome flow (𝑛 = 4980); the RG/UG split is which retrieval state the
+incorrect flows leave. (b) Per-agent outcome split (correct vs. RG | UG), sorted by accuracy. (c) Four-way error decomposition
+(directional / last-hop RG, true-extraction / boundary UG); warm = retrieval side, cool = utilization side.
+56.9% to 39.0%, because overflow incompletes had often already
+retrieved gold, and Kimi K2.6 falls from 48.0% to 24.4% RG.
+3 
+§4.4
+takes up the underlying post-gold redundancy.
+RG and UG each split into two subtypes that prescribe different
+fixes. Each gap splits by how far the trajectory got through the four
+retrieval states in Figure 2a. A retrieval gap is directional when no
+evidence document is reached, so the agent never landed in the
+right topical neighborhood; it is last-hop when evidence is reached
+but the gold-graded subset is missed. The fixes differ: hypothesis re-
+anchoring for the first case, terminal-query precision for the second.
+Directional RG dominates everywhere, accounting for 55–67% of
+each agent’s RG in Figure 2c and peaking at 66.7% for Qwen3.5-
+35B-A3B. A utilization gap is a true extraction failure when all gold
+was retrieved but the answer is still wrong, and a boundary UG
+when only part of the gold was retrieved. Kimi K2.6 is the most
+extraction-bound, with 71.4% true UG; gpt-oss-120b’s UG is the
+most boundary-heavy at 43.2%, so its nominal RG/UG split under-
+counts retrieval failure.
+The subtype decomposition implies per-agent prescriptions: break
+initial-hypothesis anchoring for Qwen3.5-35B-A3B, which has the
+largest directional share; combine deeper terminal-step search with
+stronger answer integration for Kimi K2.6, which is jointly high
+on last-hop RG and true-extraction UG; and treat Deepseek V4 Pro
+as the most balanced case. Across agents, post-gold redundancy
+remains high: after the first gold hit, 57.9–74.0% of later episodes
+add no new evidence. For Tongyi-DR, this wasted post-gold rate
+reaches 66.0% and helps drive its 38.0% overflow rate.
+What drives the utilization gap? A UG case means the agent found
+gold evidence yet still answered wrong, either through genuine
+reasoning failure or benchmark/evaluation artifacts. We probe the
+distinction in two ways. First, we strip search and visit from
+the harness and inject 𝐸 (𝑞) or 𝐺 (𝑞) directly into a shared GPT-4o
+reader at temperature 0. The ceilings are Oracle-𝐸 = 87.5% and
+Oracle-𝐺 = 87.4%, only 0.1 pp apart, so evidence-set distractor
+3
+Tongyi-DR’s overflow subset is systematically harder: the other five agents score
+10.5–59.0% on it, well below their full-set figures, so Tongyi-DR’s answered-only
+accuracy of 84.1%, against 52.2% overall, partly reflects an easier residual.
+Avg real
+accuracy
+Recoverable
+(retr.+reader)
+Hard UG
+(irreducible)
+0
+20
+40
+60
+80
+100
+Accuracy (%)
+59.5
++28.0
+12.5
+Oracle-E 87.5
+Figure 3: Oracle ladder. Real accuracy (59.5%) plus the recov-
+erable gain (+28.0 pp, a joint retrieval+reader bound) reaches
+the Oracle-𝐸 ceiling (87.5%).
+density does not bind. The remaining Hard UG is 12.5% (Figure 3):
+queries even a strong reader fails on with the evidence in front of
+it. Per-agent Net Gain, Oracle-𝐸 minus real accuracy, ranges from
++13.4 pp for GLM 5.1 to +49.5 pp for gpt-oss-120b and tracks the
+qrels-RG ranking with Spearman 𝜌 > 0.95. Because this oracle
+swaps in GPT-4o, Net Gain is a joint retrieval+reader ceiling, not
+pure retrieval headroom.
+Second, we classify each wrong answer by string similarity to
+the gold answer using normalized SequenceMatcher with substring
+containment: subtle errors have similarity at least 0.85 and differ
+only in capitalization or punctuation; format errors fall between 0.6
+and 0.85 and wrap correct content in extra exposition or markdown;
+misunderstanding errors fall below 0.6. Kimi K2.6 has the largest
+format-or-subtle rate among answering agents at 19.9%, with GLM
+5.1 at 18.6% and Qwen3.5-35B-A3B at 17.7% close behind. This is
+essentially a free loss: stripping markdown and normalizing case
+would recover roughly that fraction without touching search or
+reasoning. Tongyi-DR’s near-total misunderstanding rate of 99.0%
+is instead an artifact of the “No answer found.” string emitted by
+overflow incompletes. UG is thus heterogeneous: part genuine rea-
+soning failure, part systematic evaluation artifact.
+Retrieval gap is a query-side, not retriever-side, failure. Is RG
+an agent-side query-formulation failure or a retriever-side recall-
+ceiling failure? All six agents share the same Qwen3-Embedding-8B
+
+Liu et al.
+0 20 40 60 80 100
+Share of episodes (%)
+gpt-oss-120b
+Qwen3.5-35B-A3B
+Tongyi-DR
+Kimi K2.6
+GLM 5.1
+Deepseek V4 Pro
+17
+9
+10
+22
+13
+27
+21
+22
+29
+28
+23
+66
+63
+69
+61
+50
+64
+(a) Episode-utility split
+Productive Redundant Unproductive
+0 10 20 30 40
+Mean episodes per trajectory (C = correct, I = incorrect)
+C
+I
+C
+I
+C
+I
+C
+I
+C
+I
+C
+I
+(b) Length: correct vs. incorrect
+Productive phase (k 
+* 
+) Wasted tail (M k 
+* 
+)
+10 20 30 40 50
+Budget cap K
+20
+30
+40
+50
+60
+70
+80
+Upper-bound acc. (%)
+(c) Acc. under K-cap
+gpt-oss-120b
+Qwen3.5-35B-A3B
+Tongyi-DR
+Kimi K2.6
+GLM 5.1
+Deepseek V4 Pro
+10 20 30 40 50
+Episode index K
+0.2
+0.4
+0.6
+0.8
+Cumulative recall
+(d) Cumulative recall
+Figure 4: Episode-level mechanism. (a) Episode-utility split per agent; redundant+unproductive = no-new-evidence share
+(77.5–93.6%). (b) Trajectory length by correctness: productive phase (up to 𝑘
+∗
+) plus wasted tail; incorrect trajectories are 1.9–2.9×
+longer yet saturate at similar 𝑘
+∗
+. (c,d) Upper-bound accuracy 
+d
+Acc
+𝐾 
+and padded cumulative recall vs. 𝐾.
+with top-𝐾=5 results (§3.2), yet mean gold recall ranges from gpt-
+oss-120b’s 52.0% to GLM 5.1’s 78.7%. A 26-point spread on a fixed
+retriever can only be query-side. The retriever sets an absolute
+ceiling that bounds all agents alike, but the variance and per-agent
+leverage are in query formulation, which §4.5 takes up in detail.
+4.4 RQ3: Episode-Level Mechanism
+What does each trajectory look like turn by turn, and what pro-
+duces the outcomes above? We read four local properties: episode
+utility, productive-episode position, visit selectivity, and correct-vs-
+incorrect contrast.
+77–94% of episodes add no new evidence; waste is not uniform
+across queries. With 𝑅
+𝑘 
+, 𝐶
+𝑘 
+, and Δ
+𝑘 
+from §4.2 and 𝑘
+∗ 
+(𝜉) = max{𝑘 :
+Δ
+𝑘 
+(𝜉) ≠ ∅}, each episode is productive if Δ
+𝑘 
+≠ ∅, redundant if
+𝑅
+𝑘 
+≠ ∅ but Δ
+𝑘 
+= ∅, and unproductive if 𝑅
+𝑘 
+= ∅. Figure 4a shows
+that only 6–23% of episodes are productive; 20–29% are redundant
+and 50–70% unproductive, so 77.5–93.6% add no new evidence.
+Waste is not uniform: 8–24% of questions return zero productive
+episodes, from Kimi K2.6 low to gpt-oss-120b high, while the median
+productive count is only 2–3 everywhere. The result is a zero-
+productive tail needing reformulation plus a low-productivity bulk
+needing stopping rules.
+Useful evidence concentrates in the early episodes. Productive
+episodes concentrate early (Figure 4c,d). By 𝐾 ≈ 25, cumulative
+recall reaches Recall
+𝐾 
+∈ [0.47, 0.70], with roughly half already accu-
+mulated in the first five episodes. The first-gold-hit step is sharper:
+by 𝐾 = 5, 28.8% of Tongyi-DR trajectories and 51.9% of GLM 5.1
+trajectories have retrieved gold; by 𝐾 = 25, every agent is within
+4–10 pp of its gold-hit plateau, 59.6–86.0%, and by 𝐾 = 40 within
+1–5 pp. The remaining never hit gold at any budget: what an agent
+misses early it rarely recovers late. Overall, a trajectory either lands
+on gold early or not at all; this is why early caps cost little.
+Visit precision is per-question bimodal: visits are all-on-target or
+all-off-target. Visit precision Pr[𝑑 ∈ 𝐸 (𝑞) | (visit, 𝑑)] is the click-
+model analogue of search-result quality applied to the agent’s own
+0 20 40 60 80
+Median context budget (K tokens), by source ( chars/4)
+gpt-oss-120b
+Qwen3.5-35B-A3B
+Tongyi-DR
+Kimi K2.6
+GLM 5.1
+Deepseek V4 Pro
+62
+52
+71
+50
+34
+61
+11
+9
+8
+22
+7
+14
+8
+Overhead (sys+user)
+Search snippets
+Visit content
+Reasoning trace
+Final answer
+Tool args
+Figure 5: Per-agent context budget by source. Bar length
+is median final context; segments are the per-source split
+(character-count proxy). Search snippets dominate (66–85%);
+visit content is a minority (2–16%); reasoning fills the rest.
+clicks.
+4 
+It varies sharply across agents (Figure 1b; Table 1). Tongyi-
+DR is the volume-vs-selectivity outlier, opening 3.81 documents
+per question at 49.5% precision; the selective frontier cluster opens
+at most 1.8 at roughly 80% precision or better. Per question, the
+distribution is strongly bimodal: for the frontier cluster, 71–79% of
+questions achieve 100% precision and 10–16% land at 0%; for Tongyi-
+DR, only 28.1% hit 100% and 32.5% land at 0%. A snippet-level gate
+would help where the agent clicks blindly, not uniformly.
+Incorrect trajectories are 2× longer than correct ones but saturate
+at similar 𝑘
+∗
+. Aggregate median 𝑘
+∗ 
+is tight across agents, from 3 for
+Qwen3.5-35B-A3B to 9 for Tongyi-DR and Kimi K2.6, but median
+wasted tail 𝑀 − 𝑘
+∗ 
+diverges from 1 episode for GLM 5.1 to 19 for
+gpt-oss-120b; Tongyi-DR’s mean wasted tail of 15.0 is the proximate
+driver of its overflow. Splitting by correctness (Figure 4b) sharpens
+this: incorrect trajectories are 1.9–2.9× longer than correct ones
+in mean 𝑀, yet their 𝑘
+∗ 
+arrives only 0.6–6.7 episodes later. The
+4
+In our closed-corpus regime, visit precision coincides numerically with the visit-level
+redundant rate; we frame as click precision because that interpretation generalizes to
+the open-web setting.
+
+Diagnosing Search Behavior and Failure Modes in Long-Horizon Search Agents
+Table 2: Double dissociation between two query styles on two questions where GLM 5.1 and Kimi K2.6 disagree (✓/×; Turns =
+search-bearing turns, Srch = search calls).
+Agent Turns Srch Characteristic query move
+Q1 — name the entity at the end of a constraint chain: a 2020 article author (fixed publication cadence) interviewed by the co-creator of a Tribeca audio
+selection (gold All Fives)
+✓ GLM 5.1 19 37 Anchor-then-verify: alternate add_constraint/drop_constraint to fix the
+interviewer, isolate the author (Anjuan Simmons), and converge (0 repeats).
+× Kimi K2.6 90 90 Never anchors: guesses the game and the life skill (“Animal Crossing,” “patience,” . . .
+across 54 fresh pivots) and exhausts its budget without the author.
+Q2 — identify a US state from four clues (5th-tallest capital building, 2.1% population growth, governor’s marriage year, borders a neighboring-country region),
+then name its state bird (gold Mountain Bluebird — the state is Idaho)
+✓ Kimi K2.6 37 37 Enumerate-then-check: sweep candidate states and capitals (Austin, Olympia,
+Sacramento, Phoenix, . . . ), test each clue, converge on Idaho → Mountain Bluebird.
+× GLM 5.1 20 38 Anchors a misreading: reads “borders a region of a neighboring country” as licensing a
+foreign answer, commits to Uttarakhand, India, rationalizes every remaining clue to fit,
+and reports Himalayan Monal.
+real gap is the wasted tail, 3.0–6.1× longer on incorrect trajectories.
+Gold recall on incorrect trajectories drops from roughly 92% on
+the correct set to 27–45%, and 48–64% of them never surface a
+gold-bearing document at all. The long wasted tail is therefore
+rational continuation under failed retrieval, not simply a stopping
+failure: the agent keeps searching because it lacks the answer, but
+its queries cannot surface gold at any budget. The prescription
+splits: query reformulation triggered by saturation-without-gold for
+the RG majority, and saturation stopping for the UG subset, where
+post-gold redundancy of 58–74% bounds the reclaim.
+Accumulated search snippets, not visited documents, dominate the
+context budget. The wasted tail is paid for in context tokens, so
+we ask which text fills the window. Bucketing every message by
+source shows search snippets occupying 66–85% of context, visit
+content only 2–16%, and reasoning 3–25% (Figure 5). Tongyi-DR is
+the extreme at 85.0% snippets: its overflow is the cumulative cost
+of many top-𝐾 searches, not the documents it opens. Visit gating
+reclaims precision but little budget; the bigger lever is upstream
+snippet management, including deduplication, top-𝐾 trimming, and
+aging out earlier-episode snippets whose evidence has already been
+integrated. The pattern reproduces on the open web (§4.7), so it is
+not a fixed-corpus artifact.
+4.5 RQ4: Query Strategy Analysis
+The mechanism so far is about how much agents search and where
+the evidence lands; does the way they query separate strong from
+weak? For every search step, we classify the reformulation move
+by token overlap with the previous query: repeat for Jaccard over-
+lap at least 0.85, pivot below 0.25, and add/drop_constraint in
+between. We read these moves with the redundancy counters in
+Table 3 and correlate each with accuracy using Spearman 𝜌 over six
+agents, descriptively here and formalized within-question in §4.6.
+The headline: effort does not explain the gap. The weakest agent, gpt-
+oss-120b at 38.0%, issues the most searches, 31.8 search-turns, and
+volume runs the wrong way for an effort story, anti-correlated with
+accuracy at 𝜌 = −0.77; what tracks accuracy is query cleanliness
+and yield.
+Redundant re-querying is the cleanest behavioral predictor of fail-
+ure. gpt-oss-120b is the one genuine offender: it re-issues near-
+identical consecutive queries on 5.0% of moves, while the other five
+stay at or below 1.5% repeat. Across agents, repeat rate is the
+strongest non-mechanical behavioral correlate of accuracy, with
+𝜌 = −0.83. Tongyi-DR’s raw repeat rate of 4.8% looks like a sec-
+ond offender, but it is an artifact of malformed calls: its scaffold
+passes query as a JSON array, which the harness’s single-string
+schema rejects. That mismatch, not empty retrieval, explains its
+11.3% Bad-call rate; excluding rejected calls drops genuine repeat
+to 1.5%, squarely in the clean range reported in Table 3. We read
+Bad-call as a harness–scaffold mismatch rather than a retrieval-
+strategy signal, with the caveat that roughly one in nine intended
+Tongyi-DR searches never reaches the retriever; its 38% overflow is
+instead driven by post-gold redundancy and snippet volume (§4.4).
+Fewer reasoning hops, via parallel query batching — but this is a
+style, not a law. The strongest agent is also the most economical:
+GLM 5.1 resolves a query in 10.6 search-turns and Qwen3.5 in
+12.4, compared with 27–32 for gpt-oss-120b, Tongyi-DR, and Kimi
+K2.6. The lever is batching: GLM 5.1 and Qwen3.5 fire 1.87 and 1.74
+queries per turn, trying several angles before reacting once, whereas
+the other three issue about one query per turn. Batching correlates
+positively with accuracy at 𝜌 = +0.75. Still, turn economy is a style,
+not a requirement: Kimi K2.6 reaches 69.2% over 27 serial turns,
+brute-forcing breadth where GLM 5.1 triangulates. This is why raw
+search-turn count remains a confounded predictor.
+Trying new angles is not the waste — failing to land them is.
+One might expect weaker agents to thrash through more dead-
+end pivots. They do not: pivot rate is not negatively correlated
+with accuracy, with 𝜌 = +0.31, and the most pivot-heavy agent,
+Kimi K2.6 at 70%, is among the strongest. What separates strong
+from weak is whether new angles land on evidence. Gold coverage
+broadly tracks accuracy, from 59.6% to 86.0% (§4.4), even though
+pivot rates do not order the agents. gpt-oss-120b spends the most
+search-turns and pivots on nearly half its moves, yet converts that
+motion into gold least often.
+
+Liu et al.
+Table 3: Per-agent query-strategy profile on BrowseComp-
+Plus. Q/turn: queries per search turn (> 1 = parallel batching);
+Pivot: share of moves that jump to a new angle; Repeat: share
+of near-identical consecutive queries; Bad-call: share of mal-
+formed search calls.
+Acc Search Q/ Pivot Repeat Bad
+Agent (%) turns turn (%) (%) (%)
+gpt-oss-120b 38.0 31.8 1.00 46.6 5.0 0.3
+Tongyi-DR 52.2 27.7 1.00 58.3 1.5 11.3
+Qwen3.5-35B-A3B 55.2 12.4 1.74 44.1 0.4 0.0
+Deepseek V4 Pro 68.6 19.3 1.49 55.9 0.3 0.0
+Kimi K2.6 69.2 27.1 1.01 70.1 0.8 0.0
+GLM 5.1 74.1 10.6 1.87 47.5 0.0 0.0
+Case studies: neither query style dominates. The two styles are
+agent-level tendencies visible in Table 3: Kimi K2.6 pivots the most,
+at 70% of moves, and surfaces the most unique documents in its
+search results, 60.5 per question, giving it a breadth-first style,
+whereas GLM 5.1 commits faster by anchoring and verifying a
+candidate entity. Neither style is uniformly better. Across the 830
+questions, GLM 5.1 is correct where Kimi K2.6 fails on 109, and
+Kimi K2.6 is correct where GLM 5.1 fails on 68. Table 2 reads one
+case in each direction. Anchoring wins when the right entity is
+anchorable: in Q1, GLM 5.1 isolates the author in 19 turns while
+Kimi K2.6 burns 90 without converging. It backfires when the model
+commits to a misread clue: in Q2, GLM 5.1 reports a Himalayan bird
+for what is actually Idaho, while Kimi K2.6’s breadth-first sweep
+lands the right answer with a near-identical search count, 38 versus
+37. Each style has a failure mode, so which pays off is set by the
+question, not model strength alone.
+4.6 RQ5: Why Strong Agents Win
+Do the recall and query-discipline effects hold within the same ques-
+tion, or do they merely proxy generic model capability? The cross-
+agent correlations of §4.2 and §4.5 are descriptive over six points.
+To separate capability from behavior, we pool the 830 questions into
+an agent×question panel with 4,919 usable trajectories after drop-
+ping too-short runs, then fit linear probability models with question
+fixed effects: every comparison is between agents answering the
+same question. Predictors are 𝑧-scored and include malformed-call-
+corrected repeat/pivot shares, queries per turn, and log search
+calls; standard errors cluster by question.
+Retrieval mediates the outcome, within the question. On the 366
+questions where agents disagree about whether gold evidence was
+retrieved, the retrieving agents answer correctly 73.8% of the time,
+while the others answer correctly only 2.2% on those same questions
+(Figure 6a). The near-zero 2.2% bounds closed-book answering:
+agents almost never succeed without retrieving gold, so recall is not
+merely a proxy for parametric knowledge, though it cannot separate
+query skill from knowledge-informed querying. In the regression,
+cumulative gold recall dominates with a +30 pp effect per SD and
+𝑡 = 34, an order of magnitude above every behavioral coefficient.
+Retrieval also carries the bulk of the identity advantage: controlling
+hit miss
+gold evidence
+0
+20
+40
+60
+80
+P(correct) (%)
+73.8
+2.2
+(a) Within question
+0 5 10 15 20 25 30
+edge over gpt-oss-120b (pp)
+Qwen3.5
+Tongyi-DR
+GLM 5.1
+Deepseek V4
+Kimi K2.6
+(b) Recall absorbs agent effects
+agent FE
++ recall control
+Figure 6: Within-question test: (a) P(correct) on the 366 gold-
+hit-disagreement questions; (b) agent edge over gpt-oss-120b
+(question FE) before (open) / after (filled) recall control —
+56–60% absorbed.
+for recall absorbs 56–60% of each stronger agent’s conditional edge
+over gpt-oss-120b in Figure 6b.
+Query discipline acts through retrieval; search volume is a symp-
+tom. The behavioral signature of §4.5 decomposes cleanly on the
+panel. repeat predicts retrieval failure within the question, re-
+ducing gold-hit probability by 1.9 pp per SD with 𝑡 = −3.4; its
+association with correctness vanishes once recall is controlled, and
+it loses significance under agent fixed effects. Search volume is
+strongly negative within the question: where agents disagree, the
+correct ones issue on average 14 fewer search calls while achieving
+54 pp higher gold recall, and the coefficient survives restricting to
+answered-only trajectories. We read this associationally: an agent
+searches long because it is failing at least as much as the reverse.
+pivot is null throughout; per-turn batching is the one behavior
+whose positive effect survives agent fixed effects and recall control,
+adding +2–4 pp per SD.
+4.7 RQ6: External Validity on Open Web
+Is the coverage–effort dissociation an artifact of the fixed corpus
+and qrels supervision? We re-run the same ReAct harness on a
+different benchmark and retrieval regime: a 200-question sample
+of BrowseComp-en [28] answered against a live commercial open-
+web search API, using the four agents that ran to completion within
+budget. Because the open web has no qrels, an LLM judge supplies
+the relevance signal: for each question, it decomposes the informa-
+tion need, labels whether every search/visit surfaces a critical
+new fact, and judges whether the gathered facts are jointly sufficient.
+Coverage is the share of questions judged sufficient; an error is a
+retrieval gap when sufficiency is never reached and a utilization gap
+otherwise. Answer accuracy keeps the same GPT-4o protocol.
+The headline replicates. Across the four agents run to completion
+on the open web, accuracy tracks judged coverage and is flat against
+effort. GLM 5.1 has the top accuracy at 64.0% with the fewest calls,
+about 65 per question; Deepseek V4 Pro spends the most, 81 calls
+per question, for slightly lower accuracy at 61.5%; and the two
+mid-scale agents, Tongyi-DR and Qwen3.5-35B-A3B, remain below
+45%, at 42.5% and 30.5%. With only four agents, the correlations are
+
+Diagnosing Search Behavior and Failure Modes in Long-Horizon Search Agents
+27.5 30.0 32.5 35.0 37.5 40.0
+prod+red share (%)
+30
+40
+50
+60
+Accuracy (%)
+r = 0.98
+Search step
+24 26 28 30
+prod+red share (%)
+r = 0.82
+Visit step
+Qwen3.5-35B-A3B Tongyi-DR GLM 5.1 Deepseek V4 Pro
+Figure 7: Accuracy vs. productive+redundant share of search
+/ visit steps on BrowseComp-en.
+directional, but accuracy–coverage has 𝑟 = 0.99 while accuracy–
+calls has 𝑟 = 0.12. As in the main study, retrieval gap dominates
+errors, accounting for 68–88% of them. The reformulation move-
+share is identical across the correct/incorrect split, so what separates
+outcomes is whether a trajectory reaches sufficient evidence, not
+how it queries. The snippet-dominated budget also reproduces.
+The qrels-free utility axes behave consistently across benchmarks.
+The episode-utility decomposition of §4.4 can be reconstructed with-
+out qrels because the LLM usefulness judge labels each episode,
+search step, and visit as productive, redundant, or unproductive. On
+BrowseComp-Plus, productive+redundant share correlates with
+accuracy most strongly at the episode level, where 𝑟 = 0.71, weaken-
+ing through search steps at 𝑟 = 0.63 to visits at 𝑟 = 0.51. This is the
+qrels-free echo of recall-over-precision (§4.2). The four-agent open-
+web check in Figure 7 is directionally consistent but underpowered
+for the ordering, so we lean on BrowseComp-Plus for that.
+5 Discussion
+What makes an agent strong. Every layer returns the same an-
+swer: strong agents win by writing queries that retrieve, and nearly
+everything else is downstream. Accuracy is dominated by retrieval
+recall rather than context budget; within the same question, the
+agent that retrieves the gold evidence usually answers correctly,
+while the one that misses it almost never does. Recall also absorbs
+most of the apparent between-agent capability gap (§4.6). The be-
+havioral signature of strength is discipline, not effort: strong agents
+essentially never re-ask the same content, pivot as often as weak
+agents but land those pivots, often batch several angles per turn,
+and stop near evidence saturation. High search volume is therefore
+a symptom of a failing trajectory, not a lever that rescues it.
+What transfers to weaker agents, and how. Similar accuracies
+can hide disjoint failure profiles: Kimi K2.6 is utilization-bound
+while Deepseek V4 Pro is retrieval-bound at the same accuracy,
+and Tongyi-DR’s apparent search problem is largely a missing stop-
+ping rule. Transfer should therefore be prescribed by diagnosis,
+not leaderboard position. The largest transferable surface is the
+query side. On the shared retriever the 26-point spread in gold re-
+call is query-side by construction (§4.3), so retrieval-gap errors are
+not benchmark-impossible but query-fixable in principle. Possible
+mechanisms include reformulation and deduplication guards [11],
+prompt-level strategy transfer, or distillation on stronger agents’
+queries, though our numbers are upper bounds rather than realized
+gains. Other levers are scaffold-side and cheap: answer normaliza-
+tion for format-or-subtle errors, schema repair for rejected searches,
+snippet-stream management, and snippet-first visit gates [5].
+What remains at the frontier. For the strongest agents the diag-
+nosis shifts. GLM 5.1 sits closest to the oracle reader ceiling with
+a negligible wasted tail, so reformulation triggers and stopping
+rules have little left to reclaim. Its residual errors concentrate in
+mis-anchoring (Q2 of Table 2) and in the format-or-subtle share,
+where the prescriptions are verification and answer normalization
+rather than more search. This suggests a different frontier problem:
+not how to spend more retrieval budget, but how to decide when
+an apparently coherent chain is anchored to the wrong entity, and
+how to normalize answers without weakening precision. Comple-
+mentarity also matters: agents fail on largely disjoint questions,
+so no single agent’s error set marks the field’s ceiling. The oracle
+reader places that ceiling at 87.5% (§4.3), leaving a residual that
+gold evidence in hand does not fix.
+Relation to human search behavior. The patterns also clarify
+where current agents differ from human searchers. Berrypicking
+[2] predicts that information needs evolve as evidence accumulates;
+our agents often do the opposite, fixing an initial framing and then
+issuing paraphrase searches long after new evidence has stopped
+arriving [11, 22]. Humans also stop under satisficing, fatigue, and
+the economics of search cost [1, 31]; agents usually stop at hard
+caps or after emitting an answer. The missing piece is not merely a
+shorter budget, but an internal sense of marginal utility: whether
+a new query is likely to change the answer, whether a snippet
+adds new evidence, and whether enough independent support has
+accumulated. In that sense, evidence-driven stopping and query
+reformulation are not just engineering tricks; they are the agentic
+analogues of human search judgment.
+6 Conclusion
+We studied long-horizon search agents by opening the search tra-
+jectory rather than treating it as an opaque path to a final answer.
+Across six agents on BrowseComp-Plus, under a shared ReAct har-
+ness and retriever, effort and outcome dissociate: neither search
+volume nor context budget explains accuracy. What does is whether
+an agent’s queries retrieve the gold evidence, and the behavioral
+signature of the agents that do is query discipline. The trajectory
+analysis shows why: useful evidence arrives early or not at all,
+while later turns run on as a wasted tail of redundant snippets. The
+failure analysis splits errors into retrieval gaps, where evidence was
+never surfaced, and utilization gaps, where it was surfaced but not
+converted into the right answer; a within-question test confirms
+that this is not merely a capability ranking — on the same questions,
+retrieving the gold evidence is what separates success from failure.
+These findings argue for making search better directed rather
+than deeper: for weaker agents the main opportunity is query for-
+mulation, recognizing failed hypotheses and avoiding redundant
+re-querying; for stronger agents it shifts toward verification and
+answer normalization. Our analysis quantifies the headroom but
+remains diagnostic: realizing the gains will require training, prompt-
+ing, or tool-design changes.
+
+Liu et al.
+References
+[1] Leif Azzopardi. 2014. Modelling Interaction with Economic Models of Search.
+In Proceedings of the 37th International ACM SIGIR Conference on Research and
+Development in Information Retrieval. 3–12.
+[2] Marcia J. Bates. 1989. The Design of Browsing and Berrypicking Techniques for
+the Online Search Interface. Online Review, 13(5). Pages 407–424.
+[3] 
+Mingyang Chen, Tianpeng Li, Haoze Sun, Yijie Zhou, Chenzheng Zhu, Haofen
+Wang, Jeff Z. Pan, Wen Zhang, Huajun Chen, Fan Yang, Zenan Zhou, and Weipeng
+Chen. 2025. ReSearch: Learning to Reason with Search for LLMs via Reinforce-
+ment Learning. arXiv:2503.19470 https://arxiv.org/abs/2503.19470
+[4] Yanyu Chen, Jiyue Jiang, Jiahong Liu, Yifei Zhang, Xiao Guo, and Irwin King.
+2026. TRACE: Trajectory-Aware Comprehensive Evaluation for Deep Research
+Agents. arXiv:2602.21230 https://arxiv.org/abs/2602.21230
+[5] Zijian Chen, Xueguang Ma, Shengyao Zhuang, Jimmy Lin, Akari Asai, and Victor
+Zhong. 2026. AgentIR: Reasoning-Aware Retrieval for Deep Research Agents.
+arXiv:2603.04384 https://arxiv.org/abs/2603.04384
+[6] 
+Zijian Chen, Xueguang Ma, Shengyao Zhuang, Ping Nie, Kai Zou, Andrew Liu,
+Joshua Green, Kshama Patel, Ruoxi Meng, Mingyi Su, Sahel Sharifymoghad-
+dam, Yanxi Li, Haoran Hong, Xinyu Shi, Xuye Liu, Nandan Thakur, Crystina
+Zhang, Luyu Gao, Wenhu Chen, and Jimmy Lin. 2025. BrowseComp-Plus: A
+More Fair and Transparent Evaluation Benchmark of Deep-Research Agent.
+arXiv:2508.06600 https://arxiv.org/abs/2508.06600
+[7] João Coelho, Jingjie Ning, Jingyuan He, Kangrui Mao, Abhijay Paladugu, Pranav
+Setlur, Jiahe Jin, Jamie Callan, João Magalhães, Bruno Martins, and Chenyan
+Xiong. 2025. DeepResearchGym: A Free, Transparent, and Reproducible Evalua-
+tion Sandbox for Deep Research. arXiv:2505.19253 https://arxiv.org/abs/2505.
+19253
+[8] Alejandro Cuadron, Dacheng Li, Wenjie Ma, Xingyao Wang, Yichuan Wang,
+Siyuan Zhuang, Shu Liu, Luis Gaspar Schroeder, Tian Xia, Huanzhi Mao, Nicholas
+Thumiger, Aditya Desai, Ion Stoica, Ana Klimovic, Graham Neubig, and Joseph E.
+Gonzalez. 2025. The Danger of Overthinking: Examining the Reasoning-Action
+Dilemma in Agentic Tasks. arXiv:2502.08235 https://arxiv.org/abs/2502.08235
+[9] DeepSeek-AI. 2026. DeepSeek-V4: Towards Highly Efficient Million-Token Con-
+text Intelligence.
+[10] Yuwen Du, Rui Ye, Shuo Tang, Xinyu Zhu, Yijun Lu, Yuzhu Cai, and Siheng
+Chen. 2026. OpenSeeker: Democratizing Frontier Search Agents by Fully Open-
+Sourcing Training Data. arXiv:2603.15594 https://arxiv.org/abs/2603.15594
+[11] Jeff Huang and Efthimis N. Efthimiadis. 2009. Analyzing and Evaluating Query
+Reformulation Strategies in Web Search Logs. In Proceedings of the 18th ACM
+Conference on Information and Knowledge Management. 77–86.
+[12] 
+Bowen Jin, Hansi Zeng, Zhenrui Yue, Jinsung Yoon, Sercan Arik, Dong Wang,
+Hamed Zamani, and Jiawei Han. 2025. Search-R1: Training LLMs to Reason
+and Leverage Search Engines with Reinforcement Learning. arXiv:2503.09516
+https://arxiv.org/abs/2503.09516
+[13] Kimi Team. 2026. Kimi K2.6 Technical Report. Technical report.
+[14] 
+Kuan Li, Zhongwang Zhang, Huifeng Yin, Liwen Zhang, Litu Ou, Jialong Wu,
+Wenbiao Yin, Baixuan Li, Zhengwei Tao, Xinyu Wang, Weizhou Shen, Junkai
+Zhang, Dingchu Zhang, Xixi Wu, Yong Jiang, Ming Yan, Pengjun Xie, Fei Huang,
+and Jingren Zhou. 2025. WebSailor: Navigating Super-human Reasoning for Web
+Agent. arXiv:2507.02592 https://arxiv.org/abs/2507.02592
+[15] Xiaoxi Li, Guanting Dong, Jiajie Jin, Yuyao Zhang, Yujia Zhou, Yutao Zhu, Peitian
+Zhang, and Zhicheng Dou. 2025. Search-o1: Agentic Search-Enhanced Large
+Reasoning Models. arXiv:2501.05366 https://arxiv.org/abs/2501.05366
+[16] 
+Xiaoxi Li, Jiajie Jin, Guanting Dong, Hongjin Qian, Yutao Zhu, Yongkang Wu, Ji-
+Rong Wen, and Zhicheng Dou. 2025. WebThinker: Empowering Large Reasoning
+Models with Deep Research Capability. arXiv:2504.21776 https://arxiv.org/abs/
+2504.21776
+[17] Zhuofeng Li, Dongfu Jiang, Xueguang Ma, Haoxiang Zhang, Ping Nie, Yuyu
+Zhang, Kai Zou, Jianwen Xie, Yu Zhang, and Wenhu Chen. 2026. OpenResearcher:
+A Fully Open Pipeline for Long-Horizon Deep Research Trajectory Synthesis.
+arXiv:2603.20278 https://arxiv.org/abs/2603.20278
+[18] Jingjie Ning, João Coelho, Yibo Kong, Yunfan Long, Bruno Martins, João Magal-
+hães, Jamie Callan, and Chenyan Xiong. 2026. Agentic Search in the Wild: Intents
+and Trajectory Dynamics from 14M+ Real Search Requests. arXiv:2601.17617
+https://arxiv.org/abs/2601.17617
+[19] OpenAI. 2025. gpt-oss-120b and gpt-oss-20b Model Card. arXiv preprint
+arXiv:2508.10925.
+[20] Litu Ou, Kuan Li, Huifeng Yin, Liwen Zhang, Zhongwang Zhang, Xixi Wu, Rui Ye,
+Zile Qiao, Yong Jiang, Pengjun Xie, Fei Huang, and Jingren Zhou. 2025. BrowseC-
+onf: Confidence-Guided Test-Time Scaling for Web Agents. arXiv:2510.23458
+https://arxiv.org/abs/2510.23458
+[21] Qwen Team. 2025. Qwen3 Technical Report. arXiv preprint arXiv:2505.09388
+(2025).
+[22] Soo Young Rieh and Hong (Iris) Xie. 2006. Analysis of Multiple Query Reformu-
+lations on the Web: The Interactive Information Retrieval Context. Information
+Processing & Management 42, 3 (2006), 751–768.
+[23] Zhengliang Shi, Yiqun Chen, Haitao Li, Weiwei Sun, Shiyu Ni, Yougang Lyu,
+Run-Ze Fan, Bowen Jin, Yixuan Weng, Minjun Zhu, Qiujie Xie, Xinyu Guo, Qu
+Yang, Jiayi Wu, Jujia Zhao, Xiaqiang Tang, Xinbei Ma, Cunxiang Wang, Jiaxin
+Mao, Qingyao Ai, Jen-Tse Huang, Wenxuan Wang, Yue Zhang, Yiming Yang,
+Zhaopeng Tu, and Zhaochun Ren. 2025. Deep Research: A Systematic Survey.
+arXiv:2512.02038 https://arxiv.org/abs/2512.02038
+[24] 
+Zhongxiang Sun, Qipeng Wang, Weijie Yu, Jingxuan Yang, Haolang Lu, and Jun
+Xu. 2026. Deep Search with Hierarchical Meta-Cognitive Monitoring Inspired
+by Cognitive Neuroscience. arXiv:2601.23188 https://arxiv.org/abs/2601.23188
+[25] MiroMind Team, Song Bai, Lidong Bing, Carson Chen, Guanzheng Chen, Yuntao
+Chen, Zhe Chen, Ziyi Chen, Jifeng Dai, Xuan Dong, Wenhan Dou, Yue Deng,
+Yunjie Fu, Junqi Ge, Chenxia Han, Tammy Huang, Zhenhang Huang, Jerry Jiao,
+Shilei Jiang, Tianyu Jiao, Xiaoqi Jian, Lei Lei, Ruilin Li, Ryan Luo, Tiantong Li,
+Xiang Lin, Ziyuan Liu, Zhiqi Li, Jie Ni, Qiang Ren, Pax Sun, Shiqian Su, Chenxin
+Tao, Bin Wang, Hellen Wang, Haonan Wang, James Wang, Jin Wang, Jojo Wang,
+Letian Wang, Shizun Wang, Weizhi Wang, Zixuan Wang, Jinfan Xu, Sen Xing,
+Chenyu Yang, Hai Ye, Jiaheng Yu, Yue Yu, Muyan Zhong, Tianchen Zhao, Xizhou
+Zhu, Yanpeng Zhou, Yifan Zhang, and Zhi Zhu. 2025. MiroThinker: Pushing the
+Performance Boundaries of Open-Source Research Agents via Model, Context,
+and Interactive Scaling. arXiv:2511.11793 https://arxiv.org/abs/2511.11793
+[26] Tongyi DeepResearch Team, Baixuan Li, Bo Zhang, Dingchu Zhang, Fei Huang,
+Guangyu Li, Guoxin Chen, Huifeng Yin, Jialong Wu, Jingren Zhou, Kuan Li,
+Liangcai Su, Litu Ou, Liwen Zhang, Pengjun Xie, Rui Ye, Wenbiao Yin, Xinmiao
+Yu, Xinyu Wang, Xixi Wu, Xuanzhong Chen, Yida Zhao, Zhen Zhang, Zhengwei
+Tao, Zhongwang Zhang, Zile Qiao, Chenxi Wang, Donglei Yu, Gang Fu, Haiyang
+Shen, Jiayin Yang, Jun Lin, Junkai Zhang, Kui Zeng, Li Yang, Hailong Yin, Maojia
+Song, Ming Yan, Peng Xia, Qian Xiao, Rui Min, Ruixue Ding, Runnan Fang,
+Shaowei Chen, Shen Huang, Shihang Wang, Shihao Cai, Weizhou Shen, Xiaobin
+Wang, Xin Guan, Xinyu Geng, Yingcheng Shi, Yuning Wu, Zhuo Chen, Zijian Li,
+and Yong Jiang. 2025. Tongyi DeepResearch Technical Report. arXiv:2510.24701
+https://arxiv.org/abs/2510.24701
+[27] 
+Hongru Wang, Cheng Qian, Wanjun Zhong, Xiusi Chen, Jiahao Qiu, Shijue
+Huang, Bowen Jin, Mengdi Wang, Kam-Fai Wong, and Heng Ji. 2025. OTC:
+Optimal Tool Calls via Reinforcement Learning. arXiv:2504.14870 https://arxiv.
+org/abs/2504.14870
+[28] Jason Wei, Zhiqing Sun, Spencer Papay, Scott McKinney, Jeffrey Han, Isa Fulford,
+Hyung Won Chung, Alex Tachard Passos, William Fedus, and Amelia Glaese.
+2025. BrowseComp: A Simple Yet Challenging Benchmark for Browsing Agents.
+arXiv:2504.12516 https://arxiv.org/abs/2504.12516
+[29] Yunjia Xi, Jianghao Lin, Yongzhao Xiao, Zheli Zhou, Rong Shan, Te Gao, Ji-
+achen Zhu, Weiwen Liu, Yong Yu, and Weinan Zhang. 2025. A Survey of LLM-
+based Deep Search Agents: Paradigm, Optimization, Evaluation, and Challenges.
+arXiv:2508.05668 https://arxiv.org/abs/2508.05668
+[30] 
+Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik Narasimhan,
+and Yuan Cao. 2023. ReAct: Synergizing Reasoning and Acting in Language
+Models. arXiv preprint arXiv:2210.03629 (2023). doi:10.48550/arXiv.2210.03629
+[31] Lisl Zach. 2005. When Is “Enough” Enough? Modeling the Information-Seeking
+and Stopping Behavior of Senior Arts Administrators. Journal of the American
+Society for Information Science and Technology 56, 1 (2005), 23–35.
+[32] Aohan Zeng, Xin Lv, Zhenyu Hou, Zhengxiao Du, Qinkai Zheng, Bin Chen, Da
+Yin, Chendi Ge, Chenghua Huang, Chengxing Xie, et al. 2026. Glm-5: from vibe
+coding to agentic engineering. arXiv preprint arXiv:2602.15763 (2026).
+[33] Yanzhao Zhang, Mingxin Li, Dingkun Long, Xin Zhang, Huan Lin, Baosong Yang,
+Pengjun Xie, An Yang, Dayiheng Liu, Junyang Lin, Fei Huang, and Jingren Zhou.
+2025. Qwen3 Embedding: Advancing Text Embedding and Reranking Through
+Foundation Models. arXiv preprint arXiv:2506.05176 (2025).

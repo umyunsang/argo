@@ -72,3 +72,15 @@ Each stream produces:
 8. claim records for the paper.
 
 The review is iterative. A stream is never marked complete because a search returned no results; it closes only with documented coverage and remaining uncertainty.
+## Outcome-triggered retrieval
+
+The corpus is a living context graph, not a static gate on experiments or local results. Prior work informs hypotheses, methods, comparators, failure modes, and interpretation. A citation, vote count, or missing paper never establishes or blocks local efficacy; only identity-bound run evidence under the frozen protocol can do that.
+
+Every meaningful execution outcome reopens retrieval from observed evidence:
+
+- a positive result triggers searches for independent replication, transfer limits, causal alternatives, and negative counterevidence;
+- a null result triggers searches for measurement sensitivity, power, effect heterogeneity, boundary conditions, and mechanism-distinct alternatives;
+- a negative result triggers searches for analogous regressions, incompatible assumptions, safety failures, and alternative methods without closing the whole family;
+- an execution failure triggers primary implementation/specification research for the concrete failure and updates engineering state only.
+
+Queries inherit the observed mechanism, protocol fingerprint, error signature, population, metric, and scope. New detailed source claims still require retained bytes and reviewed locators. Any changed hypothesis, method, metric, split, or stop rule creates a descendant DecisionRecord rather than rewriting the answered protocol.

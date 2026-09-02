@@ -1,0 +1,1816 @@
+
+Warning: orx 0.1.117 is outdated (latest 0.1.118). A newer release is available; upgrade to stay compatible with the API. Run `orx update` to upgrade.
+
+alphaXiv: https://www.alphaxiv.org/abs/2608.01964
+GitHub: https://github.com/AMAP-ML/LongHorizon-Harness
+
+LongHorizon-Harness: Advancing Long-
+Horizon Agents for Real-World Tasks
+Ziyu Ma
+∗
+, Hailang Huang
+∗
+, Shun Zou
+∗
+, Yong Wang
+∗†
+, Shidong Yang, Yiming Hu, Fei Wei,
+Xiangxiang Chu
+DreamX Team, Alibaba Group 
+∗
+Equal contribution 
+†
+Project lead
+Large language model (LLM) agents increasingly undertake long-horizon tasks that require sustained
+reasoning, tool use, and revision across many interdependent steps. However, existing agent harnesses
+maintain task execution, task state, and completion assessment within a growing context, making the
+state difficult to track and allowing incorrect self-assessments to propagate into later decisions. We
+reformulate long-horizon execution as a task-state management problem and propose LongHorizon-
+Harness, which maintains the task state explicitly outside execution and updates it only with facts
+independently verified from the environment. Its Manage-Execute-Audit (MEA) loop uses a manager
+to maintain the task state and determine the next subtask, a fresh-context executor to perform it,
+and a read-only auditor to verify the resulting environment state before the next round. A lightweight
+AgentAdapter supports interchangeable model and harness backends without modifying their native
+agent loops. LongHorizon-Harness improves Qwen 3.7-Plus from 51.8% to 80.7% on WeaveBench,
+from 69.7% to 77.2% on Terminal-Bench 2.1, and from 2.8% to 8.3% on OSWorld 2.0. It also raises
+Claude Opus 4.7 from 20.0% to 34.3% on an OSWorld 2.0 subset, demonstrating consistent gains
+across models, harnesses, and interaction domains.
+Github: https://github.com/AMAP-ML/LongHorizon-Harness
+Website: https://lh-harness.pages.dev
+Figure 1 Left: LongHorizon-Harness improves long-horizon execution across benchmarks and backbones. With
+the same backbone and execution backend, it lifts WeaveBench PassRate from 51.8% to 80.7%, Terminal-Bench 2.1
+from 69.7% to 77.2%, and OSWorld 2.0 binary completion by 3.0×, and the gains transfer from Qwen 3.7-Plus to
+Claude Opus 4.7. Right: Audited state transitions. Instead of one continuously growing session that judges its own
+progress, a manager re-plans the next subtask from audited facts, a fresh-context executor performs it, and a read-only
+auditor certifies what actually changed in the environment. Audit reports are the only cross-round memory, and
+interchangeable backends (e.g., Claude Code, Codex) serve each role.
+1
+arXiv:2608.01964v1 [cs.CV] 3 Aug 2026
+
+1 Introduction
+Over the past few years, large language models (LLMs) have evolved from conversational models into the
+decision-making core of autonomous agents for software engineering (Yang et al., 2024; Wang et al., 2025;
+Ren et al., 2026; Ding et al., 2025), general-purpose assistance (Anthropic, 2025; OpenAI, 2025a;b; Anthropic,
+2026), scientific discovery (Sun et al., 2025; Wei et al., 2025a), computer use (Anthropic, 2024; OpenAI,
+2025c; Google DeepMind, 2025; Sager et al., 2026; Zhou et al., 2026; Zheng et al., 2026), and multimodal
+interaction (Zhang et al., 2023; Agashe et al., 2025). Across these applications, agents increasingly face
+long-horizon execution, which requires repeated reasoning, tool use, observation, and revision over many
+interdependent steps, sometimes across multiple context windows or sessions. The length of tasks that agents
+can complete increasingly determines how much work can be delegated to them. METR (Kwa et al., 2026)
+reports that the task-completion horizon of advanced agents has doubled roughly every seven months, with
+the trend accelerating to about four months for recent models. Frontier coding agents can already sustain
+hours-long work on a single project (OpenAI, 2025a; Anthropic, 2025; Yang et al., 2026a). However, a longer
+horizon does not by itself make execution reliable (Dong et al., 2026).
+The difficulty of long-horizon execution lies not in any individual step, but in sustaining coherent progress
+across a long sequence of interdependent actions. Across systems and domains, three challenges consistently
+emerge: (i) Compounding errors and goal drift. Errors in earlier actions or decisions accumulate along the
+trajectory, distort subsequent choices, and gradually steer the agent away from its original objective (Sun
+et al., 2026). (ii) Context rot. As the interaction history grows, relevant information becomes increasingly
+difficult to retrieve and use, and agent performance can degrade sharply once context utilization crosses a
+critical threshold (Liu et al., 2024; Hong et al., 2025). (iii) Task-state loss. Long-horizon tasks are difficult
+to complete without an accurate and up-to-date task state (i.e., the requirements to satisfy, actions already
+completed, artifacts produced, and facts discovered from the environment), but agents often fail to recover,
+retain, and update this state throughout task execution.
+Extensive efforts have strengthened agents from both the model and harness sides. Frontier models continue to
+scale in size, extend their context windows, and acquire stronger coding and agentic capabilities by training on
+large-scale, high-quality data (Wei et al., 2025b; Chu et al., 2026; Li et al., 2025; Ma et al., 2026; Ji et al., 2025;
+Yang et al., 2026b). In parallel, agent harnesses such as Claude Code (Anthropic, 2025), Codex CLI (OpenAI,
+2025a), and OpenClaw (OpenClaw Contributors, 2026) have become the standard system layer for organizing
+prompting, tool use, context management, and multi-step execution around the model. For long-horizon tasks,
+these harnesses already support planning, task decomposition, tool use, and subagents that execute or review
+work in isolated contexts. However, existing harnesses still face two structural limitations: (i) Task execution
+and task-state management share the same growing context. The agent uses the same context to execute the
+task and maintain its task state, while the growing execution history makes task state increasingly difficult to
+track. (ii) Task execution and completion assessment remain coupled. The agent performs each subtask and
+judges whether it has been completed, with an incorrect judgment potentially being recorded as part of the
+task state and used as a premise for subsequent decisions.
+To address these limitations, we propose LongHorizon-Harness, a framework that organizes long-horizon
+execution as a sequence of independently audited task-state transitions. Our key idea is to maintain the
+task state as an explicit record outside task execution, update it only with facts independently verified from
+the environment, and derive each next subtask from the current record and the original goal. Specifically,
+LongHorizon-Harness follows a Manage-Execute-Audit (MEA) loop as shown in Fig. 1. A manager reads
+the current task state and defines one subtask with its dependencies, constraints, and acceptance criteria.
+An executor performs only this subtask in a fresh context, while a read-only auditor independently inspects
+the environment to determine what changed, what was completed, and what remains unmet (Zhuge et al.,
+2024; Zheng et al., 2023). The manager updates the task state from the audit result and begins the next
+round, while the executor’s interaction history is discarded after each round so that only compact, verified
+task state persists across the task. Through a lightweight AgentAdapter, LongHorizon-Harness preserves the
+native agent loops (Yao et al., 2023) of existing systems and supports interchangeable backends for all three
+roles, spanning models such as Claude Opus, GPT, and Qwen and harnesses such as Codex CLI (OpenAI,
+2025a), Claude Code (Anthropic, 2025), OpenClaw (OpenClaw Contributors, 2026), and Hermes Agent (Nous
+Research, 2026).
+2
+
+Figure 2 Overview of LongHorizon-Harness. LongHorizon-Harness processes a long-horizon task T through repeated
+Manage-Execute-Audit rounds, shown by the dashed box and numbered flow ❶–❸. The manager reads task state S
+i
+and constructs subtask contract c
+i
+, which specifies the goal, acceptance criteria, boundary constraints, and relevant
+prior evidence (❶). The manager may instead request user information or authorization through the ask route. The
+selected GUI or CLI executor performs the subtask in a fresh, budget-bounded context and modifies the environment
+(❷). The auditor independently inspects the resulting environment through read-only tools and produces audit report
+v
+i 
+(❸). The manager uses v
+i 
+to update the task state before the next round.
+We evaluate LongHorizon-Harness on three recent long-horizon benchmarks, WeaveBench (Li et al., 2026),
+OSWorld 2.0 (Yuan et al., 2026), and Terminal-Bench 2.1 (Merrill et al., 2026), which together cover cross-
+interface coordination, desktop workflows, and challenging command-line tasks. Under matched model
+backends and evaluation protocols, LongHorizon-Harness raises WeaveBench PassRate from 51.8% to 80.7%
+using Qwen 3.7-Plus and Claude Code, nearly doubling the strongest officially reported result of 41.2%
+obtained by Claude Opus 4.7 with Claude Code. On Terminal-Bench 2.1, it improves performance from 69.7%
+to 77.2% with Qwen 3.7-Plus. On the full OSWorld 2.0 benchmark, it raises binary completion from 2.8% to
+8.3% with Qwen 3.7-Plus; on a 34-task subset, it improves the result from 20.0% to 34.3% with Claude
+Opus 4.7. Our contributions are summarized as follows:
+• We reformulate long-horizon execution from a single growing trajectory into a task-state management
+problem. The task state is maintained explicitly outside execution, updated only with independently
+verified facts, and used to determine each next subtask under the original goal.
+• 
+We design LongHorizon-Harness, which realizes this principle through a Manage-Execute-Audit loop. In
+each round, the manager defines one subtask from the current task state, the executor performs it in a
+fresh context, and the auditor independently inspects the environment before the manager updates the
+state and begins the next round.
+• We evaluate LongHorizon-Harness on WeaveBench, OSWorld 2.0, and Terminal-Bench 2.1. With
+Qwen 3.7-Plus, it improves WeaveBench PassRate from 51.8% to 80.7%, Terminal-Bench 2.1 from 69.7%
+to 77.2%, and OSWorld 2.0 binary completion from 2.8% to 8.3%, while also delivering consistent gains
+with Claude Opus 4.7.
+3
+
+2 Method
+2.1 Overview
+Given a long-horizon task T and a computer environment, LongHorizon-Harness executes the task through a
+sequence of dynamically determined rounds rather than a single continuously growing session. The harness
+maintains an explicit task state outside task execution and advances it only with evidence independently
+verified from the environment. Across rounds, only the task state and its supporting audit reports persist;
+the executor’s raw interaction trajectory is discarded after each round. Fig. 2 provides an overview of the
+framework.
+Each round follows a Manage-Execute-Audit (MEA) loop. Let S
+i 
+denote the task state available at the
+beginning of round i, e
+i−1 
+∈ E the current environment state, and V
+i−1 
+= (v
+1
+, . . . , v
+i−1
+) the accumulated
+audit reports. The manager constructs a bounded subtask contract c
+i
+. A fresh-context executor performs the
+contract, transforms the environment from e
+i−1 
+to e
+i
+, and returns an execution report o
+i
+. A separate auditor
+then inspects e
+i 
+through read-only tools and produces audit report v
+i
+. The manager incorporates v
+i 
+into the
+next task state S
+i+1 
+before determining whether another round is required. The loop ends when the audited
+state satisfies the original task, no permitted subtask can advance the remaining requirements, user input is
+required, or the round budget is exhausted.
+2.2 Manager
+The manager owns the persistent task state and determines how the task should proceed. It has access to the
+original task T , the current task state, and all accumulated audit reports, but has no direct interface to the
+computer environment. It cannot observe application state, inspect workspace contents, invoke GUI or CLI
+tools, or modify the environment. Its decisions are based entirely on the task state and environment evidence
+recorded by the auditors.
+After round i, the manager updates the task state and produces the next control decision:
+(S
+i+1
+, q
+i+1
+, c
+i+1
+) = Φ
+mgr 
+(T , S
+i
+, V
+i
+) , (1)
+where V
+i 
+= (v
+1
+, . . . , v
+i
+) and q
+i+1 
+is one of execute, done, blocked, and ask. The contract c
+i+1 
+is returned
+only when further execution is required.
+Task-state update. The task state is a structured collection of task-relevant records: a requirement represents
+an objective or constraint derived from the original task, an artifact represents an output created or modified
+during execution, and a fact records environment information needed by subsequent rounds. Each record is
+marked as completed, pending, blocked, or untrusted, and retains references to the audit evidence supporting
+its current status. The initial state S
+1 
+is constructed from T with its requirements marked as pending. After
+each round, the manager applies the verified findings in v
+i 
+to S
+i
+, adding or updating the corresponding records
+while leaving unresolved ones pending, blocked, or untrusted as appropriate. Executor claims do not directly
+change the persistent state: a record is marked as completed only when supported by clean audit evidence.
+Next-subtask construction. The manager compares S
+i+1 
+against the original task, selects an unresolved
+objective that can be advanced from the current state, and checks its dependencies and prerequisites. It then
+constructs a bounded contract c
+i+1 
+specifying the immediate goal, acceptance criteria, boundary constraints,
+and the task-state records and prior audit reports relevant to execution and verification. The contract is
+routed to a GUI or CLI executor according to the primary environment transition it requires. The manager
+returns done when the audited state satisfies T without unresolved integrity violations, blocked when no
+permitted action can advance the remaining requirements, and ask when progress requires user information
+or authorization; otherwise, it returns execute together with c
+i+1
+.
+2.3 Executor
+The executor performs the contract selected by the manager and is the only role permitted to intentionally
+modify the environment. In round i, it receives the original task T , the current task state S
+i
+, the subtask
+4
+
+contract c
+i
+, and only the prior audit reports referenced by the contract. It transforms the environment from
+e
+i−1 
+to e
+i
+:
+(e
+i
+, o
+i
+) = Φ
+exec 
+(T , S
+i
+, c
+i
+; e
+i−1
+) , (2)
+where o
+i 
+summarizes the actions performed, resulting state, artifacts produced or modified, and issues
+encountered during execution. The report o
+i 
+describes the executor’s outcome but does not establish that the
+contract has been completed.
+Fresh-context execution. Each executor invocation runs as a fresh, budget-bounded episode containing only
+the information supplied for the current round. It does not receive the raw interaction trajectories of earlier
+rounds. Within the episode, the executor may perform multiple cycles of planning, environment interaction,
+observation, and revision. When the episode ends, its raw trajectory and internal reasoning are discarded;
+only o
+i 
+is forwarded for auditing.
+GUI and CLI capability boundaries. GUI and CLI executors operate through different environment interfaces.
+The GUI executor receives screen-oriented capabilities such as taking screenshots, clicking, scrolling, and
+entering text, and is responsible for transitions centered on application and interface state. The CLI executor
+receives capabilities such as shell execution, file editing, coding, and testing, and is responsible for transitions
+centered on workspace, process, and program state.
+The harness exposes only the environment interface and tool set assigned to the selected executor role.
+Capabilities outside that role are unavailable unless explicitly provided by its configuration. This separates
+responsibility for different classes of state-changing actions while allowing the manager to select the interface
+appropriate for each contract.
+Backend execution. Executors are instantiated through a common agent-adapter interface. Given a contract,
+a role-specific environment interface, and an execution budget, the adapter launches an existing backend
+such as Claude Code, Codex CLI, or OpenClaw as one bounded episode. The backend retains its native
+planning and tool-use loop and may normally invoke the shell, edit files, write code, run tests, or interact
+with applications when those capabilities are exposed by its assigned role. The harness does not replace the
+backend’s internal execution process; it controls the supplied context, available tools, environment permissions,
+execution budget, and returned report.
+2.4 Auditor
+The auditor independently verifies the environment state produced by the executor. After execution, it receives
+the original task T , the task state S
+i
+, the contract c
+i
+, the prior audit reports referenced by the contract, and
+the executor report o
+i
+. It does not receive the executor’s raw interaction trajectory or internal reasoning. The
+auditor inspects the resulting environment e
+i 
+and produces
+v
+i 
+= Φ
+aud 
+(T , S
+i
+, c
+i
+, o
+i
+; e
+i
+) , (3)
+where v
+i 
+is appended to the persistent audit history and returned to the manager before the next round.
+Independent environment inspection. The auditor starts from a fresh context that excludes the executor’s raw
+interaction trajectory and internal reasoning. It may use o
+i 
+to locate relevant files, windows, logs, processes,
+or other outputs, but determines completion by independently comparing the resulting environment against
+the goal, acceptance criteria, and boundary constraints in c
+i
+. A GUI auditor examines application and
+screen state through observation-oriented interactions, whereas a CLI auditor uses non-mutating commands
+and inspection tools to examine files, metadata, logs, processes, tests, and workspace state. In both cases,
+audit conclusions must be supported by evidence obtained directly from the environment rather than by the
+executor’s completion claim.
+5
+
+Table 1 Results on WeaveBench. Gray rows denote official results reported by (Li et al., 2026), using the best
+reported thinking mode for each backbone; models other than GPT-5.5 and Claude Opus 4.7 were evaluated only with
+OpenClaw. Black rows denote our runs with Qwen 3.7-Plus. Our runs use root privileges inside the task virtual
+machine, whereas the official results use a regular user account and are therefore included as reference points rather
+than matched comparisons. PR denotes full-task PassRate (%), and Overall denotes the mean score over all 114 tasks.
+The remaining columns report PassRate across the eight benchmark domains.
+Model Harness PR↑ Overall↑ DSK DOC GAM WEB DAV OPS SPA DES
+Claude Opus 4.7
+Claude Code 41.2 0.532 55.6 47.1 23.5 53.3 23.1 50.0 33.3 40.0
+OpenClaw 35.1 0.482 55.6 29.4 23.5 66.7 15.4 41.7 16.7 20.0
+Hermes Agent 28.1 0.516 33.3 47.1 11.8 26.7 30.8 50.0 8.3 10.0
+Codex CLI 13.2 0.378 16.7 11.8 11.8 6.7 7.7 25.0 16.7 10.0
+GPT-5.5
+Codex CLI 35.1 0.499 38.9 29.4 23.5 53.3 15.4 50.0 58.3 10.0
+OpenClaw 33.3 0.466 38.9 35.3 35.3 21.4 23.1 38.5 33.3 40.0
+Hermes Agent 31.6 0.466 55.6 29.4 35.3 40.0 7.7 25.0 25.0 20.0
+Claude Code 14.9 0.299 
+33.3 11.8 11.8 0.0 15.4 16.7 25.0 0.0
+GPT-5.4 OpenClaw 22.8 0.465 55.6 35.3 5.9 0.0 23.1 23.1 8.3 20.0
+GPT-5.3-codex OpenClaw 18.4 0.456 33.3 23.5 29.4 0.0 7.7 16.7 8.3 20.0
+GPT-5.2-codex OpenClaw 6.1 0.321 
+5.6 11.8 0.0 0.0 15.4 16.7 0.0 0.0
+GPT-5.1-codex OpenClaw 1.8 0.226 0.0 5.9 0.0 0.0 7.7 0.0 0.0 0.0
+Gemini 3.1 pro OpenClaw 1.8 0.223 0.0 0.0 0.0 0.0 0.0 8.3 8.3 0.0
+Qwen3.5-397B-A17B OpenClaw 0.9 0.318 0.0 0.0 0.0 0.0 0.0 8.3 0.0 0.0
+Qwen3-VL-8B-Think OpenClaw 0.9 0.092 
+0.0 0.0 0.0 0.0 8.3 0.0 0.0 0.0
+GUI-Owl-1.5-32B OpenClaw 0.0 0.065 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0
+Qwen 3.7-Plus 
+Claude Code 51.8 0.702 
+83.3 76.5 29.4 46.7 53.8 66.7 16.7 20.0
+LongHorizon-Harness (Claude Code) 80.7 0.835 
+88.9 100.0 58.8 73.3 84.6 91.7 66.7 80.0
+Read-only authority. The auditor may change its observation view when necessary for inspection but cannot
+modify task-relevant environment state. It cannot create, edit, overwrite, move, or delete protected artifacts,
+execute state-changing commands, or perform GUI actions that alter the result under inspection. The harness
+monitors task-relevant workspace and artifact state throughout auditing; any detected mutation is recorded
+as an integrity violation, and the resulting report cannot support a completed task-state record.
+Audit-result construction. The audit report v
+i 
+records three classes of findings. First, it assigns a completion
+status of complete, incomplete, or blocked by evaluating the contract’s acceptance criteria. Second, it assigns
+an integrity status of clean, suspect, or violation by checking workspace mutations, artifact validity and
+provenance, and relevant deletion constraints. Third, it records the task-state updates supported by the
+inspection, including verified facts, supporting evidence, and remaining gaps.
+The auditor may propose changes to requirement, artifact, and fact records, but the manager determines
+how these findings are incorporated into S
+i+1
+. Consequently, o
+i 
+remains an unverified execution summary,
+whereas v
+i 
+provides the environment-grounded evidence that may advance the persistent task state.
+3 Experiments
+3.1 Experimental Setup
+Compared configurations. We use Qwen-3.7-Plus as the primary backbone model, and additionally evaluate
+Claude Opus-4.7 to assess the generality across backbone models. For each backbone model, we compare the
+original Claude Code evaluation framework (Anthropic, 2025) with LongHorizon-Harness, where the latter
+uses Claude Code as its execution backend. Unless otherwise specified, the manager, executor, and auditor
+are instantiated with the same backbone model, ensuring that the comparison reflects the effect of task-state
+management rather than differences in model capability.
+6
+
+Table 2 Results on OSWorld 2.0. Gray rows denote official results reported by (Yuan et al., 2026) under batched-
+and single-action settings, while the black row denotes LongHorizon-Harness with Qwen 3.7-Plus in the hybrid setting.
+Binary is the percentage of tasks whose final benchmark score equals 1, and Partial is the mean benchmark score over
+all 108 tasks. Bold marks the best official result.
+Model Harness / Mode Binary↑ Partial↑
+Claude Opus 4.8 Batched actions 20.6 54.8
+Claude Opus 4.7 Batched actions 18.2 48.9
+GPT-5.5 Batched actions 13.0 49.5
+Claude Opus 4.8 Single action 18.5 49.3
+Claude Opus 4.7 Single action 13.9 49.1
+Claude Sonnet 4.6 Single action 8.3 41.5
+MiniMax M3 Single action 4.6 22.3
+Kimi 2.6 Single action 4.6 22.1
+Qwen 3.7-Plus Single action 2.8 21.5
+Qwen 3.7-Plus LongHorizon-Harness (hybrid) 8.3 35.2
+Implementation details. LongHorizon-Harness integrates existing agent backends through a unified Agen-
+tAdapter interface. Each role is assigned an independent execution budget: the executor is limited to 1800
+seconds per round, while both the manager and the auditor are limited to 300 seconds. We set the maximum
+number of MEA rounds to N
+max 
+= 25.
+Benchmarks and metrics. We evaluate LongHorizon-Harness on three recent benchmarks that cover comple-
+mentary forms of long-horizon execution.
+WeaveBench (Li et al., 2026) consists of 114 tasks that require coordinated GUI and CLI interactions within
+the same workflow. We follow the standard WeaveBench evaluation protocol, using the task definitions,
+workspaces, runtime assets, and judge templates released by the official benchmark for all tasks. We report
+PassRate, defined as the percentage of fully passed tasks, and Overall, defined as the average score across all
+tasks. In addition, we report PassRate for each of the eight domains covered by the benchmark.
+OSWorld 2.0 (Yuan et al., 2026) consists of 108 desktop workflow tasks, with a median human completion time
+of approximately 1.6 hours. We use the official osworld-v2-2026.06.24 release and its standard Docker-based
+VM infrastructure. We report two metrics: Binary and Partial Accuracy. Binary Accuracy counts a task as
+successful only when its final score is 1, while Partial Accuracy is the average score over all tasks.
+Terminal-Bench 2.1 (Merrill et al., 2026) is designed to evaluate challenging and realistic command-line tasks.
+We follow the evaluation setup used for the Qwen-series models, and evaluate on Terminal-Bench 2.1 using
+Harbor with the Docker backend. Final results report the average score over three independent runs per task,
+and are compared against the official leaderboard results.
+3.2 Main Results
+Effectiveness on long-horizon computer use. Table 1 reports the results on WeaveBench. The Claude Code
+harness with Qwen 3.7-Plus achieves a PassRate of 51.8% and a mean task score of 0.702. Using the same
+model and retaining Claude Code as the executor backend, LongHorizon-Harness increases these results to
+80.7% and 0.835, respectively. This matched comparison isolates the contribution of the additional task-state
+management layer. Performance also improves across all eight task domains, showing that the gain is not
+concentrated in a particular application category. Since the officially reported configurations use a different
+privilege setting, we include them as reference points but base our main conclusion on the matched Claude
+Code comparison.
+7
+
+Figure 3 Results on Terminal-Bench 2.1. LongHorizon-Harness retains Claude Code as its executor backend and
+improves success rate from 69.7% to 77.2%. Values marked with 
+∗ 
+are externally reported metrics.
+Table 3 OSWorld 2.0 Opus 4.7 subset (34 tasks). Both rows use Claude Opus 4.7 as the backbone.
+Model Harness / Mode Binary↑ Partial↑
+Claude Opus 4.7 Single action 20.6 55.8
+Claude Opus 4.7 LongHorizon-Harness (hybrid) 35.3 66.9
+Table 2 reports the results on OSWorld 2.0. With Qwen 3.7-Plus, LongHorizon-Harness increases binary
+completion from 2.8% to 8.3% and partial score from 21.5% to 35.2%. The higher partial score shows
+that the agent satisfies a larger fraction of the task requirements, while the threefold increase in binary
+completion shows that this progress more frequently leads to a fully completed workflow. Together, the results
+on WeaveBench and OSWorld 2.0 show that explicit task-state management improves both cross-interface
+execution and sustained progress over long visual computer-use trajectories.
+Complementarity with backbone capability. Table 3 further evaluates LongHorizon-Harness with Claude
+Opus 4.7 on a 34-task subset of OSWorld 2.0. It increases binary completion from 20.6% to 35.3% and partial
+score from 55.8% to 66.9%. The consistent improvements with Qwen 3.7-Plus and Claude Opus 4.7 show
+that the framework does not merely compensate for a weaker model. The backbone determines the quality of
+the actions and decisions produced within each round, while LongHorizon-Harness determines how reliably
+verified outcomes are maintained and used across rounds. Stronger models and explicit task-state management
+therefore provide complementary gains.
+Generalization beyond computer use. Fig. 3 reports the results on Terminal-Bench 2.1. Due to the limited
+budget, we only run three configurations ourselves: Claude Code with Qwen 3.7-Plus, LongHorizon-Harness
+with Claude Code and Qwen 3.7-Plus, and LongHorizon-Harness with Codex and GPT-5.6 Luna. All other
+results are quoted from the official Terminal-Bench 2.1 leaderboard or the corresponding model’s official
+report. LongHorizon-Harness improves the success rate of Qwen 3.7-Plus with Claude Code from 69.7% to
+77.2%. With Codex as the executor backend, LongHorizon-Harness further reaches 83.1% using GPT-5.6 Luna.
+Terminal-Bench tasks are performed entirely through the command line and require neither visual perception
+nor GUI–CLI routing. The gain therefore cannot be attributed to mechanisms specific to computer-use agents.
+It shows that explicit task-state maintenance, bounded execution contexts, and independent auditing also
+8
+
+Figure 4 Cost–performance frontier on OSWorld 2.0. Binary completion (left) and partial score (right) versus average
+output tokens per task. Colored curves show the official results under different reasoning-effort settings (Yuan et al.,
+2026), with marker size indicating the reasoning effort. The blue star denotes LongHorizon-Harness with Qwen 3.7-Plus,
+and the dashed arrow shows its improvement over the official single-action Qwen 3.7-Plus baseline.
+Figure 5 Token consumption by role. Average tokens per task consumed by the manager, executor, and auditor in
+LongHorizon-Harness, compared with the corresponding baseline. Segment labels report the fraction consumed by
+each role. All LH-Harness roles use Qwen 3.7-Plus. WeaveBench and Terminal-Bench 2.1 report total tokens, whereas
+OSWorld 2.0 reports output tokens because the official provides only output-token statistics (Yuan et al., 2026).
+benefit general long-horizon agent execution. Across hybrid-interface, desktop, and pure CLI environments,
+LongHorizon-Harness consistently improves how agents preserve and convert intermediate progress into
+completed tasks.
+3.3 Analysis
+We next examine the computational cost of these gains, the task conditions under which they arise, and how
+the model and harness jointly determine the capability of the resulting agent system.
+Cost–performance trade-off. Fig. 4 shows that LongHorizon-Harness moves Qwen 3.7-Plus to a substantially
+stronger point on the OSWorld 2.0 cost–performance frontier. The same model improves from 2.8% to 8.3% in
+binary completion and from 21.5% to 35.2% in partial score, although its average output-token consumption
+increases from 28.9K to 104K per task. This result shows that a stronger harness can raise the task-level
+performance achievable by a fixed model. The increased cost observed with Qwen 3.7-Plus is specific to this
+model–task configuration; as analyzed below, the token cost of LongHorizon-Harness depends strongly on the
+capability of the underlying executor.
+Computation across roles. Fig. 5 decomposes the token consumption of LongHorizon-Harness across the
+manager, executor, and auditor. The manager accounts for only 2.8%, 2.0%, and 8.1% of the total tokens on
+WeaveBench, OSWorld 2.0, and Terminal-Bench 2.1, respectively, showing that explicit task-state maintenance
+introduces little computational overhead. The auditor accounts for 19.4%, 24.8%, and 38.1% of the tokens,
+9
+
+indicating that independent verification constitutes the main additional investment of the framework. The
+overall token change nevertheless differs across benchmarks. LongHorizon-Harness consumes 2.3× the baseline
+tokens on WeaveBench and 3.6× the baseline output tokens on OSWorld 2.0, whereas it consumes 24% fewer
+tokens on Terminal-Bench 2.1 while achieving a higher success rate. These results show that the framework
+does not impose a fixed token multiplier. Its total cost depends on both the task and the number of execution
+and recovery rounds required by the underlying model.
+Figure 6 Performance gains across task types. LongHorizon-Harness (blue) is compared with the same-model baseline
+(gray) across WeaveBench domains (left), OSWorld 2.0 capability tags (middle), and Terminal-Bench 2.1 categories
+(right). The rightmost column of each panel reports the absolute performance change in points. Blue connectors
+indicate improvements, and red connectors indicate regressions. Parenthesized values report the number of OSWorld
+tasks or Terminal-Bench trajectories in each category.
+Task-dependent effectiveness. Fig. 6 compares the gains of LongHorizon-Harness across task types. On
+WeaveBench, Design and Spatial/3D obtain the largest PassRate improvements of 60.0 and 50.0 points,
+respectively, whereas the Desktop domain, which already reaches 83.3% with the baseline, improves by 5.6
+points. On OSWorld 2.0, some of the largest gains appear in streaming interaction, human-in-the-loop, and
+tutorial-following tasks. On Terminal-Bench 2.1, system-administration and game tasks improve substantially,
+while several short analytical categories show smaller gains or regressions. Despite operating through different
+interfaces, the categories with larger improvements commonly require agents to preserve, inspect, and revise
+multiple dependent environment states over an extended trajectory. The smaller improvements on several
+analytical categories suggest that LongHorizon-Harness provides less benefit when task performance is
+dominated by an individual model capability, such as visual perception, mathematical reasoning, coding, or
+algorithm design. Independent auditing can detect an incorrect result and initiate recovery, but it cannot supply
+a capability that the model does not possess. The effectiveness of LongHorizon-Harness is thus determined less
+by whether a task uses a GUI or CLI than by whether its primary bottleneck lies in long-horizon execution
+reliability or in solving an individual step.
+Agent capability as a system property. Table 4 compares the Claude Code baseline and LongHorizon-Harness
+on the same 17 WeaveBench Games tasks using Claude Opus 4.7 and Qwen 3.7-Plus. LongHorizon-Harness
+improves the mean score of Opus from 0.680 to 0.809 and that of Qwen from 0.524 to 0.733, with the largest
+gains concentrated on tasks where the corresponding baseline performs poorly. All six tasks on which the
+Qwen baseline scores at or below 0.04 recover to scores between 0.30 and 0.92, showing that the framework
+primarily raises the failure floor by recovering trajectories that would otherwise end in near-total failure.
+Qwen with LongHorizon-Harness further reaches a mean score of 0.733, exceeding the 0.680 obtained by Opus
+with the base Claude Code harness. This comparison demonstrates that agent capability is a property of
+the complete model–harness system. The model determines the actions and solutions available within each
+execution round, while the harness determines how reliably these local capabilities are decomposed, verified,
+recovered, and accumulated into end-to-end task completion. A stronger harness can consequently raise the
+task-level performance achievable with a fixed model, even though it does not add new primitive capabilities
+to that model. The token results reveal the same dependence on both components: LongHorizon-Harness
+increases Qwen’s average consumption from 10.7M to 34.3M tokens per task, but reduces Opus consumption
+10
+
+Table 4 Per-task scores and token consumption on the WeaveBench Games subset (17 tasks). CC = Claude Code;
+LH = LongHorizon-Harness wrapping Claude Code as its backend. Tok denotes total tokens per task (M). Bold marks
+the better score per backbone.
+Claude Opus 4.7 Qwen 3.7-Plus
+Score Tok (M) Score Tok (M)
+Task CC LH CC LH CC LH CC LH
+mines_solve 0.958 0.920 8.8 4.9 0.040 0.590 6.0 97.2
+game_ui_bug 0.830 0.910 11.7 8.3 
+0.750 0.850 10.0 34.2
+stockfish_puzzle 0.603 0.550 7.5 3.4 0.000 0.550 0.9 15.2
+gdb_pygame_cheat 0.920 0.950 33.9 5.6 0.720 0.860 5.9 13.9
+mines_visual 0.800 0.860 29.1 4.3 0.000 0.470 3.7 50.1
+quadrapassel_autoplay 0.600 0.870 50.5 13.4 0.000 0.300 10.0 59.1
+pokerth_equity_play 0.050 0.400 4.6 23.1 0.000 0.920 9.0 16.2
+sokoban_solver 0.990 0.950 4.4 3.3 
+0.960 0.958 3.9 4.2
+rhythm_autoplay 0.880 0.900 10.5 6.9 
+0.950 0.830 8.5 19.6
+gnuchess_blunder_hunt 0.720 0.920 20.1 14.0 0.830 0.940 19.5 21.4
+anagramarama_word_grid 0.550 0.750 6.6 18.3 0.750 0.830 12.8 12.5
+godot_scene_debug 0.958 0.920 11.4 7.8 0.930 0.870 8.6 17.1
+hedgewars_mission_debug 0.790 0.810 19.6 8.5 
+0.740 0.830 14.4 13.1
+supertux_level_repair 0.600 0.720 19.7 11.8 0.000 0.650 7.5 21.0
+xmoto_level_repair 0.600 0.550 8.1 23.4 0.920 0.850 19.4 83.3
+kmahjongg_pair_solver 0.350 0.830 8.8 13.2 0.790 0.750 30.1 35.4
+pysol_freecell 0.360 0.940 24.8 18.0 
+0.520 0.410 12.5 68.8
+Mean 0.680 0.809 16.5 11.1 0.524 0.733 10.7 34.3
+from 16.5M to 11.1M. This opposite pattern suggests that a stronger model can satisfy subtask contracts with
+fewer audit–replan rounds, whereas a weaker model must spend additional inference on repeated execution
+and recovery. Model capability and harness design jointly determine both the achievable performance and the
+computational cost of a long-horizon agent.
+3.4 Case Studies
+We further compare paired trajectories in which the Claude Code baseline and LongHorizon-Harness execute
+the same task using the same Qwen 3.7-Plus model. These cases examine what persists between rounds
+under the Manage-Execute-Audit loop. Unresolved failures and completed progress are carried outside the
+execution history, completion claims are checked before entering the task state, and unmet dependencies
+remain available when the manager defines subsequent subtasks. The examples also illustrate how persistent
+task state connects executors that operate in separate, fresh contexts.
+Recovering from a stalled interaction. Fig. 7 compares how the two systems proceed after the same GUI
+interaction fails. The baseline recognizes that the Wireshark “Decode As” dialog is unresponsive, but this
+observation remains embedded in its growing execution history. It consequently returns to the same interaction
+for more than 400 steps without collecting the remaining task evidence. LongHorizon-Harness instead records
+the failed interaction and the unresolved evidence gaps in the task state. Later executors focus directly
+on the missing simulcast-layer charts and packet-level evidence, increasing the score from 0.59 to 0.92. By
+externalizing the stalled interaction, LongHorizon-Harness preserves the progress already verified and provides
+the next executor with only the unresolved requirements. Recovery therefore resumes from the latest audited
+task state rather than from the failed trajectory that produced it.
+Auditing apparent completion. Fig. 8 presents a case in which the executor stops at a visually plausible result
+that does not satisfy the full task specification. The baseline directly edits the document XML and terminates
+after the headings appear correct. However, the task requires the styles to be applied through the LibreOffice
+workflow, and the result therefore receives a score of 0.00. LongHorizon-Harness performs the prescribed GUI
+operations, confirms the style changes during execution, and rechecks the document page by page. The auditor
+11
+
+then parses the document XML and confirms that all 15 headings have the required underlying style, yielding
+a score of 0.89. This independent audit prevents the executor’s plausible but non-compliant completion claim
+from becoming part of the persistent task state. Subsequent planning can instead proceed from the document
+state confirmed in the environment, rather than from the executor’s assessment of its own result.
+Preserving pre-repair evidence. Fig. 9 presents a task in which part of the required evidence belongs to the
+environment state before the repair. The baseline captures an initial view of the formula errors, but modifies
+the spreadsheet before completing the full pre-repair evidence sequence. Its direct XML edit also leaves formula
+errors after the file is reopened, producing an inconsistent before-and-after record. LongHorizon-Harness
+records the missing pre-repair evidence as a pending requirement. The next executor first completes this
+evidence, then repairs the spreadsheet and checks the resulting formula cells. The auditor subsequently reviews
+the complete sequence of nine screenshots, increasing the score from 0.45 to 0.87. Keeping the pre-repair
+evidence explicit changes the next subtask selected from the task state: the original spreadsheet state is
+documented before the repair is allowed to modify it. The resulting execution order preserves a consistent
+evidence chain across the state transition.
+Continuing from verified progress. Fig. 10 compares two trajectories in which the model can perform the
+central optimization but differs in how the remaining workflow is maintained. The baseline improves the target
+page, yet the same growing session must continue operating DevTools, tracking the remaining deliverables,
+collecting evidence, and assessing its own progress. Repeated DevTools interactions eventually exhaust the
+available budget, leaving the task incomplete. LongHorizon-Harness retains the completed optimization in the
+task state and derives subsequent subtasks from the remaining requirements. Fresh-context executors then
+confirm the page state, inspect the relevant script structure, and collect the performance trace, while the
+auditor checks the final screenshot against its metadata. The score increases from 0.53 to 0.85. Because the
+completed optimization persists outside the execution history, later executors can focus on the remaining
+evidence without reconstructing or carrying the preceding optimization process. The manager maintains
+continuity across the full workflow, while each executor uses its context for the current environment transition,
+allowing the model’s local progress to be carried forward into a more complete task result.
+12
+
+Baseline (Claude Code + Qwen3.7-Plus) · score 0.59
+I see the "Decode As" dialog. It shows "UDP port 50000
+Integer, base 10 (none) (none)". I need to double-click on the
+"Current" column to change it from "(none)" to "RTP". Let me…
+Opens Wireshark's 'Decode As' dialog to decode by
+hand, the failure is about to get trapped inside this GUI
+context.
+I need to add the other two ports (50001 and 50002) to the RTP
+decode. Let me close this dialog, add the decode, and reopen
+it. Actually, let me try a different approach. Instead of closing…
+Only one stream decoded; the local failure is noticed
+but never stored as a state object, so it can only be
+patched by hand.
+The dialog keeps showing up. The OK button is not responding
+to my clicks. Let me try pressing Enter instead to confirm the
+dialog.
+The OK button keeps not responding, the failure stays
+in the execution context and degenerates into repeated
+clicking.
+The Decode As dialog is still empty. The xdotool clicks are not
+hitting the right spots. The dialog seems to be unresponsive to
+my automated interactions. I've been spending too much time…
+Still stuck on the same dialog after 400+ steps, the
+failure is never externalized, so the task spins until the
+budget runs out.
+LongHorizon-Harness (Claude Code + Qwen3.7-Plus) · score 0.92
+Now I need to hover over the bytesSent chart at ~45s. Looking
+at the chart, the bytesSent overlay chart is the first one. The x-
+axis spans from 0s to 90s. I need to hover at the 45s mark,…
+Renders the three-layer curves on the real desktop, f-
+layer plateau clearly visible, every step points to
+checkable evidence.
+The tooltip shows t=46.5s with `fps=0 frameWidth=0x0` for the
+f layer - exactly the degradation evidence needed. Let me save
+this screenshot.
+Hovers at t≈45s to capture the f-layer fps=0
+degradation evidence, the goal becomes checkable
+forensic points.
+I can see all the key charts now - framesPerSecond showing
+the f layer drop, and qualityLimitationReason with color-coded
+segments (green=none, red=bandwidth). Let me close…
+All key charts are in place; each screenshot
+corresponds to one verifiable proposition in the report.
+Wireshark is open with 21018 packets. Now let me open the RTP
+Streams analysis view.
+Loads 21018 packets for cross-validation, where the
+baseline stalled, the executor turns it into checkable
+evidence.
+✓✓
+Figure 7 Recovering from a stalled interaction. The case is WEB_task_16, a WebRTC simulcast-layer audit. Top:
+The Claude Code baseline recognizes that Wireshark’s “Decode As” dialog is unresponsive, but continues retrying
+the same interaction for more than 400 steps and obtains a score of 0.59. Bottom: LongHorizon-Harness records the
+unresolved evidence gaps in the task state. Subsequent execution rounds collect the missing chart- and packet-level
+evidence, resulting in a score of 0.92.
+Baseline (Claude Code + Qwen3.7-Plus) · score 0.00
+The style dropdown shows "FakeBoldParagraph" for "Results" -
+proving it's not a real Heading 1. The font is also "Liberation
+Serif 16pt" vs "Heading 1" with "Liberation Sans 18pt". Let me…
+The screenshot confirms the problematic heading; the
+evidence gathering itself is fine.
+The TOC shows all 15 entries perfectly! Now let me save the
+document and export to PDF.
+The TOC 'looks perfect' so it is saved, visual
+correctness is mistaken for content correctness.
+PDF Options dialog is open. Let me click Export to generate the
+PDF.
+Clicking export and the dialog closing is treated as
+success, without verifying the PDF was actually
+produced.
+Let me click on "Results" heading to show it's now properly
+Heading 1, and capture this as additional proof.
+Shows only 'it looks right'; the XML was edited directly,
+not the style dropdown as claimed, judged non-
+compliant.
+LongHorizon-Harness (Claude Code + Qwen3.7-Plus) · score 0.89
+Now I can clearly see "Results" has style "FakeBoldParagraph"
+with Liberation Serif 16pt. This confirms the inspection. Let me
+now change it to "Heading 1" using the style dropdown. I'll clic…
+Verifies each heading's true underlying style before
+editing, instead of assuming from appearance.
+Excellent! "Results" is now successfully changed to "Heading 1"!
+The style dropdown shows "Heading 1" and the text now
+matches the size of "Background" and "Methodology". Let me…
+Confirms the state has actually changed after each edit
+before moving on.
+The document looks great - all headings on page 1 now visually
+match as Heading 1. Let me take a proof screenshot showing
+the style verification, then scroll down to check page 2.
+Not satisfied with 'looks right', it scrolls page by page
+to re-check every heading.
+Perfect! All 15 headings in the document are now using
+`Heading_20_1` (which is the ODT encoding of "Heading 1") with
+outline-level="1". This is exactly what was required. Let me no…
+The verifier re-parses the XML to confirm all 15
+headings, completion = an independently auditable
+state proposition.
+✕✕
+✓✓
+Figure 8 Auditing apparent completion. The case is DOC_task_2, which requires heading-style normalization. Top:
+The Claude Code baseline edits the document XML directly and terminates with a visually plausible result. Because
+the required LibreOffice workflow is not followed, the result receives a score of 0.00. Bottom: LongHorizon-Harness
+applies the heading styles through the prescribed GUI workflow and rechecks the document. The auditor then parses
+the document XML to confirm the final style of all 15 headings, obtaining a score of 0.89.
+13
+
+Baseline (Claude Code + Qwen3.7-Plus) · score 0.45
+I can see many #REF! errors (shown as Err:510) in the SalesData
+sheet. Let me take screenshot 1 and then click on an error cell
+for screenshot 2.
+First captures the REF! errors, this is the 'pre-repair'
+evidence window.
+I see "Search key not found" - that's because I'm searching in
+Formulas, but the #REF! text appears in the cell values, not in
+the formulas themselves. The formulas contain `VLOOKUP(...)`…
+The search tool repeatedly fails to find the target;
+evidence collection is unstable.
+Now let me close LibreOffice, fix the XML, and repack.
+Repairs by editing the XML directly, the data is fixed,
+but the original file's forensic context is also erased.
+The formulas still show Err:510. Let me click on cell F2 to see
+what the formula bar shows.
+After reopening, the formulas still show Err:510; the
+before/after states are misaligned and progress is not
+monotonic.
+LongHorizon-Harness (Claude Code + Qwen3.7-Plus) · score 0.87
+I'm on the SalesData sheet. I can see columns F, G, H showing
+"Err:510" errors. Let me click on cell F2 to see the formula in
+the formula bar.
+First captures the REF! errors in the pre-repair state,
+locking down the evidence window.
+Excellent! The SalesData sheet now shows all normal values
+with no errors! Let me take the screenshots. Starting with
+view_01.
+Confirms all values are back to normal after the repair;
+the state transition is explicitly verified.
+Let me click on cell F2 to select it and show the VLOOKUP
+formula in the formula bar.
+Checks the VLOOKUP formula cell by cell, ensuring
+post-repair evidence matches the pre-repair state one
+to one.
+Let me also verify the complete set of 9 screenshots and check
+the current desktop state.
+The verifier reviews the complete set of 9 screenshots,
+confirming a time-consistent evidence chain.
+✕✕
+✓✓
+Figure 9 Preserving pre-repair evidence. In DOC_task_4, the agent must repair a Calc VLOOKUP formula while
+preserving before-and-after evidence. Top: The Claude Code baseline records initial formula errors but edits the
+spreadsheet before completing the required pre-repair evidence, leaving the final file and evidence sequence inconsistent
+and scoring 0.45. Bottom: LongHorizon-Harness keeps the missing pre-repair evidence as a pending requirement,
+records it before modification, and audits the full nine-screenshot sequence, scoring 0.87.
+Baseline (Claude Code + Qwen3.7-Plus) · score 0.53
+Chrome is open with the Acme Catalog page. I can see the
+page loaded. Now I need to: 1. Close the popup dialogs 2.
+Open DevTools (F12) 3. Go to Performance tab 4. Record a…
+The page being visible on screen is treated as a
+progress signal, but visible does not mean the state is
+correct.
+I can see the tooltip showing "2258 ms" for the "Evaluate script"
+task. The summary shows: - Range: 0 ms – 2.26 s - 2258 ms
+highlighted - 2101 ms Scripting Now I need to hover directly…
+Grabs a number and moves on, without checking
+whether it matches the long task the constraints
+actually require.
+The click isn't working on the "Bottom-up" tab. The Summary
+tab is still active. Let me try using the keyboard shortcut or
+clicking more precisely. In Chrome DevTools, I can use…
+GUI evidence gathering keeps failing and it can only
+grind on alone; the failure is never externalized to any
+role.
+The click still didn't work. The Coverage panel still shows "Click
+the record button ⊙ to start capturing coverage." I've been
+trying for a very long time and the Coverage panel's record…
+Still stuck on the same click after 400 steps; a single
+agent shoulders every cognitive responsibility until
+exhausted.
+LongHorizon-Harness (Claude Code + Qwen3.7-Plus) · score 0.85
+The Acme Catalog page is loaded. Now I need to open
+DevTools and start working. Let me open the Performance
+panel first.
+First confirms the target Acme Catalog page loaded
+correctly, treating 'visible' as a premise to be checked.
+Good - index.bad.html has blockerA.js and legacy-bundle.js as
+synchronous scripts in the head. They're collapsed in the
+DevTools. Let me navigate to the Performance panel to record…
+Checks the page's actual synchronous-script
+structure, rather than assuming 'loaded means correct'.
+The recording is complete. I can see the flame chart with a long
+"Evaluate script" task. Let me stop the recording and click on the
+long task.
+Records the Performance trace as specified, obtaining
+verifiable real evidence.
+Let me audit the current state of the view_perf_after.png
+deliverable. I need to: 1. Check if the file exists and its size 2.
+Check if the meta.json exists and its contents 3. Verify the…
+The verifier independently audits the deliverable,
+rewriting 'done' into a cross-modal consistent state
+proposition.
+✓✓
+Figure 10 Continuing from verified progress. WEB_task_10 is a Lighthouse performance-optimization task. Top: The
+Claude Code baseline completes the core optimization but gets stuck during DevTools evidence collection, fails to
+produce all required deliverables, and scores 0.53. Bottom: LongHorizon-Harness preserves the verified optimization
+state, delegates the remaining evidence requirements to later rounds, and audits the final screenshot and metadata,
+scoring 0.85.
+14
+
+4 Conclusion
+In this work, we introduce LongHorizon-Harness, a general framework for long-horizon agent execution
+that separates task-state management from environment interaction through a Manage–Execute–Audit loop.
+LongHorizon-Harness maintains progress as explicit, audited task state, executes each subtask in a fresh
+context, and carries only independently verified outcomes across rounds. Experiments on WeaveBench,
+OSWorld 2.0, and Terminal-Bench 2.1 show consistent improvements across hybrid GUI–CLI workflows,
+professional desktop tasks, pure command-line environments, and different model backbones. These results
+demonstrate that long-horizon agent capability is determined not only by the underlying model, but also by
+the harness that organizes, verifies, and converts its local capabilities into end-to-end task completion.
+15
+
+References
+Saaket Agashe, Jiuzhou Han, Shuyu Gan, Jiachen Yang, Ang Li, and Xin Eric Wang. Agent S: An open agentic
+framework that uses computers like a human. In The Thirteenth International Conference on Learning Representations,
+2025. https://arxiv.org/abs/2410.08164.
+Anthropic. Claude computer use. https://www.anthropic.com/news/3-5-models-and-computer-use, 2024.
+Accessed: 2025-05-03.
+Anthropic. Claude Code. https://www.anthropic.com/product/claude-code, 2025. Accessed: 2026-06-22.
+Anthropic. Claude Cowork. https://www.anthropic.com/product/claude-cowork, 2026. Accessed: 2026-06-24.
+Xiangxiang Chu, Hailang Huang, Xiao Zhang, Fei Wei, and Yong Wang. Gpg: A simple and strong reinforcement
+learning baseline for model reasoning. In ICLR, 2026.
+Jingzhe Ding, Shengda Long, Changxin Pu, Huan Zhou, Hongwan Gao, Xiang Gao, Chao He, Yue Hou, Fei Hu,
+Zhaojian Li, et al. Nl2repo-bench: Towards long-horizon repository generation evaluation of coding agents. arXiv
+preprint arXiv:2512.12730, 2025.
+Guanting Dong, Xiaoshuai Song, Yuyang Hu, Jiajie Jin, Chenghao Zhang, Yifei Chen, Xiaoxi Li, Huaying Yuan, Xinyu
+Yang, Tongyu Wen, Jiejun Tan, Hongjin Qian, Shijue Huang, Junting Lu, Zhenyu Li, Wanjun Zhong, Yutao Zhu,
+Tat-Seng Chua, Zhicheng Dou, and Ji-Rong Wen. Towards long-horizon agents: A survey. Preprints, July 2026. doi:
+10.20944/preprints202607.1328.v1. https://doi.org/10.20944/preprints202607.1328.v1.
+Google DeepMind. Introducing the Gemini 2.5 Computer Use model. https://blog.google/innovation-and-ai/mo
+dels-and-research/google-deepmind/gemini-computer-use-model/, 2025. Accessed: 2026-06-22.
+Kelly Hong, Anton Troynikov, and Jeff Huber. Context rot: How increasing input tokens impacts LLM performance.
+https://research.trychroma.com/context-rot, 2025.
+Yuxiang Ji, Ziyu Ma, Yong Wang, Guanhua Chen, Xiangxiang Chu, and Liaoni Wu. Tree search for llm agent
+reinforcement learning. arXiv preprint arXiv:2509.21240, 2025.
+Thomas Kwa, Ben West, Joel Becker, Amy Deng, Katharyn Garcia, Max Hasin, Sami Jawhar, Megan Kinniment,
+Nate Rush, Sydney Von Arx, et al. Measuring AI ability to complete long software tasks, 2026. https://arxiv.or
+g/abs/2503.14499.
+Renda Li, Hailang Huang, Fei Wei, Feng Xiong, Yong Wang, and Xiangxiang Chu. Adacurl: Adaptive curriculum
+reinforcement learning with invalid sample mitigation and historical revisiting. arXiv preprint arXiv:2511.09478,
+2025.
+Wanli Li, Bowen Zhou, Yunyao Yu, Zhou Xu, Yifan Yang, Dongsheng Li, and Caihua Shan. WeaveBench: A long-horizon,
+real-world benchmark for computer-use agents with hybrid interfaces, 2026. https://arxiv.org/abs/2606.09426.
+Nelson F. Liu, Kevin Lin, John Hewitt, Ashwin Paranjape, Michele Bevilacqua, Fabio Petroni, and Percy Liang.
+Lost in the middle: How language models use long contexts. Transactions of the Association for Computational
+Linguistics, 12:157–173, 2024. doi: 10.1162/tacl_a_00638.
+Ziyu Ma, Shidong Yang, Yuxiang Ji, Xucong Wang, Yong Wang, Yiming Hu, Tongwen Huang, and Xiangxiang Chu.
+Skillclaw: Let skills evolve collectively with agentic evolver. arXiv preprint arXiv:2604.08377, 2026.
+Mike A. Merrill, Alexander G. Shaw, Nicholas Carlini, Boxuan Li, Harsh Raj, Ivan Bercovich, et al. Terminal-Bench:
+Benchmarking agents on hard, realistic tasks in command line interfaces, 2026. https://arxiv.org/abs/2601.11868.
+Nous Research. Hermes agent CLI. https://hermes-agent.ai/tools/hermes-agent-cli, 2026. Accessed: 2026-05-05.
+OpenAI. Introducing Codex. https://openai.com/index/introducing-codex/, May 2025a. Accessed: 2026-05-07.
+OpenAI. Introducing ChatGPT agent: bridging research and action. https://openai.com/index/introducing-cha
+tgpt-agent/, July 2025b. Accessed: 2026-05-07.
+OpenAI. Operator. https://openai.com/research/operator, 2025c. Accessed: 2025-05-03.
+OpenClaw Contributors. OpenClaw: Open-source autonomous AI agent platform. https://openclaw.ai/, 2026.
+Accessed: 2026-06-22.
+16
+
+Qingnan Ren, Shun Zou, Shiting Huang, Ziao Zhang, Kou Shi, Zhen Fang, Yiming Zhao, Yu Zeng, Qisheng Su, Lin
+Chen, et al. Saasbench: Exploring the boundaries of coding agents in long-horizon enterprise saas engineering. arXiv
+preprint arXiv:2605.17526, 2026.
+Pascal J Sager, Benjamin Meyer, Peng Yan, Rebekka von Wartburg-Kottler, Layan Etaiwi, Aref Enayati, Gabriel
+Nobel, Ahmed Abdulkadir, Benjamin F Grewe, and Thilo Stadelmann. A comprehensive survey of agents for
+computer use: Foundations, challenges, and future directions. Journal of Artificial Intelligence Research, 85, 2026.
+Qiushi Sun, Zhoumianze Liu, Chang Ma, Zichen Ding, Fangzhi Xu, Zhangyue Yin, Haiteng Zhao, Zhenyu Wu, Kanzhi
+Cheng, Zhaoyang Liu, et al. ScienceBoard: Evaluating multimodal autonomous agents in realistic scientific workflows,
+2025. https://arxiv.org/abs/2505.19897.
+Yiyou Sun, Xinyang Han, Weichen Zhang, Yuanbo Pang, Tianyu Wang, Yuhan Cao, Yixiao Huang, et al. Agents’ Last
+Exam, 2026. https://arxiv.org/abs/2606.05405.
+Xingyao Wang, Boxuan Li, Yufan Song, Frank F. Xu, Xiangru Tang, Mingchen Zhuge, Jiayi Pan, Yueqi Song, Bowen Li,
+Jaskirat Singh, Hoang H. Tran, Fuqiang Li, Ren Ma, Mingzhang Zheng, Bill Qian, Yanjun Shao, Niklas Muennighoff,
+Yizhe Zhang, Binyuan Hui, Junyang Lin, Robert Brennan, Hao Peng, Heng Ji, and Graham Neubig. OpenHands:
+An open platform for AI software developers as generalist agents. In The Thirteenth International Conference on
+Learning Representations, 2025. https://arxiv.org/abs/2407.16741.
+Jiaqi Wei, Yuejin Yang, Xiang Zhang, Yuhan Chen, Xiang Zhuang, Zhangyang Gao, Dongzhan Zhou, Guangshuai
+Wang, Zhiqiang Gao, Juntai Cao, et al. From ai for science to agentic science: A survey on autonomous scientific
+discovery. arXiv preprint arXiv:2508.14111, 2025a.
+Yuxiang Wei, Olivier Duchenne, Jade Copet, Quentin Carbonneaux, Lingming Zhang, Daniel Fried, Gabriel Synnaeve,
+Rishabh Singh, and Sida I. Wang. SWE-RL: Advancing LLM reasoning via reinforcement learning on open software
+evolution, 2025b. https://arxiv.org/abs/2502.18449.
+John Yang, Carlos E. Jimenez, Alexander Wettig, Kilian Lieret, Shunyu Yao, Karthik Narasimhan, and Ofir Press.
+SWE-agent: Agent-computer interfaces enable automated software engineering, 2024. https://arxiv.org/abs/24
+05.15793.
+John Yang, Kilian Lieret, Jeffrey Ma, Parth Thakkar, Dmitrii Pedchenko, Sten Sootla, Emily McMilin, Pengcheng
+Yin, Rui Hou, Gabriel Synnaeve, et al. Programbench: Can language models rebuild programs from scratch. arXiv
+preprint arXiv:2605.03546, 2026a.
+Shidong Yang, Ziyu Ma, Tongwen Huang, Yiming Hu, Yong Wang, and Xiangxiang Chu. Coevolve: Training llm agents
+via agent-data mutual evolution. In Proceedings of the 64th Annual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers), pages 23015–23036, 2026b.
+Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik Narasimhan, and Yuan Cao. ReAct: Synergizing
+reasoning and acting in language models. In International Conference on Learning Representations (ICLR), 2023.
+Mengqi Yuan, Zilong Zhou, Xinzhuang Xiong, Weiming Wu, Jiayang Sun, Jiamin Song, Kaiqian Cui, Tianbao Xie,
+Bowen Wang, Haoyuan Wu, Yitong Li, Dunjie Lu, Haikong Lu, Qi Zhen, Xinyuan Wang, Tao Yu, et al. OSWorld 2.0:
+Benchmarking computer use agents on long-horizon real-world tasks, 2026. https://arxiv.org/abs/2606.29537.
+Chi Zhang, Zhao Yang, Jiaxuan Liu, Yucheng Han, Xin Chen, Zebiao Huang, Bin Fu, and Gang Yu. AppAgent:
+Multimodal agents as smartphone users, 2023. https://arxiv.org/abs/2312.13771.
+Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin, Zhuohan Li,
+Dacheng Li, Eric P. Xing, Hao Zhang, Joseph E. Gonzalez, and Ion Stoica. Judging LLM-as-a-Judge with MT-Bench
+and Chatbot Arena. In Advances in Neural Information Processing Systems, 2023.
+Yuhao Zheng, Li’an Zhong, Yi Wang, Rui Dai, Kaikui Liu, Xiangxiang Chu, Linyuan Lv, Philip Torr, and
+Kevin Qinghong Lin. Code2world: A gui world model via renderable code generation. arXiv preprint
+arXiv:2602.09856, 2026.
+Jiamu Zhou, Jihong Wang, Weiming Zhang, Weiwen Liu, Zhuosheng Zhang, Xingyu Lou, Weinan Zhang, Huarong
+Deng, and Jun Wang. Colorbrowseragent: An intelligent gui agent for complex long-horizon web automation. arXiv
+preprint arXiv:2601.07262, 2026.
+Mingchen Zhuge, Changsheng Zhao, Dylan R. Ashley, Wenyi Wang, Dmitrii Khizbullin, Yunyang Xiong, Zechun
+Liu, Ernie Chang, Raghuraman Krishnamoorthi, Yuandong Tian, Yangyang Shi, Vikas Chandra, and Jürgen
+Schmidhuber. Agent-as-a-Judge: Evaluate agents with agents, 2024. https://arxiv.org/abs/2410.10934.
+17
+
+A Detailed Experimental Setup
+A.1 WeaveBench
+WeaveBench (Li et al., 2026) consists of 114 long-horizon computer-use tasks spanning eight domains: Desktop
+Applications, Document Processing, Games, Web Development, Data Analysis and Visualization, DevOps,
+Spatial/3D Applications, and Design. Each task requires the agent to use both GUI and CLI interactions
+within the same workflow, rather than relying solely on command-line or browser operations. We follow
+the standard WeaveBench evaluation protocol: each task is launched in an isolated containerized Ubuntu
+desktop VM, and task executions do not share runtime state. The task definitions, workspaces, runtime assets,
+judge templates, and scoring procedure are all taken from the official release. The evaluator uses Claude
+Opus 4.7 as a trajectory-aware judge. We report two aggregate metrics: PassRate, defined as the fraction
+of tasks with score at least 0.8, and Overall, defined as the average score over all 114 tasks. In addition to
+the aggregate results, we report domain-level PassRate for the eight domains: Desktop Applications (DSK),
+Document Processing (DOC), Games (GAM), Web Development (WEB), Data Analysis and Visualization
+(DAV), DevOps (OPS), Spatial/3D Applications (SPA), and Design (DES).
+For the model and execution framework, we evaluate Qwen 3.7-Plus. The Claude Code runtime version
+is claude-code 2.1.76. Each task is allowed up to 25 Manage-Execute-Audit rounds. The per-round
+timeout is 1800 seconds for the executor, and 300 seconds for both the manager and the verifier. The
+Claude Code reasoning effort on the task side is set to high; the judge is executed with OpenClaw, with
+AJ_THINKING=medium.
+For GUI tools, we preserve the basic WeaveBench computer-use interface, including the screenshot perception
+tool and desktop actuation tools implemented with pyautogui, such as click, double-click, mouse move,
+keyboard input, scroll, drag, and wait. In addition, we introduce a restricted evidence-preservation tool,
+save_screenshot. This tool does not provide any new environment-control capability, nor does it expose
+additional information to the agent; it can only save the currently visible real desktop screen to the target
+directory as an official screenshot artifact required by certain tasks.
+Since GUI tasks frequently provide screenshot inputs, we use an image URL proxy for visual inputs: screenshots
+are uploaded to an image-hosting backend and referenced as image URLs in model requests, avoiding oversized
+request bodies caused by multiple base64-encoded screenshots.
+A.2 OSWorld 2.0
+OSWorld 2.0 (Yuan et al., 2026) consists of 108 professional desktop workflow tasks, with a median human
+completion time of approximately 1.6 hours. We use the official OSWorld-v2 osworld-v2-2026.06.24
+release, including the corresponding task definitions, task assets, Docker VM image, and mocked websites.
+Experiments are conducted using the standard OSWorld Docker-based VM infrastructure in an Ubuntu
+desktop environment, with a default resolution of 1920 × 1080. Final scoring is performed by the native
+OSWorld env.evaluate() procedure.
+Unlike the main official baselines, which typically rely only on GUI actions, LongHorizon-Harness uses a hybrid
+tool pool on OSWorld-v2. GUI actions are executed by a computer MCP server inside the VM, supporting
+desktop operations such as clicking, typing, dragging, and hotkeys. The CLI role can execute shell commands
+in the same VM for filesystem inspection, script execution, and long-context task processing. These tools are
+hosted inside the VM through a fixed version of claude-code 2.1.176.
+For model inference, we set thinking.type=enabled, max_tokens=65,536, and effort=max. The native
+OSWorld evaluator and user simulator use the same qwen3.7-plus configuration as the execution agent. For
+human-in-the-loop tasks in the benchmark that require user information or authorization, we do not introduce
+manual intervention; instead, we use the native OSWorld user-simulator interface to provide responses.
+We report two metrics: Binary Accuracy and Partial Accuracy. Binary Accuracy counts a task as successful
+only when its final score is 1, while Partial Accuracy is the average fine-grained score over all 108 tasks and
+measures partial task completion.
+18
+
+Table 5 Detailed per-task results on the OSWorld 2.0 Opus 4.7 subset. Ours denotes LongHorizon-Harness.
+Task Baseline Ours Task Baseline Ours
+001 0.7778 1.0000 018 0.0000 0.0000
+002 0.7500 1.0000 019 0.5200 0.7600
+003 1.0000 1.0000 020 0.1000 1.0000
+004 0.8000 0.7667 021 1.0000 0.0000
+005 0.0000 1.0000 022 1.0000 1.0000
+006 0.5556 0.8889 023 0.9300 0.9300
+007 0.4000 0.8000 025 0.2401 0.0833
+010 1.0000 1.0000 027 0.5000 0.0000
+011 0.2963 0.5556 028 0.4000 1.0000
+012 0.6000 1.0000 030 1.0000 0.0000
+013 1.0000 0.7500 032 0.9111 0.2000
+014 0.9000 0.7400 033 0.1000 1.0000
+015 0.2840 0.7667 034 0.5938 0.8750
+016 0.8571 0.7524 051 0.0000 0.6000
+017 0.1429 0.0000 052 1.0000 1.0000
+060 0.1000 0.1000 054 0.3628 1.0000
+061 0.3574 0.3891 062 0.5033 0.7753
+A.3 Terminal-Bench 2.1
+Terminal-Bench 2.1 (Merrill et al., 2026) is designed to evaluate agents on challenging and realistic software-
+engineering and command-line tasks. We use Harbor as the evaluation framework, with the Docker backend
+providing an isolated execution environment for each task. During evaluation, we preserve the CPU, memory,
+and environment constraints originally defined for each task.
+To ensure consistency with existing evaluations of Qwen-series models, both the baseline and CUA-Harness
+settings use Claude Code as the underlying CLI execution agent, connected to the qwen3.7-plus model.
+The Claude Code version is v2.1.211. Since the Claude Code command-line interface does not directly
+expose all low-level request parameters, we introduce a transparent request proxy inside the container. All
+model requests are configured with temperature=1.0, top_p=0.95, top_k=20, enable_thinking=true, and
+max_tokens=65,536.
+Each trial has a timeout of 5 hours. We run three independent trials per task, report the average score over
+the three runs for each task, and compare against the Claude Code baseline under the same model setting as
+well as the official leaderboard results.
+B Detailed Experimental Results
+B.1 Detailed Results on the OSWorld 2.0 Opus 4.7 Subset
+Table 5 reports the per-task scores on the 34-task OSWorld 2.0 Opus 4.7 subset. The baseline uses the
+standard single-action GUI setting, while LongHorizon-Harness uses our hybrid GUI+CLI tool pool. On this
+subset, LongHorizon-Harness improves the partial score from 55.83% to 66.86%, and the binary accuracy
+from 20.6% to 35.3%.
+B.2 Fine-Grained Breakdown by Benchmark and Task Type
+Beyond the Opus 4.7 subset reported above, we provide a fine-grained breakdown of the main evaluation
+results by benchmark, domain, task property, and failure mode. We use LongHorizon-Harness (LH-Harness) as
+the abbreviated name in the tables. The purpose of this analysis is to identify where the harness changes the
+execution dynamics, rather than only reporting aggregate gains. Across benchmarks, the largest improvements
+appear when progress can be represented as verifiable environment state: installed binaries, repository states,
+19
+
+Table 6 WeaveBench domain-level results. Score ∆ is LH-Harness minus baseline. Pass-rate improvement is reported
+in percentage points.
+Domain Baseline LH-Harness Score ∆ Pass-rate ∆
+DES 0.5630 0.8160 +0.2530 +60.00 pp
+SPA 0.5800 0.8192 +0.2392 +50.00 pp
+GAM 0.5235 0.7328 +0.2093 +29.41 pp
+DAV 0.6981 0.8608 +0.1627 +30.77 pp
+OPS 0.7758 0.9090 +0.1332 +25.00 pp
+DOC 0.8009 0.8929 +0.0920 +23.53 pp
+WEB 0.7287 0.8147 +0.0860 +26.67 pp
+DSK 0.8671 0.8465 -0.0205 +5.56 pp
+Table 7 Fine-grained results for WeaveBench Games tasks. Task names omit the shared GAM_task_* prefix for
+compactness.
+Task Baseline LH-Harness Task Baseline LH-Harness
+gnome_mines_solve 0.040 0.590 rhythm_autoplay 0.950 0.830
+game_ui_bug 0.750 0.850 gnuchess_pgn_blunder_hunt 0.830 0.940
+stockfish_puzzle_analysis 0.000 0.550 anagramarama_word_grid 0.750 0.830
+gdb_pygame_cheat 0.720 0.860 godot_scene_node_debug 0.930 0.870
+mines_visual 0.000 0.470 hedgewars_lua_mission_debug 0.740 0.830
+quadrapassel_autoplay 0.000 0.300 supertux_level_repair_play 0.000 0.650
+pokerth_equity_play 0.000 0.920 xmoto_level_xml_repair_ride 0.920 0.850
+sokoban_solver 0.960 0.958 kmahjongg_pair_solver 0.790 0.750
+pysol_freecell_fcsolve 0.520 0.410
+screenshots with well-defined metadata, application configuration, structured files, or cross-checked evidence
+from multiple interfaces. The remaining failures concentrate in tasks where the decisive condition is difficult to
+close under the available verifier, such as hidden performance thresholds, embodied visual precision, temporal
+video evidence, or task semantics that admit several plausible interpretations.
+B.2.1 WeaveBench
+Table 6 reports the domain-level breakdown on WeaveBench. LH-Harness improves the mean score in seven
+of the eight domains, with the largest gains in Design (DES), Spatial/3D Applications (SPA), and Games
+(GAM). Pass rate also increases in every domain, including Desktop (DSK), where the mean score slightly
+decreases despite a higher pass rate. This pattern indicates that the harness mainly raises the lower tail
+of long-horizon trajectories: it converts many near-failures into partial or complete successes, while a small
+number of already-strong baseline trajectories can be affected by additional verification and repair steps.
+The Games domain provides a useful stress test because it combines visual interaction, symbolic state,
+search, and environment-specific constraints. Table 7 shows that the largest gains occur on tasks where the
+baseline often fails to establish a stable state representation. For example, Mines, Stockfish puzzle analysis,
+Quadrapassel autoplay, PokerTH equity play, and SuperTux level repair all improve from near-zero or zero
+baseline scores to nontrivial completion. In these cases, the harness helps by decomposing the task into
+explicit subgoals and by carrying forward verified facts rather than a long interaction transcript. In contrast,
+when the baseline already solves the core task, additional rounds provide less benefit and can even slightly
+reduce score, as in rhythm autoplay, X-Moto, KMahjongg, and FreeCell.
+B.2.2 OSWorld 2.0
+Table 8 reports the OSWorld 2.0 breakdown by capability tag. Tags are not mutually exclusive, so a task
+may contribute to multiple rows. LH-Harness improves all six tag groups, but the magnitude and residual
+failure modes differ substantially. The largest gain appears in streaming interaction tasks, where the baseline
+score is zero and LH-Harness reaches 0.500 on average. Human-in-the-loop tasks also improve strongly,
+indicating that the harness benefits from converting user-provided information into persistent state constraints.
+Tutorial-following tasks improve because symbolic instructions can often be decomposed into bounded subtasks
+20
+
+Table 8 OSWorld 2.0 results by capability tag. Tags are overlapping. “Zero” and “Full” count tasks in the tag group
+where LH-Harness obtains score 0 or 1, respectively.
+Tag n Baseline LH-Harness ∆ Zero Full
+streaming_interaction 6 0.000 0.500 +0.500 3 3
+human_in_the_loop 6 0.225 0.557 +0.332 1 0
+tutorial_following 22 0.157 0.374 +0.217 7 2
+implicit_state_inference 43 0.241 0.366 +0.125 15 6
+visual_spatial_precision 45 0.198 0.298 +0.100 14 4
+cross_source_reasoning 46 0.263 0.361 +0.098 11 3
+with explicit acceptance criteria.
+The tag-level results suggest five more specific observations. First, in human-in-the-loop tasks, the main
+benefit comes from treating the user’s response as a durable constraint rather than as a transient dialogue
+turn. The same mechanism can also fail: if newly supplied information does not override stale evidence, the
+verifier may confirm an outdated state. Second, the harness is stronger at following symbolic tutorials than
+embodied tutorials. Commands, tables, file names, and web fields can be decomposed into auditable steps;
+video timelines, CAD geometry, and fine mouse operations remain difficult to translate into reliable low-level
+actions. Third, implicit state inference works best when there is an authoritative closure over the environment
+state, such as a file, database entry, application setting, or evaluator-visible artifact. Without such closure,
+plausible evidence can be mistaken for completed evidence. Fourth, visual-task gains mainly arise when a
+visual requirement can be rewritten as a file, code, metadata, or search problem. When the requirement
+remains purely spatial or motor-level, performance is still limited by visual localization and cursor control.
+Fifth, cross-source reasoning is often not the bottleneck by itself. Many failures occur after the relevant
+evidence has been understood, when the final answer is written to the wrong state carrier, saved at the wrong
+boundary, or not submitted through the expected interface.
+B.2.3 Terminal-Bench 2.1
+Terminal-Bench provides a complementary view because most tasks are command-line tasks with hidden tests.
+Table 9 reports the category-level results. The largest gain is in system administration, where LH-Harness
+improves from 0.593 to 0.889. This category is dominated by stateful procedures such as installation, service
+configuration, PATH management, build outputs, and persistent environment side effects. These are precisely
+the settings in which an explicit task contract and independent audit can prevent the agent from stopping after
+an incomplete but superficially plausible command sequence. Software engineering also improves substantially,
+especially in tasks where the baseline performs most of the work but misses one blocking constraint, such as
+image similarity, asynchronous cancellation behavior, independence from a reference binary, or compressed-size
+limits.
+Table 10 shows that the gain is larger on hard tasks than on medium tasks. This is consistent with the purpose
+of the harness: when a task is short enough for the baseline to complete in one trajectory, the marginal value
+of explicit state management is smaller. As tasks become longer and contain more intermediate failure points,
+the ability to record unresolved constraints and re-plan from verified state becomes more important.
+The tag-level results in Table 11 further localize the effect. The strongest positive tags are images, version-
+control, system, and sys-admin. These tags share a common property: correctness can be checked against
+durable artifacts, such as image hashes or similarity scores, repository history, installed executables, service
+state, logs, or filesystem layout. Negative tags such as mteb, data-science, and video-processing expose a
+different limitation. In these tasks, the official correctness condition can depend on hidden thresholds, ranking
+semantics, temporal localization, or evaluation conventions that are not fully recoverable from visible state.
+In such cases, LH-Harness may organize execution more carefully, but a misinterpreted contract can still lead
+to a confidently verified wrong answer.
+21
+
+Table 9 Terminal-Bench 2.1 category-level results.
+Category n Baseline LH-Harness ∆
+software-engineering 78 0.705 0.833 +0.128
+system-administration 27 0.593 0.889 +0.296
+data-science 24 0.792 0.667 -0.125
+scientific-computing 24 0.375 0.542 +0.167
+security 24 0.833 0.875 +0.042
+file-operations 15 0.333 0.333 +0.000
+debugging 15 0.933 1.000 +0.067
+data-processing 12 0.750 0.917 +0.167
+mathematics 12 0.917 0.750 -0.167
+model-training 12 0.750 0.667 -0.083
+machine-learning 9 1.000 1.000 +0.000
+games 3 0.000 0.333 +0.333
+video-processing 3 0.333 0.000 -0.333
+data-querying 3 1.000 1.000 +0.000
+optimization 3 1.000 1.000 +0.000
+personal-assistant 3 1.000 1.000 +0.000
+Table 10 Terminal-Bench 2.1 results by difficulty.
+Difficulty n Baseline LH-Harness ∆
+easy 12 0.833 1.000 +0.167
+medium 165 0.776 0.818 +0.042
+hard 90 0.533 0.656 +0.122
+C Additional Case Studies
+This appendix expands the qualitative analysis in Section 3.4 with additional case studies from WeaveBench
+and Terminal-Bench. These examples are selected to illustrate the same mechanism that underlies the
+quantitative gains: LongHorizon-Harness does not merely give the model more actions, but restructures
+long-horizon execution around explicit task state, fresh-context execution, and independent verification. Across
+domains, the repeated pattern is that local execution progress becomes useful only after it is converted into an
+auditable state proposition: what changed in the environment, which requirement it satisfies, what evidence
+supports it, and what remains unresolved.
+What the cases are meant to show. The cases are not intended as isolated demonstrations of tool use. Instead,
+they expose recurring failure modes in long-horizon agents and show how the Manage-Execute-Audit loop
+addresses them. First, GUI failures are externalized as unresolved state rather than being trapped inside
+a growing interaction history. Second, artifacts are not accepted because the executor claims completion;
+they are accepted only after a read-only auditor inspects the resulting environment. Third, hybrid GUI+CLI
+execution lets the agent use the interface that best grounds each part of the task: GUI tools for visual and
+application state, and CLI tools for files, logs, metadata, build products, and reproducibility checks. Finally,
+the manager turns the audit result into the next bounded subtask, preserving verified progress while avoiding
+context rot.
+C.1 Cross-Domain WeaveBench Cases
+Desktop workflow: turning a GUI failure into a verified state transition. Figure 11 shows a desktop application
+task in Joplin. The task requires creating a rich note, placing it in the correct notebook, and reproducing a
+title-bar rendering issue. The important point is not that the executor eventually finds a way to click through
+the interface. The important point is that failed shortcuts and imprecise clicks are treated as changes in
+the task state: the note body already exists, the notebook still needs to be created, and the final visual bug
+22
+
+Table 11 Terminal-Bench 2.1 tag-level results. Tags may overlap across tasks.
+Tag n Baseline LH-Harness ∆ Tag n Baseline LH-Harness ∆
+coding 54 0.907 0.926 +0.019 sys-admin 9 0.667 0.889 +0.222
+file-operations 30 0.733 0.767 +0.033 web 9 0.556 0.667 +0.111
+system 30 0.633 0.900 +0.267 images 6 0.167 1.000 +0.833
+security 27 0.815 0.778 -0.037 mteb 6 0.500 0.167 -0.333
+data-processing 21 0.762 0.714 -0.048 video-processing 6 0.333 0.000 -0.333
+software-engineering 21 0.714 0.714 +0.000 image-processing 6 0.667 0.833 +0.167
+compilation 12 1.000 0.917 -0.083 ocr 6 0.667 0.833 +0.167
+machine-learning 12 1.000 0.917 -0.083 log-analysis 6 0.833 1.000 +0.167
+version-control 12 0.667 1.000 +0.333 simulation 6 0.833 1.000 +0.167
+biology 9 0.000 0.111 +0.111 corewars 6 1.000 0.833 -0.167
+cloning 9 0.000 0.111 +0.111 gaming 6 1.000 0.833 -0.167
+data-science 9 0.667 0.333 -0.333 pmars 6 1.000 0.833 -0.167
+pytorch 6 1.000 0.833 -0.167
+LongHorizon-Harness (Claude Code + Qwen3.7-Plus) · score 0.91
+The content was actually typed successfully - I can see it all in
+the editor now, including the table, code blocks, checkboxes,
+and the preview panel on the right showing the rendered…
+Creates a note in real Joplin with a full body (table,
+code block, 5 checkboxes), a checkable initial state for
+the test.
+The "Create notebook" dialog appeared. Let me type the
+notebook name and confirm.
+After failed shortcuts and clicks, opens 'Create
+notebook' via a precise right-click, treating failure as
+state adjustment.
+I can see "Bug Repro" already shows "1" note. Let me check if
+the note is already there by clicking on the "Bug Repro"
+notebook.
+Moves the note into the Bug Repro notebook, Steps-to-
+Reproduce table visible, leaving an auditable
+intermediate artifact.
+Wait, the difference bounding box is rows 8-439, cols 288-
+1031. That's a HUGE area - 431x743 pixels.
+Adds an emoji 🔧 title to reproduce the title-bar
+rendering bug; the verifier diffs screenshots pixel by
+pixel to confirm it.
+✓✓
+Figure 11 Desktop workflow case. LongHorizon-Harness creates the rich note, recovers from failed GUI interactions
+by updating the task state, and verifies the reproduced rendering bug through screenshot evidence.
+still needs evidence. LongHorizon-Harness preserves the verified intermediate artifact, routes the remaining
+GUI work as a focused subtask, and then uses pixel-level screenshot comparison to audit the final rendering
+difference. The case illustrates failure recovery without discarding completed work or trusting the executor’s
+self-assessment.
+Document processing: verifying semantic document state rather than visual appearance. Figure 12 illustrates
+a document-editing task where the visible appearance of headings is insufficient evidence of completion. A
+heading can look bold and large while still using the wrong underlying style. LongHorizon-Harness first inspects
+the real LibreOffice Writer state, then applies a reproducible macro to normalize headings, and finally audits
+the resulting ODT XML. This turns a visually plausible edit into an independently checkable proposition:
+all required headings are encoded with the correct heading style and outline level. The case highlights why
+completion must be grounded in environment state rather than screenshots or executor confidence alone.
+Game analysis: combining GUI replay with file-level validation. Figure 13 shows a chess-analysis task in
+XBoard. The agent must identify an illegal move and analyze the game state around the failure. LongHorizon-
+Harness uses the GUI to replay the PGN until XBoard itself stops at the illegal move, preserving visual
+evidence of the exact board position. It then complements this GUI evidence with file-level checks of the
+generated reports. The result is a cross-validated artifact: the illegal move, the stopped board state, the
+blunder analysis, and the output files agree with one another. This case demonstrates the value of hybrid
+execution when neither GUI observation nor file inspection alone is sufficient.
+Web diagnostics: converging browser charts, JSON state, and packet evidence. Figure 14 shows a WebRTC
+simulcast-layer audit. The task requires identifying a layer degradation event and supporting it with evidence
+from the browser and packet capture. LongHorizon-Harness separates the workflow into evidence-producing
+subtasks: render the browser charts, hover at the relevant timestamp, capture tooltip values, and open
+Wireshark to cross-check the RTP streams. The auditor then treats each screenshot as one proposition in a
+23
+
+LongHorizon-Harness (Claude Code + Qwen3.7-Plus) · score 0.89
+Now I can clearly see "Results" has style "FakeBoldParagraph"
+with Liberation Serif 16pt. This confirms the inspection.
+Checks each heading's real underlying style in Writer
+first, not assuming Heading 1 from its bold look.
+Excellent! "Results" is now successfully changed to "Heading 1"!
+After editing, confirms the style truly changed to
+Heading 1, treating each step as a state transition to
+verify.
+The macro is ready. Let me run it by pressing F5.
+Normalizes the remaining headings with a Basic macro,
+batched and reproducible, not by clicking each one by
+hand.
+Perfect! All 15 headings in the document are now using
+Heading201 (which is the ODT encoding of "Heading 1") with
+outline-level="1".
+The verifier re-parses the ODT XML: all 15 headings are
+outline-level=1, so completion = an auditable state
+proposition.
+✓✓
+Figure 12 Document-processing case. The harness verifies the underlying ODT structure instead of relying on visual
+formatting, ensuring that all headings are semantically normalized.
+LongHorizon-Harness (Claude Code + Qwen3.7-Plus) · score 0.94
+XBoard has loaded the broken.pgn and detected the illegal
+move at "8. Nf3".
+Loads broken.pgn in XBoard; the engine finds 8. Nf3
+cannot be legally played, pinning the illegal move as
+evidence.
+The Error dialog is dismissed. The board shows the position at
+ply=14 (after 7...a6), where XBoard stopped due to the illegal
+move "8.
+The board stops at ply=14 (after 7...a6), the position
+just before the illegal move, locking down the problem
+spot as image evidence.
+The Edit menu is open! I can see navigation options (Backward,
+Forward, Back to Start, Forward to End) and Edit Position.
+Replays move by move via the Edit menu, locating the
+blunder with a sharp eval swing at a concrete position.
+Let me try reading the file directly.
+The verifier reads the output files, cross-checking
+illegal_moves / blunders / result_check against the
+board images.
+✓✓
+Figure 13 Game-analysis case. GUI replay identifies the illegal PGN transition, while file-level auditing checks that
+the final reports are consistent with the board evidence.
+larger evidence chain, such as the f-layer dropping to zero frames per second around the target interval. This
+case illustrates how the harness prevents a long GUI investigation from becoming an unstructured transcript;
+each observation is recorded as a verified fact that can guide the next step.
+Data analysis and visualization: auditing evidence quality, not just file existence. Figure 15 shows an Airflow
+debugging task. A naive trajectory can save screenshots with the right filenames while capturing the wrong
+UI state, such as a Grid view saved under a Gantt-view name. LongHorizon-Harness detects this mismatch
+during audit, keeps the noncompliant screenshot from supporting completion, and assigns a focused repair
+subtask to capture the real Gantt view. It also cross-checks the DAG graph to identify the incorrect upstream
+dependency. The key lesson is that artifact presence is weaker than artifact validity: a file exists only becomes
+progress after the auditor confirms that it depicts the required state.
+DevOps: linking symptoms, root cause, and repair across UI and CLI evidence. Figure 16 presents a
+RabbitMQ operations task. The surface symptom is visible in the management UI: messages are published
+faster than they are delivered or acknowledged. LongHorizon-Harness then combines UI inspection with
+queue and binding evidence, identifying that the dead-letter routing key is mismatched. After repair, the
+auditor cross-validates the queue depths and binding configuration against CLI dumps and management UI
+screenshots. This is a representative operations workflow: the answer is not a single command, but a chain
+from symptom, to root cause, to repair, to post-repair evidence.
+Spatial and CAD workflow: preserving semantic layers through visual outputs. Figure 17 shows a LibreCAD
+task. The goal is not only to produce a drawing that looks plausible, but to restore semantic layer assignments
+and generate release-ready visual evidence. LongHorizon-Harness uses CLI rendering to check that the drawing
+is materially present, then uses the LibreCAD GUI to inspect and repair layer attributes, and finally validates
+the print preview and saved screenshots. The auditor checks file size, resolution, uniqueness, and timestamp
+24
+
+LongHorizon-Harness (Claude Code + Qwen3.7-Plus) · score 0.92
+Now I need to hover over the bytesSent chart at ~45s. Looking
+at the chart, the bytesSent overlay chart is the first one.
+Renders the three-layer bytesSent curves on the real
+desktop; the f-layer plateau at 40-50s is clearly visible
+evidence.
+The tooltip shows t=46.5s with fps=0 frameWidth=0x0 for the f
+layer - exactly the degradation evidence needed. Let me save
+this screenshot.
+Hovers at t≈46.5s to capture the f-layer fps=0
+degradation evidence as checkable forensic points.
+I can see all the key charts now - framesPerSecond showing
+the f layer drop, and qualityLimitationReason with color-coded
+segments (green=none, red=bandwidth). Let me close…
+The framesPerSecond chart shows the f layer at 0 over
+38-52s; each screenshot maps to one verifiable
+proposition.
+Wireshark is open with 21018 packets. Now let me open the RTP
+Streams analysis view.
+Loads 21018 packets in Wireshark to cross-validate,
+converging JSON / charts / capture into one auditable
+evidence chain.
+✓✓
+Figure 14 Web-diagnostics case. LongHorizon-Harness combines browser charts, tooltip evidence, and Wireshark
+inspection into a single audited evidence chain.
+LongHorizon-Harness (Claude Code + Qwen3.7-Plus) · score 0.90
+I can see the issues with existing screenshots: 1.
+viewairflowgantt.png shows Grid/Details view, not the Gantt
+chart tab 2.
+Audits existing shots: view_airflow_gantt.png is
+actually the Grid view, not Gantt - flags it as non-
+compliant.
+I have the Gantt for slaevenhour. Now I need to expand to
+show both runs.
+Switches to the real Gantt tab to capture the
+millisecond-level bar durations that JSON
+state=success silently drops.
+I have the Gantt for slaevenhour alone. I need both runs visible
+together.
+Cross-checks transform_revenue's upstream in the
+Graph view, pinning the root cause (wrong clean_* link).
+Now I can see the screenshots clearly: 1.
+viewairflowtaskinstancedetails.png: Shows the Task Instance
+Details panel for extractorders @ slaevenhour with: - Status:…
+The verifier reviews each screenshot and its metadata,
+confirming the evidence chain is complete and
+compliant.
+✓✓
+Figure 15 Data-analysis case. The harness rejects mislabeled evidence, captures the correct Airflow views, and audits
+whether each screenshot supports the required diagnosis.
+ordering, ensuring that the submitted screenshots are real captures of distinct states rather than recycled
+images. This case shows how MEA supports tasks whose success condition spans structured files and visual
+application state.
+Design workflow: grounding subjective visual comparison in real rendering state. Figure 18 shows a GIMP-
+based design task involving image upscaling and quality comparison. The executor does not merely produce a
+claimed result. It opens the actual outputs in GIMP, captures the Levels histogram, compares super-resolution
+and bicubic results side by side, and uses the real rendering pipeline to generate the evidence. The auditor
+can then evaluate whether the visual comparison is grounded in the expected files and application state. This
+case is important because design tasks often contain subjective-looking requirements; LongHorizon-Harness
+makes them more reliable by converting them into reproducible, inspectable evidence.
+C.2 Terminal-Bench Cases
+Build and installation: making hidden acceptance criteria explicit. Figure 19 compares baseline and
+LongHorizon-Harness on a Terminal-Bench task that requires compiling SQLite with gcov instrumenta-
+tion and making the result available in the shell environment. The baseline reaches partial progress but fails
+the final reward, illustrating a common long-horizon failure: the agent performs substantial work while missing
+a blocking acceptance condition. LongHorizon-Harness converts the task into a stable contract covering
+source provenance, build location, gcov instrumentation, PATH visibility, executability, and preservation of
+the vendored tarball. Each round audits one subset of this contract before the manager advances. The final
+delivery is therefore not just a build log, but a verified installation whose binary, PATH entry, gcov symbols,
+and coverage files are independently checked.
+25
+
+LongHorizon-Harness (Claude Code + Qwen3.7-Plus) · score 0.90
+Let me check if the dialog was dismissed.
+On the Management UI Overview, confirms publish rate
+exceeds deliver/ack, reproducing the 'black hole'
+symptom.
+Good. All 7 screenshots are: - Real screen captures
+(capturesource=realscreen, source=pyautogui.screenshot) -
+1920×1080 (≥ 1024×700 ✓) - All 30KB ✓ Now let me verify the…
+The verifier checks the Queues list, cross-validating
+orders.q / orders.dlq / orders.audit depths against the
+CLI dump.
+Let me analyze what I see: 1. view02mgmtratestooltip.png: This
+shows the Overview page.
+Opens the orders.dlx binding table: routing_key
+dead.routed mismatches the declared dead.unrouted -
+the root cause.
+Let me analyze what I see: 1. view02mgmtratestooltip.png: This
+shows the Overview page.
+After rebinding to dead.unrouted, the orders.dlq detail
+shows depth recovered to thousands - cross-channel
+proof of the fix.
+✓✓
+Figure 16 DevOps case. The harness links management-UI symptoms to queue and binding evidence, then verifies the
+repaired routing state across GUI and CLI views.
+LongHorizon-Harness (Claude Code + Qwen3.7-Plus) · score 0.93
+Let me visually verify the rendered PNG to confirm all layers are
+visible:
+Renders a PNG with title block and dimensions via
+ezdxf, CLI evidence that all semantic layers are in
+place.
+Good - I can see the layer context menu and the Layer List
+panel. Let me click "Edit Layer Attributes" to open the layer
+properties dialog for a more distinct screenshot.
+In LibreCAD's Layer dialog, per the spec CSV, reassigns
+geometry from layer 0 back to its semantic layer.
+The Print Preview window is open showing the drawing on a
+page with the title block clearly visible in the bottom-right corner
+with COMPANY, DWG NO, DATE, SCALE, REV, MATERIAL text.…
+Uses Print Preview for acceptance; the title block
+(COMPANY / DWG NO / SCALE) is legible, confirming
+it's release-ready.
+All 5 files exist, sizes are well above 5 KB, resolutions are
+1920x1080 (≥1024x600), all md5 hashes are unique, and
+mtimes are strictly increasing: - viewdrawinginitial.png: mtime…
+The verifier checks all 5 shots are 1920x1080 real
+captures with distinct md5s and rising mtimes.
+✓✓
+Figure 17 Spatial/CAD case. The harness combines DXF-level inspection, LibreCAD layer repair, print-preview
+evidence, and screenshot-integrity checks.
+Reverse engineering: auditing hypotheses until they become an independent artifact. Figure 20 shows a
+reverse-engineering task where the agent must produce an independent C program matching a mystery binary’s
+image output under strict constraints. This task is difficult because early observations are hypotheses rather
+than deliverables: strings, symbols, pixel statistics, and disassembly traces can guide the solution, but none of
+them alone proves completion. LongHorizon-Harness keeps these observations as audited facts, then uses later
+rounds to synthesize, compile, compress, and test the final program against the original behavior. The auditor
+checks not only that the image exists and compiles, but also that the generated output is equivalent when the
+original binary is removed. This case shows how MEA supports exploratory tasks: uncertain evidence can
+accumulate without being mistaken for completion, and the final state is accepted only when the independent
+artifact satisfies the full contract.
+C.3 Cross-Case Takeaways
+Across these cases, LongHorizon-Harness improves reliability through a common structure rather than through
+benchmark-specific heuristics. In document and CAD tasks, it separates visual plausibility from semantic
+correctness. In web, data-analysis, and DevOps tasks, it forces evidence from different interfaces to agree
+before marking progress complete. In desktop and design tasks, it preserves recoverable intermediate artifacts
+when GUI interactions fail. In Terminal-Bench tasks, it converts implicit grading requirements into explicit
+acceptance contracts and audits them round by round. These patterns support the central claim of the paper:
+long-horizon agent performance is limited not only by the model’s local capability, but also by how the harness
+represents, verifies, and carries forward task state.
+26
+
+LongHorizon-Harness (Claude Code + Qwen3.7-Plus) · score 0.94
+The Levels dialog is open with the image visible. Let me save
+this as screenshot 1.
+Inspects the Levels histogram in real GIMP, taking
+evidence from actual software state, not a fabricated
+result.
+Good, landscapebicubic.png is open. I need to zoom to 200%
+and then also open the AI image.
+Opens the real super-resolution and bicubic output
+PNGs side by side, turning the quality gap into
+checkable pixel-level evidence.
+The 4x image was loaded (display 3 created). Now let me close
+the console and set up the side-by-side comparison.
+Scripts the operations via GIMP's Script-Fu console, so
+every comparison image comes from the real rendering
+pipeline.
+Let me check if the Levels dialog was closed.
+Finally opens the 4x result in real GIMP to check its
+Levels histogram, confirming the upscale is genuinely
+rendered.
+✓✓
+Figure 18 Design case. LongHorizon-Harness grounds visual quality comparison in real GIMP state, including
+histograms and side-by-side rendered outputs.
+27
+
+Baseline (Claude Code + Qwen3.7-Plus) reward = 0
+VERIFIER TESTS
+✓ test_sqlite_compiled
+✓ test_sqlite_in_path
+✕ test_gcov_enabled
+FULL COMMAND FLOW (RAW TRAJECTORY)
+$ ls /app/vendor/ && ls /app/ && which gcc && gcc &-version | head -1 &&
+which gcov && gcov &-version | head -1
+$ ls -la /app/ ; echo "&&-" ; ls -la /app/vendor/ ; echo "&&-" ; which gcc
+make tar ; echo "&&-" ; echo $PATH
+$ cat /etc/os-release 2>/dev/null | head -5 ; echo "&&-" ; which apt-get yum
+dnf apk 2>/dev/null
+$ cat /app/vendor/sqlite-fossil-release.tar.gz.sha256 ; echo "&&-" ; cd /app/
+… or && sha256sum sqlite-fossil-release.tar.gz
+$ apt-get update -qq && apt-get install -y -qq build-essential gcc make > /de
+… ersion | head -1 && gcov &-version | head -1
+$ mkdir -p /tmp/sqlite-build && cd /tmp/sqlite-build && tar xzf /app/vendor/s
+… sil-release/ 2>/dev/null &| ls &/ | head -30
+$ ls /tmp/sqlite-build/sqlite/configure && cat /tmp/sqlite-
+build/sqlite/VERSION
+$ mkdir -p /app/sqlite && cd /tmp/sqlite-build/sqlite && mkdir -p build && cd
+… verage" LDFLAGS="&-coverage" 2>&1 | tail -25
+$ cd /tmp/sqlite-build/sqlite/build && grep -E "^(CFLAGS|LDFLAGS|BCC)"
+Makefile | head -5
+$ cd /tmp/sqlite-build/sqlite/build && make -j$(nproc) 2>&1 | tail -20
+$ cd /tmp/sqlite-build/sqlite/build && ls -la sqlite3 libsqlite3.so
+libsqlite3.a 2>&1 | head -10
+$ cd /tmp/sqlite-build/sqlite/build && file sqlite3 && echo "&&-" && ldd sqli
+… sqlite3 2>/dev/null | grep -i gcov | head -5
+$ cd /tmp/sqlite-build/sqlite/build && ldd sqlite3 | head -10 && echo "&&-" &
+… /dev/null | grep -iE "gcov|&_gcov" | head -5
+$ cd /tmp/sqlite-build/sqlite/build && make install 2>&1 | tail -20
+$ ls -la /app/sqlite/bin/ && echo "&&-" && ls -la /app/sqlite/lib/ | head -10
+… in/sqlite3 2>/dev/null | grep -c "&_gcov0\."
+$ cat > /etc/profile.d/sqlite.sh &<'EOF'
+# Add gcov-instrumented SQLite to PATH and library path
+export PATH="/app/sqlite/bin:$PATH"
+… (25 lines)
+$ export PATH="/app/sqlite/bin:$PATH"
+export LD_LIBRARY_PATH="/app/sqlite/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# Run a workload that exercises the instrumented binary
+… (12 lines)
+$ cd /tmp/sqlite-build/sqlite/build && gcov sqlite3-sqlite3.gcda 2>&1 | head
+… cho "&&-" && ls *.gcov 2>/dev/null | head -3
+SQLite 3.50.4 compiled with gcov instrumentation and installed. Summary:
+**Build & install**
+- Extracted `/app/vendor/sqlite-fossil-release.tar.gz` (SHA-256 verified: `7c02b6…5229`)
+… (21 lines)
+FINAL DELIVERY
+gcov instrumentation delivery check
+$ cd /tmp/sqlite-build/sqlite/build && ldd sqlite3 | head -10 && echo "&&-" &
+… /dev/null | grep -iE "gcov|&_gcov" | head -5
+↳ linux-vdso.so.1 (0x00007ffc1dddd000)
+libm.so.6 &> /lib/x86_64-linux-gnu/libm.so.6 (0x00007bd67589f000)
+libc.so.6 &> /lib/x86_64-linux-gnu/libc.so.6 (0x00007bd67568d000)
+/lib64/ld-linux-x86-64.so.2 (0x00007bd675d25000)
+&&-
+0000000000346560 b &_gcov0.AdjustTree
+00000000003465a0 b &_gcov0.ChooseLeaf
+0000000000342dd0 b &_gcov0.KeccakF1600Step
+0000000000342920 b &_gcov0.SHA1Transform
+0000000000342d20 b &_gcov0.SHA3Final
+Shell cwd was reset to /app
+$ export PATH="/app/sqlite/bin:$PATH"
+export LD_LIBRARY_PATH="/app/sqlite/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# Run a workload that exercises the instrumented binary
+… (12 lines)
+↳ 6
+&&- query result above &&-
+&&- .gcno files produced by the build (should exist somewhere) &&-
+/tmp/sqlite-build/sqlite/build/conftest&_.gcno
+/tmp/sqlite-build/sqlite/build/sqlite3-shell.gcno
+/tmp/sqlite-build/sqlite/build/sqlite3-sqlite3.gcno
+&&- .gcda files after running sqlite3 (look for any coverage data) &&-
+/tmp/sqlite-build/sqlite/build/sqlite3-shell.gcda
+/tmp/sqlite-build/sqlite/build/sqlite3-sqlite3.gcda
+&&-
+-rw-r&-r&- 1 root root 8192 Jul 16 12:42 /tmp/test.db
+Shell cwd was reset to /app
+LongHorizon-Harness (Claude Code + Qwen3.7-Plus) reward = 1
+VERIFIER TESTS
+✓ test_sqlite_compiled
+✓ test_sqlite_in_path
+✓ test_gcov_enabled
+MANAGER→EXECUTOR→AUDITOR ROUNDS (6)
+R1 · EXECUTE
+… (24 lines)
+- C2 [blocking] 编译位置: 原题依据="Compile SQLite in /app/sqlite"; 必须成立=源码解压与编译产物均落
+在 /app/sq … =ls /app/sqlite 可见源码树与构建产物; 阻断条件=编译目录不是 /app/sqlite。
+- C3 [blocking] gcov instrumentation: 原题依据="with gcov instrumentation"; 必须成立=编译时开启 --
+… 号；或 ls 可见 .gcno 文件; 阻断条件=二进制未带 gcov instrumentation。
+- C4 [blocking] PATH 可见性: 原题依据="make it available in the PATH"; 必须成立=在默认 shell 中执行
+`w … ode 或 sha256; 阻断条件=which sqlite3 失败，或指向与本任务产物不同的二进制。
+… (25 lines)
+AUDITOR AUDIT REPORT
+… (14 lines)
+稳定任务契约的 `验收约束` 段（C1–C6）覆盖了主要验收维度，与原始任务一致。覆盖完整的项：源码来
+源、编译位置、gcov instrumentation、PATH 可见性 … 中不可见），所以实际验收能力不受影响。候选污
+染边界在契约文本中已说明。整体覆盖完整，无明显弱化或矛盾。
+**逐项反查（针对当前探索子任务 — C1–C6 均处于待验证状态）:**
+- C1（源码来源）: 原题依据="use it instead of fetching sources over the network"。本轮为只读探索，
+未发生任何构建行为，也未发生网络下载。**结论: unknown**（下一轮构建时需通过构建日志/命令审计验
+证）。
+- C2（编译位置）: `/app/sqlite` 当前**不存在**（已独立验证：`ls: cannot access '/app/sqlite': No such
+fil … ry`），但 `/app` 对 root 可写，可创建。**结论: unknown**（构建尚未发生）。
+… (14 lines)
+R2 · EXECUTE
+… (26 lines)
+- 验收约束:
+- C1 [blocking] 源码来源: 原题依据="use it instead of fetching sources over the network"; 必须成 …
+审计构建命令，确认无网络拉取 SQLite 源码; 阻断条件=出现从网络获取 SQLite 源码的行为。
+- C2 [blocking] 编译位置: 原题依据="Compile SQLite in /app/sqlite"; 必须成立=源码解压与编译产物均落
+在 /app/sq … =ls /app/sqlite 可见源码树与构建产物; 阻断条件=编译目录不是 /app/sqlite。
+… (27 lines)
+AUDITOR AUDIT REPORT
+… (16 lines)
+**逐项反查（针对当前子任务 — 工具链安装）**:
+| 约束 | 原题依据 | blocking | 独立证据 | 结论 |
+|------|---------|----------|---------|------|
+| 子任务验收：`command -v gcc/g++/gcov/make` 返回路径 | 子任务合同 | blocking | CLI 输出：
+`/usr/bin/gcc` … in/g++` `/usr/bin/gcov` `/usr/bin/make` | verified |
+… (16 lines)
+… 3 rounds omitted
+R6 · DONE
+… (29 lines)
+- C4 [blocking] PATH 可见性: 原题依据="make it available in the PATH"；必须成立=在默认 shell 中执行
+`wh … hich sqlite3 失败，或指向与本任务产物不同的二进制。[round_005 verified]
+- C5 [blocking] 可执行性: 原题依据=隐含要求；必须成立=`sqlite3 --version` 成功返回版本信息；验证方
+式=直接执行或由 task ag … 条件=二进制无法运行或崩溃。[round_005 verified via task agent 代跑]
+- C6 [non-blocking but monitored] 不修改 vendored tarball: 原题依据="pre-vendored ... use it …
+4733125229`，64 字符）；阻断条件=无（仅作监控）。[round_005 verified]
+… (30 lines)
+FINAL DELIVERY
+gcov instrumentation delivery check
+$ find /app/sqlite -name '*.gcno' | head -10
+↳ /app/sqlite/conftest&_.gcno
+/app/sqlite/sqlite3-shell.gcno
+/app/sqlite/sqlite3-sqlite3.gcno
+/app/sqlite/sqlite3.gcno
+$ bash -lc 'which sqlite3'
+↳ /usr/local/bin/sqlite3
+$ bash -lc 'nm $(which sqlite3) 2>/dev/null | grep &_gcov | head -5; echo "&-
+… which sqlite3) 2>/dev/null | grep -c &_gcov'
+↳ … (1 lines)
+000000000033b4e0 b &_gcov0.ChooseLeaf
+0000000000337d10 b &_gcov0.KeccakF1600Step
+0000000000337860 b &_gcov0.SHA1Transform
+0000000000337c60 b &_gcov0.SHA3Final
+… (2 lines)
+Figure 19 Terminal-Bench build case. LongHorizon-Harness turns a multi-condition build task into an explicit
+acceptance contract and verifies the final SQLite installation with gcov evidence.
+28
+
+Baseline (Claude Code + Qwen3.7-Plus) reward = 0
+VERIFIER TESTS
+✓ test_image_c_exists
+✓ test_image_compiles
+✕ test_image_similarity
+FULL COMMAND FLOW (RAW TRAJECTORY)
+Let me analyze the mystery program to understand what it does.
+$ file /app/mystery && ls -la /app/mystery
+$ ls -la /app/mystery; strings /app/mystery 2>/dev/null | head -100
+$ strings /app/mystery 2>/dev/null | grep -iE "usage|error|hello|help|enter|i
+… age|arg|argc|argv|%d|%s|%f|%c|%x" | head -50
+$ echo "" | ./mystery 2>&1 | head -50
+$ ls -la /app/image.ppm 2>&1; head -c 200 /app/image.ppm
+$ ./mystery &-help 2>&1 | head -30; echo "&&-"; ./mystery -h 2>&1 | head -30
+$ strings /app/mystery | grep -iE "mandelbrot|julia|fractal|zoom|center|scale
+… olution|width|height|supersample" | head -50
+$ strings /app/mystery | grep -iE "mandel|julia|fractal|burn|ship|newton|phoe
+… smooth|escape|bailout|orbit|trap" | head -30
+$ strings /app/mystery | grep -iE "sphere|ray|camera|light|hit|intersect|refl
+… |vector|point|direction|material" | head -50
+$ awk 'NR>3 {print NR-3, $0}' /app/image.ppm | head -20; echo "&&-"; wc -l
+/app/image.ppm
+$ awk 'NR>3 {print NR-3, $0}' /app/image.ppm | sed -n '240000,240020p'; echo
+… {print NR-3, $0}' /app/image.ppm | tail -20
+$ awk 'NR>3 {print NR-3, $0}' /app/image.ppm | awk '$2>200 &| $3>200 &| $4>20
+… 217 255" | grep -v "152 152 152" | head -40
+$ awk 'NR>3 {print NR-3, $0}' /app/image.ppm | awk '!($2&=150 && $2&=200 && $
+… 0 && $3&=80 && $4&=60 && $4&=80)' | head -40
+$ awk 'NR>3 {print NR-3, $0}' /app/image.ppm | awk '{r=$2; g=$3; b=$4; if (!(
+… 150) &| (r<100 && g>150)) print}' | head -40
+$ awk 'NR>3 {print NR-3, $0}' /app/image.ppm | awk '{r=$2; g=$3; b=$4; if (!(
+… 80 && b<100) print "YELLOW:",$0}' | head -30
+$ which objdump nm readelf gdb ltrace strace 2>&1; ls /usr/bin/ | grep -iE
+"ghidra|ida|radare|rizin|r2" 2>&1
+$ nm /app/mystery 2>&1 | grep -iE " T |sphere|ray|camera|scene|render|write_i
+… r|hit|intersect|color|light|main" | head -60
+$ nm /app/mystery 2>&1 | grep -v "^[0 ]*T _" | grep " T " | head -80
+$ nm /app/mystery 2>&1 | grep " T " | grep -vE "^.{16} T (_|&_)" | head -80;
+… -vE "_(IO|libc|dl|Unwind|GI|gcc)" | head -80
+$ objdump -d &-start-address=0x401740 &-stop-address=0x401fe0 /app/mystery
+2>&1 | head -200
+$ objdump -s -j .rodata &-start-address=0x480000 &-stop-address=0x480060
+/app/mystery 2>&1
+$ python3 -c "
+import struct
+data = bytes.fromhex('cdcc4c3e6666663fcdcccc3e0000c0bfcdcc4c3f0000004b71fd7 …
+3f000000000000803f00004040'.replace(' ',''))
+… (7 lines)
+$ objdump -s -j .data &-start-address=0x485a00 &-stop-address=0x485c00 /app/m
+… jdump -s -j .bss /app/mystery 2>&1 | head -5
+$ objdump -d &-start-address=0x4019b0 &-stop-address=0x401ac0 /app/mystery
+2>&1 | head -80
+$ which gdb ltrace strace; gdb &-version 2>&1 | head -1
+$ awk 'NR>3 {print NR-3, $0}' /app/image.ppm | awk '{r=$2; g=$3; b=$4; if(g>r
+… 200 && b>200) print "WHITE:",$0}' | head -30
+$ awk 'NR>3 {print $0}' /app/image.ppm | sort | uniq -c | sort -rn | head -40
+$ awk 'NR>3 {print $0}' /app/image.ppm | sort | uniq -c | sort -rn | awk '$2
+… 60 && $3 < 60 && $4 < 60 {print}' | head -20
+$ awk 'NR>3 {print $0}' /app/image.ppm | awk '$2>100 && $3<50 && $3&=$4
+{print}' | sort -t' ' -k1,1rn | head -5
+$ objdump -d &-start-address=0x401740 &-stop-address=0x401fe0 /app/mystery
+2>&1 | sed -n '150,300p'
+$ python3 &< 'EOF'
+# Parse the PPM and analyze sphere positions
+pixels = []
+… (42 lines)
+$ python3 &< 'EOF'
+pixels = []
+with open('/app/image.ppm') as f:
+… (52 lines)
+$ python3 &< 'EOF'
+pixels = []
+with open('/app/image.ppm') as f:
+… (48 lines)
+… 50 more key steps omitted
+FINAL DELIVERY
+/app/mystery.c
+… (29 lines)
+fprintf(stderr,"\rProgress: %.1f%%",100.0f*y/(H-1));
+for(int x=0;x<W;x&+){
+float u=(2.0f*x/W-1)*(800.0f/600),v=1-2.0f*y/H;
+R r={{0,0,0},vn((V){u,v,-1})};
+V nrm;float ts=sph(r,C,CR,&nrm);V pp;float tp=pln(r,-1,&pp);
+V col;
+… (29 lines)
+LongHorizon-Harness (Claude Code + Qwen3.7-Plus) reward = 1
+VERIFIER TESTS
+✓ test_image_c_exists
+✓ test_image_compiles
+✓ test_image_similarity
+MANAGER→EXECUTOR→AUDITOR ROUNDS (9)
+R1 · EXECUTE
+… (24 lines)
+- C3 [blocking] 压缩尺寸: 原题依据=“Your C program must be <2k when compressed (cat mystery.c
+… | gzip | wc` 输出 < 2000；验证方式=执行该管道命令；阻断条件=数值 ≥ 2000。
+- C4 [blocking] 禁止 invoking ./mystery: 原题依据=“Your C program must not invoke ./mystery …
+stery|system|exec' /app/mystery.c` 人工审查；阻断条件=发现任何调用。
+… (25 lines)
+AUDITOR AUDIT REPORT
+… (20 lines)
+- O9：不得修改 `/app/mystery` 本体。
+**契约覆盖检查**：契约以 C1–C7 显式覆盖 O1–O7。O8（禁止捷径）由"候选选择与污染边界"段覆盖。O9
+（不得修改原二进制）由"提交/持久化边界"显式覆盖。覆盖完整、无弱化、无矛盾。
+**逐项反查**（当前子任务是行为探查，不是编写 mystery.c；故此处反查契约约束在整体任务语境下的状
+态，以及本轮是否为其建立了可信基础）：
+… (20 lines)
+R2 · EXECUTE
+… (26 lines)
+- C4 [blocking] 禁止 invoking ./mystery: 原题依据="Your C program must not invoke ./mystery …
+stery|system|exec' /app/mystery.c` 人工审查；阻断条件=发现任何调用。
+- C5 [blocking] 独立性: 原题依据="fully independent and work even if I run it in complete is … =重命
+名/移除 `./mystery` 后运行 `./reversed`；阻断条件=运行失败或行为改变。
+… (26 lines)
+AUDITOR AUDIT REPORT
+… (21 lines)
+**契约覆盖检查**: 稳定任务契约 C1–C8 主要覆盖最终交付物 mystery.c，但"状态产生流程"段明确把"清理/
+重建可信 image.ppm 基线 → 全面探查 … 致 md5 证明的干净 `image.ppm`"——完全覆盖本轮子任务需
+求。契约未遗漏、未弱化、未矛盾。
+**逐项反查** (当前子任务: 建立可信行为基线):
+- C1 交付物形态: not_applicable (本轮是信息收集，非编写阶段)
+… (22 lines)
+R3 · EXECUTE
+… (29 lines)
+- C6 [blocking] 静态链接与 `-lm`: 原题依据=编译命令含 `-static -lm`；必须成立=该编译命令能成功产出可
+执行文件；验证方式=`gcc -static -o reversed mystery.c -lm` 退出码为 0；阻断条件=编译失败。
+- C7 [blocking] 权威输入闭包: 原题依据=行为等价必须基于 `./mystery` 的真实行为；必须成立=任何等价
+性判断必须基于对 `./mystery` … 证据且 round 未被 harness 标记 invalid；阻断条件=无真实干净环境证据
+支持等价性。
+… (29 lines)
+AUDITOR AUDIT REPORT
+… (4 lines)
+Episode status: timeout.
+Runtime error: RuntimeError: Command timed out after 660 seconds
+Claude Code role episode exceeded 600s (command timeout_sec=660).
+… (5 lines)
+… 5 rounds omitted
+R9 · DONE
+… (33 lines)
+- C3 [blocking] 压缩尺寸: 原题依据="<2k when compressed"；必须成立=`cat /app/mystery.c | gzip |
+wc` < 2000；验证方式=执行管道命令；阻断条件=数值 ≥ 2000。
+- C4 [blocking] 禁止 invoking ./mystery: 原题依据="must not invoke ./mystery"；必须成立=`mystery
+… y|system|exec|popen' /app/mystery.c` 审查；阻断条件=发现任何调用。
+… (33 lines)
+FINAL DELIVERY
+Bit-for-bit equivalence check
+$ cd /app
+# Determinism check: run twice and compare
+rm -f image.ppm
+… (10 lines)
+↳ IDENTICAL
+e866fa2c851f4a9da736b4ed3ba3912e image.ppm
+e866fa2c851f4a9da736b4ed3ba3912e image1.ppm
+$ mv /app/mystery /app/mystery.bak && rm -f /app/image.ppm && ./reversed >std
+… echo "&&= RESTORED &&="; ls -la /app/mystery
+↳ … (1 lines)
+&&= STDOUT BYTES &&=
+0
+&&= MD5SUM &&=
+e866fa2c851f4a9da736b4ed3ba3912e /app/image.ppm
+&&= RESTORED &&=
+-rwxr-xr-x 1 root root 790376 Oct 28 2025 /app/mystery
+Figure 20 Terminal-Bench reverse-engineering case. The harness preserves exploratory evidence as audited facts and
+verifies the final independent C implementation against behavior, compilation, size, and independence constraints.
+29
