@@ -106,6 +106,31 @@ Rubric scores enter the analysis only through a selective evaluator that fails c
 - C10 isolates structured state without search.
 - For deferred H-D, baselines are flat queue and tree without insight; full tree-plus-insight is the treatment.
 
+### Budget completion, declared as a secondary outcome
+
+A declared ceiling can prevent an episode from producing a scoreable artifact at all.
+When that happens the episode is not missing data: it failed to complete within the
+budget every condition was given, and that is an outcome of the condition rather than an
+accident of instrumentation.
+
+* **Secondary outcome, budget completion rate.** For each condition, the share of
+  episodes whose measured usage respects every declared ceiling. It is computed by the
+  same admission path that decides scoreability, so a refusal is counted once and cannot
+  be silently dropped from an analysis.
+* **Reported beside the quality endpoint, never merged with it.** A condition may reach a
+  better design more often and complete within budget less often; collapsing the two
+  would hide exactly that trade.
+* **The ceiling is not adjusted to remove refusals.** It is set from measurement before a
+  block runs, and a refusal that appears afterwards is reported rather than engineered
+  away, because moving a limit until it stops binding removes the asymmetry it revealed.
+* **Declared after the first refusal was observed.** That timing is recorded rather than
+  concealed; the outcome is fixed now so later blocks cannot select it once the direction
+  is known (`RD-2026-09-03-51A`).
+
+A refusal is also a competing event for the quality endpoint: an episode refused for
+budget cannot contribute a design score, so both outcomes are reported with their
+denominators stated rather than as rates over different populations.
+
 ### Process metrics
 
 Following `2608.01913`, search volume is not capability. Each episode is productive, redundant, or unproductive according to new evaluator-relevant evidence. Errors are retrieval gaps or utilization gaps. A retrieval is decision-changing only if it changes a resource, hypothesis, control, metric, stopping rule, or scoped interpretation.

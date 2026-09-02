@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** report the refusal rate per condition as a declared secondary outcome in the design document, so budget failure is analysed rather than only recorded.
+- **next_first_action:** compute the budget completion rate per condition over the 16-episode block and report it in the manuscript beside the integrity results, with denominators stated.
 
-- **last_updated:** 2026-09-03T03:23:56+09:00
+- **last_updated:** 2026-09-03T03:28:27+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 45 closed — the declared ceiling bound for the first time and it bound asymmetrically
+- **current_phase:** cycle 46 closed — budget completion declared as a secondary outcome; a stale variable nearly corrupted the design document
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 46 — budget failure became an outcome, and a stale name nearly corrupted the design
+
+- **Gap picked:** refusals were being logged but not analysed, so a condition could look better simply by spending more and having its failures discarded.
+- **Declared in the design document:** budget completion rate as a secondary outcome, computed by the same admission path that decides scoreability, reported **beside** the quality endpoint and never merged with it, with denominators stated. A refusal is a competing event for the quality endpoint.
+- **The ceiling is explicitly not adjusted to remove refusals.** Moving a limit until it stops binding erases the asymmetry it revealed.
+- **Timing recorded honestly:** this outcome was declared *after* the first refusal was observed. That is written into the design rather than concealed, and it is fixed now so later blocks cannot select it once the direction is known.
+- **Near miss worth more than the cycle.** The insert used a variable name still bound from many cycles earlier, holding validator source code, because the assertion meant to stop the cell ran before the intended definition. About five thousand characters of Python went into the design document. It was caught when a membership check for the intended heading failed three times while writes were succeeding, repaired from the committed blob and verified against its committed digest.
+- **Lesson recorded:** the working state of a long session is itself a hazard. No gate covers an uncommitted working file, so text blocks are now defined immediately before use and every insert is verified by reading the file back.
 
 ### Cycle 45 — the ceiling bound, and it bound on one side
 
