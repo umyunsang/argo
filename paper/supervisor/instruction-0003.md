@@ -15,7 +15,7 @@
 
 ## 2. 정본 접근 (사용자 개입 없음)
 
-1. GitHub 커넥터로 릴리스 자산을 받는다: 저장소 `umyunsang/argo`, 릴리스 태그 `paper-snapshot-2026-09-02`, 자산 `argo-paper-canonical.tar.gz`(git archive, `paper/` + `.orx/`, 약 2.4 MB, 원본 PDF 제외). orx 릴리스 자산을 받았던 것과 같은 경로다. 이를 풀고 그 트리 안에서만 작업한다.
+1. GitHub 커넥터로 스냅샷 브랜치를 받는다: 저장소 `umyunsang/argo`, 브랜치 `paper-snapshot-2026-09-02`(정본 브랜치의 `paper/` + `.orx/` + `docs/argo/`만 담은 약 2.4 MB 스냅샷, 원본 PDF 제외). zip URL: `https://github.com/umyunsang/argo/archive/refs/heads/paper-snapshot-2026-09-02.zip`, tar URL: `https://github.com/umyunsang/argo/archive/refs/heads/paper-snapshot-2026-09-02.tar.gz`. 이를 풀고 그 트리 안에서만 작업한다.
 2. 개별 파일은 raw URL로도 읽을 수 있다: `https://raw.githubusercontent.com/umyunsang/argo/orx/integrate-harness-evaluation-counterevidence-and/<path>`. 예: `paper/supervisor/status.md`, `paper/supervisor/instruction-0002.md`, `.orx/paper_protocol.json`, `docs/argo/literature-review-protocol.md`.
 3. 병렬 저장소를 다시 만들지 않는다. 모든 산출물은 정본 경로에 대한 변경이다. 풀어낸 트리에서 `git init` 후 기준 커밋을 만들고, 그 위에 작업해 diff를 뽑는다.
 
