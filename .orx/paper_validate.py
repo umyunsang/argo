@@ -592,6 +592,9 @@ def main():
             + json.loads(
                 (ROOT / "paper/sources/arxiv-metadata-literature-round24-receipt.json").read_text(encoding="utf-8")
             ).get("records", [])
+            + json.loads(
+                (ROOT / "paper/sources/arxiv-metadata-literature-round26-receipt.json").read_text(encoding="utf-8")
+            ).get("records", [])
         )
         combined_metadata_ids = [x.get("source_id") for x in combined_metadata_records]
         duplicate_metadata_ids = sorted(k for k, v in collections.Counter(combined_metadata_ids).items() if v > 1)
@@ -1707,6 +1710,35 @@ def main():
         ):
             errors.append("context graph identity, topology, authority, projection, or outcome-state mismatch")
 
+    artifact_rebuild = {}
+    rebuild_cfg = (cfg.get("submission_artifact_gate") or {}).get("rebuild_check")
+    if rebuild_cfg:
+        import os
+        import tempfile
+
+        builder = ROOT / rebuild_cfg["builder"]
+        committed = ROOT / cfg["submission_artifact_gate"]["path"]
+        if not builder.is_file() or not committed.is_file():
+            errors.append("artifact rebuild check cannot run: builder or artifact missing")
+        else:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                target = Path(tmpdir) / "rebuild.docx"
+                env = dict(os.environ, ARGO_DOCX_OUT=str(target))
+                proc = subprocess.run([sys.executable, str(builder)], cwd=str(ROOT), env=env,
+                                      capture_output=True, text=True)
+                rebuilt = sha256_path(target) if target.is_file() else None
+            committed_digest = sha256_path(committed)
+            artifact_rebuild = {
+                "builder": rebuild_cfg["builder"],
+                "exit_code": proc.returncode,
+                "committed_sha256": committed_digest,
+                "rebuilt_sha256": rebuilt,
+                "reproducible": rebuilt == committed_digest,
+                "stderr_tail": proc.stderr[-400:] if proc.returncode else "",
+            }
+            if proc.returncode != 0 or rebuilt != committed_digest:
+                errors.append("submission artifact is not reproducible from its committed builder")
+
     submission_artifact = {}
     artifact_cfg = cfg.get("submission_artifact_gate")
     if artifact_cfg:
@@ -2002,6 +2034,7 @@ def main():
             "pdf_token_failures": pdf_token_failures,
         },
         "submission_artifact": submission_artifact,
+        "submission_artifact_rebuild": artifact_rebuild,
         "evidence_receipts": evidence_receipts,
         "structured_evidence": structured_evidence,
         "evidence_scope_note": cfg.get("evidence_scope_note"),

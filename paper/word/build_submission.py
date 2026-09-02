@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -22,7 +23,7 @@ PROTOCOL = ROOT / ".orx" / "paper_protocol.json"
 PANDOC = "/usr/local/bin/quarto"
 PAPER = ROOT / "paper.tex"
 SUMMARY = ROOT / "paper" / "korean-summary.txt"
-OUT = ROOT / "paper" / "word" / "graduation-thesis.docx"
+OUT = Path(os.environ.get("ARGO_DOCX_OUT", str(ROOT / "paper" / "word" / "graduation-thesis.docx")))
 REF = ROOT / "paper" / "word" / "reference.docx"
 
 
@@ -243,7 +244,8 @@ def main() -> int:
     inject_front_matter(OUT, summary, keywords)
     applied = apply_official_format(OUT, "국문 요약")
     digest = hashlib.sha256(OUT.read_bytes()).hexdigest()
-    print(json.dumps({"artifact": str(OUT.relative_to(ROOT)), "bytes": OUT.stat().st_size,
+    rel = str(OUT.relative_to(ROOT)) if str(OUT).startswith(str(ROOT)) else str(OUT)
+    print(json.dumps({"artifact": rel, "bytes": OUT.stat().st_size,
                       "sha256": digest, "korean_summary_chars": len(summary),
                       "keywords": keywords, "numbered_references": n_refs,
                       "official_format": applied}, ensure_ascii=False, indent=2))

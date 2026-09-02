@@ -1,0 +1,470 @@
+\appendix
+
+\section{Outcome Performance by Category}
+\label{app:outcome_by_category}
+
+
+
+The category-level results reveal substantial differences in both task difficulty and the relationship between average and best performance across repeated runs.
+
+\textbf{Model Development.}
+Opus leads on both avg@3 ($0.785$) and best@3 ($0.833$), but the best runs from Gemini ($0.819$) and Kimi ($0.806$) also outperform those from GLM ($0.749$) and GPT ($0.738$), despite their lower overall rankings.
+Kimi exhibits the largest avg--best gap in this category ($0.240$), showing that several models can produce strong model-development solutions but differ sharply in how reliably they reach them.
+
+
+\textbf{System Optimization.}
+Opus leads on avg@3 ($0.675$), while the best@3 scores of Opus, GPT, and GLM are nearly identical ($0.705$, $0.703$, and $0.700$).
+Across these 15 tasks, the leading models therefore differ more in the consistency with which they produce strong solutions than in their best-achieved performance.
+
+\textbf{Puzzle \& Challenge.}
+This category separates the models least: the highest-to-lowest gap is $0.150$ on avg@3 and only $0.074$ on best@3.
+GLM narrowly leads on both metrics, with GPT close behind on avg@3 and Opus close behind on best@3, indicating that strong puzzle-solving performance is relatively widespread across the evaluated models.
+
+\textbf{CUDA.}
+CUDA produces the largest performance separation, with gaps of $0.403$ on avg@3 and $0.414$ on best@3 between the highest- and lowest-scoring models.
+Opus leads avg@3 by a wide margin ($0.617$ versus GPT's $0.493$), whereas GPT achieves the highest best@3 ($0.722$ versus Opus's $0.702$).
+This contrast shows that low-level GPU optimization distinguishes consistently strong performance from occasional peak performance and remains particularly challenging for lower-ranked models.
+
+\input{Tables/main_model_cat}
+
+\section{Resource Use by Category and Performance Trade-offs}
+\label{app:resource_by_category}
+
+The main text focuses on the cost breakdown in Figure~\ref{fig:cost_by_task_type}.
+Here we report the corresponding wall-clock time and token consumption for the same four task categories and the overall task set.
+We also retain the aggregate resource--performance view, which complements the category-level breakdowns by relating best@3 to total cost, elapsed time, and interaction steps.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.9\linewidth]{Figures/resource_performance_tradeoffs.pdf}
+    \caption{Resource--performance trade-offs across seven models. The panels compare best@3 against total estimated cost (left), mean wall-clock time per task (middle), and mean interaction steps per task (right).}
+    \label{fig:resource_efficiency_appendix}
+\end{figure}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{Figures/task_type_mean_time.pdf}
+    \caption{Mean wall-clock time per task across four task categories and overall. Values average over the three independent rollouts for each model--task pair.}
+    \label{fig:time_by_task_type}
+\end{figure}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{Figures/task_type_mean_tokens.pdf}
+    \caption{Mean token consumption per task across four task categories and overall, including both input and output tokens. Values are reported in millions and average over the three independent rollouts for each model--task pair.}
+    \label{fig:tokens_by_task_type}
+\end{figure}
+
+Figure~\ref{fig:time_by_task_type} shows that Gemini-3.1-Pro and GPT-5.5 use the least wall-clock time overall (66 and 70 minutes per task), suggesting that they often terminate before fully exploiting the available time budget.
+Model Development is substantially more time-consuming for every model than the other workload families.
+Figure~\ref{fig:tokens_by_task_type} shows a related aggregate pattern: GPT uses the fewest tokens overall (3.2 million per task), followed by Gemini (6.0 million), whereas GLM uses the most (29.4 million), driven especially by System Optimization tasks.
+
+
+
+\section{Formal Definitions and Implementation Details for Process Metrics}
+\label{app:process_metric_details}
+
+This section gives the complete definitions, hyperparameters, boundary cases, and reconstruction rules for the process metrics summarized in Section~\ref{sec:process_evaluation_design}.
+
+\subsection{Proposal Gate and Canonical Checkpoints}
+
+We align official score checkpoints monotonically to transcript-observed commits using normalized commit messages and commit order.  A matched checkpoint is removed only when (i) no task artifact changed, (ii) the observed mutation is administrative, and (iii) the commit message is consistent with bookkeeping.  Strictly administrative messages may also be removed when unmatched, provided they contain no code-change signal.  We retain any checkpoint with a task-artifact mutation, an uncertain shell mutation, or a score differing by more than $\epsilon=0.01$ from the last retained score.  Consequently, execution failures, genuine reverts, and ambiguous cases remain part of the canonical trajectory.  Removed checkpoints contribute to neither the numerator nor denominator of any process score.
+
+Let $x_1,\ldots,x_T\in[0,1]$ denote the official step scores of the retained canonical checkpoints.  The first checkpoint receives dimension-specific treatment.  C1 retains it at its observed position because it anchors how early score is reached.  C2 excludes it because the initial repository is not an agent execution attempt.  For C3, a path-audited clean initial state is separated from the agent iteration axis but retained as an external score boundary; a modified or ambiguous initial state remains an ordinary checkpoint.  Below, the C3 sequence is understood after this boundary treatment.
+
+\subsection{C1: Solution Framing}
+
+C1 is computed positionally after proposal gating.  Let $h_0=0$ and
+\[
+  h_i=\max(h_{i-1},x_i)
+\]
+be the high-water-mark curve.  We use a common horizon $H=20$.  Runs with more than 20 canonical checkpoints use the first 20; shorter runs carry their final high-water mark forward, so $\bar h_i=h_{\min(i,T)}$.  The per-run score equally weights the early, middle, and late stages:
+\[
+\mathrm{C1}_{\mathrm{run}}=\frac{1}{3}\left(
+  \frac{1}{5}\sum_{i=1}^{5}\bar h_i+
+  \frac{1}{5}\sum_{i=6}^{10}\bar h_i+
+  \frac{1}{10}\sum_{i=11}^{20}\bar h_i
+\right).
+\]
+A missing score leaves the preceding high-water mark unchanged.  To preserve the authoritative precision of the original score export, the implementation applies the exactly recomputed canonical-minus-raw Stage-AUC delta to the stored per-run C1, rather than interpreting export-rounding differences as effects of proposal cleaning.
+
+\subsection{C2: Execution}
+
+Let $\mathcal I$ be the set of observable, non-initial canonical checkpoints.  For $i\in\mathcal I$, let $g_i=1$ when the committed artifact runs to completion and, when the task exposes a correctness gate, passes it; otherwise $g_i=0$.  Let $n_i$ be the number of code-related build failures observed while producing checkpoint $i$.  We use the bounded discount
+\[
+  d(n)=
+  \begin{cases}
+    1.00 & n=0,\\
+    0.85 & n=1,\\
+    0.70 & n=2,\\
+    0.60 & n=3,\\
+    0.50 & n\ge4,
+  \end{cases}
+\]
+and define
+\[
+  s_i=g_i\,d(n_i),\qquad
+  \mathrm{C2}_{\mathrm{run}}=
+  \frac{1}{|\mathcal I|}\sum_{i\in\mathcal I}s_i.
+\]
+Thus a failed delivery is a genuine zero, while repeated pre-commit build failures can only discount a successful delivery.
+
+For compiled tasks, build logs determine whether the artifact ran; for tasks without compilation logs, a numeric metric, a correctness verdict, or a positive score is evidence that evaluation ran.  A clean build with no verifier result is treated as failed delivery.  On tasks exposing binary correctness, delivery additionally requires \texttt{correctness=True}; optimization-only tasks require successful execution.  Environment failures such as an unavailable compiler are excluded from $n_i$.
+
+The exported dataset does not retain every original per-commit build artifact.  We therefore clean C2 non-destructively and accept a value through one of two auditable paths.  For 117 of the 139 affected scored runs, transcript replay reproduces the stored C2 within $10^{-4}$.  For the remaining 22, we exploit the fact that every round score belongs to
+\[
+  \mathcal Q=\{0,0.50,0.60,0.70,0.85,1.00\}.
+\]
+The rounded legacy score and maximum observable checkpoint count identify compatible denominator and total-score pairs.  Eighteen runs have a unique compatible denominator.  Four have multiple compatible denominators; for these we use the largest compatible denominator, which minimizes the leverage of the removed administrative checkpoint, and retain the full compatible range as a sensitivity interval.  This procedure resolves all affected runs while preserving the original score and trajectory fields.
+
+\subsection{C3: Feedback Control}
+
+We use a noise tolerance $\epsilon=0.01$.  Let $p=\max_i x_i$ be the peak official step score and let $f$ be the independent official final score.  Peak retention is
+\[
+  A_1=
+  \begin{cases}
+    1 & p-f<\epsilon,\\[2pt]
+    \operatorname{clip}(f/p,0,1) & \text{otherwise}.
+  \end{cases}
+\]
+
+
+
+A dip episode $e$ starts at position $i$ when $x_i<x_{i-1}-\epsilon$; consecutive descending transitions are treated as one start.  We set $p_e=x_{i-1}$ and $d_e=x_i$.  If a later official checkpoint first returns to at least $p_e-\epsilon$, that checkpoint is the recovery target and $b_e=p_e$.  Otherwise, the checkpoint with the highest score from the dip onward becomes the recovery target and supplies partial-recovery credit; if no subsequent checkpoint improves on $d_e$, we set $b_e=d_e$.  Let $j_e$ be the target position and let $L_e=\max(1,j_e-i)$ be the number of official step transitions required.  The recovered fraction and primary recovery credit are
+\[
+  \rho_e=\operatorname{clip}\!\left(
+    \frac{b_e-d_e}{p_e-d_e},0,1
+  \right),\qquad
+  B_e=\frac{\rho_e}{L_e}.
+\]
+
+Between two canonical checkpoints, transcript evidence counts distinct pairs of candidate state and objective-evaluation command.  Let $a_{e,t}$ be this count for transition $t$.  One candidate is the nominal cost of producing the next official checkpoint, so only $u_{e,t}=\max(0,a_{e,t}-1)$ is discounted.  Reusing C2's discount schedule, we define
+\[
+  D_e=\frac{1}{L_e}\sum_{t=1}^{L_e}d(u_{e,t}),\qquad
+  q_e=B_eD_e,qquad
+  A_2=\frac{1}{M}\sum_{e=1}^{M}q_e,
+\]
+where $M$ is the number of dip episodes.  The inter-step term is bounded below by $0.5$ and can only discount recovery established by official scores: it never replaces $L_e$, creates recovery absent from the official trajectory, or converts an unrecovered dip into a positive episode.  The per-run score is
+\[
+  \mathrm{C3}_{\mathrm{run}}=
+  \begin{cases}
+    A_1 & M=0,\\[2pt]
+    \tfrac12 A_1+\tfrac12 A_2 & M\ge1.
+  \end{cases}
+\]
+The two recorded singleton all-zero failures retain score zero; empty trajectories remain unscored.
+
+\subsection{Aggregation}
+
+For each dimension $k\in\{1,2,3\}$ and model $m$, we first average valid seeds within each model--task pair and then average tasks with equal weight:
+\[
+  \mathrm{C}_{k,m}=\frac{1}{|\mathcal T_m|}
+  \sum_{t\in\mathcal T_m}
+  \frac{1}{|\mathcal S_{m,t}|}
+  \sum_{s\in\mathcal S_{m,t}}\mathrm{C}_{k,m,t,s}.
+\]
+This two-level aggregation is numerically equivalent to a run mean when all three seeds are observed, but remains task-balanced when execution records are missing, as occurs for C2.  No post-hoc rescaling, evidence shrinkage, or rank-based mapping is applied.
+
+
+\section{Behavioral Diagnostic Definitions}
+\label{sec:appendix_diag}
+
+The diagnostics in Figure~\ref{fig:process_diag} describe how the research loop behaves and do not form an additional capability score.  Every run level value is first averaged across valid seeds within each model and task, after which the 36 tasks receive equal weight.  The tolerance for a meaningful score change is \(\epsilon=0.01\).
+
+\subsection{C1 Search Shape}
+
+Let \(x_1,\ldots,x_T\) be the scores of the evaluated agent proposals in the canonical trajectory.  The repository baseline is not an agent proposal and is therefore excluded from these shape diagnostics.  Let \(p=\max_i x_i\).  We report
+\[
+\begin{aligned}
+\text{best observed score} & = p,\\
+\text{early capture} & = x_1/p,\\
+\text{later headroom capture} & =
+\begin{cases}
+\dfrac{p-x_1}{1-x_1}, & x_1<1,\\
+0, & x_1=1.
+\end{cases}
+\end{aligned}
+\]
+Early capture is defined only when \(p>0\).  Later headroom capture is zero when no score space is filled after the first proposal and one when later proposals reach a score of one.  Best observed score gives the absolute height of the discovered solution, while the two capture quantities distinguish initial solution quality from subsequent progress.  Early capture and later headroom capture share \(x_1\) and \(p\), so they are complementary behavioral descriptors rather than independent capabilities.  Gain density remains available in the detailed reproduction table but is omitted from the compact figure because it is sensitive to trajectory length and does not distinguish frontier progress from recovery after a dip.
+
+\subsection{C2 Build Behavior}
+
+Build commands are extracted from the recorded shell transcript and aligned to evaluated canonical proposals by commit message.  Let \(\mathcal C\) be the set of nonadministrative evaluated proposals and let \(\mathcal I\subseteq\mathcal C\) be those with a matched transcript segment.  For each \(i\in\mathcal I\), let \(b_i\) be the number of recognized build invocations before the commit and let \(f_i\) be the number that produce a code related failure.  Environment failures are excluded.  We report
+\[
+\text{builds per round}
+=\frac{1}{|\mathcal I|}\sum_{i\in\mathcal I}b_i,
+\qquad
+\text{rounds with build errors}
+=\frac{\#\{i\in\mathcal I:f_i>0\}}{|\mathcal I|}.
+\]
+The second quantity records whether a round contains any observed code related build error, not whether its final committed artifact fails delivery.  Transcript coverage remains available in the reproduction output as an internal alignment audit, but is not part of the figure or the behavioral interpretation.
+
+\subsection{C3 Feedback Behavior and Evidence}
+
+Let \(y_0,\ldots,y_T\) be the official score sequence used by C3, where \(y_0\) is the observed baseline and the remaining values are evaluated agent rounds.  Dip episodes and recovery credit follow the definitions in Appendix~\ref{app:process_metric_details}.  For diagnostic dip depth, let \(v_e\) be the lowest score in the consecutive descending segment that begins episode \(e\).  If \(M\) dip episodes are observed, we report
+\[
+\begin{aligned}
+\text{peak retention} & = A_1,\\
+\text{dip rate} & = M/T,\\
+\text{dip depth} & =
+\frac{1}{M}\sum_{e=1}^{M}(p_e-v_e),\\
+\text{recovery credit} & = A_2.
+\end{aligned}
+\]
+Dip depth and recovery credit are conditional on observing at least one dip.  Dip depth measures the full peak to trough regression, while Recovery credit retains the selected C3 episode definition and uses the first dipped score to measure regained score.  The figure also reports the mean number \(T\) of evaluated commit rounds in gray.  This count quantifies exposure and is not included in C3.  Peak position, monotonicity, trace coverage, whether the final transition is rising, and the count of runs containing a dip remain available in the detailed reproduction table but are omitted from the compact figure because they add less distinct explanatory information.
+
+
+
+
+
+\section{Task-Level Outcomes of Self-Improvement}
+\label{app:m1_task_outcomes}
+
+The model-level means in Figures~\ref{fig:m1_in_task} and~\ref{fig:m1_inter_task} can conceal variation across tasks.
+The two evaluations use different controlled designs and task-retention criteria, yielding $32$ retained tasks for intra-task evaluation and $19$ targets for inter-task evaluation.
+Figure~\ref{fig:m1_task_outcomes} therefore reports the numbers of positive, tied, and negative task-level gains for the two settings, with inter-task gains measured under avg@3.
+
+\begin{figure}[t]
+    \centering
+
+    \begin{subfigure}[b]{0.45\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/m1_in_task_outcomes.pdf}
+        \caption{Intra-task outcomes over 32 tasks}
+        \label{fig:m1_in_task_outcomes}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.45\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/m1_inter_task_outcomes.pdf}
+        \caption{Inter-task outcomes over 19 targets (avg@3)}
+        \label{fig:m1_inter_task_outcomes}
+    \end{subfigure}
+
+    \caption{Task-level signs of self-improvement. Positive, tie, and negative denote the sign of the score difference between conditions with and without experience.}
+    \label{fig:m1_task_outcomes}
+\end{figure}
+
+For intra-task self-improvement, positive outcomes outnumber negative outcomes for every model, including Kimi ($17$ positive vs.\ $10$ negative), even though Kimi's model-level mean is slightly below zero.
+For inter-task self-improvement under avg@3, positive outcomes outnumber negative outcomes for five models, while Gemini and LongCat show the reverse pattern, consistent with their negative aggregate gains.
+
+\section{Inter-Task Self-Improvement Protocol}
+\label{app:m1_inter_task_protocol}
+
+\textbf{Rollout protocol.}
+For each model, the lesson-free condition reuses the three rollouts from the outcome-level evaluation and yields baseline scores $S^{(0)}$.
+For each source task, the model then extracts lessons from its best-performing baseline trajectory and records them in a \texttt{lessons.md} file describing successful approaches, failed attempts, and resulting recommendations.
+For each target, the model receives the lessons from the source in the same category and performs three new rollouts, yielding augmented scores $S^{(+)}$.
+The two conditions use isolated workspaces, and only \texttt{lessons.md} is transferred to the augmented condition.
+The model is instructed to consult the lessons without following them blindly.
+
+\textbf{Source selection.}
+We select one source per category from the baseline trajectories of four pilot models---Claude-Opus-4.7, GPT-5.5, GLM-5.2, and LongCat-2.0---spanning a range of performance.
+A task qualifies only if all four models achieve \texttt{best@3\_score}~$>0.5$ and \texttt{best@3\_commits}~$\geq5$.
+Among qualifying tasks, we select the highest-scoring task in each category under $\mathrm{avg}(\texttt{best@3\_score} \times \texttt{best@3\_commits})$ across the pilot models.
+This yields \texttt{data\_select\_ifeval} (Model Development), \texttt{concurrent\_kv\_wal} (System Optimization), \texttt{adaptive\_compression} (Puzzle \& Challenge), and \texttt{icp\_correspondence\_step\_cuda} (CUDA).
+
+\textbf{Target selection.}
+The other 32 tasks form the candidate target set.
+We exclude any candidate for which an evaluated model achieves avg@3~$\geq0.95$ without lessons, retaining 19 targets with improvement headroom for every model.
+The retained targets are \texttt{llm\_online\_serving}, \texttt{moving\_mnist\_world\_model}, and \texttt{grpo\_multisource} from Model Development; \texttt{bvh\_raytracer}, \texttt{fft\_rust}, \texttt{sstable\_compaction\_rs}, \texttt{agent\_tool\_routing}, \texttt{z\_order\_range\_scan}, \texttt{sha256\_throughput}, \texttt{flash\_attention}, \texttt{gaussian\_blur}, \texttt{levenshtein\_distance}, \texttt{radix\_sort}, \texttt{hash\_join}, and \texttt{aes128\_ctr} from System Optimization; \texttt{adversarial\_splay} from Puzzle \& Challenge; and \texttt{huffman\_canonical\_decode\_cuda}, \texttt{msm\_pippenger\_bls12\_381\_cuda}, and \texttt{ntt\_butterfly\_cuda} from CUDA.
+The resulting source--target pairs are fixed across all evaluated models.
+
+\textbf{Metrics.}
+For each model--target pair, we compute
+\begin{equation}
+\mathrm{M}_{\text{avg}} = \texttt{avg@3}(S^{(+)}) - \texttt{avg@3}(S^{(0)}), \qquad
+\mathrm{M}_{\text{best}} = \texttt{best@3}(S^{(+)}) - \texttt{best@3}(S^{(0)}).
+\end{equation}
+We report each metric as the mean over the 19 retained targets, capturing both model stability and peak performance capability.
+
+
+
+\section{Best@3 Results for Inter-Task Experience Reuse}
+\label{app:m1_inter_task_best}
+
+\begin{figure}[t]
+    \centering
+
+    \begin{subfigure}[b]{0.55\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/m1_inter_task_reward_gap_best.pdf}
+        \caption{Scores and transfer gains}
+        \label{fig:m1_inter_task_reward_gap_best}
+    \end{subfigure}
+    \hspace{4mm}
+    \begin{subfigure}[b]{0.4\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{Figures/m1_inter_task_outcomes_best.pdf}
+        \caption{Task-level outcomes}
+        \label{fig:m1_inter_task_outcomes_best}
+    \end{subfigure}
+
+    \caption{Inter-task self-improvement under best@3. (a) Per-model best@3 with and without trajectory-derived experience (bars, left axis) and the corresponding $\mathrm{M}_{\mathrm{best}}$ (line, right axis), averaged over 19 targets. (b) Numbers of targets with positive, tied, and negative best@3 gains.}
+    \label{fig:m1_inter_task_best}
+\end{figure}
+
+Figure~\ref{fig:m1_inter_task_best} complements the avg@3 results in Figure~\ref{fig:m1_inter_task} by showing how trajectory-derived experience changes sampled-best performance and the signs of these changes across targets.
+The two metrics reveal different improvement profiles: GPT gains more on avg@3 than best@3 ($+0.063$ vs.\ $+0.022$), indicating broader improvements across rollouts, whereas GLM ($+0.040$ vs.\ $+0.067$) and Opus ($+0.001$ vs.\ $+0.038$) gain more on best@3, indicating larger improvements in their best runs.
+Under best@3, GLM rises from fourth to second and DeepSeek overtakes LongCat, while Opus remains first; DeepSeek improves substantially under both metrics, whereas Kimi improves on avg@3 but not best@3.
+These differences show that experience can affect run-to-run performance and sampled-best performance differently, motivating the use of both metrics.
+
+
+\section{Experience Reuse Analysis}
+
+\subsection{Intra-Task Analysis: When Experience Helps or Hurts}
+\label{sec:in_task_traj}
+
+To understand what kind of experience actually shapes the next commit, we inspect paired trajectories and analyze the two sides of memory's effect: the cases where retained experience helps, and the cases where it hurts. On the positive side, memory helps when it preserves something that a from-scratch agent struggles to independently recover within the remaining budget, which we group into three patterns. On the negative side, memory hurts when the state it preserves is itself wrong or suboptimal, which we group into two patterns.
+
+\textbf{Positive effects.}
+We observe three recurring reasons that retained experience improves the next commit.
+\begin{itemize}
+  \item \textbf{Avoiding a known dead end.} 
+  On \texttt{radix\_sort}, GPT-5.5's original run had already learned that a multi-pass byte radix scores poorly and moved on to a better idea; without that memory, the erased run's first commit fell back into the same multi-pass radix.
+  In bvh\_raytracer task, GPT-5.5's original run had, after several rounds of exploration, found that the ``binned-SAH BVH $+$ leaf-size sweep'' idea yields only limited improvement; once memory was erased, the 
+  erased run fell into this same trap.
+
+  \item \textbf{Reusing a tuned configuration.} When both conditions follow nearly the same code path, the outcome is decided by a set of hyperparameters or a converged recipe that is expensive to re-discover by search. On \texttt{flux2\_klein\_lora}, LongCat's retained run kept an already-swept training recipe and hit the optimum on its first commit, whereas the erased run re-swept and settled on a worse configuration.
+
+  \item \textbf{Reusing a hard-won implementation.} The high-scoring code is a tuned, low-level implementation that is easy to describe but hard to reproduce correctly in the remaining budget. On \texttt{flash\_attention}, both conditions independently arrived at the same high-level plan, but only Gemini's retained run kept the already-tuned kernel and landed it immediately, while the erased run reassembled the plan yet could not recover the specific implementation parameters that made it fast.
+\end{itemize}
+
+\textbf{Negative effects.}
+The same mechanism reverses sign when memory anchors the agent to a bad state, which we observe for two reasons.
+\begin{itemize}
+  \item \textbf{Carrying over a premature conclusion.} Memory can fix a wrong judgment made earlier in the run, keeping the agent on a route it should have reconsidered. On \texttt{msm\_pippenger}, DeepSeek's original run tried the stronger algorithm once, measured it as slow, and prematurely abandoned it; carrying that verdict, the retained run stayed on a weaker approach, whereas the erased run reconsidered the abandoned algorithm and implemented it correctly to overtake.
+
+  \item \textbf{Anchoring to a local optimum.} Memory can lock the agent onto a locally optimal direction that a fresh start would improve on. On \texttt{resnet\_bit\_flip}, both conditions grasped the same key idea, but GLM's retained run stayed anchored to the direction it had been refining, while the erased run switched to a more aggressive variant of the idea and reached a clearly better result.
+\end{itemize}
+
+\subsection{Inter-Task Analysis: Experience Form and Source}
+\label{sec:reuse_forms}
+
+To keep the inter-task evaluation controlled and interpretable, we use a simple form of experience reuse: after completing a source task, each model extracts lessons from its trajectory and carries them forward when solving held-out target tasks.
+To further understand inter-task experience reuse, we vary this design along two axes: experience representation, comparing explicitly extracted lessons with the full source workspace, and experience source, comparing self-generated lessons with those produced by another model.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{Figures/m1_reuse_forms.pdf}
+    \caption{How the representation and source of experience affect inter-task reuse. (a--b) M under explicit reuse of extracted lessons and implicit reuse of the raw source workspace. (c--d) M when the executing model uses self-generated lessons or lessons transferred from another model. In (c--d), the upper model produces the lessons and the lower model applies them.} %
+    \label{fig:m1_reuse_forms}
+\end{figure}
+
+\textbf{Explicit vs.\ Implicit Experience.}
+\label{sec:implicit}
+To isolate the effect of representation, we compare explicit reuse of a extracted \texttt{lessons.md} file with implicit reuse of the complete source workspace for Opus, GPT, and GLM.
+In the implicit condition, the workspace contents are not inserted into context; the agent receives its path and file structure, then decides when to consult it, what to inspect, and what to reuse.
+Both conditions use the same best-performing source trajectory, 19 targets, and three-rollout protocol, so only the form in which experience is exposed differs.
+
+\textbf{Explicitly extracted lessons outperform raw workspaces for all three models under both metrics, showing that lesson extraction adds value beyond compression.}
+As shown in Figure~\ref{fig:m1_reuse_forms}(a--b), extracted lessons yield mean inter-task gains of $+0.035$ under avg@3 and $+0.042$ under best@3 across the three models, whereas raw workspaces yield $-0.007$ and $-0.009$, respectively.
+GPT is the only model with positive transfer from raw workspaces under both metrics, while GLM shows the largest drop when extracted lessons are replaced with the raw workspace: its gain falls from $+0.040$ to $-0.012$ under avg@3 and from $+0.067$ to $-0.035$ under best@3.
+Although raw workspaces outperform extracted lessons on a few target tasks, their weaker aggregate results suggest that lesson extraction improves transfer by filtering noise and surfacing transferable knowledge.
+
+
+\textbf{Self- vs.\ Cross-Model Experience.}
+\label{sec:cross_model_reuse}
+Motivated by GLM's clear gains from self-generated lessons, we examine whether its lessons can benefit the lower-performing LongCat and whether GLM can, in turn, extract value from LongCat's lessons.
+This bidirectional comparison probes how lesson quality and the receiving model's reuse capability jointly shape transfer.
+For each direction, we compare the cross-model lessons with the executing model's own lessons over the same 19 targets and three-rollout protocol.
+
+\textbf{Self-generated lessons outperform cross-model lessons in both directions, showing that effective reuse depends on compatibility between the experience and the model applying it.}
+As shown in Figure~\ref{fig:m1_reuse_forms}(c--d), using GLM's lessons instead of its own reduces LongCat's inter-task gain from $-0.021$ to $-0.049$ under avg@3 and from $-0.046$ to $-0.067$ under best@3.
+In the reverse direction, replacing GLM's own lessons with LongCat's reduces its gain from $+0.040$ to $-0.012$ under avg@3 and from $+0.067$ to $-0.009$ under best@3, eliminating the benefits of self-generated experience.
+Together, these results suggest that experience reuse is currently most effective as a model-specific, end-to-end process; direct cross-model sharing requires better adaptation to the receiving model.
+
+
+\section{Harness Comparison by Category}
+\label{app:harness_by_category}
+
+\input{Tables/harness_comparison_category}
+
+Table~\ref{tab:harness_comparison_category} shows that harness effects are strongly category-dependent: a harness that helps one workload can hurt another for the same model, and no harness dominates across models and categories.
+
+\textbf{Opus.}
+Its avg@3 is relatively robust to harness choice, with Claude Code and OpenCode differing by at most $0.021$ on Model Development, System Optimization, and Puzzle \& Challenge, although Claude Code leads by $0.049$ on CUDA.
+The larger changes appear in best@3: OpenCode improves Model Development from $0.833$ to $0.904$ and System Optimization from $0.705$ to $0.767$, while Claude Code remains stronger on Puzzle \& Challenge and CUDA.
+
+\textbf{GPT.}
+Codex CLI and OpenCode raise avg@3 on System Optimization by $0.067$ and $0.074$, respectively, while Codex CLI also improves Puzzle \& Challenge by $0.041$; both alternatives underperform Claude Code on Model Development, and Codex CLI reduces CUDA avg@3 by $0.099$.
+The reversals are even larger on best@3: Codex CLI improves System Optimization and Puzzle \& Challenge but lowers CUDA from $0.722$ to $0.476$, whereas OpenCode reaches the highest CUDA best@3 ($0.727$).
+
+\textbf{Kimi.}
+Kimi Code CLI improves avg@3 in all four categories, with its largest gain on System Optimization ($+0.110$), while OpenCode performs best on Model Development ($0.671$) and CUDA ($0.471$) but worse on Puzzle \& Challenge ($0.746$).
+These average gains do not translate uniformly to best@3: Claude Code remains strongest on Model Development and Puzzle \& Challenge, whereas Kimi Code CLI leads on System Optimization and CUDA.
+
+Overall, harness choice affects both performance stability and peak performance, but its direction depends jointly on the model and workload.
+This result supports using a fixed strong harness for controlled model comparison, while motivating task-aware harness selection in deployment.
+
+
+
+
+
+
+\section{Examples and Evaluation Prompts}
+\label{app:text_artifacts}
+
+To make our experimental interface and evaluation procedure concrete, we provide a complete task instruction, a complete file of trajectory-derived lessons used for inter-task transfer, and the full rubric and demonstrations used to assess solution novelty and categorize non-novel approaches.
+
+\subsection{Task Instruction Example}
+\label{app:task_instruction_example}
+
+The following is the complete instruction for \texttt{grpo\_multisource}, a Model Development task.
+The placeholder \texttt{@@ROOT@@} denotes the root of the task workspace.
+
+\begin{appendixtext}{Task instruction: \texttt{grpo\_multisource}}
+\VerbatimInput[
+  fontsize=\footnotesize,
+  breaklines=true,
+  breakanywhere=true,
+  breaksymbolleft={},
+  breaksymbolright={}
+]{Prompts/task-instruction.md}
+\end{appendixtext}
+
+\subsection{Example of Trajectory-Derived Lessons}
+\label{app:inter_task_lessons_example}
+
+The following \texttt{lessons.md} file were extracted by DeepSeek-V4-Pro from its highest-scoring trajectory among three lesson-free rollouts on \texttt{data\_select\_ifeval}.
+When transferred to the held-out \texttt{llm\_online\_serving}, these lessons increased avg@3 by $+0.26$ and best@3 by $+0.66$ relative to the lesson-free condition.
+
+\begin{appendixtext}{Lessons extracted from \texttt{data\_select\_ifeval}}
+\VerbatimInput[
+  fontsize=\footnotesize,
+  breaklines=true,
+  breakanywhere=true,
+  breaksymbolleft={},
+  breaksymbolright={}
+]{Prompts/lessons-case.md}
+\end{appendixtext}
+
+\subsection{Solution Novelty Classification Rubric}
+\label{app:novelty_judge_rubric}
+
+For reproducibility, we present the complete classification rubric and few-shot demonstrations provided to the judging model, Opus-4.8.
+Solution-specific inputs, including the task description, initial-to-final code diff, commit history, experiment journal, and measured effort signals, were supplied separately for each solution and are therefore omitted here.
+
+\begin{appendixtext}{Classification rubric}
+\VerbatimInput[
+  firstline=2,
+  lastline=67,
+  fontsize=\footnotesize,
+  breaklines=true,
+  breakanywhere=true,
+  breaksymbolleft={},
+  breaksymbolright={}
+]{Prompts/judge-rubric.md}
+\end{appendixtext}
+
+\begin{appendixtext}{Few-shot demonstrations}
+\VerbatimInput[
+  firstline=74,
+  lastline=107,
+  fontsize=\footnotesize,
+  breaklines=true,
+  breakanywhere=true,
+  breaksymbolleft={},
+  breaksymbolright={}
+]{Prompts/judge-rubric.md}
+\end{appendixtext}

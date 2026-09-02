@@ -1,14 +1,22 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** add the clean-clone rebuild-and-compare step to the validation run so artifact reproducibility is re-proved automatically rather than by hand.
+- **next_first_action:** generate the three remaining low-confidence element judgements so the 25-item calibration set can certify the judged-scoring risk bound.
 
-- **last_updated:** 2026-09-03T00:34:19+09:00
+- **last_updated:** 2026-09-03T00:40:40+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 15 closed — submission artifact is byte-reproducible across checkouts after diagnosing two timestamp sources
+- **current_phase:** cycle 16 closed — reproducibility folded into the gate, and the self-correction claim replaced by a measured census
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 16 — the process claim is now a number, and reproducibility is enforced
+
+- **Unit 1, reproducibility enforced.** The clean-clone comparison was folded into the validation gate: every run rebuilds the artifact from its committed builder into a temporary path and fails when the digest differs. Proven by tampering with one word in the committed artifact, which produced `reproducible: false` and a gate failure; restoring returned it to pass.
+- **Unit 2, the self-correction claim measured.** The method claimed a loop that corrects itself but never quantified it. A committed script with eight fixtures now censuses the decision ledger: **28 records across 15 groups, all carrying falsifiers written before the result, 20 with executed evidence, and 3 revised**, a revision rate of `0.107`. All three revisions were triggered by the project's own executed measurements, not outside review.
+- **Two limits recorded with the number.** The census counts the ledger that records the decision to run it, so it is reported against a stated ledger digest rather than as a constant. And a single project without a comparison group cannot show that writing falsifiers *caused* the revisions.
+- **Literature loop:** 9 discovery calls, 3 new `FULL_PAPER_READ` records. One names this project's ceiling directly: gates and receipts are operational rigor, which substitutes for understanding rather than supplying it. That sentence is now in the manuscript as the boundary of the contribution.
+- **Two real defects fixed while integrating:** the new citations used the wrong macro so first-citation ordering silently passed on 3 of 60 entries, and adding a subsection before the Conclusions renumbered two later references. The bibliography was reordered programmatically to the true first-citation order.
 
 ### Cycle 15 — the artifact was not reproducible, and now is
 
