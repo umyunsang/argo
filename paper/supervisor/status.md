@@ -1,14 +1,22 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** extend the two-sided bindings to the remaining unbound body numbers, since only the fifteen headline checks are guaranteed today.
+- **next_first_action:** record the design constants and configuration ceilings in a receipt so the numbers that are currently unbindable become bindable.
 
-- **last_updated:** 2026-09-03T02:15:42+09:00
+- **last_updated:** 2026-09-03T02:20:01+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 32 closed — the claim-binding audit tool failed its own validity test and was replaced by explicit two-sided binding
+- **current_phase:** cycle 33 closed — 29 two-sided claim bindings; two candidate bindings rejected rather than loosened
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 33 — coverage raised from 15 to 29 bindings, by refusing two
+
+- **Gap picked:** only the headline numbers were bound; the reported figures in the results were not.
+- **Executed:** 14 further two-sided bindings added, covering reliability, agreement, kappa, endpoint correlation, cost understatement, and the decision census. **29 checks now pass.**
+- **Two candidate bindings were rejected, not forced.** One resolved to an episode *list* rather than a count and was rebound to a receipt that records the count. The other had no receipt field at all, and binding it would have required a wide tolerance around a different number — that is how a check stops checking.
+- **Both directions still fire:** editing a reliability figure in the prose alone, and editing the same figure in the receipt alone, each fail the gate.
+- **Coverage limit stated in the paper:** design constants and configuration ceilings stay unbound because no receipt records them. Partial and sound is preferred to complete and loose.
 
 ### Cycle 32 — the audit tool failed its own validity test
 

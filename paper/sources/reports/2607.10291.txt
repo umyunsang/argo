@@ -1,0 +1,1632 @@
+
+Warning: orx 0.1.117 is outdated (latest 0.1.118). A newer release is available; upgrade to stay compatible with the API. Run `orx update` to upgrade.
+
+alphaXiv: https://www.alphaxiv.org/abs/2607.10291
+
+Partial Contracts Suffice: Sound, LLM-Inferred
+Regression Verification
+Yiannis Charalambous
+The University of Manchester
+0009-0000-5755-5099
+Rafael Menezes
+The University of Manchester
+0000-0002-6102-4343
+Youcheng Sun
+The University of Manchester
+0000-0002-1893-6259
+Lucas C. Cordeiro
+The University of Manchester
+0000-0002-6235-4272
+Abstract—Software evolves continuously, yet ensuring that a
+patch preserves intended behavior without re-verifying an entire
+codebase remains difficult. Regression verification addresses this
+problem, but existing techniques either require expensive whole-
+program reasoning or rely on manually written specifications
+that are rarely available in practice. In this work, we present the
+first contract-based regression verification tool. In our approach,
+the contract soundness is ensured by proving that all function
+versions match the behavior. Additionally, to ensure the behavior,
+the contract is used to verify the program flow (i.e., assume-
+guarantee). We ask whether a partial, caller-sufficient contract,
+rather than a full behavioral specification, is enough. On Frama-
+C-Problems we strengthen each inferred contract past what
+the caller needs and measure how much tighter it becomes.
+It barely moves: for most targets in every model the caller-
+sufficient contract is already the tightest the loop reaches, and our
+tightness comparator rates the partial and strengthened contracts
+equivalent for the large majority of targets it can compare (18
+of 20, 13 of 15, and 14 of 18 across the three models). Partial-
+spec contracts thus capture nearly all the attainable tightness, so
+stopping at caller-sufficiency costs almost nothing. The regression
+check underneath is sound: on the third-party EqBench-C suite
+it never fabricates an equivalence, returning zero false proofs on
+the pairs it decides and reporting an unprovable difference rather
+than a false proof. Used as a soundness oracle this way, it also sur-
+faced nine pairs that EqBench mislabels as equivalent, more than
+a concurrent tool reports. The contracts themselves are inferred
+automatically from the checker’s own counterexamples, with no
+separate specification step; on Frama-C-Problems and the ANSSI
+X509 parser this reaches a verification rate comparable to the
+weakest-precondition (WP) tools AutoSpec and Preguss, while a
+passing result certifies at least as strong a property, which we call
+safety-preserving conditional equivalence: enforcement plus caller-
+sufficiency, with runtime-error freedom covered by the safety
+encoding.
+Index Terms—formal verification, software testing, artificial
+intelligence, software safety, large language models
+I. INTRODUCTION
+Software changes constantly, and most changes are meant
+to be conservative: a refactor, a bug fix, or a small feature
+should preserve the behavior callers already rely on. They
+don’t always manage it. A fix that corrects one execution path
+can quietly perturb an output some other caller reads, and if
+no test exercises that caller the regression ships unnoticed;
+across major operating systems, between 14.8% and 24.4% of
+post-release fixes were themselves found to be incorrect [1].
+Catching it means deciding whether the new and old versions
+still agree, and there’s no general procedure for that: deciding
+full input/output equivalence is undecidable [2], and even a
+bounded check stays expensive, since it has to reason about
+each function together with all its side-effects [3].
+In a bug-fixing or refactoring context, full equivalence asks
+too much: the developer means to change some paths and
+leave the rest, so requiring agreement everywhere, old bugs
+and all, rejects the very edit being made. The useful notions
+form a spectrum, ordered by how much of each execution
+they compare, and the weaker the relation the cheaper the
+proof. Full equivalence is the strongest: the two versions must
+terminate on the same inputs and return the same outputs ev-
+erywhere, preserved bugs included. Partial equivalence relaxes
+termination, asking the versions to agree only on the inputs
+where the old one terminates. Conditional, or regression,
+equivalence relaxes further still: it fixes a property marking the
+behavior worth preserving and asks for agreement only where
+the old version already satisfied it. Where the old version
+violated the property, the new one is free to differ, and that
+freedom is exactly where a bug fix lives. We make the three
+notions precise in Definition 2.
+Whichever notion one targets, a whole-program check re-
+analyzes every callee in full at each call site, which does not
+scale as a codebase grows. A scalable proof has to be modular:
+each call is discharged against an abstraction α of the callee
+rather than its body, so the callee is analyzed once instead of
+at every use. For the proof to stay trustworthy that abstraction
+must be sound: it has to over-approximate the callee, admitting
+every behavior the function can exhibit, so the check can never
+miss a real difference.
+We take that abstraction to be a function contract: a
+precondition and a postcondition that pin down just part of
+the callee’s behavior (Definition 3). A verifier enforces the
+contract against the old version, certifying it as a sound over-
+approximation, and then replaces each call by it, so one
+enforced contract serves every call site without re-entering
+the body. The contract need only be precise on the slice
+of the output the property observes; off that slice it may
+stay weak, and looseness there costs completeness, never
+soundness. Anchoring it to the old version’s safe behavior
+also folds safety in, so a newly introduced memory leak or
+out-of-bounds access counts as a regression even when every
+returned value is unchanged.
+Contracts like this are almost never written by hand:
+even safety-critical code rarely carries machine-checkable per-
+function specifications, and what exists tends to be system-
+arXiv:2607.10291v1 [cs.SE] 11 Jul 2026
+
+Caller (unchanged in both versions)
+1 int usable_width(const box_t *b) {
+2 box_t o;
+3 shrink(b, &o);
+4 return o.w; // reads w, never h
+5 }
+shrink (OLD)
+1 void shrink(const box_t *b,
+2 box_t *o) {
+3 o->w = b->w - 2;
+4 o->h = b->h;
+5 }
+shrink (NEW)
+void shrink(const box_t 
+*b,
+box_t 
+*o)
+ {
+o->w = b->w - 2;
+o->h = b->h - 2;
+}
+Inferred contract C on shrink (enforced against OLD)
+requires \valid(b) && \valid(o);
+assigns o->w, o->h;
+ensures o->w == b->w - 2; // nothing about o->h
+Fig. 1. A property-relative regression check. The fix corrects o->h; the
+caller usable_width reads only o->w, so it cannot observe the change.
+The partial contract C pins o->w and stays silent on o->h: it is enforced
+against the old shrink ([[shrink
+1
+]] ⊆ [[C]]) and then replaces it in the
+regression check while the new shrink runs concretely, so the two agree on
+o->w. Comparing the whole of 
+*o
+ instead would flag the fix as a difference.
+level [4]–[6]. We therefore infer them with a large language
+model, which has recently begun to automate contract author-
+ing, though so far only for a single version of a program [4]–
+[6]. The model is never trusted: it proposes a contract, the
+verifier enforces it against the old version, and only an
+enforced contract is used, so a wrong guess is rejected rather
+than believed. This is the paper’s thesis: a partial, LLM-
+inferred, verifier-certified contract suffices to check regression-
+equivalence of C, a language of large, long-lived systems
+where a routine change can silently regress a caller.
+Beyond staying safe, a change is a regression only if
+something that uses the function can tell. Figure 1 shows
+the kind of edit we target. shrink trims a box by a fixed
+margin; the old version forgets to shrink the height, and the
+new one fixes it. The caller usable_width reads only the
+width, so it returns the same value before and after the fix.
+Asking whether the two shrink versions are equivalent is the
+wrong question: the height really does change, so a check over
+the whole of 
+*o
+ reports a difference, flagging the fix itself.
+What matters is whether shrink regresses on the width,
+the only part usable_width observes, and the contract C
+in the figure captures exactly that. Enforced against the old
+shrink, C pins the width (ensures o->w == b->w -
+2) and leaves the height free. The regression check replaces
+the old shrink by C and runs the new shrink concretely,
+comparing only the width: because C is precise exactly where
+the caller looks and silent elsewhere, the two agree and the
+height change is invisible. A full specification would have
+to pin the height too, the one part the fix changed and no
+caller reads, making the proof obligation much harder for the
+contract author.
+We make three contributions:
+• C1 (Soundness). A verifier-independent theorem that
+proves abstracting only the old version by a single par-
+tial, one-sided contract suffices to prove property-relative
+regression-equivalence, together with a depth-bounded
+lift for nested calls (§IV, Theorem T1).
+• C2 (System). An end-to-end pipeline of three tools:
+CONTRACTOR itself scaffolds the regression har-
+nesses, SCRIBE runs the LLM-based propose-and-certify
+contract-inference loop, and REGVER discharges the
+regression-equivalence checking against the enforced
+contracts (§IV); to our knowledge the first to com-
+bine LLM-based contract inference with regression-
+equivalence verification.
+• C3 (Relative contract-tightness comparator). JUDGE,
+a semantic comparator that decides admit-set inclusion
+in both directions between two contracts and returns a
+four-way verdict (equivalent, one strictly tighter, or in-
+comparable) with counterexample witnesses; on enforced
+contracts this yields a refinement ordering, so we can
+measure how tight an inferred contract is rather than only
+whether it verifies (§IV-D, Theorem T2).
+We evaluate C1, C2, and C3 through two questions, stated
+and answered in §V: which counterexample modality best
+drives frame-condition inference (feedback modality); and
+whether targeting a partial, property-relative contract rather
+than a full specification makes inference more tractable, and
+where its returns plateau (tractability).
+The remainder of the paper is organized as follows. §II sets
+out the relational semantics, the three equivalence notions, and
+function contracts with the frame rule; §III surveys related
+work; §IV presents the soundness theorem (Theorem T1) and
+its depth-bounded lift, the system, and the contract-tightness
+procedure (Theorem T2); §V reports the experimental evalu-
+ation and analysis, including threats to validity (§V-G); and
+§VI concludes with open directions for future work.
+II. PRELIMINARIES
+A. Program semantics
+Definition 1 (Program semantics). We model each version
+of a function as a relation [[f ]] ⊆ X × Y from input pre-
+states X to output post-states Y , where (x, o) ∈ [[f ]] means
+some terminating run of f on x yields o. The pre-state X
+subsumes the responses of any external nondeterministic callee
+the two versions share, so a single x resolves those responses
+identically on both sides; only nondeterminism internal to the
+function itself leaves [[f ]](x) multi-valued. We write [[f ]](x) ≜
+{o | (x, o) ∈ [[f ]]} for the set of outputs on x, which is empty
+when f does not terminate on x.
+The spaces X and Y range over a common store, so a pre-
+state and a post-state can be compared; this is what lets the
+frame clause below speak of the locations a function leaves
+unchanged.
+B. Equivalence notions
+Fix an old version f
+1 
+and a new version f
+2
+. The three
+notions stated informally in §I order by how much of each
+execution they compare [3], [7].
+Definition 2 (Equivalence notions). • Full equivalence:
+[[f
+1
+]] = [[f
+2
+]], so the versions terminate on the same
+
+inputs and produce the same outputs everywhere, old
+bugs included.
+• Partial equivalence relaxes termination: [[f
+1
+]](x)̸ = ∅ ⇒
+[[f
+1
+]](x) = [[f
+2
+]](x), so only inputs on which f
+1 
+terminates
+need to agree.
+• Conditional (regression) equivalence relaxes further to a
+property ϕ marking the behavior worth preserving (we
+write [[f
+1
+]](x) |= ϕ when f
+1
+’s runs on x satisfy it), asking
+for agreement only where the old version was already
+correct: [[f
+1
+]](x) |= ϕ ⇒ [[f
+1
+]](x) = [[f
+2
+]](x). Where f
+1
+violated ϕ the new version is free to differ, and that
+freedom is where the fix lives.
+We target this conditional notion throughout. §IV makes
+it precise on an explicit in-scope set and relaxes the out-
+put equality to a property-relative obligation E
+ϕ
+, recovering
+the definition above as the special case where ϕ observes
+the whole output. We denote this relation we target safety-
+preserving conditional equivalence.
+C. Contracts and the Frame Rule
+Definition 3 (Function contract and admit set). A func-
+tion contract is a Hoare-style triple [8], [9]: a precondi-
+tion (requires), a postcondition (ensures), and a frame
+(assigns) naming the locations the function may modify.
+We write C ≜ (Pre, Post, Assigns), with Pre ⊆ X a set of
+input states and Post ⊆ X × Y relating inputs to outputs over
+the state spaces X, Y defined above; throughout, we identify a
+set such as Pre with its characteristic predicate, writing Pre(x)
+for x ∈ Pre. Read in that relational model, the contract denotes
+its admit set, the input/output pairs it permits,
+[[C]] ≜ {(x, o) ∈ X × Y | Pre(x) ⇒ (Post(x, o) ∧
+o agrees with x outside Assigns)},
+with image [[C]](x) the outputs it allows on x; outside its
+precondition the contract permits anything, so [[C]](x) = Y
+when ¬Pre(x).
+A modular verifier supports two operations on such a
+contract, used here only through their effect on [[C]]. Enforce-
+ment checks that the body of f satisfies its contract: every
+execution from a requires-state ends in an ensures-
+state and writes only assigns locations. This is exactly the
+inclusion [[f ]] ⊆ [[C]], so a passing enforcement makes C an
+over-approximation of f . Replacement abstracts each call to
+f by the contract: the call site asserts requires, havocs the
+locations named in assigns, and assumes ensures, so the
+call ranges over [[C]](x) in place of [[f ]](x); since [[f ]] ⊆ [[C]]
+once enforced, a proof under replacement is sound for the real
+f .
+Replacement is an over-approximation: a proof obtained
+under it is sound for the real function, but a reported failure
+may be spurious, because havocking the assigned locations
+can hand the caller an output the real body never produces.
+The frame clause is what keeps replacement precise. Locations
+not named in assigns are snapshotted before the body and
+asserted unchanged after, so without an explicit assigns the
+verifier must havoc every reachable location, and the abstrac-
+tion becomes too coarse to support a non-trivial equivalence
+proof. One caveat keeps enforcement honest: if a contract’s
+requires can never hold, the body is never entered and the
+check passes vacuously, testing nothing. Our pipeline guards
+against this by reporting such a proof as inconclusive rather
+than as a success, so the soundness of enforcement never rests
+on an empty scope.
+III. RELATED WORK
+A. Regression Verification and Equivalence Checking
+Regression Verification Tool (RVT) [3], [7] pioneered mod-
+ular regression verification, abstracting equivalent matched
+callees with shared uninterpreted functions so the proof holds
+for any consistent interpretation. Reve / LLREVE [10], [11]
+encodes paired programs as constrained Horn clauses and
+infers coupling predicates relating the two versions’ states
+with an external solver (Eldarica, Z3), while SymDiff [12]
+and DAC [13] relate the two versions by a relational sum-
+mary in the mutual-summary tradition [14]: a single predicate
+over the disjoint union of both versions’ inputs and outputs
+that characterizes their behavioral relationship. ARDiff [15]
+prunes common code by iterative abstraction-refinement, but
+only for Java; PEQcheck and PEQtest [16], [17] target lo-
+calized refactorings through segment-level encodings; and
+PASDA [18] adds partition-based heuristics for the undecided
+cases. Differential symbolic execution [19]–[22] characterizes
+program differences by exploring both versions’ symbolic state
+spaces, usually returning concrete divergence-inducing inputs
+but no reusable artifact, as does LLM-driven test generation:
+Mokav [23] pairs it with differential testing for behavioral
+separation, and UnitTenX [24] drives agents over an ESBMC
+backend to build unit tests for legacy code, both producing
+tests rather than a proof certificate. Concurrent work by
+Sarker et al. [25] takes differential symbolic execution in
+an orthogonal direction, quantifying how much of the input
+domain a patch changes rather than proving equivalence. Run
+as a soundness oracle on EqBench-C our checker surfaced
+more mislabeled Eq pairs than they report (nine versus five),
+while we target a sound modular equivalence proof, not an
+impact measure.
+Throughout this line the callee abstraction is supplied or
+derived from both bodies in lockstep, presupposing a complete
+characterization of what is abstracted. The closest exception
+is regression verification by impact summaries [26], which
+restricts the proof to change-relevant behavior: a control- and
+data-dependence analysis marks the impacted statements and
+keeps only their path-condition constraints from a whole-
+program symbolic execution. That summary is exact, so the
+check is sound and complete to the depth bound, but for the
+same reason the analysis must see all the code it reasons about.
+We instead abstract the old version alone by a weak one-sided
+contract (one constraining the old version, never the new), a
+reusable and enforceable artifact rather than a path-condition
+partition tied to one diff, scoped to what the property observes
+rather than to what the change touches, and discharged once
+
+bottom-up then reused at every call site and in every later
+check (§IV).
+B. Contract, Invariant, and Frame Inference
+Inferring functional specifications with LLMs has advanced
+quickly. The closest are ACSL-for-C tools validated by Frama-
+C: AutoSpec’s accept-or-reject WP feedback [4], “Specify
+What?” priming on EVA and Pathcrawler data [5], and Pre-
+guss’s iterative runtime-error-alarm refinement [6], the near-
+est analogue to our BMC-trace-driven loop on a Frama-
+C backend. Other LLM-based generate+validate loops [27]–
+[29]. Non-LLM inference [30], [31] and symbolic frame
+inference [32]–[34] predate these; we contribute the BMC-
+backed counterpart, with concrete-trace feedback drawn from
+ESBMC’s frame-rule pass.
+Two gaps separate this work from all of the above. First,
+every such tool targets a single version; none reuses the
+inferred contract as a callee abstraction in a two-version
+regression-equivalence proof, the gap we close. Second, they
+judge a specification by whether it verifies, not how tight it
+is [5], [35]; to our knowledge none defines a semantic notion
+of contract tightness or a decision procedure for contract
+subsumption, which §IV-D introduces. The CE-guided LLM
+loop is by now established for invariants [36]–[43] and de-
+scends from counterexample-guided inductive synthesis [44]–
+[47], but those target invariants, not the function-level frame
+conditions we infer.
+IV. METHODOLOGY
+A. One-Sided Contracts for Regression Equivalence (C1)
+Recall from Definition 1 that each version is a relation
+[[f ]] ⊆ X ×Y of terminating runs, with image [[f ]](x), and from
+Definition 3 that a contract denotes a relation [[C]] ⊆ X × Y ,
+with image [[C]](x) the outputs it allows on x. The abstraction
+α of §I is just a contract: taking [[α]] = [[C]], its over-
+approximation requirement [[f
+1
+]] ⊆ [[α]] becomes [[f
+1
+]] ⊆ [[C]].
+Definition 4 (Scope and equivalence obligation). A property ϕ
+fixes a scope Sc ≜ {x ∈ X | [[f
+1
+]](x) |= ϕ} of in-scope inputs
+(the x on which every run of f
+1 
+stays within ϕ, e.g. runs
+safely), and an equivalence obligation E
+ϕ
+(o
+1
+, o
+2
+) that holds
+when o
+1 
+and o
+2 
+agree on the part of the output ϕ observes (for
+example, the return value and the locations a caller reads).
+We work under partial correctness and three standing as-
+sumptions, made explicit because the theorem rests on them:
+(A1) only terminating runs populate [[·]], so the claim is over
+inputs on which both versions terminate [3] (in particular, a
+change that makes f
+2 
+diverge where f
+1 
+terminated is outside
+the guarantee, and detecting such termination regressions is
+left to future work); (A2) the frame rule is sound (a body
+that passes enforcement writes no location outside Assigns,
+even under aliasing); and (A3) the verifier that discharges
+enforcement and replacement is sound, so every verdict it
+certifies holds in the relational model (Definition 3). Exter-
+nal nondeterminism needs no separate assumption: a shared
+callee’s responses are part of the input x (Definition 1), so
+they are resolved identically on both sides by construction
+and cannot themselves induce a divergence.
+Definition 5 (Contract preserving regression-equivalence).
+Given two versions f
+1
+, f
+2 
+of a function and a property ϕ,
+a contract C preserves regression-equivalence with respect to
+ϕ iff:
+1) Enforcement. [[f
+1
+]] ⊆ [[C]]: C over-approximates f
+1
+, so
+every run of f
+1 
+is one C permits.
+2) Sufficiency for ϕ. For every x ∈ Sc, every o ∈ [[C]](x),
+and every o
+2 
+∈ [[f
+2
+]](x), we have E
+ϕ
+(o, o
+2
+): every output
+the replacement of f
+1 
+by C may produce meets the
+regression obligation against f
+2
+.
+Condition 2 mirrors replacement: the abstracted call ranges
+over exactly [[C]](x), the outputs C allows on x. We need
+not separately assume Sc ⊆ Pre: dropping it only strengthens
+condition 2’s hypothesis (outside Pre, [[C]](x) = Y , so the
+obligation ranges over more outputs, never fewer), and the
+soundness proof never relies on Sc ⊆ Pre.
+Definition 6 (ϕ-regression-equivalence). f
+2 
+is ϕ-regression-
+equivalent to f
+1 
+iff for every x ∈ Sc, every o
+1 
+∈ [[f
+1
+]](x), and
+every o
+2 
+∈ [[f
+2
+]](x) the obligation E
+ϕ
+(o
+1
+, o
+2
+) holds.
+For deterministic functions (each [[f ]](x) a single output,
+shared external nondeterminism already folded into x by
+Definition 1), this coincides with the conditional equivalence
+[[f
+1
+]](x) |= ϕ ⇒ [[f
+1
+]](x) = [[f
+2
+]](x) of Definition 2, equality
+relaxed to E
+ϕ
+; for genuinely multi-valued [[f ]](x) the pairwise
+form is strictly stronger.
+Intuitively, the contract only needs to over-approximate the
+old version, while being precise on the behavior observed
+by callers. This allows us to replace the old implementation
+during verification without introducing unsoundness.
+Theorem T1 (Soundness of one-sided contract abstraction).
+Let f
+1
+, f
+2 
+be two versions of a function, C a contract, and ϕ
+a property with scope Sc and obligation E
+ϕ
+. If C preserves
+regression-equivalence with respect to ϕ (Definition 5), then
+f
+2 
+is ϕ-regression-equivalent to f
+1 
+(Definition 6).
+Proof. Fix x ∈ Sc, o
+1 
+∈ [[f
+1
+]](x), and o
+2 
+∈ [[f
+2
+]](x).
+By condition 1, [[f
+1
+]] ⊆ [[C]], so [[f
+1
+]](x) ⊆ [[C]](x) and
+o
+1 
+∈ [[C]](x). Instantiate condition 2 with this x, the witness
+o := o
+1
+, and the given o
+2
+: its premises o
+1 
+∈ [[C]](x) and
+o
+2 
+∈ [[f
+2
+]](x) both hold, so E
+ϕ
+(o
+1
+, o
+2
+). As x, o
+1
+, o
+2 
+were
+arbitrary, f
+2 
+is ϕ-regression-equivalent to f
+1
+.
+The proof turns on one step: enforcement (condition 1)
+places the real output o
+1 
+inside [[C]](x), and replacement
+(condition 2) quantifies the obligation over all of [[C]](x), so
+it specializes to o
+1
+. Condition 1 is what makes the proof
+sound; condition 2 is the only place C must be tight, and
+everywhere else it may stay weak. The relational-summary
+abstractions of SymDiff [12] and DAC [13] and the shared-
+uninterpreted-function abstraction of RVT [3] do not allow
+this freedom, since they need a complete characterization of
+the procedure. The remaining obligations are discharged by the
+
+standing assumptions (pointer aliasing across Assigns and non-
+termination) and by the semantics (external nondeterminism is
+folded into the shared input, Definition 1); these are standard
+for Hoare reasoning with a frame rule. To our knowledge this
+is the first such formalization for a one-sided contract inside
+a regression query, and it is what makes the contract small
+enough for an LLM to infer.
+How our pipeline discharges conditions 1–2 as two concrete
+ESBMC queries is described in §IV-C.
+Replacement is an over-approximation, so the converse of
+Theorem T1 can fail: the equivalence check may report a
+spurious divergence, a witness o ∈ [[C]](x) that C permits
+but f
+1 
+never produces and on which E
+ϕ 
+fails. This is exactly
+why condition 2 requires C to be precise on the ϕ-observed
+output: looseness there admits an observably-disagreeing o
+and condition 2 fails even when f
+1 
+and f
+2 
+genuinely agree
+(lost completeness, not soundness), whereas looseness off
+the observed projection only enlarges [[C]] on locations E
+ϕ
+ignores and is harmless. That harmless region is the partial-
+spec freedom, and it keeps the LLM step practical.
+Remark 1 (Non-vacuity is machine-discharged). Theorem T1
+is content-free if Sc = ∅: an unsatisfiable Pre makes condi-
+tion 1 hold vacuously and the conclusion vacuously true. Our
+approach does not rely on the user to rule this out. Instead it
+employs a vacuity probe to ensure that the contract conditions
+are not vacuously true [48].
+B. Depth-Bounded Contract Closure
+Theorem T1 governs the boundary between one abstracted
+procedure and its caller. Regression targets in legacy code
+transitively touch hundreds of helpers, and inferring partial
+contracts for all of them in a single LLM pass is intractable.
+We extend T1 by bounding the contract closure to a con-
+figurable depth N from the seed target g
+0
+. Let d(g) be the
+depth of g, its distance from the seed g
+0
+. Functions at distance
+d(g) < N along the static call graph receive precise partial
+contracts of T1’s shape; functions at d(g) = N receive
+deliberately weak boundary contracts C
+∂
+g 
+(precondition true,
+postcondition true, and a frame that havocs every location
+reachable from the call); functions at d(g) > N receive no
+contract and are not analyzed in this pass. Under contract
+replacement, boundary contracts substitute at depth-N call
+sites and deeper bodies are never expanded, so the cost of
+verifying g
+0 
+is bounded by the depth-N closure independently
+of the full callee depth.
+Write [[g | σ]] for the denotation of g under a callee
+environment σ that replaces each callee h of g by a relation.
+Here ( · )
+h 
+is the family indexed by the callees h of g, so
+[[g | ([[h]])
+h
+]] = [[g]] sends each callee to its own denotation
+and [[g | ([[C
+h
+]])
+h
+]] replaces every callee by its contract. The
+semantics is monotone in σ (a callee relation occurs only
+positively): σ ⊆ σ
+′ 
+pointwise implies [[g | σ]] ⊆ [[g | σ
+′
+]].
+Lemma L1 (Depth-N closure soundness). With contracts
+assigned as above, suppose
+(i) (boundary) each C
+∂
+g 
+at d(g) = N havocs a superset of
+g’s footprint, so [[g]] ⊆ [[C
+∂
+g 
+]]; and
+(ii) (interior) each g at d(g) < N passes enforcement
+against its callees’ contracts, [[g | ([[C
+h
+]])
+h
+]] ⊆ [[C
+g 
+]].
+Then [[g
+0
+]] ⊆ [[C
+g
+0 
+]]: the seed contract over-approximates the
+seed without expanding any body below depth N .
+Proof. Induct on the call relation of the depth-≤ N clo-
+sure, each callee before its caller. Base. A boundary node
+(d(g) = N ) is covered by (i), [[g]] ⊆ [[C
+∂
+g 
+]], with no
+enforcement query. Step. For an interior g, every callee h
+has d(h) ≤ d(g) + 1 ≤ N , so h lies in the closure with
+a contract C
+h
+; the induction hypothesis gives [[h]] ⊆ [[C
+h
+]],
+monotonicity gives [[g]] = [[g | ([[h]])
+h
+]] ⊆ [[g | ([[C
+h
+]])
+h
+]],
+and (ii) gives [[g]] ⊆ [[C
+g 
+]]. The order is well-founded when the
+closure is acyclic; an interior recursive g replaces its self-call
+by C
+g 
+in (ii), sound by the standard partial-correctness contract
+rule (A1 makes each terminating run’s recursion finite). Take
+g = g
+0
+.
+Lemma L1 supplies condition 1 of T1 for g
+0 
+at the cost of
+the depth-N closure alone; condition 2 is discharged by the
+seed’s equivalence harness (§IV-C), independent of N . Bound-
+ary contracts need no enforcement step, so deepening the
+boundary trades precision, not soundness, and T1’s partial-
+spec relaxation carries over to each interior C
+g 
+. Iterative
+deepening re-seeds a boundary function with bound N , turning
+its case (i) into case (ii) one stratum deeper; the single
+knob N trades inferred-contract precision against verification
+scalability.
+C. System Architecture (C2)
+Our tools realize the method as a three-stage pipeline.
+CONTRACTOR parses the C project with tree-sitter, identifies
+the target functions, and scaffolds their harnesses. SCRIBE
+then runs the LLM contract-inference loop over the interior
+functions through a JSON-schema interface, closing the depth-
+N frontier with the mechanical havoc boundary contracts of
+§IV-B. Finally, REGVER stages the old version, either from a
+git commit or a directory snapshot, and renames its symbols
+on a temporary copy so that both versions can coexist in a
+single harness.
+From the enforced contracts, REGVER compiles condition 2
+of Definition 5 into one equivalence harness. On a shared
+nondeterministic input x ∈ Sc it replaces the old version by its
+contract: the call site asserts requires, havocs assigns,
+and assumes ensures, so the result ranges over [[C]](x).
+It then runs the new version f
+2 
+concretely and asserts E
+ϕ
+between the two outputs. That single verification condition
+is exactly condition 2, while enforcement (condition 1) is a
+separate query placing every real f
+1
+-output inside [[C]](x). The
+check thus reduces to two ESBMC queries, and f
+1
+’s body is
+never expanded inside the equivalence proof.
+Theorem T1 is stated over an abstract contract checker, and
+we instantiate its enforcement and replacement by ESBMC’s
+enforce and replace modes, whose documented replace-mode
+behavior supplies the over-approximation the proof relies
+
+on [29]. The theorem leaves the post-state property ϕ abstract,
+and in the implementation we fix it to the safety properties
+ESBMC encodes on every harness—memory safety (spatial
+bounds and pointer- and dereference-validity, covering use-
+after-free), division by zero, arithmetic over- and under-
+flow, memory leaks, and undefined-behavior shifts. The
+same instantiation inherits the non-vacuity guard of Remark 1
+from ESBMC’s vacuity probe.
+Inference is driven by the very counterexamples the verifier
+already produces. When ESBMC enforces a proposed contract
+C
+(0) 
+against f
+1
+’s body and the frame check fails, its frame-
+rule pass recovers the offending write (file, line, and address
+expression) from the counterexample trace, and SCRIBE feeds
+that trace, not a bare verification-condition failure, into the
+next prompt.
+D. Semantic Contract-Tightness Comparison (C3)
+The published LLM contract-inference baselines (Au-
+toSpec [4], “Specify What?” [5], Preguss [6]) do not measure
+contract tightness semantically: they report verification success
+rate, or at most count annotations by type. Any such syntactic
+proxy is inflatable: a trivially true postcondition adds to the
+count without adding constraint. We replace it with a decision
+procedure for contract subsumption.
+For contracts sound A, B on a common function over the
+state spaces X, Y of Definition 1, tightness is set inclusion on
+their admit sets: A ≤
+tight 
+B ⇐⇒ [[A]] ⊆ [[B]]. JUDGE (C3)
+decides this ordering, splitting [[C]] into its postcondition and
+frame parts. The postcondition part is two validity checks:
+• Check 1: ∀x, o. admits
+A
+(x, o) ⇒ admits
+B 
+(x, o) (is
+[[A]] ⊆ [[B]]?)
+• Check 2: ∀x, o. admits
+B 
+(x, o) ⇒ admits
+A
+(x, o) (is
+[[B]] ⊆ [[A]]?)
+where admits
+C 
+(x, o) ≡ ¬ Pre
+C 
+(x) ∨ Post
+C 
+(x, o) is member-
+ship in [[C]] with the frame conjunct dropped (a superset test);
+frame containment on Assigns is checked separately (syntac-
+tically in v1, see §V-G). When A and B share their precon-
+dition and frame (the warm-start, partial-versus-strengthened
+case Theorem T2 ranges over), a passing Check 1/Check 2
+establishes [[A]] ⊆ [[B]]. These checks are sound in that
+direction but not complete: because admits
+C 
+drops the frame,
+a failing check can be spurious (its witness may lie out-
+side the shared precondition/frame region), so judge may
+under-report tightness, never over-report it. Under the same
+shared-precondition/frame assumption, the four outcomes of
+(Check 1, Check 2) classify the pair: (✓, ✓) is equivalent
+([[A]] = [[B]]); (✓, ×) is A strictly tighter; (×, ✓) is B strictly
+tighter; (×, ×) is incomparable. Each failing check yields a
+counterexample witness: a concrete (x, o) admitted by one
+contract and rejected by the other. The incomparable case
+ships two witnesses, one per direction, surfacing the precise
+behavior each contract admits that the other does not. Each
+check is a pure validity query over a nondeterministic input
+and output, with no body of f involved (neither enforcement
+nor replacement); our implementation discharges each as a
+single SMT query.
+Relative ordering, not absolute completeness. JUDGE
+measures the order between [[A]] and [[B]], not how close either
+is to [[f ]]. A contract it finds strictly tighter may still loosely
+over-approximate f , or not be valid for f at all; validity is
+settled separately by enforcement (Theorem T1, condition 1),
+and we always report the two together. A verdict between two
+enforced contracts is thus a statement about sound contracts,
+the tighter side admitting strictly fewer behaviors while still
+covering all of f ’s; between unenforced contracts it is only
+a relative-over-approximation result, labelled as such in the
+evaluation tables.
+Tightness is the classical refinement ordering [49], [50].
+When both contracts are enforcement-checked, the ordering
+says more than set inclusion: the tighter contract proves at least
+as much, discharging every obligation the looser one does. We
+state this as an extension of Theorem T1, reusing its scope
+Sc, obligation E
+ϕ
+, and condition 2 (sufficiency). We keep
+Theorem T1’s scope Sc unchanged: the hypothesis [[A]] ⊆ [[B]]
+already gives [[A]](x) ⊆ [[B]](x) at every x, so no narrowing to
+the preconditions is needed (in the warm-start, partial-versus-
+strengthened comparison A and B share Pre anyway).
+Theorem T2 (Tightness refines proof power). Let A, B be
+contracts for f
+1 
+that both pass enforcement ([[f
+1
+]] ⊆ [[A]] and
+[[f
+1
+]] ⊆ [[B]]), with [[A]] ⊆ [[B]] (judge’s Check 1: A is at
+least as tight as B). Then every regression-equivalence query
+against f
+2 
+that replace(B) discharges, replace(A) discharges
+too (condition 2 of Theorem T1 for B implies condition 2 for
+A), and the resulting proof is sound for the real f
+1 
+and f
+2
+.
+Proof. Fix x ∈ Sc. Since [[A]] ⊆ [[B]], also [[A]](x) ⊆ [[B]](x).
+Condition 2 for B requires E
+ϕ
+(o, o
+2
+) for every o ∈ [[B]](x) and
+o
+2 
+∈ [[f
+2
+]](x); restricting to o ∈ [[A]](x) gives condition 2 for
+A. As A passes enforcement, Theorem T1 turns condition 2
+for A into the regression-equivalence of f
+1 
+and f
+2
+.
+The converse fails, and that is the point: a looser contract
+proves no more, and may admit an output f
+1 
+never produces
+that raises a spurious divergence the tighter one rules out. So
+for enforcement-sound contracts judge’s verdict is a refinement
+ordering: the strictly tighter side discharges at least as many
+regression queries, and strictly more whenever it eliminates
+such a spurious counterexample.
+V. EVALUATION
+We evaluate the contributions of §IV around two questions:
+RQ1 - Feedback Modality
+Which counterexample modality most effectively
+drives frame-condition inference: concrete BMC traces,
+verification-condition failures (AutoSpec), or runtime-
+error traces (Preguss)?
+
+RQ2 - Tractability
+Given that the SCRIBE loop produces a partial contract
+(RQ1), how much additional tightness does continued
+strengthening recover beyond it, and do those returns
+plateau? This is the practical test of the partial-spec
+freedom of Theorem T1: not whether a partial contract
+is cheaper to infer, but whether it is a good place to stop.
+The order is deliberate. RQ1 establishes that the inference
+loop works at all, and RQ2 then asks whether the partial
+contract it produces is already tight enough; RQ2 only makes
+sense once RQ1 is settled. We describe the datasets, baselines,
+and metrics, then report results.
+A. Datasets
+a) EqBench-C.: The C subset of EqBench [51]: 147
+equivalent and 125 non-equivalent program pairs. EqBench is
+the most comprehensive public equivalence-checking dataset,
+built to cover the hard constructs earlier benchmarks omit
+(non-linear arithmetic, loops, floating point, and string and
+array manipulation), which makes its C subset a demand-
+ing soundness stress-test even though formal C tools have
+rarely reported on it. Its pairs are labelled by input-output
+equivalence of terminating runs, the same notion REGVER’s
+contract-free harness decides, so the labels are valid ground
+truth for our regression check. We use EqBench-C as a
+soundness baseline for REGVER, not a cross-tool rate ranking:
+the question we ask is the safe one, whether REGVER ever
+certifies a non-equivalent pair as equivalent. We evaluate
+on EqBench-C rather than the more recent EquiBench [52]
+because EquiBench labels pairs by full input-output equiva-
+lence (Definition 2), a relation finer than the safety-preserving
+regression equivalence our methodology targets.
+b) Frama-C-Problems.: Frama-C-Problems [53] is a
+community set of 51 small C programs (∼20 LoC aver-
+age), each carrying an unproven guard assertion and 1–3
+ACSL specifications. AutoSpec [4] introduced it as a contract-
+inference benchmark and Preguss [6] reused it, so it is the
+standing benchmark for this task and both report per-program
+success rates on it. We evaluate SCRIBE on all 51 programs.
+c) X509-parser.: X509-parser is a formally verified RTE-
+free X.509 parser (>1000 LoC, manually verified in ACSL
+by its authors over five months), against which AutoSpec [4]
+reports synthesized specifications for six functions, selected
+to span loops with buffer arithmetic, switch-case control
+flow, inter-procedural composition, and mixed-width integer
+and shift operations. We evaluate SCRIBE on those same six
+functions; the depth-bounded closure of §IV-B (Lemma L1),
+a standing part of our C2 contribution rather than an ablation
+knob, handles their inter-procedural composition.
+B. Baselines
+For frame inference (RQ1) we compare against
+AutoSpec [4] (LLM+WP, VC-level feedback), “Specify
+What?” [5] (LLM+WP+EVA/Pathcrawler prompt
+augmentation), Preguss [6] (LLM+WP+RTE-trace iterative
+refinement), and AutoDeduct [30] (CHC+Eva, no LLM).
+We compare against the numbers each tool reports in its
+published evaluation, on the inputs it reports them for:
+Frama-C-Problems for AutoSpec and Preguss, and the SV-
+COMP-derived subset and X509-parser for AutoSpec. We run
+SCRIBE on those same inputs and report its success rate and
+iteration count alongside theirs. For regression verification
+we use EqBench-C only as a lightweight soundness check on
+REGVER, without a numeric cross-tool ranking: the established
+equivalence checkers (RVT [3], Reve [11], ARDiff [15],
+SymDiff [12]) decide partial rather than safety-preserving
+conditional equivalence, and the ones with EqBench results
+(ARDiff and its symbolic-execution successors) report on the
+Java subset, so no like-for-like EqBench-C number exists to
+compare against. We run REGVER on this set in two arms, a
+contract-free baseline and a treatment arm in which SCRIBE
+first infers a one-sided contract for the changed function, and
+combine them as a sequential portfolio: the baseline runs
+first and the treatment arm is invoked only on the pairs it
+leaves undecided, the timeout and tool-error tail. Because the
+escalation gate is the baseline’s own abstention, observable at
+run time and independent of the dataset label, the combination
+is a portfolio and not an oracle, and it inherits every false
+positive the contract layer raises on that tail.
+C. Experimental Setup
+We evaluate with three LLMs chosen for diversity: Opus
+4.8 [54] (closed-source frontier), Kimi K2.6 [55] (open-weight
+frontier), and Qwen3.6-27B [56] (open-weight, runnable on
+inexpensive hardware), all at temperature 0.
+For the formal verifier we use ESBMC with Z3 (due to
+quantifier support). ESBMC runs under k-induction with no
+fixed unwinding bound: inductively closed loops are proved
+for every iteration and the rest unrolled in full, completing on
+finite loops and otherwise timing out. Three limits are fixed
+across every comparison run: a per-query ESBMC timeout and
+a per-call LLM timeout, both 300s, and at most 5 refinement
+iterations per target. ESBMC also runs under a 104GB per-
+process memory budget, applied as a Linux control-group limit
+with swap off, so a run that exceeds it stops at its memory
+ceiling rather than growing into swap; a stopped run is a non-
+result, never a pass or a failure. A non-result is a run that
+returns no verdict: a query timeout, a memory-ceiling stop, an
+ESBMC crash or solver error, an unreadable exit, or an LLM
+API failure. We report each success rate two ways: over the
+cases ESBMC decided, and with every non-result charged as
+a failure (to keep the lower bound conservative).
+D. Metrics and Mapping to RQs
+Each RQ pairs a metric with the dataset it is measured on.
+• RQ1 (feedback modality): contract-inference success rate
+and iterations to convergence on Frama-C-Problems and
+X509-parser, read against AutoSpec’s and Preguss’s pub-
+lished numbers.
+• RQ2 (tractability): the round-by-round JUDGE tightness
+verdict (the saturation curve) and pass rate of SCRIBE’s
+
+partial contract against the warm-start HARDSCRIBE arm,
+on Frama-C-Problems.
+E. Results
+We report RQ1 and RQ2 from the three-model sweep on the
+inputs the baselines publish, plus the EqBench-C soundness
+baseline.
+1) RQ1 (feedback modality): We ran SCRIBE in its default
+partial-spec mode on the two inputs the closest baselines
+report on, the 51 Frama-C-Problems programs and the X509
+parser, across all three models. Table I gives the headline.
+On Frama-C-Problems, SCRIBE infers a verifier-discharged
+contract for most programs on all three models, with the
+decided and conservative success rates shown. Non-results are
+few and cluster on the hard array and loop cases (20 across the
+three models, mostly query timeouts, the rest ESBMC crashes,
+unreadable exits, and one LLM API error; no run reached the
+104GB ceiling).
+Measured the way the baselines count, with every non-result
+a failure, these conservative rates clear AutoSpec on every
+model and reach Preguss’s per-trial rate at the top of the range,
+from a single deterministic run at temperature 0 where Preguss
+averages three trials. The three tools use different success ora-
+cles: AutoSpec targets functional correctness, Preguss freedom
+from runtime errors, and SCRIBE a contract that passes both
+enforcement and replacement, which the next paragraph shows
+subsumes Preguss’s condition.
+One feature makes the comparison fairer than the differing
+oracles suggest: SCRIBE’s enforcement turns on ESBMC’s full
+safety set, covering the runtime-error class Preguss proves
+absent, while also checking a functional postcondition and
+caller-sufficiency, so a passing SCRIBE result certifies at least
+as much as a passing Preguss one.
+Table II reports the per-step pass rates, with the same
+pattern across the three models: enforcement is the binding
+gate and replacement nearly always follows once it passes.
+postcondition toward one the body satisfies. Most targets
+converge in a single iteration (Figure 2). On the X509 parser,
+SCRIBE verifies 5 of 6 target functions with Opus and Kimi
+and 3 of 6 with Qwen, against the 6 of 6 AutoSpec reports;
+the function set is similar but not identical, so we read this as
+close rather than head-to-head.
+RQ1 Answer
+Model-checker counterexamples alone provide an effec-
+tive refinement signal for contract inference. Across the
+evaluated benchmarks SCRIBE reaches verification rates
+comparable to prior approaches that additionally rely
+on weakest-precondition reasoning, value analysis, or
+runtime-error annotations, while most contracts converge
+after a single refinement iteration.
+2) RQ2 (tractability): RQ1 leaves the loop reliably produc-
+ing a verifiable partial contract. We seed the warm-start arm
+(HARDSCRIBE) from each model’s partial contract and apply
+up to five enforce-gated strengthening rounds, keeping every
+TABLE I
+RQ1 CONTRACT-INFERENCE SUCCESS
+Tool (oracle) Frama-C-Problems X509
+AutoSpec (func.) 31/51 (60.8%) 6/6
+Preguss (RTE) 122/153
+a
+(79.7%) n/a
+SCRIBE, Opus 4.8 36/51 (70.6% / 85.7%) 5/6
+SCRIBE, Kimi K2.6 40/51 (78.4% / 85.1%) 5/6
+SCRIBE, Qwen3.6-27B 36/51 (70.6% / 81.8%) 3/6
+a 
+Per-trial rate over three trials.
+TABLE II
+RQ1 PER-STEP PASS RATES OVER REFINEMENT ATTEMPTS, PER MODEL.
+Model Enforce Replace
+Kimi K2.6 0.82 0.95
+Opus 4.8 0.75 0.98
+Qwen3.6-27B 0.75 0.93
+accepted round so JUDGE can measure how much tighter each
+round is than the seed. Strengthening saturates fast in every
+model (Figure 3): for almost all orderable targets the contract
+is already at its tightest at the seed (Table III), and where
+strengthening helps it does so in the first round or two and
+then stops, its round-over-round gain reaching zero by round
+two or three.
+The endpoint comparison agrees (Table III): judging each
+model’s full contract against its own partial seed over the
+orderable pairs, the two are equivalent for the large majority
+of targets and only a few are strictly tighter after strengthen-
+ing. The warm-start arm costs almost nothing in soundness,
+keeping the last contract that verifies, so its pass rate matches
+the partial arm to within one program in every model. The
+answer to RQ2 is that caller-sufficiency already captures most
+of the attainable tightness: a cheap partial contract is within
+a few targets of the strongest contract the loop can reach, a
+direct validation of the partial-spec stopping point.
+Two bounds keep this honest. About 40% of round-level
+comparisons involve a quantified or pointer-dereferencing
+postcondition JUDGE’s signature-only harness cannot order;
+we hold those out and fix the denominator to the targets
+orderable in every round, so the saturation we report speaks
+only for the contracts JUDGE can compare across all rounds.
+And the warm-start arm strengthens within the seed’s clause
+shape, so this rapid saturation shows little tightness is left
+within that shape, not that no tighter contract of a different
+shape exists, which we leave to the from-scratch study in
+§V-G.
+RQ2 Answer
+Continued strengthening recovers little beyond the partial
+contract: caller-sufficiency already captures most of the
+attainable tightness, and the few targets that tighten do so
+within a round or two before the returns plateau, so the
+partial contract is a sound place to stop.
+
+1 2 3
+iteration first reaching pass+pass
+0
+10
+20
+harnesses
+ 
+24
+12
+2
+20
+12
+2
+25
+7
+1
+RQ3 convergence histogram — frama-c-problems
+kimi-k2.6
+qwen3.6-27b
+claude-opus-4-8
+Fig. 2. RQ1 convergence histogram per model on Frama-C-Problems: the
+iteration at which each harness first reaches a passing enforce and replace.
+Most targets converge in a single iteration.
+1 2 3 4 5
+strengthening round
+0
+10
+20
+% strictly tighter
+RQ2 tightness saturation curve — frama-c-problems
+kimi-k2.6 qwen3.6-27b claude-opus-4-8 vs seed vs prev
+Fig. 3. RQ2 tightness saturation on Frama-C-Problems. Per model, the share
+of orderable targets strictly tighter than the partial seed at round k (solid) and
+the round-over-round gain over the previous round (dashed). The denominator
+is fixed across rounds to the targets JUDGE orders in every round (16 / 18 /
+19 for Opus 4.8 / Kimi K2.6 / Qwen3.6-27B), so the solid curve is monotone
+by construction.
+3) Soundness and reach on EqBench-C: REGVER runs the
+contract-free regression harness on all 272 pairs, producing a
+verdict on 70; the rest time out or hit a tool error and are held
+out. On the decided pairs it never fabricates an equivalence:
+100% recall, zero false negatives (Figure 4). Some of its
+false positives are not over-detection but dataset mislabels,
+pairs EqBench labels Eq that are actually non-equivalent; we
+found nine and filed them upstream [57] , and independent
+work reports EqBench mislabels as well [25]. We draw no
+cross-tool ranking (see §V-B): the comparable checkers decide
+partial rather than safety-preserving conditional equivalence,
+so EqBench-C serves as a soundness check, not a competitive
+baseline.
+a) Reach with contracts.: A developer runs the contract-
+free baseline first and escalates only the pairs it cannot decide;
+on that undecided tail SCRIBE infers a one-sided contract
+for the changed function and REGVER runs again. This is
+where contracts earn their keep: they recover 9, 11, and 7
+correct decisions for Opus, Kimi, and Qwen on pairs the
+baseline left as timeouts or tool errors, pushing the decided
+count from 70 to 105 / 106 / 102 (Table IV), and every
+recovered decision is a real divergence the baseline was too
+weak to expose. The gain comes at an expected precision
+cost: the inferred contracts over-approximate, so the recovered
+tail is false-alarm-heavy. But each false alarm lands on a
+pair the baseline could not decide at all, a triageable over-
+approximation rather than a regression. Soundness holds under
+the relation we target: no model fabricates an equivalence, the
+lone dataset-scored exception being triangularMod under
+Qwen, non-equivalent under full equivalence but equivalent
+under the safety-preserving conditional equivalence REGVER
+TABLE III
+RQ2 TIGHTNESS ENDPOINT, PER MODEL. “PARTIAL / FULL” ARE THE
+PER-ARM PASS COUNTS (FULL ARM OF 50).
+Model Sat. @0 Equiv : tighter Partial / Full
+Kimi K2.6 43/47 13 : 2 40 / 41
+Opus 4.8 40/42 18 : 2 36 / 36
+Qwen3.6-27B 38/42 14 : 4 36 / 36
+TABLE IV
+EQBENCH-C REACH. COUNTS ARE OUT OF 272 PAIRS.
+Arm Decided Correct FP FN
+Baseline (contract-free) 70 56 14 0
++ contracts, Opus 4.8 105 65 40 0
++ contracts, Kimi K2.6 106 67 39 0
++ contracts, Qwen3.6-27B 102 63 38 1
+a
+a 
+triangularMod: false FN under safety-preserving condi-
+tional equivalence.
+targets, since the two versions agree wherever the old one
+terminates; we report it as the dataset scores it rather than
+substitute our own oracle. Contracts therefore extend reach
+into EqBench-C’s hardest cases and fail safe: every decision
+they add is correct or a triageable false alarm, never a missed
+difference.
+F. Discussion
+The results cohere around the contributions. RQ1 supports
+C2, that BMC trace feedback is enough to drive frame
+inference: a single model checker driven by counterexamples
+infers verifiable contracts competitively with heavier weakest-
+precondition pipelines. RQ2 supports the partial-spec stopping
+point of Theorem T1 (C1), the cheap partial contract already
+close to the tightest a strengthening loop reaches, with JUDGE
+(C3) supplying the tightness ordering behind that claim and
+reporting unorderable rounds as a scope bound. The refinement
+telemetry shows the mechanism, enforcement the binding gate
+and the loop only ever weakening an over-strong postcondi-
+tion; and the EqBench-C baseline backs the soundness half of
+C1 directly, with zero fabricated equivalences.
+G. Threats To Validity
+Construct validity. The cross-tool RQ1 comparison spans
+different success oracles, so we present it as a situating com-
+parison rather than a head-to-head. On EqBench-C REGVER
+runs in two arms against the dataset’s full-equivalence labels
+as a soundness check, not a tool ranking; the reported cascade
+composes them post hoc, faithfully, since pairs are scored
+independently and the escalation gate reads only the baseline’s
+abstention, not the label. Because REGVER targets the weaker
+conditional equivalence, a pair the dataset scores as a miss
+may be correct under our notion (triangularMod); scoring
+against the dataset regardless, such mismatches can only count
+against us. JUDGE (C3) reports a relative tightness ordering on
+admit sets, not whether a contract characterises f completely;
+
+TP TN FP FN SIG_MISMATCH TIMEOUT TOOL_ERROR
+0
+50
+100
+cases
+35
+21 
+14
+0 
+2
+121
+79
+EqBench regression-verification outcomes
+Fig. 4. Contract-free baseline regression-verification outcomes on EqBench-C.
+The false-negative bucket (a non-equivalent pair called equivalent) is empty:
+the baseline never fabricates an equivalence.
+we always pair its verdict with enforcement, so a tighter-under-
+JUDGE contract that also enforces is unambiguously a tighter
+sound contract. The C1 guarantee holds under its assumptions
+on assigns aliasing, nondeterministic external calls, and
+termination; outside those it degrades to an honest unknown
+rather than a false proof.
+Internal validity. SCRIBE runs each model once at tempera-
+ture 0, a single deterministic trajectory rather than an average
+over LLM sampling; we mitigate by reporting three models
+whose refinement telemetry is near-identical, but a different
+seed could shift individual cases. Non-results are excluded
+from the pass-rate denominator, which the two-way reporting
+(§V) keeps honest since none is a wrong verdict. On EqBench-
+C the size and make-up of the undecided tail the treatment arm
+escalates on depend on the per-query timeout, fixed at 300s
+across both arms. RQ2’s warm start tightens only within the
+seed’s clause shape and cannot reach a structurally different
+contract; we frame it as the marginal value of continued
+strengthening and keep JUDGE strictly post hoc, so the loop
+is gated on enforcement, never on the tightness measure it
+reports.
+External validity. The baseline comparison is one-
+way (published numbers, not re-runs), on the same full-
+denominator basis they report. The benchmarks are small
+(Frama-C-Problems averages about seventeen lines, the X509
+study six functions, EqBench-C crafted rather than production
+code), so generalisation to large real-world C, and to C++,
+is future work. The supported program class is bounded by
+engineering gaps with known fixes: the tree-sitter call/include
+graph misses indirect, virtual, and macro-expanded calls (an
+LLVM-IR pipeline with SVF [58] or libclang closes this),
+the REGVER rename pass cannot rewrite identifiers in macro
+bodies (Coccinelle [59]), and its side-effect comparator sees
+only writes through pointer parameters (bi-abduction [33]
+and Infer-style footprints extend it). JUDGE’s tightness figures
+exist only on its primitive-typed signature class. These are
+engineering scope bounds, not open research questions.
+VI. CONCLUSION
+We asked whether a partial, caller-sufficient contract, rather
+than a full behavioral specification, is enough to verify re-
+gression equivalence. Theorem T1 answers yes for safety-
+preserving conditional equivalence: a one-sided contract that
+abstracts only the old version, scoped to the property worth
+preserving, is sound for the regression check, and a depth-
+bounded closure (Lemma L1) bounds the contract closure so
+the proof scales. The target of inference is therefore not a
+complete specification but the weakest contract a caller needs.
+An end-to-end system (SCRIBE, CONTRACTOR, REGVER)
+infers these contracts automatically from the model checker’s
+own counterexamples, with no separate specification step. On
+Frama-C-Problems and the ANSSI X509 parser this reaches a
+verification rate comparable to the weakest-precondition tools
+AutoSpec and Preguss while certifying a stronger property,
+enforcement plus caller-sufficiency with runtime-error free-
+dom included, which answers RQ1: counterexample feedback
+alone is a sufficient signal for frame inference. Strengthening
+each inferred contract past caller-sufficiency barely tightens
+it, the partial and warm-started contracts coming out JUDGE-
+equivalent for the large majority of comparable targets, so
+the partial-spec stopping point of Theorem T1 is close to the
+practical ceiling rather than a compromise (RQ2).
+A decision procedure for contract subsumption (JUDGE)
+reports these tightness results as a real set-inclusion ordering
+rather than a gameable clause count. The regression check
+underneath is sound by construction: on EqBench-C REGVER
+never fabricates an equivalence, and run as a soundness oracle
+it surfaced nine pairs the suite mislabels as equivalent, more
+than concurrent work reports. Together these establish that
+sound, modular regression verification can be driven by a
+model checker’s own counterexamples and a partial contract,
+with no hand-written specification.
+Two directions follow naturally. LLM-driven C++ contract
+inference: every published LLM contract-inference tool we
+are aware of is C-only, so inferring functional contracts for
+C++ operator overloads, initializer-list constructors, RAII de-
+structors, and template instantiations over the standard library
+is an unaddressed problem and the natural next target for
+this line of work. Regression verification across signature
+changes: RVT [3], Reve [11], SymDiff [12], and REGVER
+all assume the old and new versions share a signature, so
+aligning refactored signatures (parameter reordering, splitting,
+merging, type changes) for verification-grade equivalence is
+an open problem, naturally cast as a relational extension of
+Theorem T1 in which the parameter alignment is itself part of
+the inference.
+VII. ACKNOWLEDGEMENTS
+The authors acknowledge the use of generative AI tools
+in both the development of the research tooling and the
+preparation of this manuscript. All AI-assisted content was
+subsequently reviewed, revised, and validated by the authors,
+who assume full responsibility for the integrity and accuracy
+of the final publication.
+
+REFERENCES
+[1] Z. Yin, D. Yuan, Y. Zhou, S. Pasupathy, and L. Bairavasundaram, “How
+do fixes become bugs?” in Proceedings of the 19th ACM SIGSOFT
+Symposium and the 13th European Conference on Foundations of
+Software Engineering, ser. ESEC/FSE ’11. New York, NY, USA:
+Association for Computing Machinery, 2011, p. 26–36. [Online].
+Available: https://doi.org/10.1145/2025113.2025121
+[2] H. G. Rice, “Classes of recursively enumerable sets and their
+decision problems,” Transactions of the American Mathematical
+Society, vol. 74, no. 2, pp. 358–366, 1953. [Online]. Available:
+http://www.jstor.org/stable/1990888
+[3] B. Godlin and O. Strichman, “Regression verification: proving the
+equivalence of similar programs,” Software Testing, Verification and
+Reliability, vol. 23, no. 3, pp. 241–258, 2013. [Online]. Available:
+https://onlinelibrary.wiley.com/doi/abs/10.1002/stvr.1472
+[4] C. Wen, J. Cao, J. Su, Z. Xu, S. Qin, M. He, H. Li, S.-C. Cheung, and
+C. Tian, “Enchanting program specification synthesis by large language
+models using static analysis and program verification,” in Computer
+Aided Verification, A. Gurfinkel and V. Ganesh, Eds. Cham: Springer
+Nature Switzerland, 2024, pp. 302–328.
+[5] G. Granberry, W. Ahrendt, and M. Johansson, “Specify what? enhancing
+neural specification synthesis by symbolic methods,” in Integrated
+Formal Methods, N. Kosmatov and L. Kov´acs, Eds. Cham: Springer
+Nature Switzerland, 2025, pp. 307–325.
+[6] Z. Wang, T. Lin, M. Chen, H. Li, M. Yang, X. Yi, S. Qin, Y. Luo,
+X. Li, B. Gu, L. Lu, and J. Yin, “A tale of 1001 loc: Potential
+runtime error-guided specification synthesis for verifying large-scale
+programs,” Proc. ACM Program. Lang., vol. 10, no. OOPSLA1, Apr.
+2026. [Online]. Available: https://doi.org/10.1145/3798268
+[7] B. Godlin and O. Strichman, “Regression verification,” in Proceedings
+of the 46th Annual Design Automation Conference, ser. DAC ’09.
+New York, NY, USA: Association for Computing Machinery, 2009, p.
+466–471. [Online]. Available: https://doi.org/10.1145/1629911.1630034
+[8] C. A. R. Hoare, “An axiomatic basis for computer programming,”
+Commun. ACM, vol. 12, no. 10, p. 576–580, Oct. 1969. [Online].
+Available: https://doi.org/10.1145/363235.363259
+[9] B. Meyer, “Applying ’design by contract’,” Computer, vol. 25, no. 10,
+pp. 40–51, 1992.
+[10] D. Felsing, S. Grebing, V. Klebanov, P. R¨u mmer, and
+M. Ulbrich, “Automating regression verification,” in Proceedings of
+the 29th ACM/IEEE International Conference on Automated Software
+Engineering, ser. ASE ’14. New York, NY, USA: Association
+for Computing Machinery, 2014, p. 349–360. [Online]. Available:
+https://doi.org/10.1145/2642937.2642987
+[11] V. Klebanov, P. R¨ummer, and M. Ulbrich, “Automating regression veri-
+fication of pointer programs by predicate abstraction,” Formal Methods
+in System Design, vol. 52, no. 3, pp. 229–259, 2018.
+[12] S. K. Lahiri, C. Hawblitzel, M. Kawaguchi, and H. Rebˆelo, “Symdiff:
+A language-agnostic semantic diff tool for imperative programs,” in
+Computer Aided Verification, P. Madhusudan and S. A. Seshia, Eds.
+Berlin, Heidelberg: Springer Berlin Heidelberg, 2012, pp. 712–717.
+[13] S. K. Lahiri, K. L. McMillan, R. Sharma, and C. Hawblitzel,
+“Differential assertion checking,” in Proceedings of the 2013 9th Joint
+Meeting on Foundations of Software Engineering, ser. ESEC/FSE 2013.
+New York, NY, USA: Association for Computing Machinery, 2013, p.
+345–355. [Online]. Available: https://doi.org/10.1145/2491411.2491452
+[14] C. Hawblitzel, M. Kawaguchi, S. K. Lahiri, and H. Rebˆelo, “Towards
+modularly comparing programs using automated theorem provers,” in
+Automated Deduction – CADE-24, M. P. Bonacina, Ed. Berlin,
+Heidelberg: Springer Berlin Heidelberg, 2013, pp. 282–299.
+[15] S. Badihi, F. Akinotcho, Y. Li, and J. Rubin, “Ardiff: scaling
+program equivalence checking via iterative abstraction and refinement
+of common code,” in Proceedings of the 28th ACM Joint Meeting
+on European Software Engineering Conference and Symposium on
+the Foundations of Software Engineering, ser. ESEC/FSE 2020. New
+York, NY, USA: Association for Computing Machinery, 2020, p.
+13–24. [Online]. Available: https://doi.org/10.1145/3368089.3409757
+[16] M.-C. Jakobs, “Peqcheck: Localized and context-aware checking of
+functional equivalence,” in 2021 IEEE/ACM 9th International Confer-
+ence on Formal Methods in Software Engineering (FormaliSE), 2021,
+pp. 130–140.
+[17] M.-C. Jakobs and M. Wiesner, “Peqtest: Testing functional equivalence,”
+in Fundamental Approaches to Software Engineering, E. B. Johnsen and
+M. Wimmer, Eds. Cham: Springer International Publishing, 2022, pp.
+184–204.
+[18] J. Glock, J. Pichler, and M. Pinzger, “Pasda: A partition-based semantic
+differencing approach with best effort classification of undecided
+cases,” Journal of Systems and Software, vol. 213, p. 112037, 2024.
+[Online]. Available: https://www.sciencedirect.com/science/article/pii/
+S0164121224000803
+[19] S. Person, M. B. Dwyer, S. Elbaum, and C. S.
+Pundefinedsundefinedreanu, “Differential symbolic execution,” in
+Proceedings of the 16th ACM SIGSOFT International Symposium
+on Foundations of Software Engineering, ser. SIGSOFT ’08/FSE-16.
+New York, NY, USA: Association for Computing Machinery, 2008, p.
+226–237. [Online]. Available: https://doi.org/10.1145/1453101.1453131
+[20] H. Palikareva, T. Kuchta, and C. Cadar, “Shadow of a doubt: testing
+for divergences between software versions,” in Proceedings of the
+38th International Conference on Software Engineering, ser. ICSE ’16.
+New York, NY, USA: Association for Computing Machinery, 2016,
+p. 1181–1192. [Online]. Available: https://doi.org/10.1145/2884781.
+2884845
+[21] C. Luo, W. Meng, and S. Wang, “Strengthening supply chain security
+with fine-grained safe patch identification,” in Proceedings of the
+IEEE/ACM 46th International Conference on Software Engineering, ser.
+ICSE ’24. New York, NY, USA: Association for Computing Machinery,
+2024. [Online]. Available: https://doi.org/10.1145/3597503.3639104
+[22] C. Helbling, G. Leach-Krouse, S. Lasser, and G. Sullivan, “cozy:
+Comparative symbolic execution for binary programs,” in Proceedings
+2025 Workshop on Binary Analysis Research, ser. BAR 2025. Internet
+Society, 2025. [Online]. Available: http://dx.doi.org/10.14722/bar.2025.
+23004
+[23] K. Etemadi, B. Mohammadi, Z. Su, and M. Monperrus, “Mokav:
+Execution-driven differential testing with llms,” p. 112571, 2025.
+[Online]. Available: https://www.sciencedirect.com/science/article/pii/
+S0164121225002407
+[24] Y. Charalambous, C. N. C. Jr, L. Lamb, and L. C. Cordeiro, “Unittenx:
+Generating tests for legacy packages with ai agents powered by formal
+verification,” 2025. [Online]. Available: https://arxiv.org/abs/2510.05441
+[25] L. Sarker, A. Satter, and T. Bultan, “Quantitative symbolic patch impact
+analysis,” Cham, pp. 367–390, 2026.
+[26] J. Backes, S. Person, N. Rungta, and O. Tkachuk, “Regression verifica-
+tion using impact summaries,” in Model Checking Software, E. Bartocci
+and C. R. Ramakrishnan, Eds. Berlin, Heidelberg: Springer Berlin
+Heidelberg, 2013, pp. 99–116.
+[27] N. Tihanyi, Y. Charalambous, R. Jain, M. A. Ferrag, and L. C. Cordeiro,
+“A new era in software security: Towards self-healing software via large
+language models and formal verification,” pp. 136–147, 2025.
+[28] C. Richter and H. Wehrheim, “Beyond postconditions: Can large
+language models infer formal contracts for automatic software
+verification?” 2025. [Online]. Available: https://arxiv.org/abs/2510.
+12702
+[29] M. A. A. Pirzada, W. Wang, Y. Charalambous, K. Korovin, and
+L. C. Cordeiro, “Conver: Using contracts and loop invariant synthesis
+for scalable formal software verification,” 2026. [Online]. Available:
+https://arxiv.org/abs/2605.27051
+[30] J. Amilon, D. Gurov, C. Lidstr¨om, M. Nyberg, G. Ung, and
+O. Wingbrant, “Autodeduct: A tool for automated deductive verification
+of c code,” 2025. [Online]. Available: https://arxiv.org/abs/2501.10889
+[31] J. Amilon, Z. Esen, D. Gurov, C. Lidstr¨om, and P. R¨ummer, An
+Exercise in Mind Reading: Automatic Contract Inference for Frama-C.
+Cham: Springer International Publishing, 2024, pp. 553–582. [Online].
+Available: https://doi.org/10.1007/978-3-031-55608-1 13
+[32] Z. Rakamaric and A. J. Hu, “Automatic inference of frame axioms using
+static analysis,” in 2008 23rd IEEE/ACM International Conference on
+Automated Software Engineering, 2008, pp. 89–98.
+[33] C. Calcagno, D. Distefano, P. O’Hearn, and H. Yang, “Compositional
+shape analysis by means of bi-abduction,” in Proceedings of the
+36th Annual ACM SIGPLAN-SIGACT Symposium on Principles of
+Programming Languages, ser. POPL ’09. New York, NY, USA:
+Association for Computing Machinery, 2009, p. 289–300. [Online].
+Available: https://doi.org/10.1145/1480881.1480917
+[34] S. Spies, L. G¨aher, M. Sammler, and D. Dreyer, “Quiver: Guided
+abductive inference of separation logic specifications in coq,” Proc.
+ACM Program. Lang., vol. 8, no. PLDI, Jun. 2024. [Online]. Available:
+https://doi.org/10.1145/3656413
+
+[35] A. Beg, D. O’Donoghue, and R. Monahan, “Evaluating llm-generated
+acsl annotations for formal verification,” 2026. [Online]. Available:
+https://arxiv.org/abs/2602.13851
+[36] G. Wu, W. Cao, Y. Yao, H. Wei, T. Chen, and X. Ma, “Llm meets
+bounded model checking: Neuro-symbolic loop invariant inference,”
+in Proceedings of the 39th IEEE/ACM International Conference on
+Automated Software Engineering, ser. ASE ’24. New York, NY, USA:
+Association for Computing Machinery, 2024, p. 406–417. [Online].
+Available: https://doi.org/10.1145/3691620.3695014
+[37] W. Cao, G. Wu, T. Xu, Y. Yao, H. Wei, T. Chen, and X. Ma,
+“Clause2inv: A generate-combine-check framework for loop invariant
+inference,” Proc. ACM Softw. Eng., vol. 2, no. ISSTA, Jun. 2025.
+[Online]. Available: https://doi.org/10.1145/3728920
+[38] M. Wang, J. Wang, and X. Cheng, “Bali: Branch-aware loop invariant
+inference with large language models,” 2025. [Online]. Available:
+https://arxiv.org/abs/2601.00882
+[39] Y. Su, T. Bu, Q. Yang, Y. Ci, and E. Tian, “Cill: Cti-guided invariant
+generation via llms for model checking,” 2026. [Online]. Available:
+https://arxiv.org/abs/2602.23389
+[40] D. Banerjee, O. Bouissou, and S. Zetzsche, “Dafnypro: Llm-assisted
+automated verification for dafny programs,” 2026. [Online]. Available:
+https://arxiv.org/abs/2601.05385
+[41] G. Poesia, C. Loughridge, and N. Amin, “dafny-annotator: Ai-
+assisted verification of dafny programs,” 2024. [Online]. Available:
+https://arxiv.org/abs/2411.15143
+[42] 
+´
+Alvaro Silva, A. Mendes, and R. Martins, “Inferring multiple
+helper dafny assertions with llms,” 2025. [Online]. Available:
+https://arxiv.org/abs/2511.00125
+[43] A. Wei, T. Sun, T. Suresh, H. Wu, K. Wang, and A. Aiken,
+“Quokka: Accelerating program verification with LLMs via invariant
+synthesis,” 2026. [Online]. Available: https://openreview.net/forum?id=
+R57hlMlpkm
+[44] A. Solar-Lezama, “Program synthesis by sketching,” Ph.D. dissertation,
+University of California, Berkeley, 2008.
+[45] P. Garg, D. Neider, P. Madhusudan, and D. Roth, “Learning invariants
+using decision trees and implication counterexamples,” in Proceedings
+of the 43rd Annual ACM SIGPLAN-SIGACT Symposium on Principles
+of Programming Languages, ser. POPL ’16. New York, NY, USA:
+Association for Computing Machinery, 2016, p. 499–512. [Online].
+Available: https://doi.org/10.1145/2837614.2837664
+[46] S. Padhi, R. Sharma, and T. Millstein, “Data-driven precondition
+inference with learned features,” in Proceedings of the 37th
+ACM SIGPLAN Conference on Programming Language Design and
+Implementation, ser. PLDI ’16. New York, NY, USA: Association
+for Computing Machinery, 2016, p. 42–56. [Online]. Available:
+https://doi.org/10.1145/2908080.2908099
+[47] X. Si, H. Dai, M. Raghothaman, M. Naik, and L. Song, “Learning loop
+invariants for program verification,” in Advances in Neural Information
+Processing Systems, S. Bengio, H. Wallach, H. Larochelle, K. Grauman,
+N. Cesa-Bianchi, and R. Garnett, Eds., vol. 31. Curran Associates,
+Inc., 2018. [Online]. Available: https://proceedings.neurips.cc/paper
+files/paper/2018/file/65b1e92c585fd4c2159d5f33b5030ff2-Paper.pdf
+[48] I. Beer, S. Ben-David, C. Eisner, and Y. Rodeh, “Efficient detection of
+vacuity in actl formulas,” in Computer Aided Verification, O. Grumberg,
+Ed. Berlin, Heidelberg: Springer Berlin Heidelberg, 1997, pp. 279–290.
+[49] B. H. Liskov and J. M. Wing, “A behavioral notion of subtyping,”
+ACM Trans. Program. Lang. Syst., vol. 16, no. 6, p. 1811–1841, Nov.
+1994. [Online]. Available: https://doi.org/10.1145/197320.197383
+[50] R. Back and J. von Wright, Refinement Calculus - A Systematic
+Introduction, ser. Graduate Texts in Computer Science. Springer,
+1998. [Online]. Available: https://doi.org/10.1007/978-1-4612-1674-2
+[51] S. Badihi, Y. Li, and J. Rubin, “Eqbench: A dataset of equivalent and
+non-equivalent program pairs,” in 2021 IEEE/ACM 18th International
+Conference on Mining Software Repositories (MSR), 2021, pp. 610–614.
+[52] A. Wei, J. Cao, R. Li, H. Chen, Y. Zhang, Z. Wang, Y. Liu, T. S. F. X.
+Teixeira, D. Yang, K. Wang, and A. Aiken, “EquiBench: Benchmarking
+large language models’ reasoning about program semantics via
+equivalence checking,” Suzhou, China, pp. 33 868–33 881, Nov. 2025.
+[Online]. Available: https://aclanthology.org/2025.emnlp-main.1718/
+[53] M. Patnaik, “A repository dedicated for problems related to verification
+of programs using the tool Frama-C,” https://github.com/manavpatnaik/
+frama-c-problems, 2020, accessed: 2026-06.
+[54] Anthropic. (2026, 5) Introducing claude opus 4.8. [Online]. Available:
+https://www.anthropic.com/news/claude-opus-4-8
+[55] Moonshot AI. (2026) moonshotai/kimi-k2.6. [Online]. Available:
+https://huggingface.co/moonshotai/Kimi-K2.6
+[56] Qwen Team, “Qwen3.6-27B: Flagship-level coding in a 27B dense
+model,” April 2026. [Online]. Available: https://qwen.ai/blog?id=qwen3.
+6-27b
+[57] Y. Charalambous, “Mislabeled equivalent pairs in EqBench-C,” Issue
+#15, shrBadihi/EqBench GitHub repository, 2026, https://github.
+com/shrBadihi/EqBench/issues/15.
+[58] Y. Sui and J. Xue, “Svf: interprocedural static value-flow analysis in
+llvm,” in Proceedings of the 25th International Conference on Compiler
+Construction, ser. CC ’16. New York, NY, USA: Association
+for Computing Machinery, 2016, p. 265–266. [Online]. Available:
+https://doi.org/10.1145/2892208.2892235
+[59] Y. Padioleau, J. Lawall, R. R. Hansen, and G. Muller, “Documenting
+and automating collateral evolutions in linux device drivers,” in
+Proceedings of the 3rd ACM SIGOPS/EuroSys European Conference
+on Computer Systems 2008, ser. Eurosys ’08. New York, NY, USA:
+Association for Computing Machinery, 2008, p. 247–260. [Online].
+Available: https://doi.org/10.1145/1352592.1352618
