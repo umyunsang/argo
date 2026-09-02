@@ -85,3 +85,16 @@ Six-episode measured cost: $0.80776. Corrected cumulative measured model cost is
 not recoverable for the earlier runs, whose transcripts were truncated; only this block is
 reported as measured. GPU credit units remain 0 and `colab sessions` remains empty.
 
+## 2026-09-03 — first admissible confirmation episodes
+
+Eight episodes on two unburned tasks, structured output mode, all admissible under the
+declared ceilings.
+
+| condition | context tokens (mean) | marginal (mean) | calls (mean) |
+|---|---:|---:|---:|
+| C00 | 145,035 | 4,458 | 3.0 |
+| C11 | 734,579 | 11,604 | 13.5 |
+
+Block cost: $1.26082. GPU credit units remain 0.
+No treatment effect is estimated from one repeat per cell.
+

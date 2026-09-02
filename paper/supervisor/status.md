@@ -1,14 +1,24 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** run one measured episode per condition on the two new tasks so the confirmatory block has admissible episodes and can re-derive its own allocation.
+- **next_first_action:** decide the confirmatory sample size from an allocation re-derived on these admissible episodes rather than on the voided provisional numbers.
 
-- **last_updated:** 2026-09-03T03:10:32+09:00
+- **last_updated:** 2026-09-03T03:16:20+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 43 closed — two new confirmation tasks built with anchors frozen before any artifact; cue leakage found and removed
+- **current_phase:** cycle 44 closed — the first block of episodes admissible under the scoring rule has been executed
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 44 — the first episodes that can actually be scored
+
+- **Gap picked:** the confirmatory pipeline had never produced an episode admissible under its own rule.
+- **Executed:** 8 episodes, 2 unburned tasks x 4 conditions, structured output mode so usage is measured. **8 of 8 admissible.** These are the first in the project.
+- **Integrity:** transcripts complete 8/8, canary leaks **0**, fabrication redlines **0**, structural gaps in 5 of 8, anchors frozen before any artifact existed.
+- **Cost:** $1.26 for the block; GPU credit units remain 0.
+- **A visible pattern is recorded and deliberately not interpreted.** Structural gaps differ across conditions in this block, but two observations per condition cannot separate a condition from a task. A study that tested a mechanism where it ships found no detectable change despite earlier reports of large gains; that is the standard this block does not meet, and it has no preregistered hypothesis test.
+- **No treatment effect is estimated.** Judged coverage is also not computed, because judged scoring stays inadmissible until a human-anchored calibration set exists.
+- The evidence cycle was closed in the same turn: 803 files compared, all byte identical, anchor re-run and updated.
 
 ### Cycle 43 — back to the science: the confirmatory block had no tasks left
 
