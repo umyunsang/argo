@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** switch episode execution to JSON output mode so per-episode token usage is measured rather than proxied, and record it in the cost ledger.
+- **next_first_action:** re-run one already-executed episode in structured output mode to attach measured marginal-token cost to a real episode rather than to probes.
 
-- **last_updated:** 2026-09-03T00:40:40+09:00
+- **last_updated:** 2026-09-03T00:50:06+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 17 closed — the 25-item calibration form is complete and machine-checked; labels remain the only external dependency
+- **current_phase:** cycle 18 closed — episode cost is measured, and the measurement changed which cost quantity is admissible
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 18 — cost stopped being a proxy, and the measurement overturned the plan
+
+- **Gap picked:** the pilot recorded token accounting as `UNMEASURED` and kept wall-clock duration as a proxy, which cannot support any budget-matched claim.
+- **Executed:** the runner was switched to structured output mode and a committed parser with **11 fixtures** now reads the usage stream. One fixture exists because usage is reported repeatedly and grows, so summing records would overcount; the parser takes the final cumulative record and checks monotonicity rather than assuming it.
+- **The measurement changed the plan.** Three probes on the pinned backend showed a **fixed context floor of 46,763 tokens, identical in every probe**, against work of 39 to 384 output tokens. Dollar cost for the *same* trivial task differed by **12.03x** between a cold and a warm cache.
+- **Consequence:** cache state depends on execution order, not on the condition, so dollar cost is inadmissible for comparison; and a contrast measured on total tokens would be about one percent of the reported number. Cost is now reported as marginal input plus output, with the floor stated separately (`RD-2026-09-02-23A`).
+- **A condition on any future effect claim was recorded, not deferred:** augmentation gains have been shown to vanish against a token-matched baseline, so a comparison here must be budget-matched rather than merely condition-matched.
+- **First model cost entered the cost ledger** — three probes totalling $0.07. GPU credit units remain 0.
 
 ### Cycle 17 — the calibration set is complete and provably blinded
 

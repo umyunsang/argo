@@ -1,0 +1,712 @@
+
+Warning: orx 0.1.117 is outdated (latest 0.1.118). A newer release is available; upgrade to stay compatible with the API. Run `orx update` to upgrade.
+
+alphaXiv: https://www.alphaxiv.org/abs/2607.21672
+GitHub: https://github.com/ron-42/code-image-token-accounting
+
+Pixels for Programs? A Cross-Provider Case Study of Input-Token
+Accounting for Source Code as Text and Images
+Ronak Bhalgami
+ronak42.b@gmail.com
+Abstract
+Long source-code contexts consume many text tokens, motivating
+the proposal to render code as images for vision-language models.
+Recent work asks whether models can still solve code tasks after
+this transformation. We examine a different systems question: how
+commercial APIs count the resulting requests. We present a repro-
+ducible measurement case study of provider-reported input tokens
+for raw source text and a compact rendered-image representation.
+The benchmark pairs requests across five programming languages,
+nine source lengths from 20 to 2,000 lines, and 15 available model
+aliases exposed by Anthropic, OpenAI, and Google Vertex AI. These
+aliases collapse to approximately five distinct accounting signatures
+and are not independent model replications. Across 675 complete
+text/image pairs, aggregate image-to-text ratios are 0.135, 0.194,
+and 0.242, corresponding to reported input-token reductions of
+86.5%, 80.6%, and 75.8%, respectively. These totals conceal materi-
+ally different break-even behavior: Anthropic and OpenAI images
+receive lower counts at every tested size, while Gemini images
+require 6.95 times as many tokens at 20 lines and cross below text
+only at 200 lines in the aggregate. A targeted audit also reproduces
+non-monotonic Gemini image accounting across a page boundary.
+This study measures black-box request accounting for one com-
+pact rendering pipeline. It does not measure semantic fidelity, task
+accuracy, latency, monetary cost, or coding-agent efficiency. We
+release the scripts, revision-pinned corpus specification, raw usage
+records, validators, and deterministic analysis needed to reproduce
+and extend the study.
+Keywords
+vision-language models, source code, token accounting, visual com-
+pression, multimodal APIs, empirical software engineering
+1 Introduction
+Source code is a demanding long-context input. A single repository
+can contain far more text than a model can process in one request,
+and even file-level workflows repeatedly transmit declarations, im-
+plementation details, tests, and tool output. Code-specialized lan-
+guage models are designed for long contexts and repository-scale
+use [9]. In a commercial API, context is also an accounting concern:
+reported input tokens commonly determine quotas, request limits,
+and part of the bill.
+Vision-language APIs create an unusual alternative. Instead of
+serializing source as text tokens, a client can render the same source
+onto one or more images. A two-dimensional page may carry many
+characters while the API exposes a much smaller number of visual
+input tokens. Pixel language models already show that rendered
+text can support linguistic representation [10], while screenshot
+Artifact repository: https://github.com/ron-42/code-image-token-accounting
+and document models recover language and structure directly from
+pixels [5, 6]. More directly, Glyph renders long text to expand
+effective context [1], and recent code studies evaluate visual com-
+pression on summarization, completion, question answering, and
+clone detection [11, 14].
+Those results make the representation plausible, but they do not
+make token accounting obvious. Providers expose different multi-
+modal request formats, model families, image-processing policies,
+and usage fields. A fixed image may incur a minimum charge, scale
+with resolution, or be partitioned internally. Multiple pages may
+not behave like one larger page. Moreover, an attractive overall
+ratio can hide a regime in which images cost more than text. This
+leads to a practical measurement question:
+For a fixed source corpus and rendering pipeline, how
+do provider-reported input-token counts change when
+code is sent as raw text versus compact images, and
+how does that relationship vary with source length?
+We answer this question with paired black-box measurements.
+We use five revision-pinned source files, one each for Python,
+JavaScript, Rust, Go, and Java, and slice them into nested prefixes
+at nine sizes. The image arm first replaces leading spaces with com-
+pact indentation markers and then renders the result as PNG pages.
+Both arms append the same one-sentence summarization instruc-
+tion. We collect the provider’s own input-usage field, preserve raw
+responses incrementally, pair successful calls by provider, model,
+language, and size, and compute weighted ratios from token totals.
+The study makes four contributions:
+(1) a reproducible protocol and artifact containing 1,350 success-
+ful API calls and 675 complete text/image observations across
+three providers, while preserving the five-file sampling unit
+explicitly;
+(2) a size-stratified measurement showing immediate reductions
+for Anthropic and OpenAI but a 200-line aggregate crossover
+for Gemini;
+(3) a targeted modality audit demonstrating that reported image
+usage can change non-monotonically at a page boundary; and
+(4) an explicit validity boundary separating token accounting from
+information preservation and coding-agent utility.
+Here, “reduction” means only that the API returned a smaller
+input-token count. It does not establish that the image contains
+equivalent usable information, that inference consumed less com-
+pute, that the request cost less money, or that a coding agent would
+perform better. The contribution is a measurement surface and a
+set of break-even observations on which a task-quality study can
+build.
+1
+arXiv:2607.21672v1 [cs.SE] 23 Jul 2026
+
+Ronak Bhalgami
+2 Background and Related Work
+2.1 Text represented through pixels
+PIXEL replaces a finite subword vocabulary with visual patches of
+rendered text, demonstrating cross-script transfer and robustness
+while also exposing quality differences from token-based models
+[10]. Rendering is not a neutral preprocessing choice: character
+grouping and spatial redundancy change both learned represen-
+tations and the model size needed for downstream performance
+[7]. Document-oriented systems provide complementary evidence.
+Donut maps document images directly to structured outputs with-
+out a separate OCR pipeline [5], and Pix2Struct learns visual lan-
+guage understanding by parsing web-page screenshots [6]. This
+literature establishes machine readability, not equivalence between
+source text and aggressively packed code images.
+2.2 Visual text and code compression
+Glyph treats rendered pages as a context-scaling mechanism and
+jointly studies compression and downstream accuracy [1]. VTCBench
+makes the quality question explicit by testing retrieval, reasoning,
+and memory under vision and text compression [13]. The closest
+software-engineering work is CodeOCR, which evaluates visual
+code across multiple understanding tasks and compression levels
+[11]. LongCodeOCR extends the setting to long-context summa-
+rization, question answering, and completion [14]. These studies
+are stronger evidence for usefulness than token counts alone.
+DeepSeek-OCR provides direct reconstruction evidence in a spe-
+cialized setting. On English document pages containing 600 to 1,300
+text tokens, it reports about 97% OCR decoding precision below a
+10× text-to-vision-token compression ratio. Precision falls to about
+60% near 20× compression [12]. This result shows that high-fidelity
+optical compression is possible for a model trained specifically for
+OCR. It does not establish the same fidelity for source code or for
+the commercial model aliases measured here.
+We ask a narrower question. Rather than introducing a new
+compression method or comparing downstream accuracy, we treat
+commercial multimodal APIs as black-box accounting systems and
+compare their usage reports across providers and source sizes. This
+exposes minimum image costs, crossover points, and page-sensitive
+discontinuities that may disappear in a task-level aggregate.
+2.3 Alternative context-efficiency mechanisms
+Textual prompt compression retains selected lexical information
+rather than changing modality. LLMLingua performs coarse-to-fine
+token compression [3]; LongLLMLingua adds question-aware com-
+pression, reordering, and recovery for long contexts [4]. Prompt
+caching attacks repeated work instead: attention states for shared
+prompt modules can be reused across requests [2]. Retrieval, caching,
+textual compression, and visual representation are not mutually
+exclusive. Unlike visual conversion, however, the first three can
+preserve text-native model interfaces. A realistic coding harness
+should compare them on task quality, latency, and total cost rather
+than selecting a method from input-token ratios alone.
+3 Study Design
+3.1 Research questions
+We organize the measurement around four descriptive research
+questions:
+RQ1: Aggregate accounting.
+What weighted input-token ratio does the compact-image pipeline
+receive from each provider?
+RQ2: Scaling and break-even.
+How does the ratio change from 20 to 2,000 lines, and at what tested
+size does image input first fall below text?
+RQ3: Observed heterogeneity.
+How much does the descriptive result vary across model aliases
+and language/file workloads?
+RQ4: Accounting anomalies.
+Do image counts evolve monotonically with source length and page
+count?
+These questions concern observed API metadata. They neither
+posit a provider’s internal tokenizer nor interpret reported tokens
+as equivalent units of computation across providers.
+3.2 Corpus and sampling
+The corpus contains one source file per language: CPython’s asyncio/
+base_events.py, Lodash’s monolithic JavaScript source, the Rust
+compiler expression parser, Go’s net/http/server.go, and Guava’s
+LocalCache.java. Every URL is pinned to a Git commit, and the
+artifact records each upstream license. The fetcher saves the first
+20, 50, 100, 200, 400, 800, 1,200, 1,600, and 2,000 lines as separate
+snippets.
+The nested prefixes hold earlier content fixed as length grows,
+which makes transitions easy to inspect. They are not a random
+sample. Prefixes from the same file overlap and must not be treated
+as independent observations. Language effects are likewise con-
+founded with file, project, formatting style, and code region. For
+these reasons, we report pooled accounting totals without confi-
+dence intervals or significance tests.
+3.3 Compact-image treatment
+The treatment is a two-stage transform. First, each four-space in-
+dentation level is replaced by a leading > marker; an irregular run of
+𝑁 spaces is replaced by ˆN . A one-line legend explaining this nota-
+tion is prepended. Second, pxpipe-proxy renders the transformed
+source to one or more PNG pages. The renderer rejects dropped
+characters and removes stale pages before writing a new result.
+Figure 1 shows the paired flow. The raw-text request contains the
+untouched snippet and instruction. The image request contains all
+rendered pages and the same instruction. This is not a modality-only
+experiment: the image arm changes both the transport modality and
+indentation representation. We call the treatment compact image,
+not “the same code as an image,” throughout.
+3.4 Providers, requests, and collection
+We queried four Anthropic model aliases, six OpenAI aliases, and
+five Gemini aliases during July 2026. Table 1 reports successful calls
+and complete pairs for each provider.
+2
+
+Pixels for Programs? A Cross-Provider Case Study of Input-Token Accounting for Source Code as Text and Images
+Pinned source file 
+Nested prefix
+20–2,000 lines
+Raw source
+text request
+Indent markers
+and PNG pages
+Provider API
+text input
+Provider API
+image input
+Reported input
+token usage
+Pair and
+aggregate
+Image arm changes both
+modality and representation
+same prompt
+same prompt
+Figure 1: Paired measurement pipeline. Both arms share the revision-pinned source prefix and task instruction, but the
+compact-image arm additionally transforms indentation before rendering. Reported usage measures the complete pipeline
+rather than a modality-only causal effect.
+Table 1: Measurement coverage. A complete pair contains
+successful raw-text and compact-image requests for the same
+provider, model, language, and size.
+Provider Models Successful calls Complete pairs
+Anthropic 4 360 180
+OpenAI 6 540 270
+Gemini 5 450 225
+Anthropic requests use the Messages API and one output to-
+ken. OpenAI requests use the Responses API, high image detail,
+and at most 16 output tokens; the configured reasoning effort is
+“none” except “low” for the Codex model. Gemini requests use Ver-
+tex AI generate_content with at most 16 output tokens and an
+eight-second inter-request delay. All variants append exactly: “Sum-
+marize what this code does in one sentence.” Output quality is not
+scored; generation exists only to produce a valid request and usage
+response.
+Each provider script writes a JSON record after every attempt,
+supports resumption without repeating successful calls, and refuses
+to overwrite an existing run unless explicitly forced. Anthropic’s
+input_tokens, OpenAI’s input-usage field, and Gemini’s prompt-
+usage field are normalized to input_tokens. We do not assume
+these fields denote the same internal unit across providers.
+3.5 Metrics and validation
+For each complete pair 𝑖, the primary ratio is
+𝑟
+𝑖 
+= 
+𝐼
+𝑖
+𝑇
+𝑖
+,
+where 𝐼
+𝑖 
+and 𝑇
+𝑖 
+are provider-reported image and text input tokens.
+Values below one favor the compact image under this accounting
+measure. For an aggregate group 𝐺, we report the weighted ratio
+𝑅
+𝐺 
+=
+Í
+𝑖 ∈𝐺 
+𝐼
+𝑖
+Í
+𝑖 ∈𝐺 
+𝑇
+𝑖
+and reduction 100(1−𝑅
+𝐺 
+) percent. This weights each reported token
+equally and avoids giving a 20-line request the same influence as a
+2,000-line request, as an arithmetic mean of per-cell ratios would.
+The validator rejects duplicate provider/language/model/size/mode
+keys, unknown models, nonpositive text counts, and disagreement
+Table 2: Weighted provider-level accounting. “Reduction” is
+computed from summed provider-reported input tokens; it
+is not a monetary or compute saving.
+Provider Complete pairs Image/text ratio Input-token reduction
+Anthropic 180 0.135× 86.5%
+OpenAI 270 0.194× 80.6%
+Gemini 225 0.242× 75.8%
+between raw JSON, paired CSV, and recomputed ratios. A sepa-
+rate analysis script regenerates every manuscript table, plot, and
+numeric-evidence record from the paired CSV files.
+4 Results
+4.1 RQ1: aggregate accounting
+Table 2 gives the weighted result. Across 180 Anthropic pairs, the
+compact images receive 0.135 times the raw-text count, a reduction
+of 86.5%. Across 270 OpenAI pairs, the ratio is 0.194 and the reduc-
+tion is 80.6%. Across 225 available Gemini pairs, the ratio is 0.242
+and the reduction is 75.8%. These are within-provider descriptive
+aggregates. They should not be used to rank providers because
+model coverage and usage semantics differ.
+At the scale of the full benchmark, the compact-image arm re-
+ceives fewer reported input tokens from all three providers. The
+differences are large enough to warrant further evaluation, but
+these totals do not show whether the representation is useful or
+where it becomes advantageous.
+4.2 Aggregation sensitivity
+The weighted statistic answers a volume question: if all measured
+source contexts were transmitted once, what fraction of their re-
+ported text tokens would the image requests receive? A second
+reasonable estimand gives every provider/model/language/size cell
+equal weight. Under that unweighted mean, Anthropic’s image/text
+ratio is 0.186 (81.4% reduction), OpenAI’s is 0.261 (73.9% reduction),
+and Gemini’s is 1.548 (−54.8% reduction). Thus Gemini changes
+from an apparent 75.8% reduction under token-volume weighting
+to an increase under configuration weighting.
+Neither statistic is intrinsically correct for every deployment.
+The weighted ratio is appropriate when long contexts contribute
+3
+
+Ronak Bhalgami
+most traffic, as they do in our balanced grid of line counts. The un-
+weighted mean is appropriate when a random tested configuration
+is the unit of interest. Their disagreement is itself a finding: image
+accounting has strong fixed-cost behavior, so a paper should pub-
+lish size-stratified values and state its estimand rather than report
+one context-free “percent saved.” We use the weighted result as the
+headline because this study asks about transmitted context volume,
+while retaining the unweighted result as a sensitivity analysis.
+4.3 RQ2: scale and break-even
+Figure 2 plots weighted image/text ratios by source length, pooling
+models and languages within each provider. The log scale is neces-
+sary because Gemini spans both sides of parity by a wide margin.
+Anthropic starts at 0.397 for 20 lines and reaches roughly 0.132 at
+2,000 lines. OpenAI starts at 0.514 and approaches 0.189. Both are
+below parity at every tested size.
+Gemini behaves differently. Its ratios are 6.951, 2.883, and 1.461
+at 20, 50, and 100 lines, respectively. The corresponding “reductions”
+are negative: −595.1%, −188.3%, and −46.1%. Gemini first crosses
+below parity at 200 lines, where the ratio is 0.634 and the reduction
+is 36.6%. It then reaches 0.194 at 800 lines and 0.128 at 1,600 lines
+before rising slightly to 0.139 at 2,000 lines.
+Table 3 gives the exact reductions. Break-even behavior is more
+useful than the overall percentage for routing requests. In this
+configuration, visual conversion is counterproductive for short
+Gemini contexts and becomes competitive only at larger sizes. A
+harness needs a provider- and size-specific rule rather than a global
+“send code as images” policy.
+4.4 RQ3: alias and workload heterogeneity
+Provider-level visual accounting is often shared across model aliases,
+but not always. Three Anthropic models have the same 0.127 ag-
+gregate ratio, whereas Claude Haiku 4.5 is higher at 0.165. All six
+OpenAI models return identical aggregate text and image totals in
+this dataset, yielding 0.194 for each. Four Gemini models share a
+0.229 ratio, while Gemini 2.5 Flash is higher at 0.295. These repeated
+values suggest common accounting rules within some families, but
+the public responses do not reveal whether internal visual process-
+ing is identical.
+Weighted reductions are comparatively stable across the five
+language/file prefixes. Anthropic ranges from 85.0% for Go to 87.8%
+for Rust. OpenAI ranges from 78.7% for Go to 83.3% for JavaScript.
+Gemini ranges from 72.5% for Java to 78.5% for Rust. Because each
+language corresponds to one file, these ranges are descriptive work-
+load differences, not language effects.
+4.5 RQ4: page-sensitive accounting
+Most ratios decrease as source length grows because text tokens
+continue to accumulate while image processing amortizes page-
+level overhead. The Gemini 2.5 Flash series nevertheless contains
+a sharp non-monotonic transition. We repeated the Python image
+requests with modality-level usage metadata. At 800 lines, one
+rendered page received 2,322 image tokens; at 1,200 lines, two
+pages received only 516 image tokens. For comparison, Gemini 3.5
+Flash increased from 1,060 to 2,183 image tokens for the same page
+transition.
+The repetition confirms the reported values for those requests but
+cannot identify a mechanism. Resolution thresholds, model-specific
+media settings, dynamic preprocessing, or service-side implementa-
+tion changes are all possible. We can conclude only that black-box
+image accounting need not be monotonic in characters, pixels, or
+pages. A smooth compression rate can be misleading when page
+boundaries are not inspected.
+5 Discussion
+5.1 What the ratios do and do not imply
+The measurements support a precise statement: for this corpus
+and rendering pipeline, sufficiently long compact-image requests
+receive substantially fewer provider-reported input tokens than
+paired raw-text requests. DeepSeek-OCR’s 97% result shows that a
+specialized OCR system can recover document text with high pre-
+cision at moderate optical compression. Our measurements do not
+test that property and therefore do not show lossless compression.
+Indentation markers may be decoded incorrectly; small punctuation
+can disappear under rasterization; multiple pages can disrupt cross-
+page structure; and a model may summarize visible code without
+recovering the exact source needed for editing.
+Likewise, fewer reported tokens do not imply proportional mon-
+etary savings. Providers may price text and image tokens differ-
+ently, change image accounting, apply caching, or include fixed
+per-request charges. Nor do reported tokens measure end-to-end
+latency: local rendering, PNG transfer, image encoding, prefill, and
+decoding all contribute. The experiment intentionally avoids con-
+verting ratios into dollar or compute claims.
+5.2 Implications for coding harnesses
+The data suggest a conditional architecture rather than a univer-
+sal modality switch. Small contexts should remain text, especially
+where an image minimum dominates. Large, read-mostly context
+could be eligible for visual representation if the task tolerates ap-
+proximate recovery. Exact edit targets, compiler errors, diffs, and
+user instructions should remain text-native until fidelity is estab-
+lished. A mixed request could use images for broad repository
+context and text for the active span.
+Routing must also be calibrated per provider and rendering pro-
+file. A useful policy would measure current break-even points, mon-
+itor image dimensions and page counts, and fall back to text when
+an accounting or fidelity check fails. Because aliases and service
+behavior can change, the calibration should be versioned and rerun
+rather than hard-coded from this paper.
+Visual conversion should additionally be compared against sim-
+pler mechanisms. Retrieval can omit irrelevant files; textual com-
+pressors can preserve selected tokens; prompt caching can avoid
+recomputing stable prefixes [2–4]. Images become compelling only
+if they improve the joint frontier of usable information, task quality,
+latency, and cost.
+5.3 Next experiment
+The next study should cross representation with task. Sample inde-
+pendent files from multiple repositories and stratify by language,
+file length, nesting, identifier density, and visual page count. For
+each file, compare raw text, compact text without rasterization,
+4
+
+Pixels for Programs? A Cross-Provider Case Study of Input-Token Accounting for Source Code as Text and Images
+20 50 100 200 400 800 1.2k 1.6k 2k
+Source length (lines, log scale)
+10
+0
+2 × 10
+−1
+3 × 10
+−1
+4 × 10
+−1
+6 × 10
+−1
+2 × 10
+0
+3 × 10
+0
+4 × 10
+0
+6 × 10
+0
+Image / text input-token ratio (log scale, lower is better)
+Anthropic OpenAI Gemini Parity
+Figure 2: Weighted image/text input-token ratio by source length. Lower is better; the dashed line marks parity. Anthropic and
+OpenAI remain below parity, while Gemini’s minimum image overhead dominates through 100 lines and crosses below text at
+200 lines. Points pool available models and five language/file prefixes; they are not independent replicates.
+Table 3: Weighted input-token reduction by source length. Negative values mean that compact images receive more reported
+tokens than raw text.
+Provider 20 50 100 200 400 800 1,200 1,600 2,000
+Anthropic 60.3% 79.1% 83.4% 84.8% 86.9% 86.8% 86.8% 86.8% 86.8%
+OpenAI 48.6% 66.5% 73.3% 77.7% 81.1% 80.9% 81.1% 81.1% 81.1%
+Gemini -595.1% -188.3% -46.1% 36.6% 66.0% 80.7% 84.7% 87.2% 86.1%
+readable code images, compact images, and a textual compression
+baseline. Evaluate exact transcription, repository retrieval, code
+question answering, summarization, defect localization, and patch
+generation. Report syntax validity, tests passed, exact identifiers,
+latency, bytes transferred, cached and uncached cost, and provider-
+reported tokens.
+Such a study would separate three effects currently combined
+here: compact indentation, two-dimensional layout, and vision
+encoding. It would also connect our accounting measurements to
+the quality-oriented evidence in CodeOCR, LongCodeOCR, Glyph,
+and VTCBench [1, 11, 13, 14].
+6 Threats to Validity
+Empirical software-engineering guidance emphasizes construct
+validity, measurement fairness, repetitions, and reproducibility [8].
+Our pilot is reproducible but intentionally narrow.
+Construct validity. Provider-reported input tokens operational-
+ize request accounting, not information content, model compute,
+price, latency, or coding utility. The phrase “token reduction” can
+invite all five interpretations, so we qualify it throughout. The sum-
+marization instruction ensures valid multimodal requests but does
+not make this a summarization benchmark because outputs are
+neither normalized nor scored.
+Internal validity. The treatment changes both modality and rep-
+resentation. Replacing indentation spaces may reduce text length
+before rasterization and may affect readability; without a compact-
+text arm, we cannot attribute the difference to pixels alone. The
+study also lacks prompt-only and blank-image controls, so fixed
+request and media overhead are inferred from curves rather than
+isolated experimentally. Provider calls were made during a live
+service period rather than against frozen local weights. Although
+5
+
+Ronak Bhalgami
+Table 4: Weighted accounting by model. Repeated values
+identify shared reported accounting in this dataset, not nec-
+essarily shared internal computation.
+Provider Model Ratio Reduction
+Anthropic claude-fable-5 0.127× 87.3%
+Anthropic claude-haiku-4-5 0.165× 83.5%
+Anthropic claude-opus-4-8 0.127× 87.3%
+Anthropic claude-sonnet-5 0.127× 87.3%
+Gemini gemini-2.5-flash 0.295× 70.5%
+Gemini gemini-3-flash-preview 0.229× 77.1%
+Gemini gemini-3.1-flash-lite 0.229× 77.1%
+Gemini gemini-3.1-pro-preview 0.229× 77.1%
+Gemini gemini-3.5-flash 0.229× 77.1%
+OpenAI gpt-5.3-codex 0.194× 80.6%
+OpenAI gpt-5.4 0.194× 80.6%
+OpenAI gpt-5.5 0.194× 80.6%
+OpenAI gpt-5.6-luna 0.194× 80.6%
+OpenAI gpt-5.6-sol 0.194× 80.6%
+OpenAI gpt-5.6-terra 0.194× 80.6%
+Table 5: Weighted input-token reduction by language/file.
+Each row is one project file, so differences cannot be attrib-
+uted to language alone.
+Language/file Anthropic OpenAI Gemini
+Go 85.0% 78.7% 74.8%
+Java 86.1% 78.8% 72.5%
+Javascript 87.7% 83.3% 78.4%
+Python 85.4% 79.7% 73.1%
+Rust 87.8% 81.5% 78.5%
+paired inputs and prompts are fixed, undocumented service rout-
+ing or updates could alter counts. Requests were not repeatedly
+sampled except for the targeted Gemini audit.
+Conclusion validity. Nested prefixes are strongly dependent, and
+there is one file per language. We do not use inferential statistics.
+Weighted ratios exactly summarize the recorded requests but pro-
+vide no estimate of a wider population. Pooling aliases gives larger
+families more weight: OpenAI contributes six aliases, Anthropic
+four, and Gemini five available aliases, although repeated token
+signatures indicate only about five distinct accounting regimes. We
+report providers separately and do not compute a cross-provider
+grand total.
+External validity. The files come from prominent open-source
+projects but are not representative of repositories, generated code,
+tests, notebooks, configuration, minified files, or mixed-language
+contexts. Results may differ with font, syntax highlighting, page
+width, image resolution, renderer, prompt, API region, and model
+version. Lines of code are also a coarse size measure: the present
+run does not stratify by bytes, characters, lexical tokens, nonblank
+lines, rendered pixels, or page count.
+Reliability and reproducibility. Revision-pinned URLs, exact line
+counts, scripts, lock files, raw JSON, paired CSV, and deterministic
+regeneration reduce accidental variation. Validators check dupli-
+cate keys and recompute ratios. However, reproducing identical
+counts depends on access to proprietary APIs and on providers
+retaining their current aliases and accounting behavior. Future
+replications should record request timestamps, request identifiers,
+successful-call region, image hashes and dimensions, and stable
+provider version identifiers where available.
+7 Artifact, Ethics, and AI Assistance
+The artifact includes corpus-fetching and rendering scripts, provider
+adapters, resumable raw-result collection, data-integrity checks, de-
+terministic figure and table generation, a numeric-evidence registry,
+and a citation-verification lock. API keys and locally fetched cor-
+pus/render files are excluded from version control. Upstream source
+licenses and pinned revisions are documented. The public reposi-
+tory is available at https://github.com/ron-42/code-image-token-
+accounting. Its provider result directories contain the complete
+model-alias × language/file × line-count matrix as raw JSON and
+paired CSV, including every successful text and image observation
+rather than only the manuscript aggregates.
+7.1 Reproduction protocol
+Reproduction has four explicit stages. First, the corpus fetcher down-
+loads each pinned revision and emits the nested prefix files. A re-
+viewer can compare hashes and line counts before making any paid
+call. Second, the rendering wrapper invokes the Node renderer from
+the repository root, deletes stale pages, and fails if the renderer
+reports dropped characters. Page files are deterministic inputs to
+the API stage, so they can be inspected independently of provider
+access.
+Third, each provider adapter traverses language, size, model, and
+modality in a fixed order. Records are persisted atomically after
+every attempt. Resume mode skips only successful keys, allow-
+ing transient failures to be retried without repeating completed
+calls; force mode is required to replace a run. This behavior mat-
+ters because a partial matrix can otherwise silently mix old and
+new service conditions. Replicators should archive the raw JSON
+immediately and record collection time, region, SDK version, con-
+crete model version when the provider exposes one, request image
+dimensions, page count, and media-detail settings.
+Fourth, validation and analysis are separated from collection. The
+validator constructs the unique key provider/language/model/line-
+count/modality, verifies model membership, and checks each paired
+CSV row against its two raw JSON records. The analysis then groups
+complete pairs and writes source CSV, LaTeX tables, a vector figure,
+and a machine-readable registry mapping manuscript numbers back
+to selectors in the generated data. The bibliography has a parallel
+lock containing official DOI or arXiv metadata and a digest of each
+sentence-level support request.
+7.2 Reporting contract
+A replication should publish more than one aggregate percentage.
+At minimum it should report: (1) the exact representation trans-
+form and renderer settings; (2) source provenance and whether
+6
+
+Pixels for Programs? A Cross-Provider Case Study of Input-Token Accounting for Source Code as Text and Images
+samples are independent; (3) complete and failed model coverage;
+(4) the provider usage field used as the metric; (5) weighted and
+unweighted estimands; (6) ratios by source size; and (7) page di-
+mensions and counts near every discontinuity. Negative reductions
+should be shown as increases rather than described as savings.
+Cross-provider totals should be avoided unless usage units and
+workload weights are explicitly made comparable.
+For claims about practical efficiency, token accounting is only
+one column of the required report. A deployment-oriented repli-
+cation must also include task-quality metrics, end-to-end latency,
+bytes transferred, provider price schedules, cache behavior, and
+local rendering cost. For claims about faithful code transport, it
+should include exact transcription, identifier and literal recovery,
+whitespace-sensitive syntax, and executable tests. This reporting
+contract turns the current pilot’s limitations into acceptance criteria
+for a stronger study.
+7.3 Ethics and assistance
+The study uses public open-source code and does not involve human
+participants or personal data. API use can incur cost and transmit
+source to external providers; adopters should obtain authorization
+before applying the method to private repositories.
+AI coding and writing assistants supported implementation, lit-
+erature discovery, editing, and manuscript preparation. The author
+selected the study scope, operated the experiments, inspected raw
+results, verified citations against official records, and remains re-
+sponsible for every claim. No AI-generated output is treated as
+empirical evidence.
+8 Conclusion
+Compact rendered code can receive far fewer reported input tokens
+than raw source text, but only after provider-specific overheads are
+amortized. In 675 paired requests, weighted reductions are 86.5%
+for Anthropic, 80.6% for OpenAI, and 75.8% for the five available
+Gemini aliases. Gemini reverses the headline at small sizes and
+exhibits a reproduced page-sensitive discontinuity, showing why
+aggregate compression percentages are insufficient. The measure-
+ments motivate further evaluation but do not support deployment
+claims. The remaining question is whether a visual representa-
+tion preserves enough exact and task-relevant code information to
+improve quality, latency, and cost together in a coding system.
+References
+[1] 
+Jiale Cheng, Yusen Liu, Xinyu Zhang, Yulin Fei, Wenyi Hong, Ruiliang Lyu,
+Weihan Wang, Zhe Su, Xiaotao Gu, Xiao Liu, Yushi Bai, Jie Tang, Hongning
+Wang, and Minlie Huang. 2025. Glyph: Scaling Context Windows via Visual-Text
+Compression. (2025). arXiv:2510.17800 https://arxiv.org/abs/2510.17800
+[2] In Gim, Guojun Chen, Seung seob Lee, Nikhil Sarda, Anurag Khandelwal, and
+Lin Zhong. 2023. Prompt Cache: Modular Attention Reuse for Low-Latency
+Inference. (2023). arXiv:2311.04934 https://arxiv.org/abs/2311.04934
+[3] Huiqiang Jiang, Qianhui Wu, Chin-Yew Lin, Yuqing Yang, and Lili Qiu. 2023.
+LLMLingua: Compressing Prompts for Accelerated Inference of Large Language
+Models. In Proceedings of the 2023 Conference on Empirical Methods in Natural
+Language Processing. Association for Computational Linguistics, 13358–13376.
+https://doi.org/10.18653/v1/2023.emnlp-main.825
+[4] Huiqiang Jiang, Qianhui Wu, Xufang Luo, Dongsheng Li, Chin-Yew Lin, Yuqing
+Yang, and Lili Qiu. 2024. LongLLMLingua: Accelerating and Enhancing LLMs
+in Long Context Scenarios via Prompt Compression. In Proceedings of the 62nd
+Annual Meeting of the Association for Computational Linguistics (Volume 1: Long
+Papers). Association for Computational Linguistics, 1658–1677. https://doi.org/
+10.18653/v1/2024.acl-long.91
+[5] Geewook Kim, Teakgyu Hong, Moonbin Yim, Jeongyeon Nam, Jinyoung
+Park, Jinyeong Yim, Wonseok Hwang, Sangdoo Yun, Dongyoon Han, and Se-
+unghyun Park. 2021. OCR-free Document Understanding Transformer. (2021).
+arXiv:2111.15664 https://arxiv.org/abs/2111.15664
+[6] Kenton Lee, Mandar Joshi, Iulia Turc, Hexiang Hu, Fangyu Liu, Julian Eisenschlos,
+Urvashi Khandelwal, Peter Shaw, Ming-Wei Chang, and Kristina Toutanova. 2022.
+Pix2Struct: Screenshot Parsing as Pretraining for Visual Language Understanding.
+(2022). arXiv:2210.03347 https://arxiv.org/abs/2210.03347
+[7] 
+Jonas F. Lotz, Elizabeth Salesky, Phillip Rust, and Desmond Elliott. 2023. Text
+Rendering Strategies for Pixel Language Models. (2023). arXiv:2311.00522
+https://arxiv.org/abs/2311.00522
+[8] Paul Ralph, Nauman bin Ali, Sebastian Baltes, Domenico Bianculli, Jessica Diaz,
+Yvonne Dittrich, Neil Ernst, Michael Felderer, Robert Feldt, Antonio Filieri,
+Breno Bernard Nicolau de França, Carlo Alberto Furia, Greg Gay, Nicolas Gold,
+Daniel Graziotin, Pinjia He, Rashina Hoda, Natalia Juristo, Barbara Kitchen-
+ham, Valentina Lenarduzzi, Jorge Martínez, Jorge Melegati, Daniel Mendez, Tim
+Menzies, Jefferson Molleri, Dietmar Pfahl, Romain Robbes, Daniel Russo, Nyyti
+Saarimäki, Federica Sarro, Davide Taibi, Janet Siegmund, Diomidis Spinellis,
+Miroslaw Staron, Klaas Stol, Margaret-Anne Storey, Davide Taibi, Damian Tam-
+burri, Marco Torchiano, Christoph Treude, Burak Turhan, Xiaofeng Wang, and
+Sira Vegas. 2020. Empirical Standards for Software Engineering Research. (2020).
+arXiv:2010.03525 https://arxiv.org/abs/2010.03525
+[9] Baptiste Rozière, Jonas Gehring, Fabian Gloeckle, Sten Sootla, Itai Gat, Xiao-
+qing Ellen Tan, Yossi Adi, Jingyu Liu, Romain Sauvestre, Tal Remez, Jérémy
+Rapin, Artyom Kozhevnikov, Ivan Evtimov, Joanna Bitton, Manish Bhatt, Cris-
+tian Canton Ferrer, Aaron Grattafiori, Wenhan Xiong, Alexandre Défossez, Jade
+Copet, Faisal Azhar, Hugo Touvron, Louis Martin, Nicolas Usunier, Thomas
+Scialom, and Gabriel Synnaeve. 2023. Code Llama: Open Foundation Models for
+Code. (2023). arXiv:2308.12950 https://arxiv.org/abs/2308.12950
+[10] Phillip Rust, Jonas F. Lotz, Emanuele Bugliarello, Elizabeth Salesky, Miryam de
+Lhoneux, and Desmond Elliott. 2022. Language Modelling with Pixels. (2022).
+arXiv:2207.06991 https://arxiv.org/abs/2207.06991
+[11] 
+Yuling Shi, Chaoxiang Xie, Zhensu Sun, Yeheng Chen, Chenxu Zhang, Longfei
+Yun, Chengcheng Wan, Hongyu Zhang, David Lo, and Xiaodong Gu. 2026.
+CodeOCR: On the Effectiveness of Vision Language Models in Code Under-
+standing. (2026). arXiv:2602.01785 https://arxiv.org/abs/2602.01785
+[12] Haoran Wei, Yaofeng Sun, and Yukun Li. 2025. DeepSeek-OCR: Contexts Optical
+Compression. (2025). arXiv:2510.18234 https://arxiv.org/abs/2510.18234
+[13] Hongbo Zhao, Meng Wang, Fei Zhu, Wenzhuo Liu, Bolin Ni, Fanhu Zeng,
+Gaofeng Meng, and Zhaoxiang Zhang. 2025. VTCBench: Can Vision-Language
+Models Understand Long Context with Vision-Text Compression? (2025).
+arXiv:2512.15649 https://arxiv.org/abs/2512.15649
+[14] Jianping Zhong, Guochang Li, Chen Zhi, Junxiao Han, Zhen Qin, Xinkui Zhao,
+Nan Wang, Shuiguang Deng, and Jianwei Yin. 2026. Can Vision-Language Models
+Handle Long-Context Code? An Empirical Study on Visual Compression. (2026).
+arXiv:2602.00746 https://arxiv.org/abs/2602.00746
+7
