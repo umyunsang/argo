@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** embed the Korean summary and keyword line into the manuscript body so the Word artifact carries them, then verify Roman chapter numerals, double spacing, and page numbers against the official form.
+- **next_first_action:** verify Roman chapter numerals, double spacing, and page numbering inside the Word artifact against the official form, since those properties are still inherited untested from the reference document.
 
-- **last_updated:** 2026-09-03T00:21:27+09:00
+- **last_updated:** 2026-09-03T00:25:24+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 11 closed — conclusions rewritten to the instrument boundary and the Word submission artifact built and structurally verified
+- **current_phase:** cycle 12 closed — Word artifact now carries the Korean front matter and 57 bracketed citations, built by a committed builder
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 12 — the submission artifact is now complete and correct
+
+- **Gap picked:** the Word artifact was missing the required Korean summary and keyword line.
+- **Constraint discovered first:** the pinned LaTeX toolchain has no CJK font, so embedding Hangul in the source would break the deterministic PDF that every evidence claim rests on. The source stays ASCII and the build injects the front matter from its single side file, failing if the summary exceeds 500 characters or the keywords exceed five (`RD-2026-09-02-18A`).
+- **First attempt was worse and was rejected.** A markdown round-trip carried the Korean text but dropped the title and citation markers, so it was discarded in favour of the direct conversion with an XML-level injection.
+- **A real defect was found in the artifact:** the converter dropped every in-text citation, leaving dangling punctuation such as "correctness alone ;" where a reference belonged, in violation of the official bracketed-citation requirement. The build now materialises the same first-citation numbering the validator enforces; **57 citations render** and the reference list has 57 entries (`RD-2026-09-02-18B`).
+- **Verified from the artifact's own bytes**, not from the converter: title present, `국문 요약` at 361 of 500 characters, 5 of 5 keywords, section order Introduction → Related Works → Proposed Method → Experimental Results → Conclusions, zero forbidden public names.
+- **Open:** page numerals, spacing, and page numbers inherited from the reference document remain unverified, the application PDF export still times out, and display equations render as TeX text.
 
 ### Cycle 11 — conclusions rewritten and the submission artifact built
 
