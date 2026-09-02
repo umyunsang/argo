@@ -1,11 +1,11 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** instruction-0012의 계보 서술과 금지 어휘 게이트를 반영하고, 한글 본문에 초안의 인용을 이관해 참고문헌 수를 맞춘 뒤 전환 플래그를 넘긴다.
+- **next_first_action:** 한글 본문에 초안의 인용을 이관해 참고문헌 수를 맞추고 전환 플래그를 넘긴다. 그 다음 Q-0009 하네스 비교 arm 설계 문서를 만든다.
 
 - **last_updated:** 2026-09-03T05:53:07+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** anthropic/claude-opus-5
-- **current_phase:** cycle 66 closed — 한글 정본 5장 완성(그림 9·표 5), 전환은 인용 이관까지 보류
+- **current_phase:** cycle 67 closed — 계보 서사·어휘 게이트 적용, 계승 표 추가(표 6개), fail-closed 3/3
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 
@@ -20,6 +20,15 @@
 > 2. **한글 장 진행:** **5/5** (Ⅰ~Ⅴ + 참고문헌). 그림 **9개** 번호 캡션, 표 **5개** 번호 캡션(3개는 receipt 생성·assert). 국문요약 384자, 키워드 5개, 한글 비율 0.774. **전환 보류**: 본문 인용 6건 대 초안 93건.
 > 3. **Q-0009(하네스 비교 arm):** 미착수 — 작업 순서상 다음 단계. 기본값 (b) 실행 안 함.
 > 4. **툴체인 v3:** 한글 폰트를 고정 툴체인 안에 넣어 격리 규칙을 **완화하지 않고** 한글 조판을 열었다. 영문 빌드는 폰트 추가 전후 **바이트 동일**(`e57e8f13…`)로 반증 조건을 통과했다.
+
+
+> **instruction-0012 보고 (§7)**
+> 1. **게이트:** `lineage_fork_wording`·`lineage_migration_wording` 추가, source 범위에 `paper/manuscript/**/*.qmd`·`paper/korean-summary.txt`·`paper/figures/specs/*.json` 포함. **fail-closed 3/3 확인** (영문 fork, 영문 migration, 한글 포크를 각각 넣어 실패 확인 후 원복). 커밋 아래 참조.
+> 2. **어휘 전수 검사:** 범위 파일 21건 + 빌드된 docx 본문 + 참고문헌 = **0건**.
+> 3. **결정 기록:** `RD-2026-09-03-76A` (3단계 계보 서사 채택, 단계별 근거 수준 명시, 반증 조건은 계승 표와 원장 태그 불일치).
+> 4. **fig-09 스펙 갱신:** 축을 자율성/근거결속 → **능력/책임 가능성** 3단계 계보로 교체, 재렌더 후 판독 일치율 **1.000**.
+> 5. **계승 표:** 행 **9건**, 태그 분포 {'INHERITED': 4, 'RE_DERIVED': 3, 'MODIFIED': 2}. 코드 셀이 행 수와 태그 어휘를 assert한다. 표 총 **6개**.
+> 6. **0011 §4 진행 위치:** 1항(Quarto 전환) 완료·전환 보류, 0012 §1~3 완료, 다음은 인용 이관 → Q-0009 설계.
 
 ## Completed in current phase
 
