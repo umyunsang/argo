@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** return to the scientific gap and re-examine what would make the confirmatory block executable, since the last several cycles have all hardened evidence handling rather than advancing the study.
+- **next_first_action:** run one measured episode per condition on the two new tasks so the confirmatory block has admissible episodes and can re-derive its own allocation.
 
-- **last_updated:** 2026-09-03T03:05:00+09:00
+- **last_updated:** 2026-09-03T03:10:32+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 42 closed — the staleness window now closes in the same cycle, and closing cannot happen without a passing verification
+- **current_phase:** cycle 43 closed — two new confirmation tasks built with anchors frozen before any artifact; cue leakage found and removed
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 43 — back to the science: the confirmatory block had no tasks left
+
+- **Gap picked:** four tasks are burned as development data and the other four were consumed by the variance block, so the confirmatory block had nothing disjoint to run on.
+- **Executed:** two new tasks built from unseen recent studies whose experimental design is the withheld target — `K5-unlearning-stress` and `K6-harness-evolution`, six anchor elements each, two evidence files each.
+- **Anchors frozen before any artifact exists**, and recorded as such with the instructions digest.
+- **The cue check caught real leakage.** The first draft of the instructions pre-answered **five of twelve** scored elements, because the stated constraints named the design choices: a constraint mentioning a retain set gave away the retain-set control, one naming the fixed backbone gave away the frozen-backbone element, and the question itself named overfitting. Constraints were rewritten to define the setting without naming the choices; both tasks now leak **zero** cues.
+- **Workspaces build and admit** in both the minimal and full conditions, with no canary in any released file.
+- **Nothing has been run on them yet.** They exist so the confirmatory block has unburned tasks with anchors fixed in advance.
 
 ### Cycle 42 — closing the window without creating a rubber stamp
 
