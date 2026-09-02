@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** add the byte-level re-run to the standing loop so the staleness window closes in the same cycle that changes the evidence base, rather than in a later one.
+- **next_first_action:** return to the scientific gap and re-examine what would make the confirmatory block executable, since the last several cycles have all hardened evidence handling rather than advancing the study.
 
-- **last_updated:** 2026-09-03T02:56:35+09:00
+- **last_updated:** 2026-09-03T03:05:00+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 41 closed — evidence chain enforced every run locally, with the network level held by a staleness contract
+- **current_phase:** cycle 42 closed — the staleness window now closes in the same cycle, and closing cannot happen without a passing verification
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 42 — closing the window without creating a rubber stamp
+
+- **Gap picked:** staleness was detected but closed only in a later cycle.
+- **The danger was the obvious fix.** A command that re-anchors after any run would silence the gate it exists to satisfy. So the anchor updates **only** when the claim level passed, every archive reached an acceptable status, and no file mismatched. A failed or partial run leaves it stale on purpose.
+- **Four negative fixtures enforce that:** a failed claim level, a byte mismatch, a failed fetch, and a dry run must each leave the anchor untouched. 9 fixtures total; **5 of 5** mutations caught, including "re-anchor even when verification failed".
+- **The run refused to pass, correctly.** One record — a versioned PDF — had no archive members and reported `INCOMPLETE_RECORD`. I completed the record by verifying its artifact digest and the derived text the quotations were cut from, rather than adding the incomplete status to the acceptable set. Widening the check would have been the easy fix and the wrong one.
+- **Now closing in-cycle:** 132 archives, **787 files compared, 787 byte identical**, anchor re-run and updated after this round's own locators were added.
+- **Honest limit:** the command and the gate share an author, so those negative tests are the only thing separating closure from silencing.
 
 ### Cycle 41 — the gate enforces the chain without needing a network
 

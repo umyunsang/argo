@@ -67,8 +67,41 @@ def verify_archive(record: dict, fetch=True) -> dict:
     members = record.get("tex_files") or []
     result = {"source_id": record.get("source_id"), "files": len(repo_paths),
               "checked": 0, "byte_identical": 0, "mismatched": [], "status": "SKIPPED"}
-    if not (url and digest and repo_paths):
+    if not (url and digest):
         result["status"] = "INCOMPLETE_RECORD"
+        return result
+    if not repo_paths:
+        # A versioned PDF record has no archive members. Its identity is still checkable:
+        # the artifact digest, and the derived text that the quotations were cut from.
+        derived = record.get("derived_text_path")
+        derived_digest = record.get("derived_text_sha256")
+        if not (derived and derived_digest):
+            result["status"] = "INCOMPLETE_RECORD"
+            return result
+        if not fetch:
+            result["status"] = "OFFLINE"
+            return result
+        with tempfile.TemporaryDirectory() as tmp:
+            local = pathlib.Path(tmp) / "artifact"
+            proc = subprocess.run(["curl", "-sfL", "--retry", "3", "-o", str(local), url],
+                                  capture_output=True)
+            if proc.returncode != 0 or not local.is_file():
+                result["status"] = "FETCH_FAILED"
+                return result
+            if sha256_path(local) != digest:
+                result["status"] = "ARCHIVE_DIGEST_MISMATCH"
+                return result
+        derived_path = ROOT / derived
+        if not derived_path.is_file():
+            result["status"] = "DERIVED_TEXT_MISSING"
+            return result
+        result["checked"] = 1
+        if sha256_path(derived_path) == derived_digest:
+            result["byte_identical"] = 1
+            result["status"] = "DIGEST_VERIFIED_NO_MEMBERS"
+        else:
+            result["mismatched"].append({"member": derived, "reason": "derived text digest differs"})
+            result["status"] = "MISMATCH"
         return result
     if not fetch:
         result["status"] = "OFFLINE"
