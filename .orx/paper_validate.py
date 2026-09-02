@@ -661,6 +661,9 @@ def main():
             + json.loads(
                 (ROOT / "paper/sources/arxiv-metadata-literature-round70-receipt.json").read_text(encoding="utf-8")
             ).get("records", [])
+            + json.loads(
+                (ROOT / "paper/sources/arxiv-metadata-literature-round72-receipt.json").read_text(encoding="utf-8")
+            ).get("records", [])
         )
         combined_metadata_ids = [x.get("source_id") for x in combined_metadata_records]
         duplicate_metadata_ids = sorted(k for k, v in collections.Counter(combined_metadata_ids).items() if v > 1)
@@ -1805,6 +1808,49 @@ def main():
             if proc.returncode != 0 or rebuilt != committed_digest:
                 errors.append("submission artifact is not reproducible from its committed builder")
 
+    evidence_chain = {"claim_level": None, "byte_level_receipt": None, "stale": None}
+    chain_cfg = cfg.get("evidence_chain_gate")
+    if chain_cfg:
+        # The claim level is local and deterministic, so it runs on every validation.
+        # The byte level needs the network, so it is run on request and its recorded
+        # result is checked here for staleness instead of being repeated.
+        claims_obj = json.loads((ROOT / chain_cfg["claims"]).read_text(encoding="utf-8"))
+        locators = claims_obj["locators"] if isinstance(claims_obj, dict) else claims_obj
+        file_failures, excerpt_failures = [], []
+        for loc in locators:
+            path = ROOT / loc["source_file"]
+            if not path.is_file():
+                file_failures.append(loc["claim_locator_id"])
+                continue
+            if loc.get("source_file_sha256") and sha256_path(path) != loc["source_file_sha256"]:
+                file_failures.append(loc["claim_locator_id"])
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            excerpt = "\n".join(lines[int(loc["line_start"]) - 1:int(loc["line_end"])])
+            if hashlib.sha256(excerpt.encode()).hexdigest() != loc["excerpt_sha256"]:
+                excerpt_failures.append(loc["claim_locator_id"])
+        evidence_chain["claim_level"] = {
+            "locators": len(locators), "file_failures": file_failures,
+            "excerpt_failures": excerpt_failures,
+        }
+        if file_failures or excerpt_failures:
+            errors.append("claim locator file or excerpt no longer verifies")
+
+        receipt_path = ROOT / chain_cfg["byte_level_receipt"]
+        if not receipt_path.is_file():
+            errors.append("byte-level verification receipt missing")
+        else:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            recorded = (receipt.get("full_coverage_run") or {}).get("claim_locators_sha256")
+            current = sha256_path(ROOT / chain_cfg["claims"])
+            evidence_chain["byte_level_receipt"] = {
+                "recorded_claim_locators_sha256": recorded,
+                "current_claim_locators_sha256": current,
+            }
+            evidence_chain["stale"] = recorded != current
+            if recorded != current:
+                errors.append("byte-level verification is stale: the evidence base changed "
+                              "since it was last run")
+
     abstract_claims = {"checked": 0, "failures": []}
     claim_cfg = cfg.get("abstract_claim_consistency")
     if claim_cfg:
@@ -2256,6 +2302,7 @@ def main():
             "pdf_token_failures": pdf_token_failures,
         },
         "abstract_claims": abstract_claims,
+        "evidence_chain": evidence_chain,
         "dangling_references": dangling_references,
         "external_artifacts": external_artifacts,
         "submission_artifact": submission_artifact,

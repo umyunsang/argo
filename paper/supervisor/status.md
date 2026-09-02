@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** wire the byte-level source verification into the validation gate so the evidence chain is re-checked automatically rather than on request.
+- **next_first_action:** add the byte-level re-run to the standing loop so the staleness window closes in the same cycle that changes the evidence base, rather than in a later one.
 
-- **last_updated:** 2026-09-03T02:53:39+09:00
+- **last_updated:** 2026-09-03T02:56:35+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 40 closed — every source receipt verified at byte level; 782 of 782 files identical to their archive members
+- **current_phase:** cycle 41 closed — evidence chain enforced every run locally, with the network level held by a staleness contract
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 41 — the gate enforces the chain without needing a network
+
+- **Gap picked:** byte-level verification was manual, so nothing forced it to be re-run.
+- **The obvious move was wrong.** Running the network check inside the gate would make validation non-deterministic and fail for reasons unrelated to the work — which is how a gate becomes something people switch off.
+- **Split by determinism.** The claim level is entirely local, so it runs on **every** validation: each locator's file digest and its excerpt hash at the recorded line range. The byte level records the **digest of the evidence base** it was run against, and the gate fails when that digest no longer matches.
+- **Two staleness mutations fire:** corrupting one excerpt hash produced both a verification failure and a staleness failure; appending a locator produced staleness alone. Restoring returns to pass.
+- **The contract bit immediately.** Adding this round's own locator made the byte-level receipt stale, and it had to be re-anchored before the gate would pass — the obligation is real, not notional.
+- **Limit stated:** staleness is *detected*, not prevented, so a window exists between changing the evidence base and re-running the network check.
 
 ### Cycle 40 — the whole evidence base verified, not a sample
 
