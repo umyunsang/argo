@@ -1,12 +1,18 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** write chapter Ⅰ of the Korean canonical manuscript with its figure references, and promote G11/G1/G6 from measured to enforced as soon as that chapter lands.
+- **next_first_action:** 한글 정본 Ⅰ장을 작성하고 그림 참조를 넣은 뒤 G11·G1·G6을 measured에서 enforced로 승격한다.
 
-- **last_updated:** 2026-09-03T05:20:16+09:00
+- **last_updated:** 2026-09-03T05:30:27+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
-- **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 61 closed — 9 figures rendered deterministically, all pass the readability gate; 8 form rules enforced
+- **model:** anthropic/claude-opus-5
+- **current_phase:** instruction-0010 처리 완료 — 그림 9/9 벡터 폴백(이미지 API 크레딧 소진), 라벨 수령(모델 기준), HF 누적 추정 $1.97
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
+
+
+> **instruction-0010 보고 (§7)**
+> 1. **그림 route:** 9/9 `vector_fallback_after_image_failure`. gpt-image-2 자격 증명은 유효하나 계정이 **HTTP 429 `credit_balance_exhausted`** 를 반환해 이미지가 생성되지 않았다. 이미지 누적 **$0.00**. Graphviz 벡터본이 판독 게이트를 **9/9, 라벨 일치율 1.000** 으로 통과한 상태라 원고는 대기하지 않는다.
+> 2. **라벨 수령:** `paper/experiments/calibration/labels-received-receipt.json`. 25건 중 **판정 가능 19건**, unclear 6건 제외. 2차 blind 일치도는 **지시문 수치를 옮기지 않고 두 파일에서 직접 재계산**했다 — 전체 **24/25**, unclear 제외 **18/18**, 불일치 L022. 정지 조건 미해당. **라벨러는 사람이 아니라 모델**이므로 논문에서 `human-anchored`를 전부 제거하고 `model-anchored calibration set`으로 바꿨다. 판정 채점은 **여전히 inadmissible**(라벨 6건 부족 + 기준이 사람이 아님). 보충 양식 8건 `supplement_ready`.
+> 3. **HF 누적:** 호출 **521건**, **보수적 상한 추정 $1.97** (< $10 상한). 실측이 아니라 상한 추정이며 가정을 cost-ledger에 명시했다.
 
 ## Completed in current phase
 

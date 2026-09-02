@@ -121,3 +121,39 @@ span only $18.67, full only $30.07, full plus a twenty percent
 span subsample $33.8. This belongs to the quality arm and does not
 change the pending completion-arm question. GPU credit units remain 0.
 
+## Hugging Face 판정기 (Hugging Face judge calls)
+
+판정기 호출(`huggingface/Qwen3.6-27B`, `huggingface/GLM-5.3`)은 Hugging Face Inference Providers를
+경유하며 크레딧을 소비한다. 이 절은 **소급 추정**이다: 해당 호출들은 텍스트 모드로 실행되어 usage가
+기록되지 않았으므로 토큰 수를 프롬프트 크기에서 추정했고, 단가는 **보수적 상한**(입력 $2.00/1M,
+출력 $4.00/1M, 출력 200토큰 가정)을 적용했다. 실제 비용은 이보다 낮을 가능성이 높다.
+가정임을 명시하며, 이 수치를 실측값으로 인용하지 않는다.
+
+| 시각 | 호출 묶음 | 호출 수 | 입력토큰/호출(추정) | USD(상한 추정) |
+|---|---|---:|---:|---:|
+| 2026-09-02 13:12 | backend probes | 3 | 600 | 0.006 |
+| 2026-09-02 15:39 | verified endpoint element judgements | 174 | 900 | 0.452 |
+| 2026-09-02 17:17 | judge reliability set | 78 | 900 | 0.203 |
+| 2026-09-03 cycle 52 | cross-judge replication | 78 | 1,200 | 0.250 |
+| 2026-09-03 cycle 53 | no-span full-artifact re-judgement | 18 | 3,500 | 0.140 |
+| 2026-09-03 cycle 54 | span-negative full-artifact re-judgement | 18 | 3,500 | 0.140 |
+| 2026-09-03 cycle 55 | span versus full cost comparison | 6 | 2,000 | 0.029 |
+| 2026-09-03 cycle 56 | whole-artifact rescore | 30 | 3,500 | 0.234 |
+| 2026-09-03 01:34 | judged verdict replay | 24 | 900 | 0.062 |
+| 2026-09-03 01:46 | mid-band stability | 50 | 900 | 0.130 |
+| 2026-09-03 cycle 60 | second-repeat whole-artifact judgement | 42 | 3,500 | 0.328 |
+| **누적** | 2026-09-02 13:12 이후 | **521** | — | **1.97** |
+
+- 상한 규칙: 누적 추정 USD가 10을 넘으면 새 HF 호출을 멈추고 Q를 올린다. 현재 **1.97 < 10**이므로 계속한다.
+- 앞으로의 HF 호출은 receipt에 `provider: huggingface`, 호출 수, USD를 남긴다.
+- 판정기 유지 근거: 처치 모델(anthropic 계열)과 제공자 계열이 달라 독립성이 유지된다. anthropic 계열로
+  바꾸면 처치와 제공자가 겹친다.
+
+## 이미지 생성 (image generation)
+
+| 시각 | 모델 | 호출 | 결과 | USD |
+|---|---|---:|---|---:|
+| 2026-09-03T05:26:37+09:00 | gpt-image-2 | 1 | HTTP 429 `credit_balance_exhausted`, 이미지 미반환 | 0.00 |
+
+누적 이미지 USD **0.00**. 자격 증명은 유효하나 계정 크레딧이 없어 벡터 폴백을 유지한다.
+

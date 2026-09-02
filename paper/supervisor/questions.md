@@ -93,3 +93,11 @@ Q 형식: `## Q-000N` 제목 아래 6필드(id/시각, 근거 경로, 옵션과 
 - **되돌리는 조건:** 사용자가 (a) 또는 (b)를 선택하면 스펙 변경 없이 경로만 교체한다.
 - **상태:** OPEN, 기본값으로 진행 중 (2026-09-03T05:11:47+09:00)
 
+### Q-0006 갱신 (2026-09-03) — 답변 수령
+
+- **답변:** (a). 25건 기입 완료. **라벨러는 사람이 아니라 supervisor 모델**이므로 논문·receipt 어디에서도 `human-anchored`로 쓰지 않고 `supervisor-model-anchored calibration set`(감독 모델 기준 교정 세트)으로만 부른다.
+- 분포 satisfied 14 / not_satisfied 5 / unclear 6. **판정 가능 라벨 19건**, 요건 25건에 **6건 부족**.
+- 2차 blind 일치도(세션이 두 파일에서 **직접 재계산**, 지시문 수치를 옮기지 않음): 전체 24/25, unclear 제외 18/18. 불일치 L022(satisfied vs unclear). 정지 조건 미해당.
+- `supplement_ready: paper/experiments/calibration/label-form-supplement-001.json` — **8건**, 동일 층화(seed 20260903, >0.9:3 / 0.7-0.9:3 / <0.7:2), verdict·confidence 미포함. supervisor 기입 대기.
+- 판정 채점은 여전히 **inadmissible**: 라벨 부족과 기준이 사람이 아니라는 두 이유 모두.
+
