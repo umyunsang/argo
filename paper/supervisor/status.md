@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** re-derive the judged endpoint bound by re-running the element verifier on a fixed subset and reporting agreement with the recorded verdicts, since that layer is excluded from the deterministic re-derivation.
+- **next_first_action:** re-examine the three low-confidence calibration items, since replay showed that band carries no reproducible content and those items may be unlabelable rather than merely hard.
 
-- **last_updated:** 2026-09-03T01:29:19+09:00
+- **last_updated:** 2026-09-03T01:34:32+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 24 closed — both executed blocks re-derive exactly from retained artifacts with the audited instruments
+- **current_phase:** cycle 25 closed — judged reproducibility measured per confidence band; the 0.9 floor is now supported by measurement
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 25 — the judged layer replays only where it is admitted
+
+- **Gap picked:** the deterministic re-derivation could not reach judged verdicts, so their reproducibility was unmeasured.
+- **Executed:** 24 recorded element judgements, sampled with a fixed seed and stratified across confidence bands, re-verified from the same artifacts with the same judge and the committed verifier.
+- **Result by band, not in total.** Above 0.9 confidence: **10 of 10**. Between 0.7 and 0.9: **8 of 10**. Below 0.7: **0 of 4**. Overall 18 of 24; excluding two items that retrieved no span and so need no model call, 16 of 22.
+- **The 0.9 admission floor is now measured, not just reasoned.** It was adopted in cycle 16 on reliability grounds; the band it admits replays perfectly here.
+- **Verdicts below 0.7 carry no reproducible content** and must not be scored, rather than being treated as noisy but usable.
+- **Three limits recorded:** replay is not correctness since no human label exists for these items; a disagreement cannot be attributed to judge stochasticity rather than item ambiguity from this design; and the low band held only 5 items in total.
 
 ### Cycle 24 — the recorded results were re-derived, not assumed
 
