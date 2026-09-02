@@ -57,7 +57,7 @@ Q 형식: `## Q-000N` 제목 아래 6필드(id/시각, 근거 경로, 옵션과 
 - **answer:** (b) 보류. 파일럿 전제와 16-episode 파일럿은 GPU 없이 끝낸다. 파일럿 완료 후 사전등록(목표·고정 명령·입력 sha·est_CU·중단 규칙·체크포인트)과 cost-ledger 행을 커밋한 뒤 새 Q로 다시 올린다. 이 Q는 더 이상 blocking이 아니며 루프를 멈추지 않는다.
 
 
-## Q-0006 — 교정 라벨 25건 수집 요청 (양식 완성됨)
+## Q-0006 — 교정 라벨 25건 수집 요청 (양식 완성됨) [ANSWERED 2026-09-03 05:17 KST — (a) 25건 기입]
 
 - **id:** Q-0006
 - **question:** `paper/experiments/calibration/label-form.json`의 **25개** 항목에 blind 라벨(satisfied / not_satisfied / unclear)을 기입해 줄 수 있는가? 프로토콜은 `paper/research/human-label-protocol.md`다. 각 항목은 `label_id`, 요구사항 한 줄, 후보 구절만 담고 있으며 판정기의 판단과 신뢰도는 들어 있지 않다.
@@ -69,6 +69,7 @@ Q 형식: `## Q-000N` 제목 아래 6필드(id/시각, 근거 경로, 옵션과 
 - **updated_at:** 2026-09-03T00:40:40+09:00
 - **status:** 양식이 완성되어 대기 중이다. 저신뢰 층 3건을 보충해 25건(>0.9 10건 / 0.7-0.9 10건 / <0.7 5건)이 됐고, 모든 항목이 동일한 필드 집합을 갖도록 고쳤다. 항목에 판정 결과가 새지 않는지 기계로 확인했다. 라벨이 없는 동안에도 루프는 기본값으로 계속 진행한다.
 - **supervisor_note (2026-09-03 05:25 KST):** 사용자에게 전달됨(라벨은 사람만 기입 가능). 답변 전까지 기본값 (b) 유지, 루프 계속. instruction-0009 §7 참조.
+- **answer (2026-09-03 05:17 KST):** (a). 사용자가 05:08 KST에 "Q-0006 교정 라벨 25건 니가 직접진행해 승인할게"로 supervisor에게 기입을 위임했다. `paper/experiments/calibration/label-form.json`의 25개 항목에 `answer`/`labeller`/`labelled_at`/`notes`를 기입했다(satisfied 14 / not_satisfied 5 / unclear 6). 라벨러는 사람이 아니라 supervisor 모델(claude-fable-5-1, Claude Code supervisor 세션)이며, 판정기(huggingface/Qwen3.6-27B, GLM-5.3)와 처치 모델(anthropic/claude-haiku-4-5)과는 다른 모델·제공자 계열이다. 이 사실을 논문 본문과 receipt에 그대로 공개할 것("human-anchored"라는 표현은 쓰지 말 것). unclear 6건은 프로토콜대로 제외·별도 집계하므로 무결 라벨은 19건이며, 25건 요건을 채우려면 같은 층화로 추가 항목을 뽑아 supervisor에게 보내야 한다. 2차 라벨러 중복(20% 이상) 결과와 세부 절차는 instruction-0010 §2 참조.
 
 
 ## Q-0007 — 완료율 정밀도를 위한 116 에피소드 블록 실행 승인

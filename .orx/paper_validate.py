@@ -338,6 +338,16 @@ def thesis_form_gate(root, cfg, docx_path):
          {"per_chapter": by_chapter, "required": {"II": 1, "III": 3, "IV": 1}},
          by_chapter.get("II", 0) >= 1 and by_chapter.get("III", 0) >= 3 and by_chapter.get("IV", 0) >= 1,
          True, "enforced now")
+    rule("G8c", "every figure has been rendered and passes the readability gate",
+         {"rendered": routed, "passing": sum(1 for f in figs if f.get("ocr_passed")),
+          "total": len(figs)},
+         len(figs) > 0 and routed == len(figs) and all(f.get("ocr_passed") for f in figs),
+         True, "enforced now")
+    rule("G8d", "every rendered figure output exists at its recorded digest",
+         {"checked": sum(1 for f in figs if f.get("output_path"))},
+         all((root / f["output_path"]).is_file() for f in figs if f.get("output_path"))
+         and len([f for f in figs if f.get("output_path")]) == len(figs),
+         True, "enforced now")
     rule("G12", "no forbidden public token appears in any figure specification or prompt",
          {"scanned": len(list((figdir / "specs").glob("*"))) if (figdir / "specs").is_dir() else 0},
          not any(t.lower() in p.read_text(encoding="utf-8", errors="replace").lower()

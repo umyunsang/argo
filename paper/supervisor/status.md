@@ -1,11 +1,11 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** render the nine figures from their committed specs with the deterministic vector route, run the OCR label gate on each, and fill route/output/sha in figure-ledger.json.
+- **next_first_action:** write chapter Ⅰ of the Korean canonical manuscript with its figure references, and promote G11/G1/G6 from measured to enforced as soon as that chapter lands.
 
-- **last_updated:** 2026-09-03T05:11:47+09:00
+- **last_updated:** 2026-09-03T05:20:16+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** instruction-0009 form workstream opened; 6 form rules enforced and passing, Korean body not yet written
+- **current_phase:** cycle 61 closed — 9 figures rendered deterministically, all pass the readability gate; 8 form rules enforced
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
