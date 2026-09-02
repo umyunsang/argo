@@ -1,14 +1,22 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** rewrite the manuscript Introduction and Proposed Method so they match the replaced endpoint and the reliability floor, since they still describe the design as of round 7.
+- **next_first_action:** rewrite the Conclusions section so its roadmap matches the instrument-first boundary, then regenerate the Word submission artifact from the validated manuscript.
 
-- **last_updated:** 2026-09-03T00:03:13+09:00
+- **last_updated:** 2026-09-03T00:12:39+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 9 closed — manuscript now reports the executed instrument evidence, including its own falsified endpoint
+- **current_phase:** cycle 10 closed — manuscript front matter aligned with the replaced instruments and the self-verification hazard stated explicitly
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 10 — front matter aligned, and the self-verification hazard named
+
+- **Gap picked:** the Introduction and Proposed Method still described the round-7 design, and the thesis had not stated what a system that studies itself is entitled to claim.
+- **Literature loop:** 9 discovery calls, 5 new `FULL_PAPER_READ` records, 5 locators. One is directly adversarial to this project: when an agent controls both the optimized object and its verifier, self-assigned scores can stay high while real performance does not.
+- **Executed:** the scope subsection now states that the work reached the instrument-admissibility boundary and stopped there, and a new method subsection makes the three instruments first-class design objects, each with its own falsifier. Five references added, bibliography reordered.
+- **Named hazards rather than assumed immunity:** self-authored verification, harness tampering by a self-improving agent, and self-evolving loops that presuppose a metric which does not exist. The mitigations already implemented are stated against each.
+- Manuscript is now 7,781 words with 121 reviewed locators behind it.
 
 ### Cycle 9 — the manuscript now reports what was executed
 
