@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** sample the 25 calibration pairs from `paper/experiments/study-a-variance-block-2026-09-02/element-verdicts.json` under the frozen label protocol and emit the blinded label form.
+- **next_first_action:** generate three additional low-confidence element judgements to top the calibration form up to 25 items, then hold judged scoring until labels return.
 
-- **last_updated:** 2026-09-02T23:50:56+09:00
+- **last_updated:** 2026-09-03T00:03:13+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 7 closed — verified endpoint implemented and run over 32 retained episodes; variance recomputed; scoring inadmissible until calibration labels exist
+- **current_phase:** cycle 8 closed — verifier reliability measured, confidence floor set at 0.9, blinded 22-item calibration form emitted and awaiting labels
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 8 — is the verifier even stable?
+
+- **Gap picked:** labels are expensive and require a human, so before requesting any, test whether the verifier is stable enough to be worth calibrating.
+- **Literature loop:** 9 discovery calls, 5 new `FULL_PAPER_READ` records, 5 locators, including one that directly challenges the plan: agreement is not accuracy, and high self-consistency frequently co-occurs with wrong answers.
+- **Executed:** reliability audit on 64 stratified pairs, each re-judged by the same judge with the same prompt and independently judged by a second model.
+- **Measured:** test-retest agreement **0.844**, cross-model agreement **0.703**, chance-corrected kappa **0.411**. Above 0.9 confidence retest agreement is **0.880**, cross-model **0.920**, and **0 of 20** high-confidence pairs disagreed across models. Between 0.7 and 0.9 cross-model agreement falls to **0.568**, near chance.
+- **Decision:** a reliability floor at 0.9 confidence abstains before calibration, and calibration may only tighten it (`RD-2026-09-02-16A`). This is reliability, not validity, and is reported as such.
+- **Calibration form emitted:** 22 blinded items sampled stratified across confidence bands with a recorded seed, plus a separate evaluator-owned key. Stratification rather than uncertainty sampling was chosen because uncertainty sampling concentrates the items where annotation error also concentrates (`RD-2026-09-02-16B`). Q-0006 requests the labels; the default is to continue without them.
 
 ### Cycle 7 — replacement endpoint implemented and measured
 

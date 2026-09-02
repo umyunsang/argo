@@ -1,0 +1,1058 @@
+
+Warning: orx 0.1.117 is outdated (latest 0.1.118). A newer release is available; upgrade to stay compatible with the API. Run `orx update` to upgrade.
+
+alphaXiv: https://www.alphaxiv.org/abs/2607.08065
+
+When LLMs Agree, Are They Right?
+Auditing Self-Consistency and Cross-Model Agreement as Confidence
+Signals
+Kaihua Ding
+*
+University of Pennsylvania
+dkaihua@upenn.edu
+Abstract
+LLM-as-judge (Zheng et al., 2023) is increas-
+ingly the default for evaluating AI systems
+in enterprise pipelines, often scaled to ensem-
+bles (Verga et al., 2024) or ‘mixture-of-experts’
+(Shazeer et al., 2017) panels of judges. These
+systems share a key assumption: that consis-
+tency—agreement among judges, or among a
+model’s own samples—indicates correctness.
+We show this assumption is unreliable. Agree-
+ment is not accuracy: a model can agree with
+itself, and different models can agree with each
+other, out of shared bias, a memorized heuris-
+tic, or an option-position prior rather than truth.
+We ask when agreement is nonetheless a us-
+able proxy, in a large-scale cross-runner study:
+53 runners drew K=50 samples for assigned
+overlapping cases across comparisons of model
+tier, prompting, and scale on GPQA Diamond
+and AIME—265,000 samples. Using majority-
+correctness as the deployment label and a hi-
+erarchical runner-clustered bootstrap, agree-
+ment is a positive but weak predictor (ρ 0.20–
+0.59, all positive under item-clustered resam-
+pling) whose usefulness is regime-dependent:
+best for unsaturated mid-tier models and for
+allocating compute, and worst—over-confident
+yet no more accurate—for the most consis-
+tent frontier model (agreement ≥ 0.8 on 77%
+of GPQA case-result entries, 48% of those
+wrong). An exploratory cross-family check
+on three Claude tiers shows the same fron-
+tier over-confidence, with confident errors re-
+curring across providers above a marginal-
+preserving null. Self-consistency is thus a con-
+ditional proxy for correctness, not a standalone
+confidence score. We publicly release the de-
+identified per-run rows and answer distribu-
+tions.
+*
+The author’s prior work spans output-based error estima-
+tion (Ding, 2018) and AI-system evaluation and assessment
+design (Ding, 2025a).
+1 Introduction
+Large language models are increasingly used to
+evaluate AI systems—as LLM-as-judge, and in en-
+semble or multi-judge (‘mixture-of-experts’) pan-
+els now common in enterprise evaluation pipelines
+(Zheng et al., 2023). These pipelines rest on
+a pervasive intuition: that agreement signals
+correctness—if several judges concur, or if a model
+returns the same answer across many stochastic
+samples, the answer is trusted, and if they disagree
+it is treated as a guess. But agreement-with-itself is
+not the same as being right: a model can repeat an
+answer because it is genuinely certain, or because
+every sample passes through the same memorized
+heuristic, shared misconception, option-position
+prior, or systematic hallucination. This is the self-
+referential analogue of the self-preference bias doc-
+umented when models judge their own outputs
+(Zheng et al., 2023; Panickssery et al., 2024)—
+agreement with oneself can encode shared bias
+rather than correctness. Self-consistency decoding
+operationalizes this by returning the majority an-
+swer over K samples (Wang et al., 2023), building
+on chain-of-thought prompting (Wei et al., 2022).
+The same agreement signal is now reused well be-
+yond decoding—as a confidence estimate for cost-
+based routing and cascades (Chen et al., 2023), for
+adaptive sample-budget allocation (Aggarwal et al.,
+2023), and for selective prediction and abstention
+(Geifman and El-Yaniv, 2017; Kamath et al., 2020).
+That self-consistency raises accuracy via ma-
+jority voting is well established, as is the broader
+finding that elicited LLM confidence is often mis-
+calibrated and can even worsen after post-training
+(Kadavath et al., 2022; Lin et al., 2022; Tian et al.,
+2023; OpenAI, 2023). Less systematically exam-
+ined is how reliably the agreement signal itself
+functions as the confidence proxy that routing and
+abstention systems already assume it to be—and
+when it fails—under a controlled, cross-replicated
+arXiv:2607.08065v1 [cs.AI] 9 Jul 2026
+
+audit on hard reasoning benchmarks. We provide
+that audit, using a cross-runner design to separate
+confident errors that recur across different runners
+and prompts from those that are sampling noise.
+Our thesis is that self-consistency is not accuracy,
+but a regime-dependent empirical proxy for it: a
+positive yet weak signal whose usefulness depends
+on measurable conditions—model tier and agree-
+ment regime, answer space, and intended use—
+which we map. It is usable where agreement is
+unsaturated (mid-tier models) and for allocating
+compute, but unreliable as a standalone confidence
+score, worst for the over-confident frontier model.
+Contributions. (1) A large-scale (265,000-
+sample), cross-runner audit of self-consistency as
+a confidence/abstention/routing signal on GPQA
+Diamond and AIME, with a hierarchical runner-
+clustered bootstrap and multiplicity control. (2)
+Evidence that the agreement signal degrades
+on the most consistent frontier model—over-
+confident but no more accurate—consistent with
+the known post-RLHF calibration regression, mak-
+ing confidence-routing toward it counterproduc-
+tive. (3) A recurrence-based separation of recur-
+ring from stochastic confident-wrongness, plus an
+option-shuffle control showing part of GPQA “con-
+fidence” is positional. (4) Honest null/marginal re-
+sults: chain-of-thought improves accuracy but only
+marginally improves the agreement–correctness
+signal, and a confidence-routed cascade is dom-
+inated by always using the mid-tier model. (5)
+A released de-identified, schema-validated dataset
+and analysis pipeline. (6) An exploratory, agent-
+mediated cross-family check on three Claude tiers,
+consistent with the frontier over-confidence and
+suggesting confident errors are partly shared across
+providers (GPT and Claude pick the same wrong
+answers above a marginal-preserving null for the
+two smaller tiers)—so high agreement can reflect
+shared bias, not correctness.
+2 Setup
+Data provenance. The runs were produced by
+53 runners completing an assignment in a graduate
+course (participants shared a course context and
+may have exchanged code or discussion, so runs
+are independently submitted but not guaranteed sta-
+tistically independent); we perform a secondary,
+de-identified meta-analysis of their submitted run-
+level outputs. No runner is identifiable: all per-
+sonal identifiers are removed and replaced with
+anonymous indices. We release de-identified per-
+runner–per-case rows (an anonymous runner index,
+case id, the answer-count distribution, and C/A/M)
+without GPQA question text—sufficient to repro-
+duce the clustered analysis (§11). Because runners
+were assigned overlapping cases (and each runner
+ran both of its axis’s conditions on the same cases,
+so Axis-B and Axis-C contrasts are paired within
+runner), each (axis, condition, case) cell is inde-
+pendently re-sampled by a mean of 2.5 runners (up
+to 9); in total the data span 5,300 case-result rows
+over 394 unique cases. This overlap is the basis for
+the replication analysis in §7.
+Benchmarks. GPQA Diamond (Rein et al.,
+2024): graduate-level four-option multiple choice
+({A, B, C, D}). AIME: integer-answer competi-
+tion mathematics ({0, . . . , 999}). They bracket op-
+posite ends of an answer-space spectrum: GPQA’s
+four options floor C near 1/4 even under random
+sampling, so high C is the discriminating regime;
+AIME’s large space floors C for any model that
+cannot reason.
+Design. Each runner was assigned one of three
+controlled comparisons, each with two conditions
+(a vs. b), at temperature= 1.0, K=50, on the
+gpt-4.1 family: Axis A model tier (nano vs. mini,
+zero-shot); Axis B prompt strategy (mini zero-shot
+vs. mini chain-of-thought); Axis C mid vs. frontier
+(mini vs. gpt-4.1, zero-shot). Runners implemented
+their own prompts, so prompt wording varies—a
+source of variance we treat as part of the measure-
+ment (§11). Each runner ran both conditions of its
+axis on the same cases, so all Axis-B and Axis-C
+contrasts are paired within runner (100% pairing);
+Table 3 reports the counts. Exact model snapshots
+and run timestamps were not logged and are unre-
+coverable, so our replication is across runners and
+prompts, not across time (§11).
+Metrics. For each (case, condition) we compute
+self-consistency C = n
+maj
+/K, sample accuracy
+A = n
+correct
+/K, and the majority-correct indica-
+tor M = ⊮[majority answer = ground truth]. Be-
+cause deployed majority-vote systems return the
+majority answer, M is our primary outcome; A is
+secondary. We treat C as the deployed confidence
+score under audit, not as a calibrated probability:
+C has benchmark-dependent floors (near 1/4 for
+four-option GPQA, far lower for AIME), so “over-
+confident” means high C co-occurring with errors,
+not a miscalibrated probability in the formal sense;
+
+Model (axis) Benchmark C M ρ(C, A) [95% CI] ρ(C, M) [95% CI]
+gpt-4.1-nano (A) GPQA .76 .40 .12 [−.04, .29] 
+† 
+.21 [.07, .34]
+gpt-4.1-nano (A) AIME .39 .23 .42 [.14, .67] .47 [.25, .64]
+gpt-4.1-mini (A) GPQA .83 .51 .37 [.21, .53] .30 [.17, .43]
+gpt-4.1-mini (A) AIME .51 .32 .58 [.28, .81] .59 [.37, .75]
+gpt-4.1-mini, ZS (B) GPQA .80 .52 .34 [.14, .54] .26 [.11, .39]
+gpt-4.1-mini, ZS (B) AIME .58 .36 .56 [.31, .80] .55 [.35, .71]
+gpt-4.1-mini, CoT (B) GPQA .79 .58 .54 [.35, .71] .38 [.24, .51]
+gpt-4.1-mini, CoT (B) AIME .61 .44 .63 [.35, .86] .58 [.37, .75]
+gpt-4.1-mini (C) GPQA .82 .52 .42 [.25, .58] .35 [.24, .46]
+gpt-4.1-mini (C) AIME .46 .24 .48 [.17, .72] .52 [.31, .69]
+gpt-4.1 (C) GPQA .89 .48 .19 [.06, .34] .20 [.07, .33]
+gpt-4.1 (C) AIME .46 .17 .27 [.10, .44] .31 [.13, .45]
+Table 1: Spearman ρ of self-consistency C with sample accuracy A and with majority-correctness M, per cell, with
+hierarchical runner-clustered-bootstrap 95% CIs (B=2000). C, M are cell means. All twelve ρ(C, M) are positive
+and survive Holm correction (adj. p ≤ .0024). 
+†
+Only the nano–GPQA ρ(C, A) CI crosses zero. The frontier gpt-4.1
+has the highest agreement (C=.89) yet the lowest ρ and no accuracy advantage over mini.
+Post-hoc focal contrast (on M) Bench Estimate [95% CI] p
+E1: Axis-B CoT, ∆M (paired) GPQA +.066 [−.005, .132] .022
+E2: Axis-C frontier, ∆ρ(C, M) GPQA −.18 [−.31, −.03] .025
+Secondary (AIME):
+Axis-C frontier, ∆ρ(C, M) AIME −.26 [−.40, −.12] .0006
+Axis-B CoT, ∆M (paired) AIME +.080 [−.009, .193] .003
+Table 2: Post hoc focal contrasts (both GPQA) on the
+deployment label M (E1: Wilcoxon on paired ∆M;
+E2: permutation on ∆ρ); AIME secondary. These con-
+trasts were chosen after earlier analyses and prior re-
+view, so the p-values are descriptive, not confirmatory;
+Holm is applied only to the twelve per-cell ρ(C, M) tests
+of Table 1. E2 is the stronger contrast—it survives a
+Bonferroni-for-two (p
+adj
+=.05) and a case-clustered boot-
+strap, and recurs on AIME (∆ρ= − .26, p=6×10
+−4
+);
+E1 is borderline (its ∆M CI crosses zero), though its
+accuracy effect is strong (∆A= + .067, p=2×10
+−5
+).
+ECE/Brier of C against M are operational diagnos-
+tics of that deployment use (reliability diagrams
+in the appendix). Unit of analysis: cell means,
+ECE/Brier, and err| C≥.8 are row-weighted over
+case-result entries; “always-CW” and the recur-
+rence rates of §7 are case-weighted over unique
+cases.
+Inference. We report Spearman ρ. Entries are
+not i.i.d. (each runner contributes many rows; each
+case is seen by many runners), so all CIs use a
+hierarchical runner-clustered bootstrap (resam-
+ple runners, then cases within runner; B=2000;
+Appendix A). Because this corrects runner depen-
+dence but not the globally shared-case factor, we
+also report a case-clustered bootstrap and a leave-
+one-runner check for the headline frontier result
+(§4). Before the revised analysis we designated two
+Axis (a/b) Bench runners cases rows rep
+A nano/mini GPQA 18 178 900 2.5
+AIME 18 178 900 2.5
+B ZS/CoT (mini) GPQA 17 180 850 2.4
+AIME 17 172 850 2.5
+C mini/gpt-4.1 GPQA 18 182 900 2.5
+AIME 18 180 900 2.5
+Table 3: Design and counts per axis. “rows” are case-
+result rows over both conditions; “rep” is the mean
+number of runners per (condition, case) cell (max 6–9).
+Each runner ran both conditions on the same cases, so
+Axis-B/C contrasts are paired within runner. Totals: 53
+runners, 394 unique cases, 5,300 rows.
+endpoints (both on GPQA, declared post hoc for
+this revision, not preregistered)—the paired Axis-
+B chain-of-thought effect (E1; Wilcoxon on ∆M)
+and the Axis-C frontier degradation (E2; permuta-
+tion on ∆ρ(C, M)); their p-values are reported raw,
+with a Bonferroni-for-two check in Table 2. The
+remaining cells are exploratory; these endpoints
+were declared for the revised analysis (prompted
+by prior review) and are not a preregistration. Holm
+correction is applied only to the family of twelve
+per-cell ρ(C, M) tests (Table 1); correlation differ-
+ences use permutation tests. No inferential claim
+in this paper is preregistered; the endpoint tests in
+Table 2 are descriptive robustness summaries, not
+confirmatory.
+3 Does self-consistency predict
+correctness?
+Table 1 reports ρ(C, ·) for all twelve cells. The pic-
+ture is consistent with a conditional proxy: agree-
+ment tracks correctness everywhere, but weakly
+
+Cell (axis/cond) GPQA ρ(C, M) [CI] AIME ρ(C, M) [CI]
+A/a nano .21 [.10,.30] .47 [.38,.54]
+A/b mini .30 [.19,.41] .59 [.53,.65]
+B/a mini ZS .26 [.15,.35] .55 [.47,.62]
+B/b mini CoT .38 [.26,.48] .58 [.50,.65]
+C/a mini .35 [.24,.45] .52 [.45,.58]
+C/b gpt-4.1 .20 [.09,.32] .31 [.21,.41]
+Table 4: Item-clustered robustness: case-clustered boot-
+strap 95% CIs for all twelve ρ(C, M) (resampling cases,
+not runners; B=1000). All twelve are positive and ex-
+clude zero, so the agreement–correctness link is not an
+artifact of the runner-clustered choice.
+and with a strength that varies systematically across
+the regimes we vary next. (1) Positive but weak.
+No cell exceeds ρ(C, M) = 0.6; most variance
+in correctness is unexplained by agreement, so a
+“high-C auto-accept” rule still admits many wrong
+answers. (2) The signal pivots on the label. For
+nano on GPQA, ρ(C, A) = 0.12 has a CI cross-
+ing zero whereas ρ(C, M) = 0.21 is positive—
+reinforcing M as the right target. All twelve
+ρ(C, M) are positive and survive Holm correction
+(adj. p ≤ 0.0024); they also all remain positive and
+exclude zero under a case-clustered bootstrap that
+resamples items rather than runners (Table 4), so
+the link is not an artifact of the clustering choice.
+(3) Non-monotonic in scale. The frontier gpt-4.1
+has the lowest GPQA ρ(C, M) (0.20) despite the
+highest mean C (0.89); we examine this next.
+4 The most consistent model is the
+worst-calibrated voter (in this audit)
+In this audit (one OpenAI model family, with an ex-
+ploratory Claude check in §8), on the same Axis-C
+cases gpt-4.1 has a significantly lower agreement–
+correctness correlation than mini: ∆ρ(C, M) =
+−0.18 [−0.31, −0.03] 
+on GPQA (p=0.025, per-
+mutation) and −0.26 [−0.40, −0.12] on AIME
+(p=0.0006). This is not because gpt-4.1 is stronger
+here—its GPQA majority accuracy is slightly
+lower than mini’s (M=0.48 vs. 0.52)—but be-
+cause it is over-confident: mean C=0.89, reaching
+C ≥ 0.8 on 77% of GPQA cases. With agree-
+ment piled at the ceiling, C loses discriminative
+power. gpt-4.1 also has the worst GPQA expected
+calibration error of all twelve cells (ECE = 0.41,
+both fixed-width and equal-mass; Brier 0.42) ver-
+sus 0.22 for CoT-mini (Table 5; Figures 1, 2). The
+miscalibration is not GPQA-specific: on AIME
+gpt-4.1’s ECE is 0.30 at majority accuracy only
+0.17.
+GPQA condition ECE Brier Pr[C≥.8] err| C≥.8 always-CW
+nano .36 .37 .50 .50 .09
+mini (A) .33 .35 .67 .43 .15
+mini ZS (B) .30 .33 .59 .39 .11
+mini CoT (B) .22 .26 .59 .28 .08
+mini (C) .30 .32 .62 .36 .14
+gpt-4.1 .41 .42 .77 .48 .28
+Table 5: GPQA calibration and confident-wrongness.
+ECE is fixed-width (equal-mass agrees within ±.01;
+Appendix); Brier is the mean squared error of C against
+M. “err| C≥.8” is the row-weighted majority-error rate
+(M=0) among high-agreement entries; “always-CW” is
+the (case-weighted) fraction of unique cases confidently
+wrong (C≥.8 and A≤.3—a stricter sample-level notion
+than majority-error) for every runner. gpt-4.1 is worst
+on ECE, Brier, Pr[C≥.8], and always-CW; its condi-
+tional high-confidence error (.48) is high but marginally
+below nano’s (.50). CoT-mini is best on ECE, Brier, and
+always-CW.
+0.2 0.4 0.6 0.8 1.0
+self-consistency C (binned)
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+majority correct (empirical)
+perfect
+gpt-4.1 (frontier)
+mini, CoT
+Figure 1: GPQA reliability: binned self-consistency C
+vs. empirical majority-correctness. The frontier gpt-4.1
+sits well below the diagonal at high C (majority correct
+only 52% when C ≥ 0.8), i.e. over-confident; CoT-mini
+(72%) tracks the diagonal more closely.
+The deployment consequence is concrete: a
+high-agreement (C ≥ 0.8) gpt-4.1 answer on
+GPQA is wrong 48% of the time (95% CI
+[.40, .56], case-clustered, row-weighted over high-
+agreement entries), so a router that auto-trusts such
+answers inherits roughly that error rate. This di-
+rection is consistent with documented post-training
+calibration regressions (OpenAI, 2023), in which
+heavy post-training can sharpen the output distri-
+bution at the cost of calibration; we do not identify
+the cause here. Our contribution is not that this
+happens, but a quantification of how it degrades
+self-consistency as a deployable signal, and (§7)
+that the resulting errors frequently recur across dif-
+ferent runners and prompts. These conclusions are
+not artifacts of the runner-clustered bootstrap: un-
+
+0.0 0.2 0.4 0.6 0.8 1.0
+coverage (kept by C)
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+selective risk (1
+ 
+M
+)
+GPQA: risk-coverage by self-consistency
+gpt-4.1-mini (ZS)
+gpt-4.1-mini (CoT)
+gpt-4.1
+Figure 2: GPQA risk–coverage by self-consistency for
+the three key cells. The frontier gpt-4.1 curve is highest
+(worst) and CoT-mini lowest, despite gpt-4.1’s higher
+mean agreement—self-consistency orders correctness
+least well exactly where agreement is highest.
+der a case-clustered bootstrap (resampling items)
+the frontier ∆ρ(C, M) remains negative with a CI
+excluding zero (GPQA −.15 [−.27, −.03], AIME
+−.21 [−.32, −.12]) and is stable to leaving out any
+single runner.
+A logged-snapshot confirmation. Because the
+course runs lack recorded model snapshots (§11),
+we re-ran the Axis-C comparison ourselves under a
+single logged snapshot (gpt-4.1-2025-04-14 vs.
+gpt-4.1-mini-2025-04-14, K=20, fixed canon-
+ical prompt, the same 48 GPQA cases). The pat-
+tern reproduces: gpt-4.1 is more self-consistent
+than mini (mean C 0.89 vs. 0.82; C ≥ 0.8 on
+81% vs. 63%) at identical majority accuracy (0.48
+each), with worse calibration (ECE = 0.41 vs.
+0.34) and lower ρ(C, M) (0.35 vs. 0.41; logged at
+2026-05-24T11:53Z). This makes a pure unlogged-
+snapshot explanation less likely—though the re-run
+is small (48 GPQA, K=20) and the ρ/ECE gaps
+are not individually significant at this scale (∆ρ=−
+.06 [−.37, .26], ∆ECE= + .07 [−.07, .22]); the
+over-confidence itself (higher C at equal accuracy)
+reproduces clearly.
+5 Chain-of-thought: accuracy yes, signal
+marginal
+Axis B isolates chain-of-thought on a fixed
+model (mini) with a within-runner paired de-
+sign. CoT robustly improves accuracy: paired
+∆A = +0.067 (GPQA, Wilcoxon p=2.1×10
+−5
+)
+and +0.069 (AIME, p=2.9×10
+−4
+), with major-
+ity flips 2–5× more often toward correct than
+away. Its effect on the deployment label is
+GPQA signal cov. ρ(·, M) ↑ AURC↓ ECE↓
+self-consistency C 50/50 .31 [.05,.57] .44 .30
+verbalized conf. 39/50 .21 [−.10,.49] .30
+∗ 
+.32
+P(True) 50/50 .19 [−.10,.45] .41 .39
+rank-avg combo 50/50 .30 [.03,.55] .37 .13
+Table 6: Confidence signals on GPQA (n=50, gpt-
+4.1-mini). No signal dominates; differences sit within
+wide CIs. Verbalized confidence parsed on only 39/50
+GPQA cases, so its ρ/AURC/ECE are computed over
+those parsed cases and are not directly comparable to
+C/P(True), which use all 50 (“cov.” column); 
+∗
+its AURC
+is computed on those 39 cases, a favourable subset, so
+the verbalized-confidence AURC advantage should be
+read with caution.
+weaker: ∆M = +0.066 (GPQA; bootstrap CI
+[−0.005, 0.132], Wilcoxon p=0.02) and +0.080
+(AIME, p=0.003). The effect on the signal
+is mixed: CoT raises ρ(C, A) significantly on
+GPQA (+0.199 [0.049, 0.367], p=0.0002) but its
+effect on the primary ρ(C, M) is only border-
+line (+0.123 [−0.030, 0.265], p=0.025 GPQA;
++0.031, p=0.21 AIME). Under case-clustered
+resampling the GPQA ∆ρ(C, M) CI excludes
+zero (+.123 [.016, .238]) while AIME stays null
+(+.031 [−.023, .080]). CoT is thus a reliable accu-
+racy intervention but at most a marginal one for the
+agreement–correctness signal.
+6 Self-consistency vs. other confidence
+signals
+We compare self-consistency against two signals
+from prior calibration work, on the same gpt-4.1-
+mini cases (50 per benchmark). Verbalized con-
+fidence (Lin et al., 2022; Tian et al., 2023) is the
+mean of ten elicited 0–100 self-ratings; P(True)
+(Kadavath et al., 2022) is the True/False next-token
+logprob mass on the model’s own modal answer.
+AURC (area under the risk–coverage curve) and
+ECE target M; CIs are case-level (we ran these
+cases ourselves, so runner clustering does not ap-
+ply). Table 6 reports GPQA.
+On GPQA, self-consistency has the highest rank
+correlation with correctness (ρ=0.31), edging ver-
+balized confidence (0.21) and P(True) (0.19); yet
+verbalized confidence yields the best risk–coverage
+(AURC 0.30 vs. 0.44) and a rank-average combina-
+tion is best-calibrated (ECE 0.13), with all differ-
+ences within wide CIs (n=50). On AIME every sig-
+nal is weak—majority accuracy is near the floor—
+and verbalized confidence is essentially uninfor-
+mative: it parsed on only 3/50 AIME cases and
+
+0.0 0.2 0.4 0.6 0.8 1.0
+coverage
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+selective risk (1-M)
+GPQA Diamond
+self-consistency C
+verbalized
+P(True)
+combo
+0.0 0.2 0.4 0.6 0.8 1.0
+coverage
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+selective risk (1-M)
+AIME
+self-consistency C
+verbalized
+P(True)
+combo
+Risk-coverage by confidence signal (gpt-4.1-mini)
+Figure 3: Risk–coverage curves by confidence signal
+(gpt-4.1-mini). Lower is better. No signal is a reliable
+standalone deferral score on these hard benchmarks.
+was nearly constant (mean 0.92), while P(True) is
+only weakly predictive (ρ=0.12). Self-consistency
+is thus competitive with, not dominated by, dedi-
+cated confidence signals on these hard benchmarks,
+and none is a reliable standalone abstention score
+(Figure 3).
+7 Confident errors recur—but are partly
+positional
+Are confidently-wrong outcomes mere sampling
+artifacts? The replication design says not entirely:
+several GPQA questions yield the same wrong ma-
+jority answer at C=1.0 from every runner who ran
+them, across different model conditions. For ex-
+ample, gpqa_d_076 and gpqa_d_106 (both ground
+truth B) each elicited a wrong “C” from all runners
+across multiple axes. Quantitatively, for gpt-4.1 on
+GPQA, 28% of unique cases are confidently wrong
+for every runner and 50% for at least one—so a
+nontrivial subset of confident errors recur across
+different runners and prompts rather than being
+sampling noise. We avoid the stronger claim that
+they are wholly intrinsic: AIME confident errors
+are often dispersed (no single stable wrong integer,
+frequently unparseable), and a minority of GPQA
+items appear ambiguous or mislabeled (e.g. one
+item answered consistently against its listed key)—
+a caveat for treating every such case as a model
+error.
+An option-shuffle control. Because GPQA is
+multiple choice, high agreement on a letter can
+reflect position priors rather than semantic confi-
+dence (Zheng et al., 2024; Wei et al., 2024). On
+48 GPQA cases (12 per ground-truth letter), for
+gpt-4.1-mini and gpt-4.1, we ran K=50 under the
+original order and two random option permutations,
+remapping the ground-truth letter under each (Fig-
+ure 4). Two effects emerge. First, answer con-
+tent is position-sensitive: mini’s point-estimate
+majority accuracy falls from 0.50 [0.35, 0.65] to
+A B C D
+majority-answer letter
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+0.35
+fraction of cases
+gpt-4.1-mini
+acc 0.50->0.29
+original
+shuffled
+A B C D
+majority-answer letter
+gpt-4.1
+acc 0.46->0.39
+original
+shuffled
+Majority-answer letter distribution: original vs shuffled options
+Figure 4: Majority-answer letter distribution under orig-
+inal vs. shuffled options. The model under-selects “D”
+regardless of which content sits there, and GPQA accu-
+racy drops under shuffling.
+0.29 [0.19, 0.41] under shuffling (gpt-4.1 falls less,
+0.46→0.39)—suggestive, though the CIs overlap
+at n=48—and the majority content is stable across
+permutations for only 35% of mini cases (56% for
+gpt-4.1). Second, “D” is under-selected in both the
+original and shuffled conditions (≈16% for mini,
+≈15% for gpt-4.1, vs. a 25% uniform baseline), so
+the D-avoidance is a position bias that survives con-
+tent randomization. A meaningful share of GPQA
+“confidence” is therefore positional, not semantic.
+8 An exploratory cross-family check: are
+confident errors shared?
+The audit so far is within one provider. As an
+exploratory robustness check—not a like-for-like
+reproduction—we re-ran the GPQA and AIME
+measurements on three tiers of a second family,
+Anthropic’s Claude (haiku, sonnet, opus), on the
+same studied cases (48 GPQA, 12 per ground-truth
+letter; 24 AIME). The caveats are substantial and
+we state them first: lacking API access, we drew
+samples through separate Claude agent sessions,
+which we treat as approximately independent sam-
+ples but cannot control for sampling temperature
+or verify backend/session independence; K=10
+per tier is far below the main study’s K=50; and
+these models reason internally even when asked for
+a direct answer (so AIME is effectively chain-of-
+thought—we therefore center the comparison on
+GPQA). Absolute values are internal, not compara-
+ble to the gpt-4.1 runs; CIs are case-level bootstraps.
+With those caveats, the qualitative pattern recurs.
+Frontier over-confidence recurs. Table 7 shows
+the same non-monotonic pattern within Claude.
+The frontier tier (opus) is the most self-consistent
+(mean C=0.94, C ≥ 0.8 on 88% of GPQA cases)
+but not the most accurate—its majority accuracy
+(0.58) trails the mid tier (sonnet, 0.63)—and it has
+the worst calibration (ECE = 0.35) and a lower
+
+GPQA (Claude) C M ρ(C, M) [CI] ECE err| C≥.8
+haiku .80 .50 .29 [.00,.57] .34 .43
+sonnet .87 .63 .74 [.54,.90] .24 .20
+opus .94 .58 .44 [.19,.67] .35 .36
+Table 7: Exploratory cross-family check on Claude tiers
+(GPQA, K=10 agent sessions per case, 48 cases). The
+frontier tier (opus) is the most self-consistent and most
+over-confident (C ≥ 0.8 on 88%) yet not the most accu-
+rate and the worst-calibrated—reproducing the gpt-4.1
+pattern (Table 5).
+ρ(C, M) (0.44) than sonnet (0.74). As in the gpt-
+4.1 family, the most-consistent tier discriminates
+correctness worse than the mid tier.
+Confident errors are partly shared across fam-
+ilies. On the 46 GPQA items the gpt-4.1 runs
+also cover, gpt-4.1 and the Claude tiers agree on
+the majority answer for 48–63% of items. Be-
+cause option-position priors (§7) make a flat 1/3
+null inappropriate, we test the same-wrong-answer
+rate (among items both get wrong) against a label-
+permutation null that preserves each model’s em-
+pirical wrong-answer distribution (Table 8). The
+observed rate exceeds the null for all three tiers
+and significantly so for haiku (p=.003) and son-
+net (p=.005), though not opus (p=.07; only 12
+shared-wrong items); and these shared wrong an-
+swers are high-confidence for both providers (mean
+C ≈ 0.85 GPT, ≈ 0.78 Claude), so they are confi-
+dent errors, not low-agreement coincidences. Six
+of the 46 items are answered wrongly by all four
+models (e.g. one whose listed key is B that ev-
+ery model answers D). Confident errors thus ap-
+pear partly shared across providers rather than
+idiosyncratic—consistent with shared pretraining
+biases, shared misconceptions, or item flaws—
+which both strengthens the recurrence finding of §7
+and cautions that cross-family agreement is itself
+not evidence of correctness (§11).
+9 Implications for systems
+Adaptive sampling. Simulating stop-when-
+consensus on the existing sample banks, an
+adaptive rule uses 60% fewer samples on average
+(19.8 vs. 50) at equal majority error (0.603);
+on CoT-mini the saving is 82%. Agreement is
+thus useful for allocating compute even where it
+is weak for trusting an answer, consistent with
+Aggarwal et al. (2023).
+vs. gpt-4.1 both-wrong same obs null p
+haiku 15 10 .67 .31 .003
+sonnet 14 10 .71 .38 .005
+opus 12 6 .50 .27 .07
+Table 8: Shared confident errors (GPQA, 46 shared
+items, exploratory). Among items both gpt-4.1 and the
+Claude tier answer wrongly (“both-wrong”), how of-
+ten they pick the same wrong option (“same”; obs =
+same/both-wrong), vs. a label-permutation null preserv-
+ing each model’s wrong-answer marginal (p is the per-
+mutation tail). Shared-wrong items are high-confidence
+for both (mean C 0.84–0.93 gpt-4.1, 0.70–0.87 Claude).
+Routing policy (GPQA, axes A+C) majority accuracy
+always-nano .30
+always-mini .40
+always-gpt-4.1 .33
+C-routed cascade .30–.36
+random routing .30–.34
+oracle routing .44
+Table 9: Cost-aware routing. The C-routed cascade
+beats random ordering but is dominated by simply al-
+ways using the mid-tier model; escalating to the over-
+confident frontier model hurts.
+Confidence-routed cascade. Routing
+cheap→expensive by C (Chen et al., 2023)
+beats random ordering on the cost–accuracy
+frontier (peak majority accuracy 0.36 vs. 0.34) but
+is dominated by simply always using the mid-tier
+model (0.40); always-frontier reaches only 0.33,
+and an oracle router 0.44. Because escalation
+sends “hard” (low-C) cases to the over-confident,
+no-more-accurate frontier model (§4), routing
+toward it is counterproductive here—a direct,
+cautionary consequence of the frontier degradation
+(Table 9).
+10 Related work
+Self-consistency was introduced to raise accuracy
+via majority voting (Wang et al., 2023), not as a
+calibrated confidence; reusing the agreement sig-
+nal as confidence is the downstream practice we
+audit. LLM confidence can be elicited and is of-
+ten miscalibrated—via self-evaluation/P(True) (Ka-
+davath et al., 2022), verbalized confidence (Lin
+et al., 2022; Tian et al., 2023), and post-training
+calibration regression (OpenAI, 2023). Agree-
+ment already drives adaptive sampling (Aggar-
+wal et al., 2023) and confidence cascades (Chen
+et al., 2023); selective prediction (Geifman and
+El-Yaniv, 2017; Kamath et al., 2020) thresholds a
+
+confidence signal to abstain. Multiple-choice an-
+swers carry option-order/selection biases (Zheng
+et al., 2024; Wei et al., 2024; Pezeshkpour and
+Hruschka, 2024). Closest to our concern, sampling-
+based agreement is itself used as an uncertainty
+or hallucination signal—SelfCheckGPT (Manakul
+et al., 2023) and semantic-entropy methods (Kuhn
+et al., 2023; Farquhar et al., 2024)—and surveys
+of LLM confidence estimation treat consistency
+as one such cue (Geng et al., 2024; Xiong et al.,
+2024). A separate line shows that a model’s pref-
+erence for its own outputs—self-enhancement/self-
+preference bias in LLM-as-judge settings (Zheng
+et al., 2023; Panickssery et al., 2024)—can inflate
+self-agreement independently of correctness; self-
+consistency is the intra-model analogue, which
+our cross-family shared-error analysis (§8) probes
+directly. Judging correctness when reference la-
+bels are scarce or contested is itself an active mea-
+surement problem (Ding, 2025b), and our runner-
+clustered, heterogeneity-aware inference is in the
+spirit of clustered estimation over heterogeneous
+units (Ding et al., 2024, 2025). Our contribution
+is an empirical audit of the agreement signal in
+the confidence role on hard reasoning benchmarks,
+with a cross-runner recurrence analysis and an ex-
+ploratory cross-family check that separates recur-
+ring from stochastic confident-wrongness and finds
+confident errors are partly shared across providers.
+11 Conclusion
+Self-consistency is not accuracy, but it is a positive,
+regime-dependent empirical proxy for it: useful
+where agreement is unsaturated—mid-tier models,
+and for allocating sample budget—but unreliable
+as a standalone confidence score, worst for the over-
+confident frontier model where high agreement is
+only weakly tied to correctness. Along the way it
+is only marginally improved by chain-of-thought
+on the deployment label, and partly positional on
+multiple choice; and its confident errors frequently
+recur across runners and prompts—and, in an ex-
+ploratory cross-family check, across providers—so
+they reflect shared bias more than sampling noise.
+The practical upshot is not “never use agreement”
+but “use it within its regime”: treat it as a coarse,
+cost-saving signal, not as a trustworthy confidence
+threshold, and never as a reason to route hard cases
+toward the most consistent frontier model.
+Limitations
+Our primary audit is within a single provider (gpt-
+4.1); we add an exploratory cross-family check on
+three Claude tiers (§8), but it is agent-mediated—
+no temperature control, smaller K, and internal
+reasoning we cannot disable—so its absolute values
+are internal, not directly comparable to the gpt-4.1
+runs. Crucially, because the confident errors are
+largely shared across families, cross-family agree-
+ment does not by itself certify correctness: shared
+pretraining data and shared option-position priors
+can produce shared bias rather than independent
+confirmation. We study two benchmarks (four-
+option MCQ and integer math), not open-ended
+generation or code. K=50 leaves substantial mea-
+surement noise. We do not study reasoning-trained
+models, whose internal reasoning may already sup-
+ply the calibration lift we measure for prompted
+CoT. Runners wrote their own prompts, adding
+implementation variance. Critically, exact model
+snapshots and run timestamps were not logged and
+are unrecoverable, so we cannot verify that the
+replicated runs occurred under an identical backend
+snapshot; our design establishes recurrence across
+different runners and prompts, not across time—
+though a controlled re-run under a single logged
+snapshot (§4, 2026-05-24) reproduces the over-
+confidence direction (higher agreement at equal ac-
+curacy), while the ρ/ECE gaps are underpowered at
+K=20. Finally, the confidence-baseline and shuf-
+fle studies use 50 and 48 cases respectively, so their
+CIs are wide, and a minority of GPQA items appear
+ambiguous or mislabeled, which inflates apparent
+confident-wrongness. The confidence-baseline and
+option-shuffle controls were run by us under a cur-
+rent model snapshot, so their absolute values are
+internal comparisons, not directly comparable to
+the course runs.
+Ethics Statement
+This is a secondary analysis of model-output
+data generated by runners completing a graduate
+course assignment. All personal identifiers
+were removed prior to analysis and replaced
+with anonymous indices; we release only
+de-identified per-runner–per-case rows (anony-
+mous runner index, case id, answer-count
+distribution, and C/A/M), and no individual is
+identifiable. The de-identified data are available
+at https://github.com/dingkaihua/self_
+consistency_as_predictor_of_accuracy
+. We
+
+do not redistribute GPQA Diamond question text,
+consistent with its access terms. The work also
+carries a deployment-safety implication: systems
+that treat self-consistency as confidence will route
+confidently-wrong answers into trusted paths, most
+severely for frontier models—a risk this paper
+quantifies.
+Acknowledgments
+I thank the graduate-course cohort whose submitted
+model-output runs constitute the dataset analyzed
+here. All analysis, framing, and conclusions are
+the author’s own.
+The author acknowledges the National Artificial
+Intelligence Research Resource (NAIRR) Pilot and
+the Jetstream2 cloud resource at Indiana Univer-
+sity for contributing to this research result. This
+work used Jetstream2 through NAIRR Pilot allo-
+cation NAIRR250223; Jetstream2 is supported by
+the U.S. National Science Foundation under award
+NSF-OAC 2005506. The author also thanks the
+Wharton AI & Analytics Initiative at the Univer-
+sity of Pennsylvania for financially supporting this
+project through its AI Education Innovation Fund.
+References
+Pranjal Aggarwal, Aman Madaan, Yiming Yang, and
+Mausam. 2023. Let’s sample step by step: Adaptive-
+consistency for efficient reasoning and coding with
+LLMs. In Proceedings of the 2023 Conference on
+Empirical Methods in Natural Language Processing
+(EMNLP), pages 12375–12396, Singapore. Associa-
+tion for Computational Linguistics.
+Lingjiao Chen, Matei Zaharia, and James Zou. 2023.
+FrugalGPT: How to use large language models while
+reducing cost and improving performance. arXiv
+preprint arXiv:2305.05176.
+Kaihua Ding. 2018. Efficient Output-Based Adaptation
+Mechanics for High-Order Computational Fluid Dy-
+namics Methods. Ph.D. thesis, University of Michi-
+gan.
+Kaihua Ding. 2025a. Designing AI-Resilient Assess-
+ments Using Interconnected Problems: A Theoret-
+ically Grounded and Empirically Validated Frame-
+work. Preprint, arXiv:2512.10758. Accepted, IEEE
+Frontiers in Education (FIE) 2026.
+Kaihua Ding. 2025b. Variance-Bounded Evalua-
+tion of Entity-Centric AI Systems Without Ground
+Truth: Theory and Measurement. Preprint,
+arXiv:2509.22751.
+Kaihua Ding, Jingsong Cui, Mohammad Soltani, and
+Jing Jin. 2024. Iterative Causal Segmentation: Filling
+the Gap between Market Segmentation and Market-
+ing Strategy. Preprint, arXiv:2405.14743.
+Kaihua Ding, Jingsong Cui, Mohammad Soltani, and
+Jing Jin. 2025. Iterative Causal Segmentation. PMSA
+Journal, pages 21–33.
+Sebastian Farquhar, Jannik Kossen, Lorenz Kuhn, and
+Yarin Gal. 2024. Detecting hallucinations in large
+language models using semantic entropy. Nature,
+630(8017):625–630.
+Yonatan Geifman and Ran El-Yaniv. 2017. Selective
+classification for deep neural networks. In Advances
+in Neural Information Processing Systems 30 (NIPS).
+ArXiv:1705.08500.
+Jiahui Geng, Fengyu Cai, Yuxia Wang, Heinz Koeppl,
+Preslav Nakov, and Iryna Gurevych. 2024. A sur-
+vey of confidence estimation and calibration in large
+language models. In Proceedings of the 2024 Con-
+ference of the North American Chapter of the As-
+sociation for Computational Linguistics: Human
+Language Technologies (NAACL), pages 6577–6595,
+Mexico City, Mexico. Association for Computational
+Linguistics.
+Saurav Kadavath, Tom Conerly, Amanda Askell, Tom
+Henighan, Dawn Drain, Ethan Perez, Nicholas
+Schiefer, Zac Hatfield-Dodds, Nova DasSarma, Eli
+Tran-Johnson, Scott Johnston, Sheer El-Showk,
+Andy Jones, Nelson Elhage, Tristan Hume, Anna
+Chen, Yuntao Bai, Sam Bowman, Stanislav Fort, and
+17 others. 2022. Language models (mostly) know
+what they know. arXiv preprint arXiv:2207.05221.
+Amita Kamath, Robin Jia, and Percy Liang. 2020. Se-
+lective question answering under domain shift. In
+Proceedings of the 58th Annual Meeting of the Asso-
+ciation for Computational Linguistics (ACL), pages
+5684–5696. Association for Computational Linguis-
+tics.
+Lorenz Kuhn, Yarin Gal, and Sebastian Farquhar. 2023.
+Semantic uncertainty: Linguistic invariances for un-
+certainty estimation in natural language generation.
+In The Eleventh International Conference on Learn-
+ing Representations (ICLR).
+Stephanie Lin, Jacob Hilton, and Owain Evans. 2022.
+Teaching models to express their uncertainty in
+words. Transactions on Machine Learning Research
+(TMLR). ArXiv:2205.14334.
+Potsawee Manakul, Adian Liusie, and Mark J. F. Gales.
+2023. SelfCheckGPT: Zero-resource black-box hal-
+lucination detection for generative large language
+models. In Proceedings of the 2023 Conference on
+Empirical Methods in Natural Language Processing
+(EMNLP), pages 9004–9017, Singapore. Association
+for Computational Linguistics.
+OpenAI. 2023. GPT-4 technical report. arXiv preprint
+arXiv:2303.08774.
+
+Arjun Panickssery, Samuel R. Bowman, and Shi Feng.
+2024. LLM evaluators recognize and favor their
+own generations. In Advances in Neural Information
+Processing Systems 37 (NeurIPS 2024).
+Pouya Pezeshkpour and Estevam Hruschka. 2024.
+Large language models sensitivity to the order of op-
+tions in multiple-choice questions. In Findings of the
+Association for Computational Linguistics: NAACL
+2024. Association for Computational Linguistics.
+David Rein, Betty Li Hou, Asa Cooper Stickland, Jack-
+son Petty, Richard Yuanzhe Pang, Julien Dirani, Ju-
+lian Michael, and Samuel R. Bowman. 2024. GPQA:
+A graduate-level google-proof Q&A benchmark. In
+First Conference on Language Modeling (COLM).
+ArXiv:2311.12022.
+Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz,
+Andy Davis, Quoc Le, Geoffrey Hinton, and Jeff
+Dean. 2017. Outrageously large neural networks:
+The sparsely-gated mixture-of-experts layer. In In-
+ternational Conference on Learning Representations
+(ICLR).
+Katherine Tian, Eric Mitchell, Allan Zhou, Archit
+Sharma, Rafael Rafailov, Huaxiu Yao, Chelsea Finn,
+and Christopher D. Manning. 2023. Just ask for cali-
+bration: Strategies for eliciting calibrated confidence
+scores from language models fine-tuned with human
+feedback. In Proceedings of the 2023 Conference on
+Empirical Methods in Natural Language Processing
+(EMNLP), pages 5433–5442, Singapore. Association
+for Computational Linguistics.
+Pat Verga, Sebastian Hofstätter, Sophia Althammer, Yix-
+uan Su, Aleksandra Piktus, Arkady Arkhangorodsky,
+Minjie Xu, Naomi White, and Patrick Lewis. 2024.
+Replacing judges with juries: Evaluating LLM gen-
+erations with a panel of diverse models. Preprint,
+arXiv:2404.18796.
+Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc V.
+Le, Ed H. Chi, Sharan Narang, Aakanksha Chowd-
+hery, and Denny Zhou. 2023. Self-consistency
+improves chain of thought reasoning in lan-
+guage models. In The Eleventh International
+Conference on Learning Representations (ICLR).
+ArXiv:2203.11171.
+Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten
+Bosma, Brian Ichter, Fei Xia, Ed H. Chi, Quoc V. Le,
+and Denny Zhou. 2022. Chain-of-thought prompting
+elicits reasoning in large language models. In Ad-
+vances in Neural Information Processing Systems 35
+(NeurIPS). ArXiv:2201.11903.
+Sheng-Lun Wei, Cheng-Kuang Wu, Hen-Hsen Huang,
+and Hsin-Hsi Chen. 2024. Unveiling selection bi-
+ases: Exploring order and token sensitivity in large
+language models. In Findings of the Association for
+Computational Linguistics: ACL 2024, pages 5598–
+5621. Association for Computational Linguistics.
+Miao Xiong, Zhiyuan Hu, Xinyang Lu, Yifei Li, Jie
+Fu, Junxian He, and Bryan Hooi. 2024. Can LLMs
+express their uncertainty? an empirical evaluation of
+confidence elicitation in LLMs. In The Twelfth In-
+ternational Conference on Learning Representations
+(ICLR).
+Chujie Zheng, Hao Zhou, Fandong Meng, Jie Zhou, and
+Minlie Huang. 2024. Large language models are not
+robust multiple choice selectors. In The Twelfth In-
+ternational Conference on Learning Representations
+(ICLR). ArXiv:2309.03882.
+Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan
+Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin,
+Zhuohan Li, Dacheng Li, Eric P. Xing, Hao Zhang,
+Joseph E. Gonzalez, and Ion Stoica. 2023. Judging
+LLM-as-a-judge with MT-Bench and chatbot arena.
+In Advances in Neural Information Processing Sys-
+tems 36 (NeurIPS 2023), Datasets and Benchmarks
+Track.
+A Hierarchical cluster bootstrap
+For B=2000 replicates we resample the 53 runner
+indices with replacement; within each sampled run-
+ner we resample its cases with replacement; we
+recompute the statistic on the pooled resample and
+take percentile CIs. This two-stage scheme is a hi-
+erarchical (nested) cluster bootstrap on the runner
+factor: it corrects the dominant runner-level de-
+pendence rather than implementing a full two-way
+crossed resample over globally shared cases. For
+the paired Axis-B contrasts we resample (runner,
+case) units while preserving the zero-shot/CoT pair-
+ing and recompute the paired difference. Holm cor-
+rection is applied across the family of twelve per-
+cell ρ(C, M) tests; correlation-difference p-values
+are permutation-based.
+B Prompts and protocol
+Canonical zero-shot and chain-of-thought prompts
+for GPQA and AIME, answer-extraction rules, and
+the _UNPARSEABLE_ handling (which counts as in-
+correct) are documented with the released code.
+For the confidence baselines, verbalized confidence
+used a fixed “Answer/Confidence” template (ten
+samples), and P(True) read the True/False token
+logprobs on the modal answer; for the shuffle
+control, option contents were permuted with the
+ground-truth letter remapped accordingly.
+C Additional tables and robustness
+Per-cell marginal rates, reliability diagrams, full
+risk–coverage curves, equal-mass vs. fixed-width
+ECE, the confident-wrongness threshold sweep,
+and the adaptive-sampling and cascade frontiers
+are provided in the supplementary material.

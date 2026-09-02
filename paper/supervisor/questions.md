@@ -56,3 +56,13 @@ Q 형식: `## Q-000N` 제목 아래 6필드(id/시각, 근거 경로, 옵션과 
 - **asked_at:** 2026-09-02T21:52:42+09:00
 - **answer:** (b) 보류. 파일럿 전제와 16-episode 파일럿은 GPU 없이 끝낸다. 파일럿 완료 후 사전등록(목표·고정 명령·입력 sha·est_CU·중단 규칙·체크포인트)과 cost-ledger 행을 커밋한 뒤 새 Q로 다시 올린다. 이 Q는 더 이상 blocking이 아니며 루프를 멈추지 않는다.
 
+
+## Q-0006 — 교정 라벨 22건 수집 요청
+
+- **id:** Q-0006
+- **question:** `paper/experiments/calibration/label-form.json`의 22개 항목에 blind 라벨(satisfied / not_satisfied / unclear)을 기입해 줄 수 있는가? 프로토콜은 `paper/research/human-label-protocol.md`다.
+- **why_it_matters:** 판정 채점은 교정 없이는 아무 것도 승인되지 않는다. 라벨이 없으면 1차 지표는 결정론 층으로만 제한된다.
+- **options:** (a) 22건 라벨 후 3건 보충 (b) 라벨 없이 진행하고 판정 채점을 영구 보류
+- **default_if_unanswered:** (b) 보류하고 루프는 계속한다. 신뢰도 하한 0.9는 라벨과 무관하게 이미 적용된다.
+- **blocking:** false — 기본값으로 진행해도 되돌릴 수 없는 손실이 없다.
+- **asked_at:** 2026-09-03T00:03:13+09:00

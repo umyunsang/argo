@@ -1,0 +1,903 @@
+% EMNLP 2026 submission via ACL Rolling Review (May 2026 cycle)
+% Using ACL style template: https://github.com/acl-org/acl-style-files
+\documentclass[11pt]{article}
+\usepackage{acl}  % Remove [review] for camera-ready version
+\usepackage{times}
+\usepackage{latexsym}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{placeins}
+
+% UTF-8 support
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{microtype}
+
+\title{Reliability without Validity: A Systematic, Large-Scale Evaluation\\of LLM-as-a-Judge Models Across Agreement, Consistency, and Bias}
+
+% Authors hidden in review mode
+\author{
+  Justin D. Norman \and Michael U. Rivera \and D. Alex Hughes \\ 
+  \texttt{\{justin.norman, michaelrivera, dhughes\}@berkeley.edu} \\ 
+  UC Berkeley School of Information \\ 
+  102 South Hall Drive, Berkeley CA, 94708
+  }
+
+\begin{document}
+\nolinenumbers
+\raggedbottom
+\maketitle
+
+% ============================================================================
+% ABSTRACT
+% ============================================================================
+\begin{abstract}
+LLM-as-a-Judge has become the dominant evaluation paradigm for language models, but judge validation in practice relies on exact-match agreement, a metric that does not correct for chance and systematically overstates discriminative ability. We present the largest systematic evaluation of LLM-as-a-Judge to date: 21 judges from nine providers across MT-Bench, JudgeBench, and RewardBench, evaluated under three protocols (agreement, consistency, bias audit) over 118 runs and approximately $541{,}000$ individual judgments. Four findings emerge, consistent across the full cohort, including the April 2026 frontier: kappa deflation between exact match and Cohen's $\kappa$ is universal ($33$--$41$ pp on MT-Bench), judge rankings shift by up to 14 positions across benchmarks, high test--retest reliability ($>0.95$) coexists with severe position bias ($>0.10$) in two production-deployed judges (instantiating a consistency--bias paradox), and verbosity bias is small ($<0.011$) across our cohort under a single pairwise rubric. We distill these into a Minimum Viable Validation Protocol.
+\end{abstract}
+
+
+% ============================================================================
+% 1. INTRODUCTION
+% ============================================================================
+\section{Introduction}
+% STRUCTURE: Problem -> Gap -> Contribution -> Findings Preview -> Paper outline
+
+% --- The Problem ---
+% - LLM-as-a-Judge has become the dominant paradigm for evaluating language
+%   model outputs \citep{zheng2023judging}. 
+% - Known reliability issues are well-documented: position bias
+%   \citep{wang2023large,shi2024judging}, verbosity bias \citep{wu2023style},
+%   self-enhancement bias \citep{panickssery2024llm}, and low test-retest
+%   reliability \citep{stureborg2024large}.
+% - Two comprehensive 2024 surveys catalog these issues systematically
+%   \citep{gu2024survey,li2024comprehensive}.
+
+Large language models (LLMs) increasingly evaluate large-scale content~\citep{zheng2023judging}. These ``judgments'' rely on the model's ability to mimic a human evaluator on tasks requiring analytical acuity. Such judges are widely deployed in production evaluation pipelines across hundreds of documented LLMOps deployments \citep{doordash2024autoeval, zenml2025deployments}. This proliferation has accelerated despite well-documented reliability issues with LLM use for reasoning tasks \citep{wang2023large, wu2023style, panickssery2024llm, stureborg2024large, schroeder2024trust, gu2024survey, li2024comprehensive, shi2024judging}. 
+% These issues include Position Bias~\citep{wang2023large,shi2024judging},Verbosity Bias~\citep{wu2023style}, Self-Enhancement Bias~\citep{panickssery2024llm}, and low Test-Retest Reliability~\citep{stureborg2024large}.
+% Recent surveys focused on LLM-as-Judge (LLMaJ) reliability have cataloged many of these issues systematically \citep{gu2024survey, li2024comprehensive}. ~\citet{gu2024survey} provide a systematic review of LLM-as-a-Judge centered on building reliable judging systems, cataloging consistency failures, evaluation biases, and a fragmented research landscape lacking formal definitions or standardized practices. \citet{li2024comprehensive} extend this with a five-axis taxonomy spanning functionality, methodology, applications, meta-evaluation, and limitations, documenting biases inherited from pretraining corpora, difficulty adapting evaluation criteria across domains, and unresolved questions about how cooperating judge models reach consensus. 
+Surveys of LLM-as-Judge (LLMaJ) reliability identify a recurring set of failure modes: inconsistency across prompts and runs, systematic scoring biases, weak domain-specific calibration, and the absence of meta-evaluation standards for comparing judges on equal footing.
+
+% --- The Gap ---
+% - Despite documented problems, judge validation in practice relies on exact
+%   match (raw agreement rate), a metric that does not correct for chance
+%   agreement and systematically overstates discriminative ability.
+% - No prior work has conducted a large-scale, cross-benchmark, multi-protocol
+%   evaluation of judge reliability across model families and generations.
+% - Single-benchmark validation is the norm, yet we show rankings are
+%   non-transferable across benchmarks.
+
+% Despite the reliability challenges of LLM-as-a-Judge reliability \citep{stureborg2024large,schroeder2024trust,gu2024survey,li2024comprehensive}, 
+Despite these challenges, judge validation continues to rely heavily on exact match. Established judge benchmarks---MT-Bench \citep{zheng2023judging}, RewardBench \citep{lambert2024rewardbench}, JudgeBench \citep{tan2025judgebench}---and recent successors \citep{malik2025rewardbench2,whitehouse2025j1,jiang2025codejudgebench} privilege raw agreement as the headline validation metric. This family of metrics does not correct for chance \citep{cohen1960coefficient,hayes2007standard} and overstates discriminative ability \citep{guerdan2025validating,han2025judgesverdict,collot2025balanced}.
+
+
+% --- Our Contribution ---
+% - We present the largest systematic evaluation of LLM judges:
+%   21 models from 9 providers, evaluated across 3 benchmarks using 3 protocols,
+%   producing ~541,000 judgments across 113 evaluation runs.
+% - We introduce two diagnostic concepts: kappa deflation, quantifying 
+%   how raw agreement overstates chance-corrected discrimination, 
+%   and the consistency-bias paradox, demonstrating that high 
+%   test-retest reliability can mask severe systematic bias.  
+% - We release the full evaluation dataset as a community resource.
+% - We provide jeval, an open-source framework implementing 14 metrics from
+%   8 peer-reviewed papers for reproducible judge evaluation.
+
+No prior work has conducted a large-scale, cross-benchmark, multi-protocol evaluation of judge reliability across model families and generations. We present the largest such evaluation: 21 models from nine providers across three benchmarks and three evaluation protocols, producing 541{,}000 judgments over 118 runs.
+
+% --- Key Findings Preview ---
+% - \textbf{Kappa deflation is universal}: Exact match overstates judge quality
+%   by 33--41pp on MT-Bench for all 21 models, including April 2026 frontier
+%   systems (confirmed for 10/10 SoTA models, H1).
+% - \textbf{Rankings are non-transferable}: Models shift by up to 14 positions
+%   across benchmarks (H3 confirmed).
+% - \textbf{The consistency-bias paradox}: High test-retest ($>$0.95) can coexist
+%   with severe position bias ($>$0.10), formally demonstrated for 2 models (H7).
+% - \textbf{Verbosity bias is solved}: All 21 models show $<$0.011 verbosity
+%   bias, contrasting with 20--40\% variance reported in 2023 literature.
+% - \textbf{JudgeBench discriminates}: 4.5$\times$ wider kappa spread than
+%   MT-Bench (60.4pp vs 13.5pp).
+
+We report five principal findings, including two diagnostic concepts. First, \textbf{kappa deflation}: raw agreement overstates chance-corrected discrimination by 33--41pp in all 21 evaluated models. Second, judge rankings are non-transferable: models shift by as many as 14 positions across benchmarks. Third, the \textbf{consistency--bias paradox}: high test--retest reliability often masks severe position bias. Fourth, verbosity bias is much reduced: all 21 models register $<$0.011, in sharp contrast to the 20--40\% variance reported in 2023 literature. Fifth, JudgeBench discriminates $4.5\times$ more sharply than MT-Bench (60.4pp vs.\ 13.5pp $\kappa$ spread).
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/figure1b_byfamily.png}
+  \caption{\footnotesize \textbf{Two diagnostic failures of LLM-as-a-Judge across 21
+    judges.} Panel \textbf{(a), \emph{kappa deflation}}: every
+    judge's exact-match score (orange) exceeds its chance-corrected
+    agreement (Cohen's $\kappa$, blue) on MT-Bench by between $33.8$
+    and $41.2$ percentage points, regardless of provider, scale, or
+    generation; the grey segment between the two markers is the
+    deflation gap. Panel \textbf{(b), \emph{the consistency--bias
+    paradox}}: high test--retest reliability ($\geq 0.95$) coexists
+    with severe position bias ($> 0.10$) for Qwen 3 8B and Gemini 2.5
+    Flash, both of which occupy the upper-right ``consistent but
+    biased'' quadrant; the most reproducible judges are among the
+    least valid. Panel (b) covers the 16 judges evaluated on both
+    consistency and bias-audit protocols.}
+  \label{fig:hero}
+\end{figure*}
+% --- Paper Outline ---
+% The remainder of this paper is organized as follows...
+
+% ============================================================================
+% 2. RELATED WORK
+% ============================================================================
+\section{Related Work}
+
+% \subsection{The LLM-as-a-Judge Paradigm}
+
+% - Origins in MT-Bench and Chatbot Arena \citep{zheng2023judging}: GPT-4 as
+%   judge achieves ~80\% agreement with human preferences.
+% - Rapid adoption: G-Eval \citep{liu2023geval}, AlpacaEval
+%   \citep{dubois2024alpacaeval}, Arena-Hard \citep{li2024arenahard},
+%   WildBench \citep{lin2024wildbench}.
+% - Now the dominant evaluation paradigm, used by major labs and in production
+%   systems \citep{zenml2025, doordash2024}. Add more. 
+
+The LLMaJ paradigm originated with MT-Bench and Chatbot Arena \citep{zheng2023judging}. Rapid adoption followed across diverse evaluation settings, including G-Eval for natural-language-generation tasks \citep{liu2023geval}, AlpacaEval for instruction-following \citep{dubois2024alpacaeval}, Arena-Hard for separating model performance from crowdsourced preference data \citep{li2024arenahard}, and WildBench for real-user prompts \citep{lin2024wildbench}. LLMaJ is now widely deployed in industrial evaluation pipelines, and has emerged as the dominant pattern for reference-free scoring across hundreds of production LLM deployments \citep{zenml2025deployments}.
+
+% \subsection{Prior Surveys}
+
+% - \citet{gu2024survey}: strategies for reliability, consistency, bias
+%   mitigation in LLM-as-a-Judge.
+% - \citet{li2024comprehensive}: 5-perspective coverage (Functionality,
+%   Methodology, Applications, Meta-evaluation, Limitations).
+% - Both surveys recommend the metrics our study implements but neither
+%   conducts a large-scale empirical evaluation.
+
+Evaluation of LLMaJ has expanded rapidly in response to the widespread adoption of the approach. The field faces distinct challenges surrounding reliability, consistency, and bias mitigation, which have prompted some emergent remedies \citep{gu2024survey, li-etal-2025-generation}. For example, prior work has documented biases inherited from pretraining corpora, difficulty adapting evaluation criteria across domains, and unresolved questions about consensus among cooperating judge models \citep{li2024comprehensive}. Other work identifies inconsistency under temperature and prompt variation \citep{stureborg2024large}, introduces reliability coefficients \citep{schroeder2024trust}, evaluates rating-indeterminacy \citep{guerdan2025validating}, and examines latent dimensions of reliability \citep{choi2026diagnosing}. %\citet{doddapaneni2024fbi} take an adversarial-perturbation approach in the FBI framework, measuring whether evaluator LLMs detect targeted quality drops in candidate answers and reporting failure on more than $50\%$ of perturbed cases. 
+Closest in scale to our work, \citet{bavaresco2025llms} surveys 11 LLM judges across 20 NLP evaluation tasks and recommends careful validation against task-specific annotation before deployment. 
+
+%Both surveys recommend the metrics our study implements (Cohen's $\kappa$, Krippendorff's $\alpha$, test--retest reliability, position-swap diagnostics), but neither conducts a large-scale empirical evaluation that quantifies these metrics across modern judges. Our study fills this empirical gap by reporting all of the recommended metrics for 21 judges across three benchmarks under a single common protocol.
+
+% \subsection{Concurrent Meta-Evaluation Work}
+
+% NEW SUBSECTION (added 2026-05-07; differentiators revised 2026-05-07):
+% concurrent-work positioning. Distinguishes the present study from
+% recent meta-evaluation papers that approach LLM-as-a-Judge
+% reliability from complementary angles.
+% - \citet{stureborg2024large}: temperature/prompt-level inconsistency
+% - \citet{schroeder2024trust}: formal reliability coefficients (McDonald's omega)
+% - \citet{guerdan2025validating}: rating indeterminacy construct
+% - \citet{choi2026diagnosing}: Item Response Theory as diagnostic framework
+% - \citet{doddapaneni2024fbi}: adversarial perturbations (FBI); EMNLP 2024 outstanding
+% - \citet{bavaresco2025llms}: 20-task large-scale empirical study (closest scale point)
+% Differentiators: (1) multi-protocol design on fixed model+benchmark population;
+% (2) cross-benchmark rank instability as a measurable quantity; (3) two named
+% operational diagnostic constructs (kappa deflation, consistency-bias paradox).
+
+%% 
+%% We're doing a lot of claiming and throat clearing
+%% Consider cutting this paragraph? 
+%% 
+
+% Our work advances existing work in three distinct dimensions. First, ours is the only study that combines three measurement protocols (agreement, consistency, and bias audit) on a single fixed model and benchmark population. In addition, whereas existing work uses single-protocol designs, our multi-protocol design surfaces a clear dissociation between consistency and bias. Second, our approach that evaluates 20 models on 3 judge benchmarks allows us to quantify what we discover to be substantial cross-benchmark rank-instability. Third, we introduce two, operationally defined diagnostic constructs: \textit{kappa deflation} and the \textit{consistency--bias paradox}. % (high test--retest reliability co-occurring with high position bias). %; neither rating indeterminacy \citep{guerdan2025validating} nor any named construct in the cited concurrent work captures the metric-inflation gap or the consistency-validity dissociation.
+
+% quantity: rankings shift by up to 14 positions (Llama 3.3 70B: rank 5 on MT-Bench, rank 19 on JudgeBench), and JudgeBench yields a $4.5\times$ wider $\kappa$ spread than MT-Bench (60.4pp versus 13.5pp); \citet{bavaresco2025llms} use a comparable fixed-population structure but report within-task agreement rather than cross-benchmark rank shifts. The remaining concurrent papers do not have a multi-benchmark fixed-population design at all. 
+
+\subsection{LLM Judge Metrics and Definitions}
+
+% - \textbf{Exact Match (Agreement Rate).} The proportion of items on which the judge's verdict matches the human label. Widely reported in LLM-as-a-Judge studies \citep{zheng2023judging}, but does not correct for agreement expected by chance alone, making it sensitive to label distribution.
+
+\textit{Exact match} is the proportion of items on which the judge's verdict matches the human label. We follow \citet{zheng2023judging} in reporting the tie-excluded variant for pairwise comparisons, restricting the denominator to items on which the human label is non-tie~\citep{wang-etal-2025-improving-llm-judge}. Despite being widely used, exact match does not correct for agreement expected by chance, and as a result exact match is sensitive to the label distribution of the underlying benchmark. 
+
+\textit{Cohen's} $\kappa$ is a chance-corrected measure of agreement between two raters on categorical labels:
+\begin{equation}
+\kappa = \frac{p_o - p_e}{1 - p_e},
+\end{equation}
+where $p_o$ is the observed agreement and $p_e$ is the agreement expected by chance under the marginal label distributions of the two raters \citep{cohen1960coefficient}. We use $\kappa$ as our primary agreement metric and compare each judge against the human label set on all benchmarks. \textit{Krippendorff's $\alpha$} \citep{krippendorff2011computing} is a reliability coefficient that accommodates more than two raters as well as ordinal and interval scales. The two measures coincide for the two-rater nominal case, but $\alpha$ extends naturally to the multi-run consistency setting introduced below.
+
+\textit{Test-retest reliability} is the agreement of a judge with itself across independent re-evaluations of the same items. The concept captures the stability of verdicts under identical conditions, and is a necessary but insufficient characteristic of a quality judge. %In this work we operationalize test-retest reliability as Krippendorff's $\alpha$ computed across $N$ replicate runs ($N \in [3, 5]$ in this study) at temperature $0$ with no response caching \citep{stureborg2024large, schroeder2024trust}.  
+% - \textbf{Self-Consistency.} The proportion of items on which the majority verdict across $N$ runs agrees with each individual run. Captures within-judge agreement at the item level, complementing the corpus-level test-retest coefficient.   
+% - \textbf{Position Flip Rate.} The fraction of items for which the judge's verdict changes when the response order is swapped (A$\leftrightarrow$B). A direct measure of position sensitivity at the item level, complementing the aggregate position bias statistic \citep{zheng2023judging}.
+\textit{Self-consistency} is the proportion of items on which the majority verdict across $N$ runs agrees with each individual run, capturing within-judge agreement at the item level and complementing the corpus-level test--retest coefficient. 
+
+\textit{Position flip rate} is the fraction of items for which the judge's verdict changes when the response order is swapped \citep{zheng2023judging}, providing an item-level measure of position sensitivity that complements the aggregate position-bias statistic defined next.
+% - \textbf{Position Bias.} The systematic tendency of a judge to favor the response in a particular position (A or B), 
+% independent of content quality. Measured as $|P(\text{A}) - 0.5|$ across AB+BA paired 
+% evaluations \citep{zheng2023judging,wang2023large,shi2024judging}. A value of 0 
+% indicates no position preference; values approaching 0.5 indicate 
+% near-deterministic position dependence.
+\textit{Position bias} is the tendency of a judge to favor response in a particular position \citep{zheng2023judging, wang2023large, shi2024judging}. %Following \citet{wang2023large}, we operationalize position bias as the absolute deviation of the judge's empirical probabilty of selecting label $A$ from $0.5$, measured across paired $\{AB, BA\}$ evaluations.
+% \begin{equation}
+% \text{PositionBias} = \left| P(\text{A wins}) - 0.5 \right|.
+% \end{equation}
+%A value of $0$ indicates no positional preference; values approaching $0.5$ indicate near-deterministic position dependence. 
+Across a range of judge models, flip rates range from $25\%$ to $50\%$ \citep{wang2023large, shi2024judging}. Position-swap debiasing raises within-judge consistency from roughly $60\%$ to $85\%$ \citep{li2024split}. 
+
+% - \textbf{Verbosity Bias.} The tendency of a judge to prefer longer responses regardless of content quality, 
+%measured as the Pearson correlation between the response-length differential 
+%($|$len(A)$|$ $-$ $|$len(B)$|$) and the judge's verdict \citep{wu2023style,dubois2024alpacaeval}.
+
+\textit{Verbosity bias} is the tendency of a judge to prefer longer responses regardless of content quality \citep{wu2023style, dubois2024alpacaeval}. Following \citet{dubois2024alpacaeval}, we operationalize verbosity bias as the Pearson correlation between the response-length differential $|\text{len}(A)| - |\text{len}(B)|$ and the judge's verdict. %Under our single-rubric pairwise protocol we observe small verbosity bias across all evaluated models; we do not claim verbosity bias is solved in general, and we discuss the scope of this finding in the Limitations. Self-enhancement bias, the tendency of a judge to rate its own generations higher \citep{panickssery2024llm}, is documented in prior work and is not measured in the present study because our protocol relies on human-labelled benchmarks rather than judge-vs-judge preference.
+
+% - \textbf{Kappa Deflation.} The difference between exact match and Cohen's $\kappa$ for a given judge--benchmark pair: $\Delta = \text{EM} - \kappa$. This quantity captures how much raw agreement overstates chance-corrected discriminative ability. We introduce this term to name a phenomenon that, while mathematically straightforward, has not been systematically measured or reported in the LLM-as-a-Judge literature.\footnote{To our knowledge, no prior work names or quantifies this gap at scale across judge models.} 
+
+\textbf{\emph{Kappa deflation}} is the difference between exact match and Cohen's $\kappa$ for a given judge--benchmark pair:
+\begin{equation}
+\Delta_\kappa(j, b) = \text{EM}(j, b) - \kappa(j, b).
+\end{equation}
+$\Delta_\kappa$ quantifies how much raw agreement overstates chance-corrected discriminative ability. We introduce this term to name a phenomenon that, while mathematically a direct consequence of Cohen's correction \citep{cohen1960coefficient}, has not been systematically measured or reported at scale across modern LLM judges. On MT-Bench we observe $\Delta_\kappa \in [33.8, 41.2]$ percentage points across all 21 models tested.
+
+% - \textbf{Consistency-Bias Paradox.} The empirical observation that high test-retest reliability ($>$0.95) can coexist with severe position bias ($>$0.10) in the same judge model, such that the judge is highly \emph{reproducible} but not \emph{valid}. This paradox arises because test-retest measures stability of outputs, not correctness of the underlying decision process. We introduce this term to formalize a failure mode where reporting test-retest alone creates a misleading picture of judge reliability.
+
+\textbf{\emph{Consistency-bias paradox}} is the empirical observation that high test-retest reliability ($\alpha > 0.95$) can coexist with severe position bias in the same judge model, such that the judge is highly reproducible but not valid. We introduce this term to formalize a failure mode reachable by reporting test-retest alone \citep{stureborg2024large, schroeder2024trust,chen-etal-2024-humans}. The paradox arises because test-retest measures the stability of outputs and not the correctness of the underlying decision process: a judge that deterministically favors position $A$ across runs would achieve a perfect test-retest score, but would also exhibit maximum-possible position bias.  %  , and we demonstrate it empirically on two production-deployed models in Section~\ref{sec:results}.
+
+%% 
+%% I think that we can cut this because of how the last paragraph is now written
+%% 
+    
+% \subsection{Known Biases in LLM Judges}
+
+% % - \textbf{Position bias}: Judges show systematic preference for responses in
+% %   specific positions (first or last). Documented at 25--50\% flip rates
+% %   \citep{wang2023large,shi2024judging}. Position-swap mitigation improves
+% %   consistency from ~60\% to ~85\% \citep{li2024split}.
+% % - \textbf{Verbosity bias}: Longer responses score higher regardless of content
+% %   quality \citep{wu2023style}. AlpacaEval addresses with length-controlled
+% %   win rates \citep{dubois2024alpacaeval}.
+% % - \textbf{Self-enhancement bias}: Models preferentially rate their own outputs
+% %   higher, with self-recognition accuracy at 60--70\% \citep{panickssery2024llm}.
+% % - \textbf{Style bias}: Formatting features (markdown, bullets, confident tone)
+% %   shift win rates by 15--25pp independent of content quality \citep{wu2023style}.
+% % - \textbf{Cognitive biases}: CoBBLEr systematically benchmarks 6 cognitive
+% %   biases in LLM evaluators \citep{koo2023benchmarking}.
+
+% Prior work has documented several systematic biases that affect LLM judges. \textbf{Position bias} is the systematic preference for responses occupying a particular position: \citet{wang2023large} and \citet{shi2024judging} report flip rates between $25\%$ and $50\%$ across a range of judge models, and \citet{li2024split} show that position-swap debiasing raises within-judge consistency from roughly $60\%$ to $85\%$. \textbf{Verbosity bias} is the tendency to favor longer responses regardless of content quality \citep{wu2023style}; \citet{dubois2024alpacaeval} address it directly through length-controlled win rates on AlpacaEval. \textbf{Self-enhancement bias} is documented by \citet{panickssery2024llm}, who show that judge models recognize their own generations at $60\%$--$70\%$ accuracy and rate them disproportionately higher. \textbf{Style bias} captures the influence of formatting features such as markdown, bullet points, and confident tone, which can shift win rates by $15$--$25$ percentage points without any change in underlying content \citep{wu2023style}. Finally, \textbf{CoBBLEr} \citep{koo2023benchmarking} systematically benchmarks six cognitive biases (egocentric, salience, bandwagon, attentional, distractor, and order biases) in LLM evaluators, providing the broadest cognitive-bias taxonomy in the literature to date.
+
+\subsection{Attempts to Improve Reliability}
+
+% % - Test-retest reliability measurements show same-verdict rates of ~70--78\% at
+% %   temperature 1.0, ~95\%+ at temperature 0 \citep{stureborg2024large}.
+% % - McDonald's omega and formal reliability frameworks applied to LLM judges
+% %   \citep{schroeder2024trust}.
+% % - Rating indeterminacy: forced-choice validation selects judge systems up to
+% %   31\% worse; multi-label response sets improve selection
+% %   \citep{guerdan2025validating}.
+% % - IRT (Item Response Theory) applied to diagnose LLM judge reliability
+% %   \citep{irt2025diagnosing}.
+
+% A growing line of acknowledges and attempts to evaluate and ameliorate LLM-as-a-Judge reliability issues. \citet{stureborg2024large} report test--retest same-verdict rates of roughly $70\%$--$78\%$ at temperature $1.0$ and above $95\%$ at temperature $0$, illustrating both the magnitude and the temperature-sensitivity of judge inconsistency. \citet{schroeder2024trust} go further, applying formal reliability frameworks (including McDonald's $\omega$ and related coefficients) to characterize LLM-judge variance components. \citet{guerdan2025validating} introduces the construct of \emph{rating indeterminacy} and show that forced-choice validation selects judge systems that perform up to $31\%$ worse than validation that uses multi-label response sets, providing direct evidence that the standard agreement-based validation pipeline is itself unreliable. Most recently, \citet{choi2026diagnosing} apply Item Response Theory (specifically the Graded Response Model) to LLM-as-a-Judge, decomposing reliability into intrinsic consistency and human alignment dimensions. Our study complements these methodological contributions by reporting reliability statistics at scale across 21 judges and three benchmarks, allowing the empirical magnitude of each phenomenon to be assessed using a single common protocol.
+
+% % \subsection{Dedicated Judge Models and Multi-Judge Approaches}
+
+% % - Prometheus \citep{kim2023prometheus} and Prometheus 2 \citep{kim2024prometheus2}:
+% %   rubric-based fine-tuned judges approaching GPT-4 performance.
+% % - JudgeLM \citep{zhu2023judgelm}: swap augmentation reduces position bias ~50\%.
+% % - PoLL \citep{verga2024replacing}: panel of 3 diverse LLMs outperforms single
+% %   GPT-4 at 7$\times$ lower cost ($\kappa$ 0.63 vs 0.58).
+% % - Multi-agent debate approaches \citep{chan2023chateval}.
+
+% A parallel line of work develops dedicated judge architectures rather than relying on general-purpose LLMs. Prometheus \citep{kim2024prometheus} and Prometheus 2 \citep{kim2024prometheus2} are rubric-based fine-tuned judge models that approach GPT-4 performance on reference-grounded evaluation tasks. JudgeLM \citep{zhu2023judgelm} introduces swap augmentation during training and reports approximately a $50\%$ reduction in position bias relative to a non-augmented baseline. \citet{verga2024replacing} propose Panel of LLM Judges (PoLL), in which three diverse models render verdicts that are aggregated into a single judgment; the panel achieves higher agreement with human preferences than a single GPT-4 judge ($\kappa = 0.63$ versus $0.58$) at roughly $7\times$ lower cost. Multi-agent debate approaches such as ChatEval \citep{chan2023chateval} extend this multi-judge framing further by allowing judge models to deliberate before producing verdicts. Our study evaluates general-purpose LLMs as judges rather than dedicated judge models, but our metrics and protocols apply directly to either setting.
+
+A growing body of work both documents the reliability limitations of LLMaJ systems, and then develops specialized architectures intended to mitigate them. Test-retest studies show substantial temperature sensitivity: same-verdict rates are above 95\% when temperature is set to 0, but fall to as low as 70\% when temperature is increased to 1 \citep{stureborg2024large, haldar-hockenmaier-2025-rating}. Recent approaches have separated intrinsic consistency from human-alignment using Item Response Theory models \citep{choi2026diagnosing}. Another line of work develops dedicated judge architectures rather than relying on general-purpose language models. These experiments show some promise of reducing position bias \citep{zhu2023judgelm} and cost \citep{verga2024replacing} while approaching general-purpose model performance \citep{kim2024prometheus, kim2024prometheus2}. Our study complements these efforts by evaluating reliability at scale across 21 judge models and three benchmarks under a common experimental protocol.
+
+
+
+
+% ============================================================================
+% 3. METHODOLOGY
+% ============================================================================
+\section{Methodology}
+\label{sec:Methods}
+
+\paragraph{Model Selection}
+
+We evaluate 21 general-purpose model LLM judges drawn from 9 providers grouped into three capability tiers. \autoref{tab:models} lists each model with its provider, release date, tier, and per-token cost. Tier 1 consists of widely-deployed production judges; Tier 2 consists of cost-conscious models; Tier 3 consists of April 2026 frontier models and open-source systems. The 21 models span parameter counts from 8B to over 100B. 
+
+\begin{table}[t]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llccc}
+\toprule
+\textbf{Model} & \textbf{Provider} & \textbf{Tier} & \textbf{Released} & \textbf{Input \$/MTok} \\
+\midrule
+GPT-4o            & OpenAI    & 1 & 2024-05 & 2.50  \\
+GPT-4o-mini       & OpenAI    & 1 & 2024-07 & 0.15  \\
+GPT-4.1           & OpenAI    & 1 & 2025-04 & 2.00  \\
+Gemini 2.5 Pro    & Google    & 1 & 2025-03 & 1.25  \\
+Gemini 2.5 Flash  & Google    & 1 & 2025-04 & 0.30  \\
+Claude Haiku 4.5  & Anthropic & 1 & 2025-10 & 1.00  \\
+Llama 3.3 70B     & Meta      & 1 & 2024-12 & 0.90  \\
+Qwen 3 8B         & Alibaba   & 1 & 2025-04 & 0.20  \\
+\midrule
+Mixtral 8x22B     & Mistral   & 2 & 2024-04 & 1.20  \\
+GPT-4.1-mini      & OpenAI    & 2 & 2025-04 & 0.40  \\
+Claude Sonnet 4   & Anthropic & 2 & 2025-05 & 3.00  \\
+\midrule
+GPT-5.4           & OpenAI    & 3 & 2026-03 & 2.50  \\
+GPT-5.4-mini      & OpenAI    & 3 & 2026-03 & 0.75  \\
+Claude Opus 4.6   & Anthropic & 3 & 2026-02 & 5.00  \\
+Claude Sonnet 4.6 & Anthropic & 3 & 2026-02 & 3.00  \\
+Gemini 3.1 Pro    & Google    & 3 & 2026-02 & 2.00  \\
+GPT-oss 120B      & OpenAI    & 3 & 2025-08 & 0.15  \\
+Minimax M2.7      & MiniMax   & 3 & 2026-03 & 1.00  \\
+DeepSeek V3.2     & DeepSeek  & 3 & 2025-12 & 0.56  \\
+Kimi K2.5         & Moonshot  & 3 & 2026-01 & 0.60  \\
+GLM-5             & Zhipu     & 3 & 2026-02 & 1.00  \\
+\bottomrule
+\end{tabular}}
+\caption{\footnotesize The 21 evaluated judges. Release dates were verified against provider
+announcements. Full primary-source URLs are documented in our supplementary
+material. List prices are USD per million input tokens at evaluation time (April 2026).
+Output-token cost is omitted because judges produce short verdicts and input cost dominates total spend.}
+\label{tab:models}
+\end{table}
+
+\paragraph{Benchmarks}
+
+% - \textbf{MT-Bench} \citep{zheng2023judging}: 2,391 pairwise comparisons with
+%   expert human judgments. Most widely-used judge evaluation benchmark.
+% - \textbf{JudgeBench} \citep{tan2025judgebench}: 350 challenging items with
+%   expert labels across diverse domains (math, coding, creative writing,
+%   analysis). Designed to test judge limits.
+% - \textbf{RewardBench} \citep{lambert2024rewardbench}: 2,985 chosen/rejected
+%   pairs with position randomization (seed=42) matching the official
+%   \texttt{run\_generative.py} methodology. We identified and corrected a
+%   position-ordering bug in the standard loader that rendered all prior
+%   generative evaluation results on this benchmark degenerate ($\kappa$=0.000).
+% - Together: 5,726 unique evaluation items spanning easy (MT-Bench) to hard
+%   (JudgeBench) difficulty.
+
+We evaluate every judge on three benchmarks of increasing difficulty. MT-Bench  contributes 2,391 pairwise comparisons with expert human judgments and is the most widely-used judge-evaluation benchmark \citep{zheng2023judging}. JudgeBench contributes 350 items spanning mathematics, coding, creative writing, and analysis labeled for objective correctness rather than aesthetic preference \citep{tan2025judgebench}. RewardBench  contributes 2,981 chosen-versus-rejected pairs, presented to each judge under per-item position randomization so that the chosen response is equally likely to occupy either position \citep{lambert2024rewardbench}. 
+
+\paragraph{Evaluation Protocols}
+
+% - \textbf{Agreement}: Single judgment per item compared to human labels.
+%   Metrics: Cohen's $\kappa$ \citep{cohen1960coefficient}, Krippendorff's
+%   $\alpha$ \citep{krippendorff2011computing}, exact match (tie-excluded,
+%   matching \citet{zheng2023judging} methodology).
+% - \textbf{Consistency}: 3--5 independent runs per item with no response
+%   caching, AB+BA position orderings. Metrics: test-retest reliability
+%   (Krippendorff's $\alpha$ across runs), self-consistency (majority agreement
+%   rate), position flip rate (fraction of items where AB$\neq$BA verdict).
+% - \textbf{Bias Audit}: AB+BA orderings with response length analysis.
+%   Metrics: position bias ($|P(A) - 0.5|$), verbosity bias (correlation
+%   between response length differential and verdict).
+
+We measure judge behavior under three protocols. First, the \textit{agreement protocol} produces a single judgment per item and compares it to the human label, reporting Cohen's $\kappa$, Krippendorff's $\alpha$, and tie-excluded exact match. Second, the \textit{consistency protocol} runs $N \in [3, 5]$ independent evaluations per item with response caching disabled, presenting each pair in both AB and BA orderings, and reports test--retest reliability, self-consistency, and position flip rate. Third, the \textit{bias-audit protocol} presents AB+BA orderings together with response-length analysis, and reports position bias and verbosity bias. 
+
+\paragraph{Hypotheses}
+
+% - Seven hypotheses registered before Phase 6 (SoTA model) evaluation,
+%   based on findings from the Tier 1+2 evaluation (Phases 1--5):
+%   H1: Kappa deflation $\geq$ 30pp persists for SoTA models.
+%   H2: Thinking models (GPT-5.4, Gemini 3.1 Pro, DeepSeek V3.2) show
+%       position bias $<$0.05.
+%   H3: Cross-benchmark rank divergence $\geq$3 positions.
+%   H4: MT-Bench ceiling effect ($\leq$5pp $\kappa$ spread).
+%   H5: RewardBench remains saturated ($\kappa \leq$ 0.05).
+%   H6: Consistency degrades on JudgeBench ($\geq$1.5$\times$ flip rate).
+%   H7: At least one model with test-retest $>$0.95 AND position bias $>$0.10.
+
+We formulate seven hypotheses before running frontier-model evaluation and list them here so that readers can assess our findings against \textit{a priori} predictions. \textit{H1}: Kappa deflation will persist within frontier models. \textit{H2}: Thinking-architecture models (GPT-5.4, Gemini 3.1 Pro, DeepSeek V3.2) will exhibit position bias below $0.05$. \textit{H3}: Cross-benchmark rank divergence will be at least three positions for some model. \textit{H4:} MT-Bench will show a limited $\kappa$ spread, defined as the distance between the largest and smallest Cohen's $\kappa$. \textit{H5:} Issues with RewardBench, (human labels are all in the \textit{A} position), will persist under generative evaluation. As a result, $\kappa$ values will be very small, no larger than $0.05$. \textit{H6:} Position flip rate will degrade by at least a factor of $1.5$ from MT-Bench to JudgeBench. \textit{H7:} At least one model will exhibit test-retest reliability greater than $0.95$ and with position bias greater than $0.10$. 
+
+\paragraph{Experimental Procedure}
+
+% - Seven phases of evaluation:
+%   Phase 1: Smoke test (1 model, 1 benchmark).
+%   Phase 2: Agreement — 8 Tier 1 models $\times$ 3 benchmarks (23 runs).
+%   Phase 3: Bias audit — 8 models $\times$ MT-Bench (8 runs).
+%   Phase 4: Consistency — 6 models $\times$ 2 benchmarks, 5 runs (12 runs).
+%   Phase 5: Tier 2 models (9 runs).
+%   Phase 6: SoTA agreement + bias — 10 models $\times$ 4 protocols (40 runs).
+%   Phase 7: SoTA consistency — 10 models $\times$ 2 benchmarks, 3 runs (20 runs).
+% - Total: 113 runs, ~541,000 judgments.
+% - All evaluations use temperature 0.0 for determinism.
+% - Position-swap debiasing applied in consistency and bias audit protocols.
+% - Evaluation conducted using jeval, an open-source framework implementing
+%   14 metrics from 8 peer-reviewed papers.
+
+We conducted model evaluation in seven phases over a five-week window during March and April 2026. A detailed summary is in Appendix~\ref{app:phases}. The full procedure produced 118 evaluation runs, and approximately $541,000$ judgments. All evaluations used temperature $0$. In order to ensure that replicate runs sample independent generations rather than memorized responses, we execute the consistency protocol with response caching disabled. Position-swap debiasing (AB+BA paired evaluations) was applied in both the consistency and bias-audit protocols. Every run was executed with a bespoke research evaluation library (that will be released open source upon publication) which implements the 14 metrics for each model.
+
+% ============================================================================
+% 4. RESULTS
+% ============================================================================
+\section{Results}
+\label{sec:results}
+
+\subsection{Kappa Deflation Is Universal}
+
+% - Every model exhibits kappa deflation on MT-Bench: exact match overstates
+%   judge quality by 33.8--41.3pp (mean 38.4pp).
+% - All 10 SoTA models confirm H1 ($\geq$30pp deflation).
+% - Even the top performer (Gemini 3.1 Pro: EM=84.9\%, $\kappa$=0.511) shows
+%   a 33.8pp gap.
+% - Deflation magnitude varies by benchmark: MT-Bench (38.4pp avg), JudgeBench
+%   (24.8pp), RewardBench (10.5pp). The difference reflects class balance --
+%   MT-Bench's balanced A/B/Tie distribution creates high chance agreement.
+% - Table 2: All 21 models with EM, $\kappa$, $\alpha$, deflation by benchmark.
+% - \textbf{Implication}: Published exact-match scores systematically mislead.
+
+\autoref{fig:hero}~(a) plots the dumbbell of exact match and $\kappa$ values for each judge on MT-Bench and \autoref{tab:deflation} reports $\kappa$, exact match, and $\Delta_\kappa$ for all three benchmarks. Every judge in our study exhibits substantial kappa deflation on MT-Bench: exact match overstates chance-corrected agreement by between $33.8$ and $41.3$ percentage points across the 21 models, with a cohort mean of $38.6$ pp. The deflation is universal across capability tiers: all ten frontier-generation (Tier 3) judges exhibit $\Delta_\kappa \geq 30$ pp, supporting H1. Even the judge that performed best on chance-corrected agreement, Gemini 3.1 Pro, shows a $33.8$ pp gap between exact match (\text{$EM =0.849$}) and chance-corrected ($\kappa = 0.511$) performance. 
+
+The magnitude of deflation varies systematically with the benchmark's label distribution. MT-Bench, with a balanced A/B/Tie distribution, produces the largest mean deflation ($38.6$ pp); JudgeBench's pairwise correctness-labeled items produce a mean of $23.7$ pp (range $8.1$ to $38.5$); RewardBench's binary chosen-versus-rejected pairs produce $10.4$ pp (range $5.9$ to $21.3$). Balanced label distributions raise expected-by-chance agreement, which inflates the gap between raw and chance-corrected metrics. The practical consequence is that a judge reporting ``$85\%$ agreement'' on MT-Bench has $\kappa \approx 0.48$. 
+
+% TODO: confirm body vs appendix placement.
+% \begin{table*}[t]
+% \centering
+% \small
+% \begin{tabular}{lcccccccccc}
+% \toprule
+% & \multicolumn{3}{c}{\textbf{MT-Bench}} & \multicolumn{3}{c}{\textbf{JudgeBench}} & \multicolumn{3}{c}{\textbf{RewardBench}} \\
+% \cmidrule(lr){2-4}\cmidrule(lr){5-7}\cmidrule(lr){8-10}
+% \textbf{Model} & EM & $\kappa$ & $\Delta_\kappa$ & EM & $\kappa$ & $\Delta_\kappa$ & EM & $\kappa$ & $\Delta_\kappa$ \\
+% \midrule
+% Gemini 3.1 Pro    & 0.849 & 0.511 & 33.8 & 0.964 & 0.841 & 12.3 & 0.956 & 0.898 &  5.9 \\
+% Claude Opus 4.6   & 0.848 & 0.489 & 35.9 & 0.956 & 0.875 &  8.1 & 0.943 & 0.879 &  6.4 \\
+% DeepSeek V3.2     & 0.845 & 0.486 & 35.9 & 0.791 & 0.545 & 24.5 & 0.921 & 0.826 &  9.5 \\
+% Claude Sonnet 4.6 & 0.851 & 0.484 & 36.7 & 0.920 & 0.782 & 13.8 & 0.942 & 0.871 &  7.1 \\
+% Llama 3.3 70B     & 0.841 & 0.465 & 37.6 & 0.664 & 0.283 & 38.1 & 0.892 & 0.769 & 12.3 \\
+% Kimi K2.5         & 0.846 & 0.461 & 38.5 & 0.864 & 0.720 & 14.5 & 0.937 & 0.873 &  6.4 \\
+% GPT-5.4           & 0.836 & 0.457 & 38.0 & 0.812 & 0.606 & 20.7 & 0.940 & 0.879 &  6.2 \\
+% GPT-4o            & 0.832 & 0.451 & 38.1 & 0.667 & 0.309 & 35.8 & 0.883 & 0.745 & 13.8 \\
+% GPT-4.1           & 0.830 & 0.451 & 37.9 & 0.751 & 0.487 & 26.4 & 0.906 & 0.809 &  9.7 \\
+% Gemini 2.5 Pro    & 0.829 & 0.447 & 38.3 & 0.838 & 0.603 & 23.6 & 0.932 & 0.830 & 10.2 \\
+% GLM-5             & 0.832 & 0.442 & 39.0 & 0.804 & 0.596 & 20.8 & 0.923 & 0.838 &  8.5 \\
+% GPT-oss 120B      & 0.833 & 0.441 & 39.2 & 0.854 & 0.687 & 16.7 & 0.944 & 0.880 &  6.4 \\
+% Gemini 2.5 Flash  & 0.825 & 0.437 & 38.9 & 0.804 & 0.578 & 22.6 & 0.919 & 0.817 & 10.2 \\
+% Claude Haiku 4.5  & 0.832 & 0.435 & 39.7 & 0.831 & 0.653 & 17.7 & 0.937 & 0.873 &  6.4 \\
+% GPT-4.1-mini      & 0.831 & 0.432 & 39.9 & 0.738 & 0.466 & 27.1 & 0.899 & 0.795 & 10.4 \\
+% Minimax M2.7      & 0.828 & 0.430 & 39.8 & 0.868 & 0.715 & 15.3 & 0.920 & 0.834 &  8.6 \\
+% Qwen 3 8B         & 0.810 & 0.406 & 40.4 & 0.645 & 0.289 & 35.6 & 0.829 & 0.616 & 21.3 \\
+% GPT-4o-mini       & 0.809 & 0.396 & 41.3 & 0.676 & 0.325 & 35.2 & 0.831 & 0.622 & 20.8 \\
+% Mixtral 8x22B     & 0.803 & 0.392 & 41.0 & 0.656 & 0.271 & 38.5 & 0.852 & 0.679 & 17.3 \\
+% GPT-5.4-mini      & 0.788 & 0.376 & 41.2 & 0.696 & 0.372 & 32.4 & 0.901 & 0.798 & 10.3 \\
+% \midrule
+% Cohort mean       &       &       & 38.5 &       &       & 24.0 &       &       & 10.4 \\
+% \bottomrule
+% \end{tabular}
+% \caption{Exact match (EM), Cohen's $\kappa$, and kappa deflation
+% $\Delta_\kappa = \text{EM} - \kappa$ (in percentage points) for each
+% judge on each benchmark. Rows sorted by MT-Bench $\kappa$ descending.
+% Claude Sonnet 4 is excluded because it was evaluated on MT-Bench
+% agreement only.}
+% \label{tab:deflation}
+% \end{table*}
+
+\begin{table}[t]
+\centering
+\small
+\resizebox{\columnwidth}{!}{\begin{tabular}{lcccccccccc}
+\toprule
+& \multicolumn{3}{c}{\textbf{MT-Bench}} & \multicolumn{3}{c}{\textbf{JudgeBench}} & \multicolumn{3}{c}{\textbf{RewardBench}} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}\cmidrule(lr){8-10}
+\textbf{Model} & EM & $\kappa$ & $\Delta_\kappa$ & EM & $\kappa$ & $\Delta_\kappa$ & EM & $\kappa$ & $\Delta_\kappa$ \\
+\midrule
+Gemini 3.1 Pro    & 0.849 & 0.511 & 33.8 & 0.964 & 0.841 & 12.3 & 0.956 & 0.898 &  5.9 \\
+Claude Opus 4.6   & 0.848 & 0.489 & 35.9 & 0.956 & 0.875 &  8.1 & 0.943 & 0.879 &  6.4 \\
+DeepSeek V3.2     & 0.845 & 0.486 & 35.9 & 0.791 & 0.545 & 24.5 & 0.921 & 0.826 &  9.5 \\
+Claude Sonnet 4.6 & 0.851 & 0.484 & 36.7 & 0.920 & 0.782 & 13.8 & 0.942 & 0.871 &  7.1 \\
+Llama 3.3 70B     & 0.841 & 0.465 & 37.6 & 0.664 & 0.283 & 38.1 & 0.892 & 0.769 & 12.3 \\
+Kimi K2.5         & 0.846 & 0.461 & 38.5 & 0.864 & 0.720 & 14.5 & 0.937 & 0.873 &  6.4 \\
+GPT-5.4           & 0.836 & 0.457 & 38.0 & 0.812 & 0.606 & 20.7 & 0.940 & 0.879 &  6.2 \\
+GPT-4o            & 0.832 & 0.451 & 38.1 & 0.667 & 0.309 & 35.8 & 0.883 & 0.745 & 13.8 \\
+GPT-4.1           & 0.830 & 0.451 & 37.9 & 0.751 & 0.487 & 26.4 & 0.906 & 0.809 &  9.7 \\
+Gemini 2.5 Pro    & 0.829 & 0.447 & 38.3 & 0.838 & 0.603 & 23.6 & 0.932 & 0.830 & 10.2 \\
+GLM-5             & 0.832 & 0.442 & 39.0 & 0.804 & 0.596 & 20.8 & 0.923 & 0.838 &  8.5 \\
+GPT-oss 120B      & 0.833 & 0.441 & 39.2 & 0.854 & 0.687 & 16.7 & 0.944 & 0.880 &  6.4 \\
+Claude Sonnet 4   & 0.843 & 0.440 & 40.2 & 0.817 & 0.633 & 18.4 & 0.944 & 0.886 &  5.8 \\
+Gemini 2.5 Flash  & 0.825 & 0.437 & 38.9 & 0.804 & 0.578 & 22.6 & 0.919 & 0.817 & 10.2 \\
+Claude Haiku 4.5  & 0.832 & 0.435 & 39.7 & 0.831 & 0.653 & 17.7 & 0.937 & 0.873 &  6.4 \\
+GPT-4.1-mini      & 0.831 & 0.432 & 39.9 & 0.738 & 0.466 & 27.1 & 0.899 & 0.795 & 10.4 \\
+Minimax M2.7      & 0.828 & 0.430 & 39.8 & 0.868 & 0.715 & 15.3 & 0.920 & 0.834 &  8.6 \\
+Qwen 3 8B         & 0.810 & 0.406 & 40.4 & 0.645 & 0.289 & 35.6 & 0.829 & 0.616 & 21.3 \\
+GPT-4o-mini       & 0.809 & 0.396 & 41.3 & 0.676 & 0.325 & 35.2 & 0.831 & 0.622 & 20.8 \\
+Mixtral 8x22B     & 0.803 & 0.392 & 41.0 & 0.656 & 0.271 & 38.5 & 0.852 & 0.679 & 17.3 \\
+GPT-5.4-mini      & 0.788 & 0.376 & 41.2 & 0.696 & 0.372 & 32.4 & 0.901 & 0.798 & 10.3 \\
+\midrule
+Cohort mean       &       &       & 38.6 &       &       & 23.7 &       &       & 10.2 \\
+\bottomrule
+\end{tabular}}
+\caption{\footnotesize Exact match (EM), Cohen's $\kappa$, and kappa deflation
+$\Delta_\kappa = \text{EM} - \kappa$ (in percentage points) for each
+judge on each benchmark. Rows sorted by MT-Bench $\kappa$ descending.}
+\label{tab:deflation}
+\end{table}
+
+
+\subsection{Position Bias Heterogeneity}
+
+% - Position bias ranges from 0.002 (Gemini 2.5 Pro) to 0.192 (Qwen 3 8B) --
+%   a 96$\times$ spread across 20 models.
+% - H2 partially confirmed: only Gemini 3.1 Pro (0.038) of the three thinking
+%   models meets the $<$0.05 threshold. GPT-5.4 (0.083) and DeepSeek V3.2
+%   (0.094) do not. Thinking architectures do not reliably reduce position bias.
+% - Lowest bias: Gemini 2.5 Pro (0.002), Claude Opus 4.6 (0.004), Kimi K2.5
+%   (0.004).
+% - Within-family variation can be extreme: Gemini 2.5 Pro (0.002) vs. Gemini
+%   2.5 Flash (0.125) differ by 62$\times$.
+% - Table 3: All 20 models with position bias and verbosity bias.
+
+
+\autoref{tab:bias}, column 2, reports position biases for each model. The least position biased model, Gemini 2.5 Pro ($pb = 0.002$) and most position biased model Qwen 3 8B ($pb = 0.192$) span nearly two orders of magnitude difference in position bias. In this evaluation, reasoning and frontier models have systematically lower rates of position bias; small, and cost-optimized models have the highest rates of position bias. Within-family heterogeneity is large: Gemini 2.5 Pro ($0.002$) and Gemini 2.5 Flash ($0.125$) differ by a factor of $70$. H2 predicted that the three thinking-architecture judges (GPT-5.4, Gemini 3.1 Pro, DeepSeek V3.2) would all fall below $0.05$; only Gemini 3.1 Pro ($0.038$) does so. And so, while they reduce position bias relative to cost-efficient models, they do not eliminate it. 
+
+% TODO: confirm body vs appendix placement.
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{Model} & \textbf{Position bias} & \textbf{Verbosity bias} \\
+& $\left|P(A)-0.5\right|$ & Pearson(len, verdict) \\
+\midrule
+Gemini 2.5 Pro    & 0.002 & 0.0025 \\
+Claude Opus 4.6   & 0.004 & 0.0032 \\
+Kimi K2.5         & 0.004 & 0.0044 \\
+Claude Sonnet 4   & 0.008 & 0.0035 \\
+GPT-5.4-mini      & 0.013 & 0.0046 \\
+Claude Sonnet 4.6 & 0.015 & 0.0034 \\
+Minimax M2.7      & 0.020 & 0.0004 \\
+GPT-oss 120B      & 0.037 & 0.0024 \\
+Gemini 3.1 Pro    & 0.038 & 0.0007 \\
+Claude Haiku 4.5  & 0.041 & 0.0067 \\
+GPT-4o            & 0.045 & 0.0031 \\
+GPT-4o-mini       & 0.047 & 0.0103 \\
+GPT-4.1-mini      & 0.050 & 0.0045 \\
+GLM-5             & 0.052 & 0.0024 \\
+GPT-4.1           & 0.053 & 0.0026 \\
+Llama 3.3 70B     & 0.057 & 0.0011 \\
+Mixtral 8x22B     & 0.058 & 0.0084 \\
+GPT-5.4           & 0.083 & 0.0018 \\
+DeepSeek V3.2     & 0.094 & 0.0030 \\
+Gemini 2.5 Flash  & 0.125 & 0.0009 \\
+Qwen 3 8B         & 0.192 & 0.0011 \\
+\bottomrule
+\end{tabular}
+\caption{\footnotesize MT-Bench bias-audit results. Position bias is $\left|P(A
+\text{ wins}) - 0.5\right|$ over paired AB+BA evaluations; verbosity
+bias is the Pearson correlation between response-length differential
+and verdict. Rows sorted by position bias ascending.}
+\label{tab:bias}
+\end{table}
+
+% - Model rankings shift by up to 14 positions across benchmarks. Of the 20
+%   models evaluated on all three agreement benchmarks (Claude Sonnet 4
+%   excluded; MT-Bench only), 11 show maximum rank shifts $\geq$4 positions.
+% - Instability is compounded by differences in benchmark discriminability:
+%   MT-Bench compresses all 21 models into a 13.5pp $\kappa$ band (0.376--0.511)
+%   where adjacent ranks are separated by just 0.6pp on average, leaving little
+%   room for meaningful differentiation. JudgeBench spreads 20 models
+%   across 60.4pp (0.271--0.875) with gaps of 3--9pp between tiers. RewardBench
+%   falls between the two, with a 28.1pp spread (0.616--0.898) and a tightly
+%   clustered top tier (ranks 1--7 within 2.7pp) followed by gradual separation.
+% - The largest shifts occur between MT-Bench and JudgeBench, where MT-Bench's
+%   compressed distribution inflates the apparent rank of models that collapse
+%   on harder items:
+%   - Llama 3.3 70B: MT\#5 ($\kappa$=0.465) $\to$ JB\#19 ($\kappa$=0.283), shift=14
+%   - Minimax M2.7: MT\#17 ($\kappa$=0.430) $\to$ JB\#5 ($\kappa$=0.715), shift=12
+%   - DeepSeek V3.2: MT\#3 ($\kappa$=0.486) $\to$ JB\#12 ($\kappa$=0.545), shift=9
+%   - GPT-4o: MT\#8 ($\kappa$=0.451) $\to$ JB\#17 ($\kappa$=0.309), shift=9
+% - Shifts between MT-Bench and RewardBench are also substantial:
+%   - GPT-oss-120b: MT\#12 $\to$ RB\#2, shift=10
+%   - Claude Haiku 4.5: MT\#15 $\to$ RB\#5, shift=10
+% - Only two models maintain top-3 positions across all three benchmarks:
+%   Claude Opus 4.6 (2nd, 1st, 3rd) and Gemini 3.1 Pro (1st, 2nd, 1st).
+% - \textbf{Implication}: Single-benchmark validation provides no guarantee of
+%   reliability on other evaluation tasks. The benchmark's discriminative power
+%   fundamentally determines whether rankings carry signal.
+% - Table 4: Cross-benchmark rankings for all models with $\kappa$ values.
+
+% Within each benchmark we rank judges by Cohen's $\kappa$ descending and treat the three benchmarks' rankings as independent; the rank-shift quantity reported below is the maximum pairwise difference in a model's three benchmark ranks. Of the 21 judges evaluated on all three agreement benchmarks (Claude Sonnet 4 has MT-Bench coverage only), 10 show a maximum pairwise rank shift of at least 4 positions. The largest single shift is 14 positions for Llama 3.3 70B, which ranks 5th on MT-Bench ($\kappa = 0.465$) and 19th on JudgeBench ($\kappa = 0.283$); other notable shifts include Minimax M2.7 (MT$\#$16 to JB$\#$5, $\kappa$ rising from $0.430$ to $0.715$), DeepSeek V3.2 (MT$\#$3 to JB$\#$12), GPT-4o (MT$\#$8 to JB$\#$17), GPT-oss 120B (MT$\#$12 to RB$\#$2), and Claude Haiku 4.5 (MT$\#$14 to RB$\#$5). Only two judges hold a top-three position across all three benchmarks: Claude Opus 4.6 (ranks 2, 1, 3) and Gemini 3.1 Pro (ranks 1, 2, 1). Appendix figure~\ref{app:rankshift} plots each model's rank trajectory across the three benchmarks.
+
+% The instability is amplified by sharp differences in benchmark discriminability. MT-Bench compresses all 21 models into a $13.5$ pp $\kappa$ band ($0.376$ to $0.511$), with an average gap of just $0.6$ pp between adjacent ranks; JudgeBench spreads the same models across $60.4$ pp ($0.271$ to $0.875$) with $3$--$9$ pp tiers; RewardBench falls between the two at $28.1$ pp ($0.616$ to $0.898$), with the top seven judges within a tight $2.7$ pp band followed by gradual separation. Where the underlying performance distribution is compressed, small absolute differences in $\kappa$ produce large rank changes, and a model's apparent ranking on a single benchmark is therefore a poor estimator of its ranking on others.
+
+\subsection{Cross-Benchmark Rank Instability}
+
+Consistent with Hypothesis 3, benchmark choice has an appreciable effect on relative rankings of performance. More than half ($11$ of the $21$) shift by four or more positions, and only Gemini 3.1 Pro and Claude Opus 4.6 hold a top-three position across all three benchmarks. The largest single shift is Llama 3.3 70B which shifts $15$ positions, from 5 on MT-Bench to 20 on JudgeBench. Other notable cases include 
+Minimax M2.7 (MT:17, JB:5), 
+DeepSeek V3.2 (MT:3, JB:13), 
+GPT-4o (MT:8, JB:18), 
+GPT-oss 120B (MT:12,  RB:3), and 
+Claude Haiku 4.5 (MT:15, RB:6).  
+(Supplementary figure \autoref{app:rankshift} visualizes \autoref{tab:deflation} highlighting position changes.) 
+
+The instability is amplified by sharp differences in benchmark discriminability: MT-Bench compresses all $21$ judges into a $13.5$ pp $\kappa$ band ($0.376$ to $0.511$) with an average gap of $0.6$ pp between adjacent ranks; JudgeBench spreads the same models over $60.4$ pp ($0.271$ to $0.875$) with $3$--$9$ pp tiers; RewardBench falls between at $28.1$ pp ($0.616$ to $0.898$), with the top seven judges within a tight $2.7$ pp band followed by gradual separation. Where the underlying distribution is compressed, small $\kappa$ differences produce large rank changes, and a model's apparent ranking on a single benchmark is a poor estimator of its ranking on others.
+
+
+\subsection{MT-Bench Ceiling Effect}
+
+% - Full $\kappa$ spread: 13.5pp (0.376--0.511) across all 21 models on MT-Bench.
+% - Wider than the predicted $\leq$5pp, driven by weak models at the bottom.
+% - Among top 10 models: spread narrows to 6.5pp.
+% - Compare JudgeBench: 60.4pp spread (0.271--0.875) -- 4.5$\times$ wider.
+% - MT-Bench compresses the performance distribution, making meaningful
+%   differentiation among strong models nearly impossible.
+
+Hypothesis 4 predicted an MT-Bench $\kappa$ spread of at most $5$ pp. As we report in Table \ref{tab:deflation}, we observe $13.5$ pp ($0.376$ to $0.511$) across all 21 judges, narrowing to $6.5$ pp within the top ten and approaching the H4 ceiling. The wider full-cohort spread is driven by a distinct lower tier (GPT-5.4-mini, Mixtral 8x22B, GPT-4o-mini). JudgeBench's $\kappa$ spread on the same population is $60.4$ pp, a factor of $4.5\times$ wider, confirming that MT-Bench's preference-style label set compresses meaningful quality differences among strong judges.
+
+\subsection{Position-Randomized Evaluation of RewardBench}
+
+% - H5 predicted continued saturation ($\kappa \leq$ 0.05). Refuted: with
+%   position randomization, all 20 models produce valid $\kappa$ (0.616--0.898).
+% - The original loader always placed chosen responses as Response A, making
+%   all human labels ``A'' and $\kappa$ degenerate (0.000).
+% - After applying position randomization (seed=42), RewardBench becomes a
+%   legitimate discriminative benchmark.
+% - Top performers: Gemini 3.1 Pro (0.898), GPT-oss-120b (0.880), Claude
+%   Opus 4.6 (0.879).
+
+Hypothesis 5 predicted that RewardBench would generate $\kappa$ values no larger than $0.05$ because it placed all correct human labels in the \textit{A} position. As we report in \autoref{tab:deflation} the benchmark data is not consistent with this hypothesis. Under per-item position-randomized evaluation (loader configuration in Appendix~\ref{app:rewardbench-loader}), all 20 evaluated judges produce $\kappa$ values in the range $[0.616, 0.898]$. The top five judges produce highly reasonable $\kappa$ values: Gemini 3.1 Pro $(0.898)$, GPT-oss 120B $(0.880)$, Claude Opus 4.6 $(0.879)$, GPT-5.4 $(0.879)$, and Claude Haiku 4.5 $(0.873)$. The full $\kappa$ spread on RewardBench is $28.1$ pp, between MT-Bench's $13.5$ pp and JudgeBench's $60.4$ pp, and the top tier is tightly clustered (the top seven judges fall within a $2.7$ pp band). (In the Appendix, \autoref{app:cross-bench-ranks} summarises \autoref{tab:deflation}, making it easier to read ranks and $\kappa$ jointly across the three benchmarks.)
+
+\subsection{Consistency Falls on Hard Benchmarks}
+
+% - Seven of 16 models show $\geq$1.5$\times$ position flip rate increase from
+%   MT-Bench to JudgeBench.
+% - Most severe: Llama 70B (3.3$\times$), GPT-4o-mini (3.0$\times$), GLM-5
+%   (2.4$\times$).
+% - Notable exceptions: Claude Opus 4.6 and Gemini 3.1 Pro show \emph{lower}
+%   flip rates on JudgeBench (0.58$\times$), suggesting these models maintain
+%   robustness on harder items.
+% - Average test-retest drops from 0.946 (MT-Bench) to 0.911 (JudgeBench).
+
+Consistent with Hypothesis 6, seven of the sixteen judges evaluated under the consistency protocol show a position flip-rate increase of at least $1.5\times$ from MT-Bench to JudgeBench. The three most acute degradations are Llama 3.3 70B ($3.3\times$, $0.077$ to $0.253$), GPT-4o-mini ($3.0\times$, $0.127$ to $0.380$), and GLM-5 ($2.4\times$, $0.096$ to $0.227$). Two frontier judges go in the opposite direction: Claude Opus 4.6 and Gemini 3.1 Pro both improve by a factor of $0.58\times$ when moving from MT-Bench to JudgeBench, suggesting that some current-generation systems handle harder items with greater positional stability than they show on easier items. (In the appendix, \autoref{app:flipslope} plots all 16 trajectories together with the cohort medians ($0.09$ on MT-Bench, $0.17$ on JudgeBench)).
+
+Test-retest reliability follows a similar pattern at the cohort level: the mean test--retest across the 16 judges drops from $0.943$ on MT-Bench to $0.911$ on JudgeBench. Per-judge values vary widely; for example, Gemini 2.5 Flash drops by $7.3$ pp ($0.988$ to $0.915$), while Gemini 3.1 Pro is essentially unchanged ($0.977$ to $0.978$). (In the appendix, we report per-judge MT and JB test--retest values in \autoref{app:consistency-table}.)
+
+\subsection{The Consistency--Bias Paradox}
+
+% - Two models satisfy test-retest $>$0.95 AND position bias $>$0.10:
+%   Qwen 3 8B (test-retest=0.992, position bias=0.192) and Gemini 2.5 Flash
+%   (test-retest=0.988, position bias=0.125).
+% - Qwen 3 8B is the most \emph{reproducible} judge (highest test-retest) and
+%   one of the least \emph{valid} (2nd-lowest $\kappa$ on JudgeBench, highest
+%   position bias). It consistently favors the same position across runs.
+% - \textbf{Implication}: Test-retest measures stability, not validity.
+
+Hypothesis 7 predicted that at least one judge would exhibit test-retest reliability above $0.95$ together with position bias above $0.10$, evidence of the tradeoffs between \emph{consistency-bias}. Two judges, Qwen 3 8B (test-retest $0.992$, position bias $0.192$) and Gemini 2.5 Flash (test-retest $0.988$, position bias $0.125$) generate such paradoxical results. \autoref{fig:hero}~(b) plots all 16 jointly evaluated judges in the test-retest by position-bias plane. Judges that occupy the upper-right region are those that demonstrate high test-retest reproducibility, but with high systematic bias.
+
+Qwen 3 8B has the highest test-retest of judges evaluated in this study, but it simultaneously is among the most position biased judge in the cohort $(pb=0.192)$ and its JudgeBench $\kappa$ ($0.289$) is the third lowest. Model determinism produces the same response position across replicate runs, which yields near-perfect within-judge agreement, but it violates the requirement that verdicts be position-invariant. This result has methodological implications for future teams: test--retest measures the stability of a judge's outputs, not the correctness of the underlying decision process. Reporting test-retest alone stands to present a misleading picture of judge reliability.
+
+\subsection{Pairwise Verbosity Bias}
+
+% - All 20 models show verbosity bias $<$0.011 (max: GPT-4o-mini at 0.010).
+% - 16 of 20 models show $<$0.005.
+% - Contrasts with 20--40\% variance contribution documented in 2023 literature
+%   \citep{wu2023style}.
+% - Current-generation models appear to have internalized length-independent
+%   evaluation, eliminating verbosity bias as a practical concern.
+
+All 21 judges evaluated under the bias-audit protocol register a verbosity bias below $0.011$ on MT-Bench, with the largest value being GPT-4o-mini at $0.010$; 17 of the 21 judges fall below $0.005$, with the smallest values clustered around $0.001$. Per-judge values appear in \autoref{tab:bias}. The magnitudes are an order of magnitude smaller than the variance contributions reported in $2023$-era studies of style and length effects \citep{wu2023style}, suggesting that verbosity sensitivity has fallen substantially as a practical concern over the past two model generations. We caution against generalizing this finding beyond our setting: the measurement uses a single pairwise rubric and a fixed length-differential operationalization \citep{dubois2024alpacaeval}, and we do not claim that verbosity bias has been eliminated under arbitrary rubric or task variation.
+
+\subsection{Model Family Analysis}
+
+% - Anthropic leads on JudgeBench ($\kappa$=0.770 avg) and bias (0.020 avg)
+% - Kimi K2.5: exceptional bias profile (0.004) with strong agreement -- a
+%   notable finding for a mid-tier model.
+% - OpenAI flagships surprisingly weak on JudgeBench (0.467 avg $\kappa$).
+% - Within OpenAI: GPT-4o (0.309) $\to$ GPT-4.1 (0.487) $\to$ GPT-5.4 (0.606)
+%   on JudgeBench -- steady improvement on harder tasks but not MT-Bench.
+% - Anthropic scaling: Opus $\kappa$=0.875 on JudgeBench is 34\% higher than
+%   Sonnet (0.782), while MT-Bench differs by only 1\%.
+
+Several provider-family patterns are visible in the per-judge $\kappa$ values reported in \autoref{tab:deflation}. The three Anthropic judges average $\kappa = 0.770$ on JudgeBench (Opus 4.6 $0.875$, Sonnet 4.6 $0.782$, Haiku 4.5 $0.653$) with an average position bias of $0.020$, the strongest joint performance on hard items and the lowest cohort-level bias of any provider. The three OpenAI flagships (GPT-4o, GPT-4.1, GPT-5.4) average $\kappa = 0.467$ on JudgeBench, well below the Anthropic and Google frontier-tier figures. Within-OpenAI developed models, generational progression is visible: $\kappa$ rises from $0.309$ for GPT-4o to $0.487$ for GPT-4.1, and rises to $0.606$ for GPT-5.4. MT-Bench's compressed scale makes the same generational progression nearly invisible: the corresponding MT-Bench values are $0.451$, $0.451$, and $0.457$. 
+
+Similarly, within-family scaling is more legible on JudgeBench than on MT-Bench. Claude Opus 4.6 ($\kappa = 0.875$) is $9.3$ pp above Claude Sonnet 4.6 ($\kappa = 0.782$) on JudgeBench; the corresponding MT-Bench values differ by $0.6$ pp (Opus $0.489$, Sonnet 4.6 $0.484$). Mid-tier judges can outperform frontier judges on specific dimensions: Kimi K2.5 records the lowest position bias of any non-Gemini judge ($0.004$), competitive with Claude Opus 4.6, while achieving JudgeBench $\kappa = 0.720$ at a fraction of the frontier-tier cost. We return to cost-quality trade-offs in \autoref{sec:discussion}.
+
+% ============================================================================
+% 5. DISCUSSION
+% ============================================================================
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Why Exact Match Misleads}
+
+% - Exact match treats chance agreement as genuine discrimination. On MT-Bench
+%   with balanced A/B/Tie labels, random agreement is ~33\%. A judge achieving
+%   85\% EM appears strong but has $\kappa$~0.48 (moderate).
+% - The field's reliance on EM/accuracy has created a systematic overestimation
+%   of judge quality. Our results show this is not model-specific: it is
+%   a property of the metric applied to the benchmark's label distribution.
+% - Recommendation: always report Cohen's $\kappa$ or Krippendorff's $\alpha$
+%   alongside exact match for judge validation.
+
+Exact match rewards chance agreement as if it were genuine discrimination. On a balanced ternary label set such as MT-Bench, with the chance baseline $p_e \approx 1/3$, exact-match values in $[0.80, 0.85]$ correspond to a Cohen's $\kappa$ near $0.48$. This is a moderate value, not the near-perfect band the percentage suggests. The $33.8$--$41.3$ pp gap we observe on MT-Bench is therefore not a model-quality artifact: it is how an uncorrected metric interacts with the label marginals of the benchmark \citep{cohen1960coefficient,guerdan2025validating}. The cohort-mean $\Delta_\kappa$ contracts from $38.6$ pp on MT-Bench to $23.7$ pp on JudgeBench and $10.2$ pp on RewardBench, tracking the shift from balanced ternary to imbalanced binary labels exactly as Cohen's correction predicts.
+
+Exact-match figures used to justify deploying LLM judges therefore may significantly overstate their chance-corrected discriminative ability by an amount that depends on the benchmark, not the judge \citep{han2025judgesverdict,collot2025balanced}. We recommend reporting Cohen's $\kappa$ or Krippendorff's $\alpha$ alongside any exact-match figure, with the chance-corrected metric (not the raw rate), treated as the headline reliability number. Figure~\ref{fig:hero}~(a) and Table~\ref{tab:deflation} illustrate the gap for every judge in our cohort.
+
+\subsection{Limits of Single-Benchmark Validation}
+
+% - With rank shifts of up to 14 positions, a model validated on MT-Bench
+%   cannot be assumed reliable for other tasks.
+% - MT-Bench's ceiling effect (13.5pp spread) makes it a poor discriminator
+%   among modern models. JudgeBench provides 4.5$\times$ wider discrimination.
+% - Recommendation: validate on $\geq$2 benchmarks spanning different
+%   difficulty levels.
+
+Cross-benchmark rank instability has two coupled drivers. First, benchmarks differ in discriminative power: MT-Bench compresses the $21$-judge cohort into a $13.5$ pp $\kappa$ band while JudgeBench spreads the same judges across $60.4$ pp, a $4.5\times$ wider range. Small absolute differences yield large rank changes. Second, the three benchmarks measure subtly different latent constructs (preference alignment, objective correctness, and chosen-vs-rejected discrimination, respectively), and a judge that looks strong under one construct can collapse under another. Llama 3.3 70B (MT$\#$5 $\to$ JB$\#$19) and Minimax M2.7 (MT$\#$16 $\to$ JB$\#$5) illustrate the two directions.
+
+Only two judges (Claude Opus 4.6 and Gemini 3.1 Pro) hold a top-three position across all three benchmarks; ten of twenty-one exhibit a maximum pairwise rank shift of at least four positions. Practically, judge validation should report results from at least two benchmarks chosen to span the preference-versus-correctness axis rather than relying on the discriminability of any single dataset. Appendix Figure~\ref{app:rankshift} and Appendix Table~\ref{app:cross-bench-ranks} report the full set of rank trajectories.
+
+\subsection{The Consistency--Bias Paradox and a Minimum Viable Validation Protocol}
+
+% - Test-retest reliability is necessary but not sufficient for judge quality.
+%   Without accompanying bias measurement, high test-retest can mask systematic
+%   errors.
+% - We propose a Minimum Viable Validation Protocol (MVVP) for deploying LLM
+%   judges: (1) report Cohen's $\kappa$, (2) measure position bias via AB+BA
+%   swap, (3) measure test-retest across $\geq$3 runs, (4) evaluate on $\geq$2
+%   benchmarks, (5) if test-retest is high, verify position bias is low.
+
+Test--retest reliability measures \emph{output stability}, not \emph{decision-process correctness}. Position bias and within-judge agreement are mathematically orthogonal, so a judge that deterministically prefers position A across runs achieves near-perfect test--retest while exhibiting maximal position bias. Qwen 3 8B (test--retest $0.992$, position bias $0.192$, JudgeBench $\kappa = 0.289$) is the empirical extreme. Gemini 2.5 Flash ($0.988$, $0.125$) instantiates the same pattern more mildly. Because reporting test--retest alone remains common in LLMaJ validation \citep{stureborg2024large,schroeder2024trust}, current reporting practice misleads precisely in the cases that matter most for deployment: highly reproducible judges. Figure~\ref{fig:hero}~(b) shows the dissociation across the $16$ jointly evaluated judges. This paradox motivates our recommended Minimum Viable Validation Protocol (MVVP) below.
+
+
+\begin{center}
+\fcolorbox{black}{gray!10}{%
+\begin{minipage}{0.95\columnwidth}
+\small
+\textbf{Minimum Viable Validation Protocol (MVVP).} Before deploying
+an LLM judge:
+\begin{enumerate}
+  \setlength{\itemsep}{2pt}
+  \item \textbf{Chance-correct.} Report Cohen's $\kappa$ (or
+    Krippendorff's $\alpha$) alongside any exact-match figure, and
+    treat the chance-corrected metric as the headline reliability
+    number.
+  \item \textbf{Swap positions.} Measure position bias via paired
+    AB+BA evaluations and report $\left|P(\text{A wins}) -
+    0.5\right|$.
+  \item \textbf{Replicate.} Measure test--retest reliability over
+    $\geq 3$ independent runs at temperature $0$ with response
+    caching disabled.
+  \item \textbf{Cross-validate.} Evaluate on $\geq 2$ benchmarks
+    spanning preference-style and correctness-style label
+    distributions.
+  \item \textbf{Audit the paradox.} When test--retest exceeds $0.95$,
+    verify position bias is below $0.10$ before claiming
+    reliability. High stability with high bias is a failure mode,
+    not a strength.
+\end{enumerate}
+\end{minipage}}
+\end{center}
+
+
+
+
+\subsection{Dataset as Community Resource}
+
+% - The full evaluation dataset (113 runs, ~541K judgments) is released for
+%   community use. Each run includes complete judgments with item-level verdicts,
+%   reasoning, latency, and computed metrics.
+% - Enables: meta-analysis across models, benchmark saturation studies,
+%   development of new calibration techniques, evaluation of future judge models
+%   against our baselines.
+% - Available at: [anonymous repository URL].
+
+We will release the complete evaluation dataset and the [\texttt{anonymized}] code repository upon publication. The dataset is derived from $118$ evaluation runs spanning $21$ judges, three benchmarks, and three protocols, totaling approximately $541{,}000$ individual judgments. Every run includes the per-item judge verdict, the model's free-form reasoning, the raw response, per-call latency, and the metric values computed for the run, so that downstream users can recompute any of our reported numbers from raw data or substitute their own metric and aggregation choices. The release supports three use cases we cannot pursue here: large-scale meta-analysis across judges and benchmarks (including variance-component decompositions across runs, items, and position orderings); development and validation of new calibration techniques on a fixed model$\times$benchmark population \citep{li-etal-2025-voices}; and a frozen baseline against which future judges can be evaluated under an identical protocol.
+
+%The full dataset and framework are available at \url{[anonymous repository URL]}. ============================================================================
+% 6. CONCLUSION
+% ============================================================================
+\section{Conclusion}
+
+% - We presented the largest systematic evaluation of LLM-as-a-Judge
+%   systems: 21 models, 3 benchmarks, 3 protocols, ~541K judgments.
+% - Key actionable findings:
+%   (1) Always use chance-corrected metrics ($\kappa$, $\alpha$) — exact match
+%       overstates quality by 33--41pp.
+%   (2) Validate on multiple benchmarks — rankings are non-transferable.
+%   (3) Measure bias alongside consistency — high test-retest can mask systematic
+%       bias.
+%   (4) Verbosity bias is no longer a concern for current-generation models.
+% - We release the full evaluation dataset and the jeval evaluation framework
+%   to enable reproducible judge validation.
+% - Future work: multilingual judge evaluation, temporal stability across model
+%   versions, multimodal judge assessment, formal variance decomposition.
+
+We present the largest systematic evaluation of LLMaJ to date: $21$ judges from nine providers across three benchmarks and three measurement protocols, producing approximately $541{,}000$ individual judgments. Four findings are present across the full cohort, including the frontier models released through April 2026: kappa deflation between exact match and Cohen's $\kappa$ is universal ($33.8$--$41.3$ pp on MT-Bench); judge rankings shift by up to $14$ positions across benchmarks; high test--retest reliability ($>0.95$) coexists with severe position bias ($>0.10$) in two production-deployed judges; and verbosity bias is small ($<0.011$) across our cohort under a single pairwise rubric.
+
+
+These findings translate into four practical recommendations. Judge validation should: (1) be chance-corrected by default, because raw exact match overstates discriminative ability by tens of percentage points, (2) span at least two benchmarks of contrasting label structure, since no single leaderboard predicts another's, (3) measure consistency and bias jointly, because high test--retest can mask a determinism that violates position invariance, and (4) no longer foreground verbosity bias under standard pairwise rubrics, subject to scope caveats. We introduce these as a Minimum Viable Validation Protocol (Section~\ref{sec:discussion}) and will release the full dataset and the [\texttt{anonymized}] evaluation library upon publication so that future judges can be measured against the same baseline.
+
+
+% These findings translate directly into four practical recommendations. First,
+% judge validation should be chance-corrected by default, as reporting raw
+% exact-match alone systematically overstates discriminative ability by
+% tens of percentage points. Second, validation protocols should span at least
+% two benchmarks with contrasting label structure, given that no single
+% benchmark's leaderboard predicts another's. Third, consistency and
+% bias must be measured together, as high test--retest can mask a
+% determinism that violates position invariance. Fourth, verbosity bias
+% is no longer a primary concern under standard pairwise protocols,
+% though the scope of this assertion is rubric-bounded. We formalize
+% these recommendations into a Minimum Viable Validation Protocol
+% (Section~\ref{sec:discussion}) to guide practitioners deploying LLM judges
+% in production pipelines. Upon publication, we will release the underlying evaluation
+% dataset together with the code for the [\texttt{anonymized}] framework so that any of our
+% findings can be recomputed and any future judge can be measured
+% against the same baseline.
+
+Several research directions remain open. Multilingual and multimodal judging are likely to surface failure modes that text-only English benchmarks cannot expose. Temporal stability across hosted-model endpoints, whose weights and serving stacks change without versioning, deserves dedicated longitudinal study. Judge-confidence calibration (Expected Calibration Error, Brier score) is a natural extension to this protocol once provider logprob coverage broadens. Finally, a formal variance-component decomposition that treats runs, items, and position orderings as random effects would convert the empirical patterns reported here into structured reliability coefficients, providing a principled basis for sample-size and replicate-count decisions in future judge-validation work.
+
+% ============================================================================
+% LIMITATIONS (Required by ACL)
+% ============================================================================
+\clearpage
+\section*{Limitations}
+
+% - \textbf{Benchmark coverage}: Three benchmarks, all English, all text-based.
+%   Multilingual and multimodal judge evaluation remains uncharacterized.
+% - \textbf{Temporal stability}: All evaluations conducted within a 5-week
+%   window (March--April 2026). Judge reliability may drift with model updates.
+% - \textbf{Rubric sensitivity}: All evaluations use a single pairwise
+%   comparison template. Rubric-level effects (score anchoring, format variation)
+%   are not isolated.
+% - \textbf{Calibration}: ECE and Brier Score require logprobs, available only
+%   from the OpenAI provider. Calibration analysis is deferred.
+% - \textbf{Cost}: API costs vary by provider and volume tier; reported costs
+%   are estimates at list pricing.
+% - \textbf{Thinking model suppression}: For models with built-in reasoning
+%   (GPT-5.4, Gemini 3.1 Pro, DeepSeek V3.2), reasoning was suppressed to
+%   avoid verdict truncation. Enabling reasoning could change results.
+
+\paragraph{Benchmark coverage.} Our evaluation uses three established
+English-language, text-only benchmarks (MT-Bench, JudgeBench,
+RewardBench). Multilingual judging and multimodal judging---both of
+which are increasingly common deployment settings---are not
+characterized in this study \citep{fu-liu-2025-reliable}. We caution against extrapolating any
+of our findings to those settings without further measurement.
+
+\paragraph{Temporal stability.} All evaluation runs were executed
+within a five-week window in March--April 2026. Hosted-model
+endpoints are known to drift across provider-side updates, sometimes
+silently, and we have not yet re-evaluated these judges over time to
+quantify within-judge stability over a longer time horizon. Consequently, the numbers we
+report should be interpreted as a snapshot of provider behavior during this specific window.
+
+\paragraph{Rubric sensitivity.} All judges were evaluated under a
+single pairwise comparison template and a fixed operationalization of
+each metric. In particular, our findings that all judges demonstrated verbosity bias below $0.011$, under our pairwise rubric and length-differential
+operationalization \citep{wu2023style,dubois2024alpacaeval}, should
+not be interpreted as a universal claim that verbosity bias is solved.
+Rubric design choices, including reference grounding and reasoning
+instructions, are known to interact with bias profiles in ways our
+single-template design cannot isolate.
+
+\paragraph{Calibration.} Expected Calibration Error and Brier Score
+require token-level logprobs that are not exposed by the majority of providers
+in our cohort. We therefore defer calibration analysis to future
+work; the present study reports agreement, consistency, and bias
+under the protocols for which directly comparable measurements are
+available across all providers.
+
+\paragraph{Cost reporting.} Per-token costs reported in
+Table~\ref{tab:models} are list prices at the time of evaluation.
+Provider-specific volume tiers, batch-API discounts, and negotiated
+enterprise pricing are not reflected. Accordingly, these cost figures should be
+interpreted as approximate upper bounds for deployment-scale spend rather than committed rates.
+
+\paragraph{Thinking-model suppression.} For models that generate a
+built-in reasoning trace (GPT-5.4, GPT-5.4-mini, Gemini 3.1 Pro,
+DeepSeek V3.2, Kimi K2.5, GLM-5, Minimax M2.7), the reasoning channel
+was suppressed using the provider-specific mechanisms documented in
+Appendix~\ref{app:model-config}; this maintained judge comparability
+and prevented verdict-token truncation when reasoning consumed the
+output budget. Reasoning-enabled evaluations could change agreement,
+consistency, and bias profiles, and we do not claim our results
+characterize the thinking-on configuration.
+
+% ============================================================================
+% REFERENCES
+% ============================================================================
+\clearpage  
+\bibliography{references}
+\bibstyle{acl_natbib}
+
+% ============================================================================
+% APPENDIX (after references, two-column format per ACL guidelines)
+% ============================================================================
+\clearpage                                                                                          
+\appendix                                              
+\section*{Appendix}
+\input{appendix}
+
+\end{document}
+                     
+
+
