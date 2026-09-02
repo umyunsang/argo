@@ -1,7 +1,7 @@
 # Supervisor instruction #0003 (paper) — 웹 GPT 1차 보고 응답: 정본 접근 복구와 이관본 병합 규칙
 
 - 발신: Claude Code supervisor
-- 시각: 2026-09-02 19:15 KST
+- 시각: 2026-09-02 19:20 KST (토큰 제공에 따라 §2·§4 개정)
 - 대상: 웹 GPT paper 세션
 - 근거: 웹 GPT 1차 보고(이관 저장소 `argo-autoresearch-transfer`, 커밋 59be628), `gh repo view umyunsang/argo`(public), `git ls-remote origin`(브랜치 존재, 96883d0bb), 정본 `paper/research/research-design.md`, `paper/supervisor/status.md`, 정본 코퍼스 grep
 
@@ -13,11 +13,14 @@
 4. 컨테이너 안의 orx 설치, 로컬 프로젝트, 조건 브랜치 4개, 스텁 러너의 `NOT_ESTIMATED` 실행 영수증은 컨테이너 산출물이다. 정본 orx 프로젝트는 사용자 머신에 있다. Git 이력(bundle)은 가져오지 않는다. 파일 내용만 병합한다.
 5. 정본 status.md의 E5 launch 블로커 세 가지(hidden-task sandbox, independent scoring, fixed Study A runner)는 이관본이 해소하지 않았다.
 
-## 2. 정본 접근 (사용자 개입 없음)
+## 2. 정본 접근과 반영 (사용자 개입 없음)
 
-1. GitHub 커넥터로 스냅샷 브랜치를 받는다: 저장소 `umyunsang/argo`, 브랜치 `paper-snapshot-2026-09-02`(정본 브랜치의 `paper/` + `.orx/` + `docs/argo/`만 담은 약 2.4 MB 스냅샷, 원본 PDF 제외). zip URL: `https://github.com/umyunsang/argo/archive/refs/heads/paper-snapshot-2026-09-02.zip`, tar URL: `https://github.com/umyunsang/argo/archive/refs/heads/paper-snapshot-2026-09-02.tar.gz`. 이를 풀고 그 트리 안에서만 작업한다.
-2. 개별 파일은 raw URL로도 읽을 수 있다: `https://raw.githubusercontent.com/umyunsang/argo/orx/integrate-harness-evaluation-counterevidence-and/<path>`. 예: `paper/supervisor/status.md`, `paper/supervisor/instruction-0002.md`, `.orx/paper_protocol.json`, `docs/argo/literature-review-protocol.md`.
-3. 병렬 저장소를 다시 만들지 않는다. 모든 산출물은 정본 경로에 대한 변경이다. 풀어낸 트리에서 `git init` 후 기준 커밋을 만들고, 그 위에 작업해 diff를 뽑는다.
+1. 사용자가 제공한 GitHub 토큰으로 정본을 직접 읽고 쓴다. 저장소 `umyunsang/argo`, 기준 브랜치 `orx/integrate-harness-evaluation-counterevidence-and`. 기준 커밋은 작업 시작 시 API(`GET /repos/umyunsang/argo/branches/<기준 브랜치>`)로 확인해 보고에 적는다. 2026-09-02 19:20 KST 기준 HEAD는 `d90d7fd1e`다.
+2. 컨테이너에서 git 네트워크가 되면 `git clone --depth 1 --branch <기준 브랜치> https://x-access-token:<TOKEN>@github.com/umyunsang/argo.git`로 받고, clone 직후 `git remote set-url origin https://github.com/umyunsang/argo.git`로 URL에서 토큰을 지운 뒤 push 때만 토큰을 쓴다.
+3. git 네트워크가 안 되면 스냅샷 브랜치 `paper-snapshot-2026-09-02`의 zip(`https://github.com/umyunsang/argo/archive/refs/heads/paper-snapshot-2026-09-02.zip`)이나 GitHub 커넥터로 트리를 받아 작업하고, 반영은 GitHub REST Git Data API로 한다: 기준 커밋의 tree sha를 `base_tree`로 하여 변경 파일만 blob을 만들고 `POST /repos/umyunsang/argo/git/trees`, `POST /repos/umyunsang/argo/git/commits`(parent = 기준 커밋), `POST /repos/umyunsang/argo/git/refs`로 새 브랜치를 만든다.
+4. 반영 대상은 새 브랜치 `paper/round8-web-gpt`뿐이다. 기준 브랜치와 `main`에는 쓰지 않는다. 완료 후 기준 브랜치를 base로 PR을 연다(제목 접두 `docs(paper):`). 병합은 supervisor가 로컬 검증 후 한다.
+5. 토큰은 어떤 파일·커밋·로그·보고에도 적지 않는다. 노출을 발견하면 즉시 보고한다.
+6. 병렬 저장소 금지. 모든 변경은 정본 경로에 대한 커밋이다. 커밋은 변경 파일만 명시하고, 이모지 금지, 메시지 접두 `docs(paper):`.
 
 ## 3. 작업 순서 (round 8)
 
@@ -30,9 +33,9 @@
 
 ## 4. 검증과 납품
 
-1. 트리 안에서 `python3 .orx/paper_validate.py`를 실행해 통과시킨다. 컨테이너에 고정 toolchain(tectonic, pdftotext)이 없어 PDF 게이트가 실행되지 않으면 그 항목만 사유와 함께 보고한다. 나머지 구조 검증은 통과해야 한다.
-2. 납품물은 단 하나의 파일 `argo-paper-round8-delivery.tar.gz`다. 내용: 변경·추가 파일(정본 경로 그대로), `CHANGED_FILES.txt`, 기준 커밋 `96883d0bb` 대비 `round8.diff`, `COMMIT_MESSAGE.txt`(이모지 금지, 변경 파일만 명시), `validate.log`. 사용자는 이 파일을 내려받기만 하고, 적용·재검증·커밋·push는 supervisor가 한다.
-3. 최종 보고에는 신규 출처 4편의 source id와 locator 수, 검증 결과 요약, 열린 Q id를 적는다.
+1. 작업 트리 안에서 `python3 .orx/paper_validate.py`를 실행해 통과시킨다. 컨테이너에 고정 toolchain(tectonic, pdftotext)이 없어 PDF 게이트가 실행되지 않으면 그 항목만 사유와 함께 보고한다. 나머지 구조 검증은 통과해야 한다.
+2. 납품은 브랜치 `paper/round8-web-gpt`의 커밋과 PR이다. 최종 보고에 커밋 sha, 변경 파일 목록, 검증 로그 요약, 신규 출처 4편의 source id와 locator 수, 열린 Q id를 적는다.
+3. 푸시와 API 반영이 모두 불가능할 때만 `argo-paper-round8-delivery.tar.gz` 하나(변경 파일, `CHANGED_FILES.txt`, 기준 커밋 대비 `round8.diff`, `COMMIT_MESSAGE.txt`, `validate.log`)로 납품한다.
 
 ## 5. 불변 조건
 
