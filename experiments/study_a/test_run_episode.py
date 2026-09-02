@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from run_episode import run, validate_config  # noqa: E402
+from run_episode import run, validate_config, admit_for_scoring, declared_ceilings  # noqa: E402
 from test_release_sandbox import make_bundle  # noqa: E402
 
 R = []
@@ -62,6 +62,43 @@ def main() -> int:
         cfg_path.write_text(json.dumps(good), encoding="utf-8")
         r5 = run(cfg_path, td / "ws5")
         check("declared_backend_reaches_executed", r5["status"] == "EXECUTED", json.dumps(r5["reasons"]))
+
+    # --- Scoring admission: a violating or unmeasured episode must not be scorable. ---
+    ok_receipt = {"status": "EXECUTED", "prelaunch_probes": {},
+                  "declared_ceilings": {"total_tokens": 2000, "api_calls": 5}}
+    good_usage = {"status": "MEASURED", "api_calls": 3,
+                  "tokens": {"input": 10, "output": 90, "totalTokens": 1000}}
+
+    check("compliant episode is scorable",
+          admit_for_scoring(ok_receipt, good_usage)["scorable"] is True)
+    over_usage = {"status": "MEASURED", "api_calls": 3,
+                  "tokens": {"input": 10, "output": 90, "totalTokens": 9000}}
+    verdict = admit_for_scoring(ok_receipt, over_usage)
+    check("episode over a declared ceiling is not scorable", verdict["scorable"] is False)
+    check("the violated quantity is named",
+          verdict["violations"][0]["quantity"] == "total_tokens", str(verdict))
+    check("an unmeasured episode is refused, not passed",
+          admit_for_scoring(ok_receipt, {})["scorable"] is False)
+    check("a usage record that is not MEASURED is refused",
+          admit_for_scoring(ok_receipt, {"status": "UNMEASURED"})["scorable"] is False)
+    # Otherwise fully valid, so only the execution-status guard can block it.
+    check("an episode that did not execute is not scorable",
+          admit_for_scoring({"status": "NOT_EXECUTED", "prelaunch_probes": {},
+                             "declared_ceilings": {"total_tokens": 2000, "api_calls": 5}},
+                            good_usage)["scorable"] is False)
+    check("a fired pre-launch probe blocks scoring",
+          admit_for_scoring({"status": "EXECUTED", "prelaunch_probes": {"withheld_bytes": "leak"},
+                             "declared_ceilings": {"total_tokens": 2000}},
+                            good_usage)["scorable"] is False)
+    check("an episode with no declared ceilings is not scorable",
+          admit_for_scoring({"status": "EXECUTED", "prelaunch_probes": {},
+                             "declared_ceilings": {}}, good_usage)["scorable"] is False)
+    check("declared ceilings are translated into measured quantities",
+          declared_ceilings({"token_ceiling": 32000, "call_ceiling": 12,
+                             "wallclock_seconds": 900})
+          == {"total_tokens": 32000, "api_calls": 12, "wallclock_seconds": 900})
+    check("a non-integer ceiling is dropped rather than trusted",
+          declared_ceilings({"token_ceiling": "lots"}) == {})
 
     passed = sum(1 for r in R if r["passed"])
     print(json.dumps({"suite": "study_a_runner", "checks": len(R), "passed": passed, "results": R},

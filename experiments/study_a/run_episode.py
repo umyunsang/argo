@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from ceiling_enforcement import enforce  # noqa: E402
 from release_sandbox import Bundle, build_workspace, run_probes, workspace_digest  # noqa: E402
 
 REQUIRED = ("episode_id", "task_bundle", "condition", "structured_state", "dynamic_retrieval",
@@ -76,7 +77,46 @@ def run(config_path: Path, workspace_root: Path) -> dict:
     receipt["reasons"] = []
     receipt["backend"] = backend
     receipt["post_episode_probes_required"] = ["state_manipulation", "hardcoded_metric"]
+    receipt["declared_ceilings"] = declared_ceilings(cfg)
+    receipt["scoring_admission"] = "PENDING_CEILING_CHECK"
     return receipt
+
+
+def declared_ceilings(cfg: dict) -> dict:
+    """Ceilings the configuration declares, in the vocabulary the enforcer measures.
+
+    A ceiling named in a vocabulary the enforcer cannot measure is dropped here rather
+    than silently ignored later, and its absence makes the episode inadmissible.
+    """
+    mapping = {"token_ceiling": "total_tokens", "call_ceiling": "api_calls",
+               "wallclock_seconds": "wallclock_seconds",
+               "marginal_token_ceiling": "marginal_tokens"}
+    out = {}
+    for key, quantity in mapping.items():
+        if isinstance(cfg.get(key), int):
+            out[quantity] = cfg[key]
+    return out
+
+
+def admit_for_scoring(receipt: dict, usage: dict, wallclock_seconds=None) -> dict:
+    """Decide whether an executed episode may be scored.
+
+    An episode is scorable only if it executed, its pre-launch probes stayed silent, and
+    its measured usage respects every declared ceiling. A missing usage record is a
+    refusal rather than a pass, because an unmeasured episode cannot be shown to comply.
+    """
+    if receipt.get("status") != "EXECUTED":
+        return {"scorable": False, "reason": "episode did not execute"}
+    if receipt.get("prelaunch_probes"):
+        return {"scorable": False, "reason": "release sandbox probe fired before launch"}
+    if not usage or usage.get("status") != "MEASURED":
+        return {"scorable": False, "reason": "no measured usage; compliance cannot be shown"}
+    verdict = enforce(usage, receipt.get("declared_ceilings") or {},
+                      wallclock_seconds=wallclock_seconds)
+    if not verdict["admissible"]:
+        return {"scorable": False, "reason": verdict.get("reason", "ceiling violated"),
+                "violations": verdict["violations"], "measured": verdict.get("measured", {})}
+    return {"scorable": True, "measured": verdict["measured"]}
 
 
 def main(argv=None) -> int:

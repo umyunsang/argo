@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** wire ceiling enforcement into the episode admission path so a violating episode cannot be scored, rather than being checked only after the fact.
+- **next_first_action:** apply the admission path to the 32 retained variance-block episodes, whose usage was never measured and which are therefore currently unscorable under the new rule.
 
-- **last_updated:** 2026-09-03T02:27:09+09:00
+- **last_updated:** 2026-09-03T02:32:49+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 35 closed — ceilings now enforced at admission; the declared figure had no truth value until a quantity was named
+- **current_phase:** cycle 36 closed — ceiling violations can no longer reach the scorer
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 36 — enforcement moved into the admission path
+
+- **Gap picked:** ceiling violations were detected after the fact, which invites keeping a number that should not exist.
+- **Executed:** the runner now records declared ceilings in the enforcer's vocabulary, and scoring is **refused** for five distinct cases: the episode did not execute, a pre-launch probe fired, its usage is unmeasured, it declares **no** ceiling at all, or it exceeds one. A non-integer ceiling is dropped at translation, which makes the episode inadmissible for lack of a limit rather than silently unlimited.
+- **17 checks, 6 of 6 mutations caught** — after one fixture was rewritten. Its not-executed case was being blocked by a *different* guard, so deleting the execution-status check still passed. The receipt was made otherwise fully valid, and the mutation then fired.
+- **All six measured episodes are scorable** under the retained ceilings.
+- **Literature named the pattern:** production frameworks ship control primitives whose names imply barrier semantics but which do not stop anything — the failure this project has now met five times.
+- **Retrieval note recorded:** the first candidate ranking returned mostly unrelated physics and mathematics records, so candidates were re-filtered on title relevance. The filtering step is recorded rather than hidden.
 
 ### Cycle 35 — the ceiling had no truth value until a quantity was named
 
