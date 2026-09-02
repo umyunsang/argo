@@ -1,14 +1,24 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** instrument evidence-file reads per episode to test whether retrieval context cost is agent-chosen, which is currently only a hypothesis.
+- **next_first_action:** audit the other committed instruments for fixtures that assert an author assumption rather than a system property, starting with the scoring and verification modules.
 
-- **last_updated:** 2026-09-03T01:06:15+09:00
+- **last_updated:** 2026-09-03T01:14:20+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 20 closed — three straight cycles in which a cost decision was corrected by its own falsifier
+- **current_phase:** cycle 21 closed — the cost instrument itself was wrong by 14.4x and every number it produced is void
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 21 — the instrument was wrong, and its own fixture protected the error
+
+- **Gap picked:** whether retrieval context cost is chosen by the agent. Answering it required reading the transcripts, which exposed something worse.
+- **The cost parser was wrong by 14.4x.** It summarised a run by its last usage record, assuming usage accumulated. Usage is reported **per completed API call**, and a multi-turn episode re-sends its context on every call, so the last record describes one call. Output tokens were understated 13.0x.
+- **The fixture protected the defect.** It asserted that the last record was the run total, which is what I believed rather than what the transcript does. The suite passed while the instrument was wrong. A fixture that encodes the author's assumption tests the assumption, not the system.
+- **How it surfaced:** the earlier run had already recorded `monotonic: false` on all six episodes. That signal was written down and not acted on. It was only chased when an unrelated question forced a look at the records.
+- **Two further defects during repair.** Transcripts captured through standard output were truncated in **four of six** runs, losing middle records; transcripts are now written to files and checked for completeness. And the first repair swallowed every record after a truncation, caught by a failing-first fixture before use.
+- **Every cost number from cycles 18, 19 and 20 is void**, including the fixed floor, both context figures, and both variability figures. The three affected decisions carry `VOIDED_BY_RD-2026-09-02-26A`; their structural content stands, their numbers do not.
+- **Re-measured from complete transcripts:** minimal condition 167,251 total tokens over 3.3 calls; full condition 520,969 over 9.7 calls, a ratio of 3.1. Both vary widely, at 16.6% and 34.0%. No factor attribution: two factors move together, three repeats each.
 
 ### Cycle 20 — one episode is a draw, not a value
 

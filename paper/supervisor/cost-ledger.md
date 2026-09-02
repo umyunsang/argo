@@ -64,3 +64,24 @@ The retrieval condition varies about four times more than the minimal one, and i
 within-condition range covers 61.1% of the between-condition gap. RD-2026-09-02-24A is
 refined by RD-2026-09-02-25A: cost is reported as a mean over repeats with its spread.
 
+## 2026-09-02 — every earlier cost figure in this ledger is void
+
+The token accounting parser read the last usage record as the run total. Usage is per
+completed API call and context is re-sent on every call, so the parser understated one
+episode by **14.4x**. Its fixture asserted the same wrong assumption, so the suite passed
+while the instrument was wrong. Transcripts captured through standard output were also
+truncated in four of six runs. Both are fixed; transcripts are now written to files and
+checked for completeness.
+
+**All dollar and token figures in the entries above are void.** Corrected measurement over
+six episodes from complete transcripts:
+
+| condition | API calls | context tokens | marginal | total | cost (USD) |
+|---|---:|---:|---:|---:|---:|
+| C00 minimal | 3.3 | 161,835 | 5,416 | 167,251 | 0.10280 |
+| C11 scaffold + retrieval | 9.7 | 511,551 | 9,418 | 520,969 | 0.16642 |
+
+Six-episode measured cost: $0.80776. Corrected cumulative measured model cost is
+not recoverable for the earlier runs, whose transcripts were truncated; only this block is
+reported as measured. GPU credit units remain 0 and `colab sessions` remains empty.
+
