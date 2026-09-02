@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** measure the filter recall on items where it did return a span, since only the no-span items have been checked and a poor span could fail the same way invisibly.
+- **next_first_action:** decide whether the endpoint retrieval is repaired or replaced by whole-artifact judging, and cost both against the measured overturn rate before choosing.
 
-- **last_updated:** 2026-09-03T03:49:15+09:00
+- **last_updated:** 2026-09-03T03:52:31+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 53 closed — the high-recall filter assumption under the endpoint is falsified
+- **current_phase:** cycle 54 closed — the endpoint bias is measured: 7 of 18 pipeline negatives overturn under a wider view
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 54 — the other half of the failure, and the size of the bias
+
+- **Gap picked:** only items where retrieval returned *nothing* had been checked. The larger case — a span returned but poor — was untested.
+- **Executed:** all nine items where a span was returned and the verdict on it was negative, re-judged by both models on the full artifact.
+- **A returned span is not protection:** 3 of those 9 are called satisfied by both judges.
+- **Complete picture: 7 of 18 pipeline negatives overturn** under the wider view, and the failure is not concentrated where retrieval found nothing — no-span 4/9, poor-span 3/9.
+- **The endpoint understates coverage at roughly that rate, always in the same direction.** That is a measured bias in the endpoint of record, not a suspicion.
+- **One caveat bounds the whole measurement**, and it is in the paper: the reference is two-judge agreement on the full artifact, which is not ground truth. It shows the pipeline verdict is unstable under a wider view, not that the wider view is right. The falsifier is written accordingly — if human labels later side with the pipeline, the overturn rate does not indicate bias.
 
 ### Cycle 53 — testing the recorded limit broke the endpoint assumption
 
