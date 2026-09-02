@@ -1,0 +1,1953 @@
+
+Warning: orx 0.1.117 is outdated (latest 0.1.118). A newer release is available; upgrade to stay compatible with the API. Run `orx update` to upgrade.
+
+alphaXiv: https://www.alphaxiv.org/abs/2606.10625
+
+snaproot: Decentralized File Integrity Verification
+Using Blockchain-Anchored Cryptographic Hashing
+Arslan Brömme
+∗ 
+and Tarkan Yavas
+†
+Chain Horizon GmbH
+Version 0.9.9.3 (Working Draft)
+Preprint / working paper. This version is a work in progress and may be updated. Comments
+are welcome.
+Abstract
+The rapid growth of digital content has made reliable integrity verification increasingly
+important. Existing solutions rely either on centralized authorities, which introduce trust
+dependencies and single points of failure, or on decentralized storage systems that incur
+prohibitive resource overhead. In this paper, we present snaproot, a lightweight system that
+implements the hash-anchoring paradigm of Haber and Stornetta on the Solana blockchain
+to provide efficient, decentralized file integrity verification. snaproot generates a SHA-256
+hash of a file and stores it immutably on-chain as a permanent reference record. Verifica-
+tion is performed by recomputing the hash and comparing it to the stored value, yielding a
+deterministic binary outcome. Beyond the basic anchoring mechanism, we describe a four-
+tier trust architecture comprising three realized tiers — user sovereignty through locally
+generated keys, within-chain immutability through consensus, and cross-fork verifiability —
+and one prospective tier consisting of a planned cross-chain migration mechanism for long-
+term persistence beyond the lifetime of any single blockchain. We present a formal threat
+model, a security analysis grounded in the second-preimage resistance of SHA-256, and an
+empirical evaluation on Solana Devnet across file sizes from 1 KB to 500 MB, with sub-five-
+second confirmation latency on Devnet that supports capture-time anchoring of photographs
+as a practical workflow for typical network conditions. The system is deployed on Solana
+Mainnet; a formal characterization under Mainnet load is left to future work. A central
+conceptual contribution of this work is the explicit structural separation between existence
+proof — the chain-resident, key-independent claim that a file existed at a given time — and
+authorship proof — the key-dependent binding between a record and a specific wallet iden-
+tity. This separation, which is absent or implicit in most prior hash-anchoring designs, allows
+existence guarantees to survive key loss, organisational change, and provider disappearance,
+while preserving the ability to make stronger authorship claims where keys are retained.
+We position snaproot against established hash-anchoring systems (OpenTimestamps, Ori-
+ginStamp, Chainpoint) and discuss limitations with respect to pre-registration manipulation
+and AI-generated content.
+Keywords— blockchain, file integrity, cryptographic hashing, decentralized verification, Solana,
+digital trust, capture-time anchoring
+∗
+Dipl.-Inform., B.Sc., CISSP, CISA, CISM, CAISE. arslanb@chain-horizon.com
+†
+M.Eng., CISM, ISO27001 Lead Auditor, CAISE. tarkan.yavas@chain-horizon.com
+1
+arXiv:2606.10625v1 [cs.CR] 9 Jun 2026
+
+1 Introduction
+The integrity of digital files is fundamental to a wide range of applications, including legal
+documentation, digital forensics, medical recordkeeping, and content authentication. Unlike
+physical documents, digital files can be silently modified without leaving any visible trace, making
+post-hoc verification difficult [1]. This challenge has grown significantly more complex with the
+proliferation of generative artificial intelligence, which enables the creation of highly realistic
+synthetic content that is often indistinguishable from authentic material by visual inspection
+alone [2].
+Traditional approaches to data integrity rely on centralized mechanisms such as digital signa-
+tures issued by certificate authorities, proprietary timestamping services, or notarial registries.
+While these approaches can function adequately in controlled environments, they share a struc-
+tural limitation that no implementation quality can remove: the integrity claim ultimately de-
+pends on the continued correct operation of a single, trusted authority. The 2011 compromise of
+the DigiNotar certificate authority illustrates this limitation concretely: a single intrusion enabled
+the issuance of hundreds of fraudulent certificates, and users had no independent mechanism to
+verify whether a given certificate had been manipulated or legitimately issued [3]. Centralized
+authorities can be coerced, compromised, or simply disappear, taking the integrity claims they
+support with them.
+Blockchain technology offers a structurally different alternative. A distributed, publicly au-
+ditable ledger removes the dependency on any single party for record persistence. Once data is
+written and confirmed, it cannot be altered without network-wide consensus, making blockchains
+an attractive substrate for long-term integrity anchoring. However, directly storing large files on-
+chain is prohibitively expensive and technically impractical. A lightweight alternative is to store
+only the cryptographic hash of a file, which serves as a compact and verifiable fingerprint [4]. The
+hash-anchoring paradigm, originally proposed by Haber and Stornetta [5], operationalizes this
+principle and has been instantiated in systems such as OpenTimestamps [6], OriginStamp [7],
+and Chainpoint [8].
+In this paper, we present snaproot, a system that combines SHA-256 hashing with on-chain
+hash anchoring on the Solana blockchain. snaproot is a concrete realization of the hash-anchoring
+paradigm on a high-throughput blockchain substrate, with confirmation latencies in the single-
+digit seconds range rather than the minutes or hours required by Bitcoin-based predecessors. This
+latency profile is a qualitative enabler for use cases that are impractical on slower substrates under
+typical conditions, most notably capture-time anchoring, in which a photograph is hashed and
+registered on-chain within the user’s natural shutter-to-preview window. The system is deployed
+on Solana Mainnet and is in productive use.
+1.1 The Trust Architecture
+Rather than positioning snaproot primarily as a performance improvement over existing hash-
+anchoring systems, this paper develops a more fundamental claim: snaproot realizes a layered
+trust architecture in which integrity claims depend on no single trusted party and remain veri-
+fiable across organizational, technological, and generational boundaries. We describe this archi-
+tecture in four tiers:
+• User sovereignty. Each snaproot installation generates a Solana keypair locally. The
+private key never leaves the user’s device. Records are signed under the user’s own wallet,
+and verification requires only the original file, a transaction identifier, and access to any
+Solana RPC endpoint — no interaction with snaproot infrastructure is needed. The user
+is structurally independent of the provider; if snaproot as an organization were to cease
+operation, existing records would remain fully verifiable.
+• Within-chain integrity. Once confirmed on Solana, records are protected by consensus
+2
+
+and the second-preimage resistance of SHA-256. A modification of a registered file is
+detectable with deterministic certainty, and reversing a confirmed record would require
+breaking consensus on a supermajority of staked validators.
+• Cross-fork verifiability. Past records survive protocol-level disruptions of the substrate.
+The Solana network has undergone protocol changes and recovery events; however, these
+affect the liveness of the network for new anchorings, not the safety of records already
+on archived chain history. As long as at least one archive of the relevant chain segment
+remains accessible, the existence of an anchored record can be verified, and any tampering
+with chain history becomes detectable through comparison of independently maintained
+archives.
+• Cross-chain trust migration. snaproot is designed with the prospect of substrate in-
+dependence in mind. In the planned mechanism, the hashes recorded on Solana could be
+aggregated by the user and re-anchored on a different blockchain (for example, Ethereum)
+through a user-initiated, wallet-bound migration. This mechanism is described as an out-
+look rather than an active development item; its purpose, if realized, would be to ensure
+that the choice of Solana remains operational rather than architectural, so that the system
+can outlive the lifetime of any single blockchain.
+An important consequence of this architecture is the structural separation of two properties
+that are conflated in many alternative designs. The existence proof for a registered file — the
+cryptographic claim that the file existed in its current form at the time of registration — is
+independent of any specific key custody. It can be verified by anyone with access to the file and
+a working RPC endpoint, indefinitely, and remains intact even if the registrant’s private key is
+later lost. The authorship proof — the cryptographic binding between the record and a specific
+wallet identity — is key-dependent and is forfeited if the private key is lost. This separation
+allows snaproot to support both identified and pseudonymous integrity claims, and to provide
+existence guarantees that survive scenarios in which authorship claims would not.
+1.2 Applications
+The trust architecture is general and supports a range of applications. We discuss two illustrative
+domains in this paper.
+Media authenticity against AI-generated content. The deterministic nature of hash com-
+parison provides a counterpoint to the inherently probabilistic approaches based on AI-based
+detection. Where a detector classifies an image as authentic or manipulated with some confi-
+dence that degrades against unfamiliar generators [2, 9], snaproot answers a different and stricter
+question: whether a specific file has changed since its on-chain registration. When combined with
+capture-time anchoring — registering the photograph at the moment of capture, before any mod-
+ification opportunity — this shifts the trust boundary from "the asserted creator" to "the capture
+pipeline of a specific app and device", a substantially smaller and more auditable surface.
+Tamper-evident records for compliance. Audit logs, regulatory records, and other documen-
+tation subject to integrity requirements typically rely on organizationally controlled storage or
+signed archives. The integrity claim then depends on the same organization that may also benefit
+from manipulation. Anchoring such records to a decentralized ledger removes this conflict: an
+auditor or regulator can verify integrity externally, without relying on the audited organization’s
+own infrastructure.
+1.3 Contributions
+The main contributions of this work are:
+3
+
+1. A four-tier trust architecture for blockchain-anchored integrity verification, of which three
+tiers are fully realized in the deployed system — user sovereignty, within-chain integrity,
+and cross-fork verifiability — and one tier (substrate-independent cross-chain migration)
+is developed as a coherent prospective design rather than an implemented mechanism.
+We identify and discuss the structural separation of existence proof and authorship proof,
+which clarifies the security guarantees of the system and distinguishes them from those of
+alternative designs.
+2. A practical Solana implementation of the architecture, deployed on Mainnet, including
+capture-time anchoring of photographs as a functional demonstration of how the substrate’s
+latency characteristics enable specific application classes that are structurally infeasible on
+slower-confirmation substrates.
+3. A formal threat model with a security reduction to the second-preimage resistance of SHA-
+256, covering non-registrant modification, replay, timestamp manipulation, and duplicate
+registration, together with an empirical evaluation on Solana Devnet measuring hashing
+performance, confirmation latency, cost, and sustained throughput.
+The remainder of this paper is organized as follows. Section 2 reviews related work. Section 3
+defines the threat model and problem formulation. Section 4 describes the system architecture
+and protocols, including capture-time anchoring. Section 5 provides a security analysis along
+the four tiers of the trust architecture. Section 6 presents the empirical evaluation. Section 7
+discusses limitations, the active roadmap, and the longer-term outlook including cross-chain
+migration. Section 8 discusses the trust architecture in the context of media authenticity and
+compliance applications. Section 9 concludes.
+2 Related Work
+We discuss prior work in five areas relevant to snaproot’s positioning: blockchain-based times-
+tamping and hash anchoring, decentralized storage, on-chain ownership records and NFTs, AI-
+based content authentication, and tamper-evident logging systems. Throughout, we focus on the
+specific properties that distinguish snaproot from each line of work, rather than on a compre-
+hensive survey.
+2.1 Blockchain-Based Timestamping and Hash Anchoring
+The use of a tamper-evident chain to establish temporal ordering and provenance of digital doc-
+uments was pioneered by Haber and Stornetta [5], predating modern blockchains by nearly two
+decades. Several systems instantiate this concept on public blockchains. OpenTimestamps [6]
+anchors hash values on the Bitcoin blockchain using Merkle aggregation, allowing a single Bit-
+coin transaction to attest to arbitrarily many documents. Its design is fully permissionless
+and provides strong long-term guarantees by inheriting Bitcoin’s settlement assurances; how-
+ever, Bitcoin’s confirmation window of approximately sixty minutes makes it unsuitable for
+latency-sensitive applications. OriginStamp [7], while presented by its authors as a decentral-
+ized timestamping service, in practice relies on a centralized aggregation backend that batches
+client hashes before anchoring their Merkle root to Bitcoin; this operational centralization par-
+tially undermines its end-to-end trust guarantees, as users depend on the continued operation
+and honesty of the aggregation service. Chainpoint [8] and related hash-aggregation services
+such as Factom, Woleet, and Po.et similarly provide Merkle-tree-based anchoring on Bitcoin or
+Ethereum, typically operated as managed services that batch many client hashes into a single
+on-chain root.
+These systems share with snaproot the basic hash-anchoring paradigm but differ along three
+properties central to the present work. First, user sovereignty: in snaproot, each installation
+4
+
+generates a Solana keypair locally and the user signs each record under their own wallet, so
+that the verification path does not require the operator’s infrastructure. In contrast, Merkle-
+aggregation services typically place the user’s hashes inside an operator-controlled aggregation
+step, and verification depends on the operator’s continued willingness and ability to provide
+Merkle proofs. Second, latency profile: snaproot’s sub-five-second confirmation latency on Solana
+(Devnet; see Section 6) supports use cases that are impractical on Bitcoin-based substrates
+under typical conditions, most notably the capture-time anchoring of photographs discussed in
+Section 4. Third, substrate independence: snaproot is designed such that hashes anchored on one
+chain can be aggregated and re-anchored on another at user initiative, decoupling the long-term
+verifiability of records from the lifetime of any single blockchain. We return to this point in
+Sections 5 and 7.
+The current snaproot implementation anchors one hash per transaction and does not perform
+on-chain Merkle aggregation; we discuss this design choice and its implications in Section 7.
+Table 1 summarises the comparison along the dimensions most relevant to the trust archi-
+tecture developed in this paper.
+Table 1: Comparison of hash-anchoring systems along trust-architecture dimensions. ✓ = property
+holds by design; ◦ = partially or with caveats; – = property absent or structurally precluded. Provider-
+independence: verification requires no operator cooperation. User-signed records: each record carries the
+user’s own cryptographic signature. Capture-time anchoring: confirmation latency supports synchronous
+photo registration. Existence/authorship separation: system explicitly separates the two proof types.
+Property OTS OriginStamp Chainpoint snaproot
+Provider-independent verification ◦ – ◦ ✓
+User-signed records – – – ✓
+Per-user authorship proof – – – ✓
+Capture-time anchoring – – – ✓
+Existence / authorship separation – – – ✓
+No operator aggregation step ✓ – – ✓
+Long-term substrate independence ✓ ◦ ◦ ◦
+†
+Permissionless access ✓ ◦ ◦ ✓
+†
+Prospective; cross-chain migration is a planned outlook feature, not yet implemented.
+The most consequential differences are in the first four rows. Provider-independent verifica-
+tion and user-signed records are architectural properties that derive from snaproot’s local-wallet
+model; they are absent in Merkle-aggregation services because the user’s hash is processed inside
+an operator-controlled aggregation step, and verification depends on the operator supplying the
+Merkle proof. The explicit separation of existence proof and authorship proof is a conceptual
+contribution of the present work and is not discussed in the prior systems. Capture-time an-
+choring is a latency-driven property that is structurally precluded on Bitcoin-based substrates.
+Long-term substrate independence is the one dimension on which OpenTimestamps holds a gen-
+uine advantage: Bitcoin’s archive ecosystem is more decentralised and longer-established than
+Solana’s, and snaproot’s cross-chain migration path is prospective rather than realised.
+2.2 Decentralized Storage Systems
+IPFS [10] provides a content-addressed distributed storage layer in which files are identified by
+their content hash (CID). While this enables integrity checking as a side effect, the system is
+designed primarily for data distribution and availability, not for authoritative integrity verifica-
+tion: the same CID can be served by any participating node, and long-term persistence depends
+on external pinning services or the Filecoin incentive layer [11], introducing variable costs and
+operational dependencies. snaproot takes a fundamentally different approach: file content is
+never transmitted or stored by the system. Only the hash is anchored on-chain, eliminating
+5
+
+storage overhead while retaining full integrity verification capability. The two approaches are
+complementary rather than competing: a workflow that requires both content availability and
+authoritative integrity could combine IPFS-based storage with snaproot-based anchoring.
+2.3 Blockchain Ownership and NFTs
+Non-fungible tokens (NFTs) associate digital assets with on-chain ownership records [12]. How-
+ever, many NFT implementations store asset data or metadata off-chain and reference it through
+a TokenURI or external storage service. Prior work on ERC-721 metadata permanence shows
+that a substantial share of NFT assets depend on non-permanent, centralized, or mutable stor-
+age [13], meaning the on-chain ownership record alone does not guarantee file integrity — an
+asset can be transferred on-chain while its underlying content is silently replaced off-chain. snap-
+root differs fundamentally by anchoring the hash of the actual file contents directly on-chain.
+Any subsequent modification of the file is immediately detectable, regardless of how the file is
+stored or distributed. Ownership and integrity are orthogonal properties; snaproot addresses the
+latter without making claims about the former.
+2.4 AI-Based Content Authentication
+A growing body of literature applies machine learning to detect AI-generated or manipulated
+content [2, 9]. Although these approaches have achieved high accuracy on known generative ar-
+chitectures, they are inherently probabilistic and degrade as generation quality improves. Rössler
+et al. [2] showed, in the context of FaceForensics++, that detectors trained on a single manipula-
+tion method generalize substantially worse than those trained across the full set of manipulation
+methods in the dataset, indicating strong sensitivity to the training distribution. Content au-
+thenticity standards such as C2PA [14] embed signed provenance metadata at creation time,
+which is complementary but requires tool-level adoption by content producers and depends on
+the integrity of the signing infrastructure.
+snaproot is orthogonal to both approaches: rather than classifying content, it verifies whether
+a previously registered file has been altered. The verification answer is binary and determinis-
+tic, with soundness reducing to the second-preimage resistance of SHA-256. Used together with
+point-of-capture mechanisms — either C2PA-conformant hardware or the capture-time anchor-
+ing path implemented in snaproot itself — the deterministic post-hoc verification provided by
+anchoring and the provenance signal provided by capture-time mechanisms reinforce each other.
+2.5 Tamper-Evident Logging and Certificate Transparency
+Certificate Transparency [15] uses append-only, cryptographically verifiable Merkle tree logs to
+provide auditable records of TLS certificates. This architecture shares snaproot’s core tamper-
+evident property but is domain-specific and relies on a fixed set of designated log operators; users
+must trust the federated operator set to behave honestly. snaproot generalizes the concept to
+arbitrary files using a fully permissionless blockchain substrate, eliminating the need for trusted
+log operators. The motivating example from Section 1 — the DigiNotar compromise of 2011 [3]
+— illustrates the failure mode that both Certificate Transparency and snaproot are designed to
+make detectable: a trusted authority that quietly behaves dishonestly. The two systems address
+this concern in different domains and at different layers, but with structurally similar primitives.
+3 Threat Model and Problem Formulation
+We define the adversary model, security goals, and assumptions under which snaproot operates.
+The goals are structured to make explicit the four tiers of the trust architecture introduced in Sec-
+6
+
+tion 1: user sovereignty, within-chain integrity, cross-fork verifiability, and substrate-independent
+migration.
+3.1 Adversary Model
+We consider a probabilistic polynomial-time (PPT) adversary A with full read access to the
+public state of the Solana blockchain, including all anchored hash records, transaction metadata,
+and timestamps. The adversary may also observe the broader public environment: the existence
+of files registered by other users, the wallet pubkeys of registrants, and any metadata associated
+with anchored records.
+The primary threat that snaproot must resist is the post-registration substitution of a reg-
+istered file by a different file that nonetheless passes verification. Given a registered file F with
+hash H = SHA256(F ), this corresponds to A finding F 
+′
+̸
+ 
+= F with SHA256(F 
+′
+) = H — that is,
+a second-preimage attack against SHA-256. Specifically, A may attempt to:
+• Observe any registered hash value and the public key of the registrant, and any associated
+metadata.
+• Modify the contents of a registered file F to produce F 
+′ 
+and present F 
+′ 
+as passing verifi-
+cation against the original registration. This is a second-preimage attack and constitutes
+the primary threat.
+• Forge or retroactively modify a blockchain record so as to validate a modified file.
+• Mount a full preimage attack: given H, attempt to find any F 
+′ 
+with SHA256(F 
+′
+) = H.
+This is strictly harder than the second-preimage attack and is included for completeness.
+• Mount a collision attack: find F and F 
+′ 
+with F̸ = F 
+′ 
+and SHA256(F ) = SHA256(F 
+′
+).
+This threat is primarily relevant in the stronger sub-case of a malicious registrant who
+commits to F but later attempts to substitute a precomputed F 
+′
+. It therefore affects the
+non-repudiation property rather than the core integrity guarantee.
+Out of scope. We assume that A cannot break the computational hardness assumptions
+underlying SHA-256 and cannot compromise the consensus mechanism of the Solana network.
+Network-level attacks against Solana’s validator set are outside the scope of application-layer
+integrity verification.
+Frontrunning as a known limitation. A specific concern that the current implementation
+does not actively defend against is timestamp frontrunning of registration transactions. The pri-
+mary planned mitigation is the salted anchoring construction H
+anchor 
+= SHA256(F ∥ s) described
+in Section 7.2; we introduce the threat here so that the mitigation in the roadmap can be read in
+context. An adversary A who learns of an unconfirmed registration — or who otherwise obtains
+the file before the legitimate user has anchored it — may submit a competing memo transaction
+with the same hash under their own wallet, attempting to be confirmed first and thereby es-
+tablishing an earlier on-chain existence claim. Because snaproot does not enforce protocol-level
+uniqueness on hashes (Section 4.4), the legitimate user’s own anchor is not displaced; their exis-
+tence claim remains valid from their own anchor time onward. The damage is therefore narrower
+than displacement: the adversary can claim that the file existed earlier than it actually did under
+their identity, which manufactures a competing narrative about provenance even though it does
+not invalidate the legitimate registrant’s record. In practice, this attack requires A to know the
+file F before its registration is confirmed, which restricts the threat to scenarios where the file is
+leaked, intercepted, or shared with a malicious party prior to anchoring. A planned salt mecha-
+nism (Section 7) mitigates this by computing the anchor as SHA256(F ∥ s) with a user-controlled
+salt s, so that an adversary in possession of F alone cannot construct a competing anchor that
+matches the legitimate one. We discuss this trade-off explicitly in Section 7.
+7
+
+3.2 Security Goals
+Let F denote a file, H = SHA256(F ) its hash, W the public key of the registering wallet, and
+B the blockchain ledger. snaproot is designed to satisfy the following properties:
+(G1) Integrity. If B contains H at time t, then any F 
+′
+̸
+ 
+= F submitted for verification at time
+t
+′ 
+> t produces H
+′
+̸
+ 
+= H (except with negligible probability), and the verification protocol
+returns FALSE.
+(G2) Existence-proof persistence. The claim “a file with hash H existed at time t” remains
+independently verifiable for any party with access to F and to any archive of B that
+includes the record, regardless of the continued availability of the registrant’s private key.
+This property is structural: it follows from the persistence of B and from the public
+verifiability of the hash, and is orthogonal to authorship.
+(G3) Non-repudiation (authorship). So long as the private key corresponding to W is held
+by the registrant, the cryptographic binding between the record and W is irrevocable: the
+registrant cannot deny having signed the registration. If the private key is lost, the author-
+ship claim becomes unprovable, but Integrity (G1) and Existence-proof persistence (G2)
+remain intact.
+(G4) Public verifiability. Any party with read access to B can independently perform ver-
+ification, given F and the transaction identifier. No cooperation or involvement of the
+original registrant is required.
+(G5) Provider independence. Verification of any record requires only F , the transaction
+identifier, and access to any functioning Solana RPC endpoint. It does not require in-
+teraction with snaproot’s infrastructure, services, or web frontend, nor with any specific
+operator. Records remain verifiable even if snaproot as an organization ceases to operate.
+(G6) Cross-fork verifiability. If B undergoes a fork or protocol-level disruption at time t
+fork
+,
+records anchored before t
+fork 
+remain verifiable on any chain version that shares the pre-fork
+history, provided at least one archive of that history is accessible. Discrepancies between
+competing chain versions after t
+fork 
+are detectable through comparison, rather than hidden.
+The separation between (G2) and (G3) is central to the trust architecture and is discussed
+further in Section 5. It is what distinguishes snaproot from systems in which the loss of a single
+secret invalidates both the existence claim and the authorship claim simultaneously.
+3.3 Assumptions
+The security analysis in Section 5 rests on the following assumptions:
+• Hash function security. SHA-256 is second-preimage resistant: no PPT adversary,
+given a fixed F , can find F 
+′
+̸
+ 
+= F with SHA256(F 
+′
+) = SHA256(F ) with non-negligible
+probability. Collision resistance, a strictly stronger property, is additionally assumed for
+the malicious-registrant sub-case.
+• Solana safety. We use the terms safety and liveness in their established distributed-
+systems sense [16] — as subsequently standardized in the distributed-systems literature —
+where safety means that no two honest participants accept conflicting histories, so that
+confirmed blocks are never reverted; liveness means that the network continues to make
+progress by confirming new transactions. For records already confirmed on B, we assume
+that the Solana consensus mechanism maintains safety: confirmed blocks are not reverted,
+and the history up to a confirmed block remains consistent across honest validators. We
+distinguish this from liveness, the ability of the network to confirm new transactions in
+8
+
+a timely manner, which we do not assume to hold indefinitely. Past records depend on
+safety; future anchorings depend on both safety and liveness.
+• Pre-registration integrity. The registrant performs registration before any adversar-
+ial modification of the file. snaproot provides no guarantee if an already-modified file
+is registered. Combining snaproot with capture-time anchoring (Section 4) tightens this
+assumption by reducing the window between file creation and registration to within the
+substrate’s confirmation latency.
+• Archive availability for long-term verification. For records to remain verifiable years
+or decades after registration, at least one archive of the relevant chain history must remain
+accessible. We do not assume that the same archive remains accessible indefinitely, nor
+that any specific operator preserves it; we only assume that some archive of the relevant
+pre-fork history exists. Section 7 discusses the cross-chain trust migration mechanism that
+further weakens this assumption.
+4 System Architecture
+snaproot consists of three logical components: a Client Layer, a Hashing Module, and a Blockchain
+Layer. The Client Layer is realized as a user-facing application; the Hashing Module operates
+locally within that application; and the Blockchain Layer is implemented as a Solana program
+(smart contract) deployed on Solana Mainnet. We describe each component, then specify the
+registration and verification protocols and the capture-time anchoring workflow.
+4.1 Overview
+The data flow for the two main operations is summarized in Figure 1. In a registration, the user
+submits a file to the Client Layer; the Hashing Module computes its SHA-256 digest; the Client
+Layer constructs a Solana transaction containing this hash together with metadata, signs it
+with the user’s locally held key, and submits it to the Blockchain Layer for inclusion on Solana.
+In a verification, the user submits a file and the transaction identifier of a prior registration;
+the Hashing Module recomputes the hash; the Client Layer retrieves the stored hash from the
+Blockchain Layer and compares the two values, yielding a deterministic binary result.
+Registration:
+User → Client Layer → Hashing Module → Blockchain Layer
+Verification:
+User → Client Layer → Hash Comparison ← Stored Hash
+Figure 1: System architecture and data flow for registration (top) and verification (bottom).
+4.2 Client Layer and Local Key Management
+The Client Layer provides the user-facing interface for file submission, verification, and result
+presentation. It accepts files in any format, forwards raw bytes to the Hashing Module, manages
+Solana wallet interactions for transaction signing, and displays results.
+A key property of the Client Layer is its handling of cryptographic keys. During account
+registration, each snaproot installation generates a fresh Solana keypair (Ed25519) locally; the
+wallet is created as an integral part of the onboarding flow and is presented to the user at sign-up
+time. The private key is stored exclusively on the user’s mobile device in the application’s local
+secure storage and is never transmitted to snaproot servers, cloud services, or any third-party
+service. All transaction signing is performed locally on the device; the private key does not leave
+the device boundary at any point in the registration or verification workflow. The Blockchain
+9
+
+Layer accepts only transactions signed by the user’s own key. This realizes property (G5) of the
+threat model (Section 3.2): verification of any record requires only the file, the transaction iden-
+tifier, and access to any Solana RPC endpoint, with no dependency on snaproot infrastructure
+for correctness.
+The current implementation allows the user to export the private key from the snaproot
+wallet; the exported key can be imported into any standard Solana wallet provider, so that the
+user retains access to the wallet identity independently of snaproot. Importing an exported key
+back into another snaproot installation is a feature scheduled for the next release; until then,
+a user operating snaproot on multiple mobile devices generates a distinct wallet on each. The
+user-sovereignty property of the trust architecture is unaffected either way: the private key is
+held by the user, not by snaproot. We return to this point in Section 7.
+The Client Layer is intentionally stateless with respect to file content: no file data is retained
+after a request is processed. Anchor records and their associated metadata are retained locally
+for the user’s reference, but the cryptographically relevant data — hash, registrant pubkey,
+timestamp — lives on Solana.
+4.3 Hashing Module
+The Hashing Module applies SHA-256 [17] to the raw byte representation of the submitted
+file. Processing is performed entirely locally; file contents are never transmitted to any external
+service. SHA-256 was chosen for its widespread standardization, its strong security properties
+under current cryptographic assumptions, and its high throughput on commodity hardware. The
+empirical characterization of hashing throughput across file sizes is reported in Section 6.2.
+In the current implementation, the anchor hash is computed directly as H
+anchor 
+= SHA256(F ),
+where F is the raw file content. A planned extension introduces an optional user-controlled salt
+parameter (Section 7), permitting independent parties to anchor identical files without conflict
+and providing additional resistance against frontrunning.
+4.4 Blockchain Layer and On-Chain Data Model
+snaproot anchors each registration as a single Solana memo transaction. There is no dedicated
+on-chain account per registration: the information that constitutes a snaproot record — the file
+hash and the metadata — is carried as the payload of a transaction that invokes the standard
+Solana memo program (program identifier MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr).
+The choice of the memo program rather than a dedicated snaproot smart contract reflects
+three deliberate design decisions. First, no rent-exempt deposit: dedicated Solana accounts
+require a minimum SOL balance to remain rent-exempt; memo transactions require no such
+deposit, so the record persists in ledger history without any ongoing cost. Second, permissionless
+verifiability: the memo program is a standard, audited Solana program whose behaviour is
+publicly known; a verifier needs no knowledge of a proprietary snaproot contract to retrieve
+and interpret a record. Third, reduced attack surface: the integrity of the anchoring mechanism
+depends only on the correctness of the standard memo program, not on the security of any
+snaproot-specific on-chain logic. The trade-off is that the memo program does not enforce any
+application-level constraints on payload structure; snaproot’s SR1 version prefix (Section 4.4)
+provides the necessary format discipline at the application layer.
+Once a memo transaction is confirmed, it becomes a permanent part of the Solana ledger
+and can be retrieved by its transaction signature.
+Payload structure and versioning. The memo payload is a UTF-8 plaintext string in a
+pipe-separated format introduced in payload format version SR1. A representative payload has
+the structure:
+SR1|<SHA256>|<timestamp_ms>|<gps_or_null>|<salt>|<source>|<filetype>
+10
+
+where SR1 is the format version prefix, <SHA256> is the 64-character hex-encoded SHA-256 hash
+of the file, <timestamp_ms> is the Unix timestamp in milliseconds at the time of client-side
+submission, <gps_or_null> is the GPS coordinate string or null if location is unavailable or
+denied, <salt> is reserved for the planned optional salt (Section 7.2), <source> identifies the
+capture method (e.g. camera), and <filetype> identifies the file type (e.g. foto). The version
+prefix SR1 allows future payload formats to be distinguished unambiguously from the current
+one; a verifier encountering an unknown prefix can signal that the record requires a newer client
+version. The Solana memo program imposes a payload size limit well in excess of what a snaproot
+record requires; a representative SR1 payload occupies approximately 112 bytes.
+Authorship and fee payment. A snaproot transaction is signed by the user’s locally held
+wallet, which appears in the transaction as the signer of the memo and therefore as the crypto-
+graphic author of the record (property G3, Section 3.2). Transaction fees are paid by a separate
+snaproot-operated wallet, the relay wallet, which acts as both the Solana fee payer and a co-
+signer of every user transaction. The Solana Program Instruction Logs confirm this explicitly:
+each confirmed snaproot memo transaction records Signed by [relay_wallet] and Signed by
+[user_wallet], with the relay wallet tagged as Fee Payer, Signer, and Writable, and the user
+wallet tagged as Signer only. This structure has four consequences worth noting explicitly. First,
+the user does not need to hold SOL to use snaproot; the relay wallet covers the network fee. Sec-
+ond, the cryptographic authorship of each record remains with the user, because the user’s wallet
+— not the relay wallet — is the memo signer, and this binding cannot be altered after confir-
+mation. Third, the relay wallet’s co-signature constitutes a verifiable infrastructure authenticity
+signal : because the relay wallet’s public key is known and published by snaproot, any verifier
+can confirm that a given memo transaction was submitted through the snaproot relay infras-
+tructure rather than by an independent party mimicking the memo format. A party wishing to
+fabricate a snaproot-like record that passes this check must control the relay wallet’s private key.
+Fourth, and importantly, a compromise of the relay wallet would affect only this infrastructure
+authenticity signal: it would not affect file integrity (G1), existence-proof persistence (G2), or
+authorship (G3), all of which depend solely on the user’s own key material and the immutability
+of the confirmed transaction. We discuss this threat boundary explicitly in Section 5.8. The
+relay wallet is an operational co-signer, not a custodian of records.
+Implicit on-chain attributes. Three further attributes of a registration are derivable from
+the confirmed transaction itself, without appearing as separate fields in the payload. The block
+time recorded by the Solana runtime serves as the registration timestamp; it is set by consensus,
+not by the client. The signer of the memo identifies the registrant. The transaction signature
+(tx_id) is the canonical handle for later retrieval of the record.
+No protocol-level uniqueness. Because each registration is an independent memo trans-
+action, there is no protocol-enforced uniqueness constraint on hashes: the same hash may be
+anchored in multiple memo transactions, potentially under different user wallets. The first con-
+firmed memo transaction for a given hash is the earliest on-chain existence proof for that file;
+subsequent anchorings of the same hash do not displace it, they simply add later existence proofs.
+We return to the implications of this in Section 5.6.
+Metadata storage. The metadata, like the hash, is part of the memo payload and is therefore
+stored on-chain in cleartext. It is not part of the SHA-256 input over the file. Being on-chain,
+the metadata inherits the same immutability as the rest of the transaction once confirmed;
+what it does not inherit is a cryptographic binding to the file, since it does not enter the hash
+computation. A planned extension (Section 7.2) will let the user choose, per use case, whether
+11
+
+metadata is anchored at all and, if so, in what form. We discuss the implications of the current
+design choice in Section 5.
+4.5 Registration Protocol
+Algorithm 1 specifies the registration protocol. The client computes the hash, constructs the
+memo payload from the hash and metadata, assembles a Solana transaction with the user’s
+wallet as the memo signer and the snaproot relay wallet as the fee payer, has it co-signed and
+submitted, and waits for confirmation. There is no on-chain existence check at registration time,
+since no protocol-level uniqueness is enforced (Section 4.4).
+Algorithm 1 RegisterFile(F , wallet, metadata)
+1: H ← SHA256(F )
+2: payload ← Encode(H, metadata)
+3: tx ← BuildMemoTx(payload,
+4: signer = wallet,
+5: fee_payer = relay_wallet)
+6: tx ← SignByUser(tx, wallet)
+7: tx ← SignByRelay(tx, relay_wallet)
+8: tx_id ← SubmitToBlockchain(tx)
+9: AwaitConfirmation(tx_id)
+10: return tx_id
+4.6 Verification Protocol
+Algorithm 2 specifies the verification protocol. The verifier recomputes the hash from the file,
+retrieves the memo transaction from Solana by its transaction signature, extracts the anchored
+hash from the memo payload, and compares the two values. The result is a deterministic binary
+outcome.
+Algorithm 2 VerifyFile(F , tx_id )
+1: H
+computed 
+← SHA256(F )
+2: tx ← FetchTransaction(tx_id)
+3: if tx = NULL then
+4: return Error(“Transaction not found on chain”)
+5: end if
+6: payload ← ExtractMemoPayload(tx)
+7: H
+stored 
+← ParseHash(payload)
+8: if H
+computed 
+= H
+stored 
+then
+9: return TRUE ▷ Integrity confirmed
+10: else
+11: return FALSE ▷ File has been modified
+12: end if
+The verification protocol takes the transaction signature as input because it is the canonical
+handle for the on-chain record. A planned extension (Section 7.2) will additionally support
+verification when only the file and the user’s wallet public key are known: in that case, the
+verifier scans the memo transactions of the user’s wallet and tests each one’s anchored hash
+against the computed hash of the file, succeeding as soon as a match is found.
+Verification can be executed against any Solana RPC endpoint: the official Mainnet end-
+points, a self-hosted node, or third-party block explorers that expose the same RPC interface.
+12
+
+snaproot itself provides a web-based verification frontend as a convenience, but as established by
+property (G5), this frontend is not on the critical verification path: the cryptographic operations
+— hash recomputation and comparison — can be performed by any party with access to the file
+and the transaction identifier.
+4.7 Capture-Time Anchoring
+In addition to the basic register/verify workflow described above, the snaproot application im-
+plements capture-time anchoring for photographs. The workflow is integrated directly into the
+camera function of the application:
+1. The user takes a photograph through the snaproot camera interface.
+2. The application presents a pre-submission screen showing a preview of the captured image,
+an editable filename field, and the current GPS availability status. If location access has
+been granted, the GPS coordinates are shown; if GPS is unavailable or has been denied, the
+screen indicates “GPS not available — will be snaprooted without coordinates” and proceeds
+without geolocation metadata. The user confirms by tapping the snaproot button.
+3. Upon confirmation, the application computes the SHA-256 hash of the image bytes as
+delivered by the device operating system’s camera API to the application. This is the
+precise object of the integrity guarantee: snaproot anchors the image bytes as presented to
+the application, not a claim about the physical capture process upstream of the OS camera
+API.
+4. The hash is immediately submitted to the Blockchain Layer for anchoring on Solana Main-
+net, signed by the installation’s local wallet.
+5. In parallel, the image is saved to the device’s normal photo library, with the corresponding
+anchor record (transaction identifier, on-chain timestamp) retained by the application for
+later reference.
+The operational significance of this workflow is twofold. First, it narrows the window be-
+tween content creation and on-chain anchoring to within the substrate’s confirmation latency
+— a single-digit number of seconds on Solana — so that any adversary wishing to substitute a
+manipulated image for the original must do so within this window or must control the capture
+device itself. The trust boundary shifts from “the asserted creator” to “the capture pipeline of a
+specific device and application instance”.
+A precise characterisation of what is and is not proven is important for avoiding overclaims.
+snaproot proves that a specific byte sequence existed at registration time and has not changed
+since. Applied to a photograph taken through the snaproot camera interface, it proves that the
+image bytes delivered by the OS camera API to the application existed at that time. It does not
+independently prove that those bytes originated directly from the physical camera sensor without
+intermediate processing by the OS, firmware, or hardware image signal processor (ISP). In prac-
+tice, for images captured in the snaproot camera workflow on unmodified consumer hardware,
+the gap between the physical capture and the OS-delivered bytes is narrow and auditable; but
+the formal guarantee is scoped to the bytes the application received, not to the physical light
+that entered the lens.
+Second, the workflow demonstrates that the Solana latency profile is a qualitatively different
+operating regime relative to Bitcoin-based anchoring systems, enabling this class of application
+under typical network conditions. A workflow that required the user to wait approximately sixty
+minutes for a Bitcoin confirmation, or ten minutes for an aggregated anchor to be batched and
+submitted, would not be acceptable in the natural photography use case: the user would have
+moved on, the shutter context would be lost, and the integration with the device’s normal photo
+library would break down. Confirmation in the seconds range, by contrast, fits within the natural
+13
+
+shutter-to-preview window on a smartphone and allows the anchoring to remain invisible to the
+user from a workflow perspective.
+We discuss the security implications of capture-time anchoring, including its relationship to
+the post-publication versus pre-publication adversary distinction, in Section 8.
+5 Security Analysis
+We analyze snaproot’s security properties along the goals defined in Section 3.2. The analysis
+covers the three realized tiers of the trust architecture: user sovereignty (Section 5.4), within-
+chain integrity (Sections 5.1–5.3), and cross-fork verifiability (Section 5.5). The fourth tier —
+cross-chain trust migration — is a prospective design that is not yet implemented; its security
+properties are discussed conceptually in Section 7.
+Goal (G4) (public verifiability) does not receive a separate subsection because it follows
+directly from (G5): if verification requires only the file, the transaction identifier, and any func-
+tioning RPC endpoint, then any party who possesses these inputs can independently perform
+verification — which is exactly what (G4) asserts. The argument is subsumed in Section 5.4.
+5.1 Integrity (G1)
+Theorem 5.1 (File Integrity). Let F be a file registered under hash H = SHA256(F ), and let
+A be a PPT adversary. Assuming SHA-256 is second-preimage resistant, the probability that A
+produces F 
+′
+̸
+ 
+= F such that Algorithm 2 returns True on input (F 
+′
+, tx _id ) is negligible in the
+security parameter λ.
+Proof sketch. Algorithm 2 returns True if and only if SHA256(F 
+′
+) = SHA256(F ) = H. For
+F 
+′
+̸
+ 
+= F , this requires A to find a second preimage of H under SHA-256. By the second-preimage
+resistance assumption, no PPT adversary can do so with non-negligible probability. Therefore
+the probability of a false True is bounded by Adv
+2pre
+SHA256
+(A, λ), which is negligible.
+In the stronger sub-case where the registrant is adversarial, the relevant assumption is collision
+resistance: a malicious registrant may commit to F and later attempt to substitute a precom-
+puted F 
+′ 
+with SHA256(F 
+′
+) = SHA256(F ). Collision resistance of SHA-256, a strictly stronger
+property, is also widely assumed to hold [17]. The integrity guarantee therefore covers both the
+honest-registrant and malicious-registrant cases under their respective hardness assumptions.
+5.2 Existence-Proof Persistence (G2)
+A central design property of snaproot is the separation between the existence proof for a registered
+file and the authorship proof. We make this property explicit here because it differs from the
+security model of many alternative systems, in which both proofs collapse onto the same secret.
+The existence proof for a registered file F is the verifiable claim that “a file with hash
+H = SHA256(F ) existed at time t, with t established by the on-chain block timestamp of the
+registration”. We claim that this proof remains verifiable for any party with access to F and to
+any archive of B containing the record, regardless of the continued availability of the registrant’s
+private key.
+The argument is direct. The verification procedure of Algorithm 2 requires only F and the
+transaction identifier; it does not require a signature operation by the registrant. The transaction
+identifier and the corresponding record are public information on the blockchain, accessible to
+any party with read access to B. The integrity of the record (G1) ensures that the value H
+retrieved from B matches the registered hash, and the hash comparison SHA256(F ) 
+?
+= H is a
+public computation that does not require any secret material from the registrant. The existence
+proof is therefore structural: it inherits its persistence from the persistence of B, not from any
+party’s key custody.
+14
+
+The practical consequences are substantial. A verifier who acquires a file F years after its
+original registration can establish the existence proof autonomously, even if the original registrant
+has long since lost their private key, lost their device, or ceased to be identifiable. snaproot
+thereby provides a class of integrity claims that survive scenarios in which conventional signature-
+based systems would silently fail.
+5.3 Non-Repudiation and the Authorship Proof (G3)
+The authorship proof is the cryptographic binding between a record and the wallet identity
+W that signed it. This proof is established at registration time: the transaction is signed by
+the private key corresponding to W , and the Solana consensus mechanism only incorporates
+transactions with valid signatures. Once a transaction is confirmed on B, it becomes part of the
+immutable distributed ledger. Solana’s consensus mechanism, built on Proof of History together
+with a Tower-BFT-style finalization protocol [18], requires agreement from more than two-thirds
+of staked validators to finalize a block. Reversing a confirmed record would therefore require
+compromising this supermajority, which represents a prohibitive economic cost. The registrant’s
+public key is permanently bound to the hash record, providing cryptographic non-repudiation of
+the registration event.
+Unlike (G2), this property is key-dependent. If the registrant retains control of the private
+key corresponding to W , the authorship binding is indefinitely demonstrable: the registrant can
+produce a fresh signature under W and thereby prove ongoing possession of the identity that
+signed the original record. If the private key is lost, the authorship binding becomes unprovable:
+any party with knowledge of the historical record can verify that some entity signed under W , but
+the original registrant can no longer demonstrate that they are that entity through cryptographic
+means alone.
+It is important to note what this loss does not entail. The record itself does not change. No
+third party gains the ability to claim authorship retroactively: such a claim would require either
+producing the lost private key, which is by assumption infeasible, or forging a signature, which
+reduces to breaking the underlying signature scheme. The loss of authorship provability is a loss
+of personal demonstrability, not a transfer of the record’s cryptographic content.
+We discuss in Section 8 a user-level workflow — the identity anchoring pattern — that allows
+users to mitigate this limitation through the existing system, by anchoring an identity attestation
+as their first record under a new wallet.
+5.4 Provider Independence (G5)
+Property (G5) asserts that verification requires only the file, the transaction identifier, and
+access to any functioning Solana RPC endpoint. It does not require interaction with snaproot’s
+infrastructure. We make the justification explicit.
+The verification procedure (Algorithm 2) consists of three steps: hash recomputation, record
+retrieval, and value comparison. Hash recomputation is local to the verifier and depends on
+no external party. Record retrieval is a read against a public blockchain and may be served
+by any Solana RPC endpoint, whether operated by snaproot, by an unrelated third party, by
+a self-hosted node, or by any other source exposing the RPC interface. Value comparison is a
+deterministic local operation.
+It follows that the verification path contains no snaproot-specific trust assumption. The con-
+venience web frontend operated by snaproot performs exactly these three steps, but its existence
+is not on the critical path: the cryptographic content of the verification answer does not change
+if the frontend is unavailable, untrusted, or replaced by an alternative implementation. Should
+snaproot as an organization cease to operate, existing records remain fully verifiable through any
+other RPC access path.
+15
+
+This property is what gives snaproot’s trust architecture its first tier (user sovereignty): the
+user’s records belong to the user, in a sense that survives the disappearance of the system that
+helped create them.
+5.5 Cross-Fork Verifiability (G6)
+Public blockchains undergo protocol changes, fork events, and recovery operations over their
+operational lifetime. Solana in particular has experienced multiple network restarts and protocol-
+level disruptions between 2022 and 2024. For long-term integrity claims, the relevant question is
+not whether such events occur, but what they imply for records already confirmed at the time
+they occur.
+We distinguish between two aspects of decentralization. Liveness concerns the ability of
+the network to confirm new transactions; it is sensitive to validator behavior at the time of
+submission. Safety concerns the durability of records already confirmed; it is sensitive to the
+post-hoc behavior of validators with respect to chain history. For snaproot, the relevant property
+for existing records is safety, not liveness: once a record has been confirmed and a block has been
+finalized, the question for verification is whether some archive of that block remains accessible,
+not whether the network continues to accept new transactions.
+Under this distinction, even an event that severely affects Solana’s liveness — such as a
+network restart with coordinated validator participation — does not directly invalidate past
+records. The pre-event chain history persists on the archives of all parties that held it before
+the event, including independent block explorers, validator operators, and third-party indexing
+services. A verifier seeking to check a pre-event record consults any such archive; if multiple
+archives agree on the record, the verifier obtains a strong existence guarantee. If they disagree
+— for example, if a fork produced two competing chain versions — the discrepancy is itself a
+verifiable signal of tampering, not a hidden corruption.
+This is a strictly weaker property than the corresponding guarantee on substrates with a
+longer-running and more decentralized archive ecosystem (notably Bitcoin), and we do not claim
+otherwise. Within these limits, the property rests primarily on the diversity and durability of
+independent archives of the Solana chain history. For horizons that extend beyond the lifetime
+of any specific chain, the prospective cross-chain migration mechanism discussed in Section 7.4
+is intended to serve as an additional safety net rather than as the load-bearing argument for
+long-term existence proofs.
+5.6 Multiple Anchorings of the Same Hash
+Because each registration is an independent memo transaction (Section 4.4), snaproot does not
+enforce protocol-level uniqueness on the registered hash. The same hash may appear in several
+memo transactions, possibly signed by different user wallets and at different times. We discuss
+the implications.
+For existence claims, the relevant property is that the earliest confirmed memo transaction
+for a given hash establishes the earliest provable existence time of the file under any wallet.
+Later anchorings of the same hash do not displace earlier ones; they simply add further existence
+proofs at later timestamps. A verifier who wishes to determine the earliest on-chain existence
+of a particular file scans for the earliest confirmed memo transaction whose payload matches
+the file’s hash; if multiple wallets have anchored the same hash, all of those transactions remain
+visible.
+For non-repudiation claims (G3), the absence of a uniqueness constraint does not weaken the
+binding between a specific anchor and its signing wallet: each memo transaction is signed by its
+registrant’s wallet, and that signature cannot be transferred or forged without the corresponding
+private key. Multiple wallets may anchor the same hash, but no wallet can claim authorship of
+an anchor signed by a different wallet.
+16
+
+This design choice has an intentional consequence: independent parties can independently
+attest to the existence of the same content (for example, a journalist and an archival service both
+anchoring the same image), and all such attestations remain visible on-chain. A planned salt
+mechanism (Section 7.2) will allow parties who instead want their anchors to be cryptographically
+distinct to compute H
+anchor 
+= SHA256(F ∥ s) for a user-controlled salt s, giving different on-chain
+anchor values for the same underlying file.
+We note that this discussion concerns the protocol layer; classical replay attacks at the trans-
+action level are handled by Solana’s standard mechanisms, and the frontrunning consideration
+identified in Section 3.1 is discussed there.
+5.7 Timestamp Integrity
+The registration timestamp of a snaproot anchor is the block time of the memo transaction, set
+by the Solana runtime at the moment of block inclusion. It is not part of the memo payload
+and the client cannot influence it. This prevents a registrant from backdating a registration by
+manipulating any client-side value. The on-chain clock is a consensus-level value, shared across
+all validators, and is subject to the same safety properties as the rest of the block content.
+Clock drift on Solana is a known phenomenon and bounded in practice to the order of minutes;
+for integrity anchoring, this granularity is sufficient, but we note that snaproot timestamps are
+not appropriate for use cases that require sub-second precision or strict legally-binding time
+attestation.
+5.8 Infrastructure Authenticity via the Relay Wallet
+As noted in Section 4.4, every snaproot transaction carries two signatures: the user’s wallet as
+the memo signer, and the snaproot relay wallet as the fee payer. The relay wallet’s public key is
+fixed, known, and published by snaproot. This structure gives rise to a three-layer authenticity
+model.
+The first layer is structural : any party can construct a Solana memo transaction with the
+same payload format as snaproot, invoking the same memo program. This layer provides no
+snaproot-specific authenticity signal.
+The second layer is infrastructural : a verifier who checks that the fee payer of a memo
+transaction matches the published snaproot relay wallet address can confirm that the transaction
+was submitted through the snaproot relay infrastructure. An adversary who wishes to fabricate
+a record that passes this check must control the relay wallet’s private key — which, under the
+assumption that the relay wallet is not compromised, they do not. This layer provides a verifiable
+binding to the snaproot deployment, at the cost of introducing a dependency on the relay wallet’s
+continued integrity.
+The third layer is user-cryptographic: the user’s wallet signs the memo independently of
+the relay wallet. This layer is unconditional: it does not depend on the relay wallet and is
+established by the user’s own key material. It provides the non-repudiation and authorship
+guarantees analyzed in Section 5.3.
+The three layers are independent and compose naturally. A verifier seeking maximum as-
+surance checks all three: that the memo payload carries a recognised version prefix (SR1 in the
+current format), that the fee payer matches the known relay wallet, and that the memo signer
+matches the claimed registrant wallet. A verifier who does not trust or cannot reach snaproot
+infrastructure can still rely on the third layer alone, which is sufficient for the core integrity and
+existence-proof guarantees.
+The relay wallet is not part of the cryptographic trust root. The cryptographic trust
+root of snaproot consists of three elements: the second-preimage resistance of SHA-256, the safety
+of Solana consensus for confirmed blocks, and the user’s private key. The relay wallet is not among
+17
+
+them. It is an operational co-signer whose presence enables the infrastructure authenticity signal
+of the second layer, but whose absence or compromise leaves the trust root intact. This is the
+precise sense in which snaproot’s integrity guarantees are provider-independent: the provider
+controls the relay wallet, but the provider does not control the trust root.
+Relay wallet compromise: threat boundary. A compromise of the relay wallet’s private
+key would allow an adversary to submit memo transactions that carry the relay wallet’s co-
+signature and thus pass the infrastructure authenticity check of the second layer. This is a
+serious operational security concern. However, its impact on the system’s core guarantees is
+strictly bounded: a relay-wallet compromise does not affect file integrity (G1), because the in-
+tegrity guarantee reduces to the second-preimage resistance of SHA-256, which is independent of
+any wallet; it does not affect existence-proof persistence (G2), because a confirmed transaction’s
+existence on the ledger is independent of which wallet paid for it; and it does not affect author-
+ship (G3), because the user’s wallet signature on the memo is separate from the relay wallet’s
+signature and cannot be forged without the user’s private key. The compromise affects only the
+infrastructure authenticity signal : a verifier relying on the relay wallet co-signature as proof that
+a transaction originated from snaproot’s infrastructure would be misled. Users who are aware of
+a relay wallet compromise should revert to third-layer verification only. We note that if snaproot
+rotates its relay wallet as a key management practice, a published registry of historical relay
+wallet addresses is needed to support retrospective second-layer checks.
+5.9 Priority of Registration
+Because snaproot does not enforce protocol-level uniqueness on hashes (Section 5.6), multiple
+parties may anchor the same hash independently. In contexts where priority matters — for
+instance, establishing which party registered a file first — the relevant criterion is the block time
+of the earliest confirmed memo transaction whose payload contains the hash in question.
+A verifier wishing to establish priority scans all memo transactions on Solana whose payload
+matches a given hash and identifies the one with the lowest block time. The result is a provable,
+chain-resident priority claim: the earliest anchor for hash H establishes the earliest on-chain
+existence of the corresponding file, under whichever wallet submitted that anchor.
+This priority check is currently a manual operation requiring an RPC scan. A planned
+feature (Section 7.2) will expose this query directly in the snaproot application, allowing a user
+to confirm at anchoring time — or at any later point — whether their registration is the earliest
+on-chain record for a given file. The completeness of the priority determination depends on the
+completeness of the RPC node’s transaction index; gaps in indexing could in principle cause an
+earlier anchor to be overlooked. Users for whom priority is legally or commercially significant
+should therefore retain their transaction identifier as primary evidence and treat the priority scan
+as a supporting, not conclusive, signal.
+5.10 Scope Limitation
+snaproot provides integrity guarantees only relative to the state of a file at the time of its
+registration. A file that was manipulated or synthetically generated before registration will be
+anchored by the hash of that already-altered content, and subsequent verifications will confirm
+it as unchanged relative to that state. This limitation is inherent to any post-hoc anchoring
+system. The capture-time anchoring workflow (Section 4.7) narrows but does not eliminate this
+gap by shifting the relevant trust boundary to the capture pipeline; we discuss the implications
+in Section 8.
+18
+
+6 Evaluation
+We evaluate snaproot empirically along three dimensions: hashing performance as a function
+of file size, end-to-end registration and verification latency, and per-operation cost on Solana.
+All measurements reported in this section were taken directly against the current production
+snaproot backend on Solana Devnet; we treat the empirical latency figures as Devnet-only and
+leave a formal characterization on Solana Mainnet under realistic load to future work. Because
+the Solana memo program executes deterministically and the per-signature base fee is identical
+on Devnet and Mainnet, the cost figures in Table 4 are directly applicable to the Mainnet
+deployment up to the SOL/USD reference price at the time of publication. The implications of
+the Devnet/Mainnet distinction are discussed in Section 6.6.
+6.1 Experimental Setup
+Experiments were conducted on a workstation running Windows 11, equipped with an Intel
+Core i5-13500H CPU (with SHA-NI hardware acceleration) and 16 GB of RAM. The snaproot
+backend under test is the production PHP / Laravel backend (PHP 8.2.12, Laravel) backed by
+MySQL: the same backend that serves the snaproot mobile application and web frontend in the
+current deployment. The backend was started locally with the bundled development server (php
+artisan serve) bound to 127.0.0.1:8000, and blockchain interactions were performed against
+the Solana Devnet network using its public RPC endpoint.
+All measurements reported in Sections 6.2 through 6.4 were produced by this PHP / Laravel
+backend. The benchmark harness is a separate process that drives the backend exclusively
+through its public HTTP API, exactly as the mobile client does in production, and reports
+per-call wall-clock latencies measured at the harness.
+File hashing experiments used SHA-256 as in the production client. Random files were
+generated for five size categories: 1 KB, 1 MB, 10 MB, 100 MB, and 500 MB; for each category,
+50 independent trials were performed. For end-to-end performance, 200 registration and 200
+verification requests were issued. Registration transactions were submitted to Solana Devnet
+and confirmed before being counted; the verification operations measured are backend-cached
+verifications, discussed in Section 6.3. Throughput figures are derived from the measured mean
+single-request latency.
+6.2 Hashing Performance
+Table 2 summarises SHA-256 hashing times per file size category. We report the sample mean,
+standard deviation, minimum, maximum, and the half-width of the 95 % confidence interval for
+the mean (CI
+95
+), computed as 1.96 · s/
+√
+n with s the sample standard deviation and n = 50.
+Table 2: SHA-256 hashing performance on the snaproot PHP backend host (50 trials each). CI
+95 
+is the
+half-width of the 95 % confidence interval for the mean.
+File size Mean (ms) Std (ms) Min (ms) Max (ms) CI
+95 
+(ms)
+1 KB 0.081 0.032 0.060 0.215 0.009
+1 MB 1.041 0.195 0.940 1.869 0.054
+10 MB 11.570 1.437 10.904 20.604 0.398
+100 MB 118.405 8.764 109.516 157.871 2.430
+500 MB 609.175 20.470 568.458 679.092 5.676
+Hashing throughput is approximately linear in file size across the range tested, with the 1 MB
+through 500 MB measurements falling on a near-perfect line and an effective throughput of ap-
+proximately 0.8 GB/s. The confidence intervals are narrow relative to the means, indicating that
+hashing is a well-behaved deterministic process with little variability beyond memory subsystem
+19
+
+effects; the SHA-NI instruction set extension on the test CPU keeps the hashing cost below
+130 ms for any file under 100 MB. For all file sizes under 100 MB, hashing completes within a
+small fraction of the Solana confirmation latency reported in the next section, confirming that
+hashing is not the bottleneck in the end-to-end registration latency budget for typical document
+and image files.
+6.3 Transaction Latency and Throughput
+Table 3 summarises end-to-end performance for registration and verification, measured on the
+PHP / Laravel backend over 200 trials. The interpretation of these two operations requires care.
+Table 3: End-to-end performance of the snaproot PHP / Laravel backend on Solana Devnet (200 trials
+each). CI
+95 
+is the half-width of the 95 % confidence interval for the mean. Verification figures reflect
+backend-cached verification; see discussion below.
+Metric Registration Verification
+Mean latency (ms) 3,145.632 351.479
+Std (ms) 924.987 93.797
+CI
+95 
+on mean (ms) 128.181 13.000
+P95 latency (ms) 4,659.069 442.763
+P99 latency (ms) 5,803.387 457.840
+Max observed (ms) 6,040.142 475.025
+Sustained throughput (ops/min) 19.072 170.706
+Registration latency is dominated by Solana transaction confirmation: the backend constructs
+and signs the memo transaction in well under one hundred milliseconds, but must then wait for
+the transaction to be included in a block and for that block to reach the confirmed commitment
+depth. The measured mean of 3.15 s with a P99 of 5.80 s is consistent with the published
+Solana confirmation profile, plus a modest additional overhead attributable to the PHP / Laravel
+request-handling stack and the synchronous database write that records the resulting hash-log
+entry before responding to the client. This figure is the relevant one for use cases that rely on
+synchronous confirmation, including the capture-time anchoring workflow (Section 4.7). The
+standard deviation of 0.92 s and the gap between the P95 (4.66 s) and the mean reflect natural
+variability in Solana slot scheduling rather than backend-side jitter, as evidenced by the long tail
+being almost entirely due to slot-confirmation outliers.
+Verification mode. The reported verification rate of approximately 171 operations per minute
+reflects backend-cached verification: when the snaproot backend has previously indexed a reg-
+istration, a subsequent verification request is served by comparing the locally recomputed hash
+against the indexed record without any round-trip to the Solana network. This figure charac-
+terises the backend’s PHP request-handling, database, and HTTP layer rather than the through-
+put of on-chain reads. The mean latency of 351 ms is dominated by the PHP / Laravel request
+lifecycle and by the two MySQL writes that the verification path performs (the verification log
+entry and the audit log entry); it is therefore an upper bound on what a more lightly instrumented
+verifier would observe.
+Direct on-chain verification — the protocol described in Algorithm 2 — requires an RPC
+query per verification and is bounded by RPC rate limits and network round-trip time. Public
+Solana RPC endpoints typically rate-limit at the order of 10
+2 
+requests per second; with the
+latency of an RPC call dominated by network round-trip, sustained verification throughput from
+a single client against a public endpoint is on the order of 10
+1 
+to 10
+2 
+verifications per second per
+client.
+1 
+For the user-facing verification scenarios that motivate snaproot — a journalist checking
+1
+Higher rates are straightforwardly attainable through self-hosted RPC nodes or contracts with commercial
+RPC providers, but these increase operational dependencies.
+20
+
+a photograph, an auditor sampling a logfile, a court verifying a piece of evidence — the relevant
+figure is single-request latency rather than aggregate throughput, and direct on-chain verification
+is comfortably within acceptable bounds.
+This distinction is important for the trust architecture: the provider-independent verification
+path (G5, Section 3.2) is always available, but the high-throughput verification figure reported
+in Table 3 is specifically an operational property of the snaproot backend, not of the system’s
+trust guarantees.
+6.4 Cost Analysis
+The cost structure of a snaproot registration consists of the Solana transaction fee paid per
+memo transaction. Because snaproot uses the memo program rather than dedicated on-chain
+accounts, there is no rent-exempt deposit per record: the memo transaction is included in the
+ledger and persists with it, without requiring a long-lived account to be funded. Each registration
+transaction carries two ed25519 signatures: one by the snaproot relay wallet (the fee payer) and
+one by the user’s wallet (the registrant). The full per-registration cost is therefore the network
+fee for one two-signature transaction, paid by the snaproot relay wallet on behalf of the user.
+Table 4 reports values measured from a representative Devnet memo transaction produced
+by the PHP backend during the latency benchmark of Section 6.3. The compute-units figure is
+reported by the Solana runtime; the per-signature base fee is fixed at 5,000 lamports by Solana
+and is identical on Devnet and Mainnet. The USD figures use a SOL reference price of $82.45
+(CoinGecko spot, 2026-05-30); they scale linearly with that price.
+Table 4: Transaction cost components for a snaproot memo registration on Solana, measured on Devnet
+against the PHP backend. There is no rent-exempt component, since the memo program does not create
+a persistent account per record.
+Cost factor Value
+Memo payload size 219 bytes
+Compute units consumed 92,246
+Signatures per transaction 2 (relay + user)
+Base transaction fee (per signature) 5,000 lamports = 0.000005 SOL
+Priority fee (current deployment) 0
+Total fee per registration 10,000 lamports = 0.000010 SOL
+Approximate USD equivalent (SOL @ $82.45) $0.000825
+1,000 registrations (total fee, USD) $0.8245
+1,000,000 registrations (total fee, USD) $824.50
+Sample Devnet tx signature 31Eg1ARz...ri9cWQ
+2
+The relay-wallet model makes the cost analysis straightforward for both the user and the
+operator. The user incurs no SOL cost at all, since they do not pay the fee directly. The
+operator’s aggregate cost scales linearly with the number of registrations, dominated entirely by
+the per-transaction fee. There is no separate storage or account-rent component that scales with
+the number of records, in contrast to designs that allocate one Solana account per registration.
+For high-volume deployments, this cost structure is well-suited to amortisation through
+Merkle aggregation (Section 7): a single memo transaction whose payload is a Merkle root
+commits to many file hashes at once, reducing the aggregate fee paid by the relay wallet by the
+corresponding factor.
+6.5 Comparison to Related Systems
+We compare snaproot to the most widely deployed free hash-anchoring service, OpenTimestamps
+(OTS), along two axes: a quantitative head-to-head comparison of submission latency, proof
+21
+
+artifact size, and infrastructure availability, measured on the same workstation against the live
+public calendar servers (Section 6.5.1); and a qualitative use-case suitability matrix that also
+incorporates OriginStamp and Chainpoint, for which we did not perform an end-to-end re-
+measurement (Section 6.5.2). OriginStamp and Chainpoint are kept qualitative because the
+former is rate-limited on its free tier and the latter no longer maintains a stable public-hosted
+anchoring endpoint; in both cases a fair quantitative comparison would require operating a paid
+or self-hosted instance, which we leave to future work.
+6.5.1 Quantitative Comparison: snaproot vs. OpenTimestamps
+We implemented a benchmark client that mirrors the synchronous portion of the OpenTimes-
+tamps stamping protocol: for each of N = 50 randomly generated SHA-256 digests, the client
+issues an HTTP POST to each of the three official public calendar servers (alice, bob, finney)
+and waits for the serialised provisional timestamp tree. The calendars are queried in parallel on
+independent threads, mirroring the behaviour of the reference otsclient. We report two latency
+modes:
+• Quorum 2-of-3 : time until the second-fastest calendar has responded. This is the latency
+that an otsclient using the default m = 2 quorum experiences before it considers the
+proof complete.
+• Fastest single calendar : time until the first calendar responds. This is the latency of
+an otsclient configured to use a single calendar (lower latency, no redundancy against
+calendar failure).
+We also attempted to measure a third mode in which the client waits for all three calendars
+to respond, but were unable to do so: one of the three official calendars (finney.calendar.
+eternitywall.com) was unreachable for all 50 of our requests, so no trial completed the full
+three-of-three rendezvous. We treat that observation itself as a measurement, reported in the
+Availability row of Table 5.
+Table 5 compares snaproot’s end-to-end registration latency (from Table 3) to the OTS
+submission latency measured on the same workstation, plus proof-artifact and availability figures.
+Both systems were exercised over commodity public Internet from the same workstation; snaproot
+used Solana Devnet via the public RPC endpoint and OTS used the official public calendar
+servers.
+Three observations follow from Table 5. First, the submission-latency means are in the same
+order of magnitude (3,146 ms for snaproot vs. 2,652 ms for OTS in quorum mode), with snaproot
+approximately 19 % higher at the mean. This is not a like-for-like comparison: snaproot’s 3.15 s
+is the time to a Solana-confirmed memo transaction, returned by a PHP / Laravel backend that
+additionally performs a synchronous MySQL write of the hash-log record before responding to
+the client; OTS’s 2.65 s is the time to a provisional timestamp tree returned by a calendar server,
+which is not anchored to any blockchain until the next Bitcoin block contains the calendar’s
+aggregated commitment, approximately ten minutes later in expectation and approximately one
+hour later if a six-block confirmation policy is required (the Anchor-immutability row of Table 5).
+The two systems therefore deliver different artefacts at the moment they return; the comparable
+latency suggests that snaproot’s stronger guarantee comes at no meaningful end-to-end cost.
+Second, snaproot has substantially tighter tail latency. The P99 of snaproot registration
+is 5.80 s, against 8.65 s for OTS in both modes. We attribute this to the structural difference
+between Solana’s slot-driven confirmation (a confirmed slot arrives every 400 ms in steady state)
+and the OTS calendar pipeline (an HTTP request whose response time is a function of calendar-
+server load and Internet round-trip variability).
+Third, and most concretely, the failure of one of the three official OpenTimestamps calendars
+to respond to any of our 50 requests is an empirical instance of the calendar-availability as-
+sumption becoming a calendar-availability dependency. A 2-of-3 quorum policy tolerates exactly
+22
+
+Table 5: Head-to-head quantitative comparison of snaproot and OpenTimestamps (snaproot N = 200
+against the PHP backend, OTS N = 50 against the public calendars, same workstation, commodity public
+Internet). Submission latency is wall-clock time from holding a SHA-256 digest to holding a usable proof
+artifact. Anchor-immutability latency is the additional delay before the proof commits to a confirmed
+block on the underlying chain.
+Metric snaproot OTS (quorum 2-of-3) OTS (fastest single)
+Submission la-
+tency, mean (ms)
+3,146 2,652 2,178
+Submission la-
+tency, P95 (ms)
+4,659 4,244 3,740
+Submission la-
+tency, P99 (ms)
+5,803 8,653 8,608
+Submission la-
+tency, max ob-
+served (ms)
+6,040 8,653 8,608
+95 % CI half-width
+on the mean (ms)
+128 301 301
+Qualitative properties at the system boundary
+Anchor-
+immutability
+0 (on-chain at return) ∼10 min (→∼60 min) same
+Proof artifact size tx-sig + 32 B hash 351 B mean (272–517 B) 169 B mean
+Direct user cost $0 (relay: $0.000825) $0 (calendar absorbs fee) $0
+Availability over
+benchmark run
+Devnet RPC: 100 % alice+bob: 100 %; finney: 0 % n/a
+Trust model Solana validators Calendar(s) + Bitcoin Single cal. + Bitcoin
+Capture-time an-
+choring
+Yes (final at return) No (provisional) No
+23
+
+this failure mode and the user is unaffected at submission time; a strict 3-of-3 policy would fail
+outright. snaproot has no analogous third-party aggregator: the Solana validator set was at full
+availability over the same window.
+We did not measure verification latency for OpenTimestamps because verifying an OTS proof
+requires the proof to have been upgraded with a Bitcoin Merkle path, which in turn requires the
+calendar’s next aggregated commitment to be confirmed in a Bitcoin block. The dominant cost
+of verification is therefore the round-trip to a Bitcoin RPC node or block-explorer API, which
+is a function of the chosen verifier rather than of the OTS protocol itself; the snaproot direct-
+on-chain verification path described in Algorithm 2 has the analogous property and inherits the
+latency of the chosen Solana RPC endpoint.
+6.5.2 Qualitative Use-Case Suitability
+Table 6 generalises the comparison to the systems for which we did not perform an end-to-end
+re-measurement. The matrix scores each system on its fitness for a set of use cases that differ
+primarily in their latency tolerance and trust requirements.
+Table 6: Qualitative use-case suitability of hash-anchoring systems. ✓ indicates a good fit, ◦ a workable
+but suboptimal fit, and – a structural mismatch.
+Use case (latency toler-
+ance)
+OTS OriginStamp Chainpoint IPFS/Filecoin snaproot
+Long-term archival anchor-
+ing (hours)
+✓ ✓ ✓ ◦ ✓
+Compliance audit-trail an-
+choring (minutes)
+◦ ◦ ◦ – ✓
+Interactive document an-
+choring (seconds)
+– – – – ✓
+Capture-time photo anchor-
+ing (synchronous)
+– – – – ✓
+Content delivery with in-
+tegrity (variable)
+– – – ✓ –
+The matrix reflects the latency characteristics of each substrate and its architectural role.
+OpenTimestamps and Chainpoint inherit Bitcoin’s confirmation window (approximately one
+hour) and are therefore strong choices for archival use cases where latency is not a constraint,
+but they cannot synchronously support interactive or capture-time workflows. OriginStamp’s
+centralised aggregation introduces additional latency on top of Bitcoin’s confirmation time. IPF-
+S/Filecoin is the only system in the comparison that combines content storage with content-
+addressed retrieval, but it does not provide an authoritative integrity claim independent of pin-
+ning. snaproot’s structural advantage is concentrated in the lower-latency use cases, where
+Bitcoin-based substrates are not viable.
+6.6 Devnet vs. Mainnet
+The hashing and latency figures reported in Sections 6.2 and 6.3 were obtained on Solana Devnet
+against the production PHP / Laravel backend. The cost figures reported in Section 6.4 were
+measured on Devnet but are directly applicable to Mainnet: the Solana memo program executes
+deterministically, and the per-signature base fee is fixed at 5,000 lamports on both networks.
+The only Mainnet-specific cost variable is the optional priority fee, which is set to zero in the
+current snaproot deployment. Should the deployment configure a non-zero priority fee in the
+future — for example, to improve confirmation latency during periods of Mainnet congestion —
+the corresponding line of Table 4 should be updated accordingly.
+24
+
+The production deployment of snaproot operates on Solana Mainnet. A representative Main-
+net registration record, generated by the snaproot mobile application during the preparation of
+this manuscript, carries the following values (as displayed in the snaproot certificate format and
+independently verifiable on the Solana Explorer):
+• Transaction signature: 3H8yzxebxUaZWRYGRzc9QyB1hhThJetLqfeCQuoYTqGLvY8nTijq4
+9sEjNB5SfjsUNWdCq1smLcMJWbbKGEbWyMR
+3
+• Slot: 423,337,332
+• Timestamp: 2026-05-31T10:23:55 (Solana Mainnet block time)
+• Confirmation status: FINALIZED, confirmations: MAX
+• SHA-256 hash: 31f0bb4c07d6068ffc4288a2496812b9c9968f130004df23f8d4c0cd7b79
+4629
+• Registrant wallet: 3K6xgyyRVowFhJW9kzWzjVhNWnzQ2kBTADetmo2yvacc
+• Capture source: Kamera (Live-Aufnahme) [camera, live capture — as displayed in the
+application]
+• Fee paid: 0.000010 SOL (consistent with Table 4)
+This record confirms that the cost figures in Table 4 are directly applicable to the Main-
+net deployment: the observed fee of 0.000010 SOL matches the Devnet measurement exactly,
+as expected from the deterministic fee schedule of the Solana memo program. The record also
+demonstrates the full certificate format described in Section 4.4, including the transaction sig-
+nature, registrant wallet, SHA-256 hash, block timestamp, and capture metadata.
+Devnet and Mainnet share the same protocol but differ in validator set and load profile.
+Mainnet performance may differ from the latency figures reported here, particularly during pe-
+riods of congestion. Solana Mainnet has experienced several extended outages between 2022
+and 2024; these affect liveness for new anchorings during the outage period but do not retroac-
+tively invalidate previously confirmed records, in accordance with the safety/liveness distinction
+made in Section 3.3. A formal characterisation of snaproot’s Mainnet latency and throughput
+performance under realistic load is left to future work.
+A further evaluation dimension is left to a later revision. The measurements reported here
+were obtained on a workstation, whereas the production target for snaproot is a mobile device.
+A future version of this paper aimed at a conference venue will report measurements taken on
+the actual mobile deployment target: SHA-256 hashing throughput on a current mid-range iOS
+and Android device, and end-to-end registration latency from the snaproot mobile application
+on Solana Mainnet. These mobile-hardware measurements would strengthen the empirical char-
+acterisation of the system as deployed and are planned for that revision.
+3
+Independently verifiable at https://explorer.solana.com/tx/3H8yzxebxUaZWRYGRzc9QyB1hhThJetLqfeCQ
+uoYTqGLvY8nTijq49sEjNB5SfjsUNWdCq1smLcMJWbbKGEbWyMR.
+25
+
+7 Limitations, Roadmap, and Outlook
+We structure this discussion in three tiers reflecting different levels of development maturity.
+Section 7.1 describes known limitations of the current system that we explicitly acknowledge
+rather than claim to have solved. Section 7.2 lists features that are under active development
+and are expected to appear in upcoming versions. Section 7.4 describes longer-term concepts
+that are deliberately not on the near-term development path but for which a coherent design has
+been worked out, so that the system can be extended in those directions if and when a concrete
+need arises.
+Deployed 
+Next release Mid-term 
+Long-term
+Wallet
+& Keys
+Anchoring
+Verification
+Trust
+& Protocols
+AI
+& Prove-
+nance
+Local wallet
+Relay wallet
+Wallet import
+Multi-device
+Capture-time
+GPS screen
+Optional salt
+Sel. metadata
+Merkle aggregation
+snaproot API
+Via TX sig.
+Relay auth
+Wallet history
+“Am I first?”
+Four-tier arch.
+Cross-fork verif.
+BSCP 
+Cross-chain migr.
+Substrate indep.
+C2PA reference AI fake detection 
+AI-aug. provenance
+Deployed 
+Next release Mid-term 
+Long-term
+Figure 2: Development timeline of snaproot: deployed features (v0.9.9), near-term roadmap, medium-
+term, and long-term outlook items, organised by thematic track.
+7.1 Limitations
+Registration of pre-modified content. snaproot detects changes relative to the registered
+hash. A manipulated or synthetically generated file that is registered at the outset will be
+anchored by the hash of that already-altered content, and all subsequent verifications will return
+TRUE for that state. This is an inherent limitation of any post-hoc anchoring system. The
+capture-time anchoring workflow (Section 4.7) narrows this gap to the duration of the capture
+pipeline itself, but does not eliminate the residual trust assumption on the integrity of the capture
+device and application.
+Timestamp frontrunning of registration transactions. As discussed in Section 3.1, an
+adversary who learns of a pending registration — or who otherwise possesses the file — may
+anchor the same hash under their own wallet first, manufacturing an earlier on-chain existence
+claim that competes with the legitimate one. Snaproot does not enforce protocol-level uniqueness
+on hashes (Section 4.4), so this does not displace the legitimate user’s later anchor, but it does
+create an earlier competing record under the adversary’s identity. In practice, the attack requires
+the adversary to learn the file before registration is confirmed; for files generated locally on the
+26
+
+user’s device and immediately registered (as in capture-time anchoring), the attack window
+is essentially nonexistent. For workflows that involve sharing or transmitting the file before
+registration, the user should register before sharing. The planned salt mechanism (Section 7.2)
+further mitigates the attack by making the anchor depend on a user-controlled value not derivable
+from the file alone.
+Key management trade-off. The current snaproot installation generates and stores the pri-
+vate key locally on the user’s device (Section 4.2). The key can be exported and imported
+into other Solana wallet providers, so the user retains an out-of-snaproot path to recover their
+identity. Importing an exported key into a second snaproot installation, which would enable
+multi-device use under a single snaproot identity, is scheduled for the next release. Until that
+mechanism is in place, a user who loses their device without having exported the key beforehand
+cannot continue to anchor new records under the same identity; existing records remain verifiable
+through existence-proof persistence (G2), but new anchorings under the same wallet require the
+original key.
+No on-chain Merkle aggregation in the current implementation. snaproot currently
+anchors one hash per memo transaction. This yields a simple architecture and a predictable
+per-file cost, but does not amortize the per-transaction fee or the on-chain footprint across many
+files. For high-volume use cases such as continuous log anchoring or bulk archival workflows,
+aggregating many file hashes into a single memo transaction via a Merkle tree reduces both the
+aggregate fee paid by the relay wallet and the on-chain memo volume. Aggregation through
+Merkle trees is straightforward in principle and is planned for a future release.
+Hash function dependency. The security of snaproot binds to the second-preimage (and,
+in the malicious-registrant case, collision) resistance of SHA-256. Both properties are well-
+established under classical computational assumptions [17]. Quantum adversaries are relevant in
+two forms. Grover’s algorithm provides a quadratic speed-up for preimage and second-preimage
+search, reducing the effective security of a 256-bit hash from 256 to 128 bits, which remains
+computationally infeasible. The Brassard–Høyer–Tapp quantum collision-finding algorithm [19]
+reduces collision security from the classical birthday bound of ∼128 bits to approximately 85
+bits, which is theoretically weaker but still large. A migration path to alternative hash functions
+such as SHA-3 or BLAKE3 should be considered for long-horizon deployments; those functions
+are subject to analogous quantum bounds.
+Reliance on a single blockchain substrate. Long-term verification of existing records cur-
+rently relies on the continued availability of Solana archives. While archive nodes and block
+explorers are operated by multiple independent parties, the diversity of these operators is lower
+than in the Bitcoin ecosystem, where full-node archives are widely held. In the current imple-
+mentation, users seeking the strongest long-term verifiability guarantee should treat external
+archival of their registration certificates as the primary defense in depth. The cross-chain migra-
+tion concept in Section 7.4 is a prospective extension path that may, if realized, further reduce
+this dependency; it is not a present mitigation.
+Metadata is not cryptographically bound to the file. The metadata carried in the memo
+payload (Section 4.4) is stored in cleartext on-chain and is not included in the SHA-256 input.
+As on-chain data, the metadata is itself immutable once confirmed; however, because it does not
+enter the hash computation, it is not cryptographically bound to the file content. In particular,
+the integrity guarantee (G1) certifies that the file is unchanged, but says nothing about whether
+the associated filename, capture source, or geolocation accurately describe that file: a registrant
+could have recorded misleading metadata at registration time. Two consequences follow. First,
+27
+
+applications that require metadata to be tamper-evident together with the file should, in the
+current implementation, embed that information in the file itself (for example in the image’s
+EXIF data) before registration, so that it is covered by the file hash. Second, because the
+metadata is public on the ledger, users should not place sensitive information in this field.
+A related privacy consideration concerns personal data. The file hash itself carries no personal
+information and is not reversible to the file, so it raises no data-protection concern on its own.
+The cleartext metadata, however, can: in the current implementation, the pre-submission screen
+displays the GPS availability status before anchoring, and GPS coordinates are included in
+the metadata only if location access has been granted and GPS is available at capture time;
+if GPS is unavailable or the user has denied location access, the record is anchored without
+geolocation metadata. Where GPS coordinates are present, a sequence of such records under a
+single persistent wallet can constitute a location-and-time profile that, combined with external
+knowledge, may be personally identifiable. Because on-chain data is immutable, such information
+cannot subsequently be erased, which stands in tension with data-protection regimes that provide
+for a right to erasure. Users who are concerned about location privacy should therefore deny
+location access to the application. The planned per-use-case metadata control (Section 7.2) will
+provide additional control: it will allow metadata to be omitted entirely or to be included in the
+hash input, the latter removing it from the public cleartext region while binding it to the file.
+A further distinction concerns where metadata resides. snaproot controls the on-chain meta-
+data field directly, and the planned per-use-case control applies to it. Metadata embedded in
+the file itself, such as EXIF GPS tags, is a separate matter: since the file hash covers the entire
+file, any such embedded metadata is implicitly anchored within the file hash regardless of the
+on-chain metadata setting. For images captured through snaproot’s own camera function, the
+application can control whether such metadata is written into the file at all; for files that are
+imported and snaprooted after the fact, any pre-existing embedded metadata is already part of
+the file and cannot be removed without altering it, and hence its hash. Users should therefore
+be aware that choosing not to store on-chain metadata does not by itself guarantee that no
+metadata is anchored, since metadata may already reside in the file.
+7.2 Roadmap
+The following features are under active development.
+Wallet import and recovery. Wallet export is implemented: the user can already extract the
+private key from a snaproot installation and import it into any standard Solana wallet provider.
+Importing an exported key back into another snaproot installation, which would enable multi-
+device use under a single snaproot identity and full in-app recovery from device loss, is scheduled
+for the next release.
+Verification via wallet history. The verification protocol (Algorithm 2) currently requires
+the transaction signature as input. A planned extension will additionally support verification
+when only the file and the user’s wallet public key are known: the verifier scans the wallet’s
+memo transactions on Solana and returns the earliest one whose anchored hash matches the file.
+This is useful for verifying records whose transaction signature has not been retained alongside
+the file.
+Priority query: “Am I first?” As discussed in Section 5.9, the earliest confirmed memo
+transaction for a given hash constitutes the on-chain priority record for that file. A planned in-
+app feature will expose this query directly: at anchoring time, and on demand during verification,
+the application will scan all indexed memo transactions on Solana for the anchored hash and
+report whether the user’s registration is the earliest. This allows users to establish, and to
+28
+
+demonstrate to third parties, that no earlier on-chain existence claim exists for the same content
+under any wallet. The query result will be accompanied by a caveat reflecting the completeness
+assumptions discussed in Section 5.9.
+Optional user-controlled salt. The hashing module will support an optional salt parameter,
+allowing the user to compute H
+anchor 
+= SHA256(F ∥ s) for a user-chosen value s. This serves
+two purposes simultaneously. First, it permits two independent parties to anchor the same file
+with different salts, yielding different on-chain records without conflict. Second, it mitigates
+frontrunning: an adversary who observes a pending registration transaction does not know the
+salt and therefore cannot trivially construct a competing registration. The exact construction
+of the salt — a user-chosen value, a value derived from the wallet public key, or a hybrid — is
+subject to ongoing design analysis with particular attention to recoverability (the user should
+not need to separately store the salt to verify later), frontrunning resilience, and compatibility
+with the outlook features described below.
+Merkle aggregation for batch registration. An aggregated registration mode will allow
+a single memo transaction to anchor an arbitrary number of file hashes through their Merkle
+root. This amortizes the per-transaction fee paid by the relay wallet across many records and
+reduces the aggregate on-chain memo volume; it is the natural mechanism for high-volume use
+cases such as continuous log anchoring or bulk archival workflows. The verification protocol
+is correspondingly extended: the verifier presents the file, the transaction identifier, and the
+Merkle proof for the file’s hash within the aggregated tree. This feature requires non-trivial
+changes to the registration and verification workflow and is therefore positioned as a medium-
+term rather than near-term item; it is listed here because the protocol design is complete, but
+its implementation is expected after the near-term roadmap items above.
+snaproot API. The snaproot registration and verification functionality is currently accessible
+through the mobile application and a web frontend. A planned extension will expose these
+operations as a documented HTTP API, allowing third-party applications to integrate snaproot
+as an integrity service without implementing their own Solana interaction layer. The API will
+provide at minimum two endpoints: a registration endpoint that accepts a file hash and metadata
+and returns a transaction identifier, and a verification endpoint that accepts a file hash and
+transaction identifier and returns a deterministic integrity result. The trust properties of the
+underlying system are unchanged by this interface layer: each registration is still signed by
+the calling application’s wallet under the user’s key material, and the provider-independence
+guarantee (G5) remains intact because verification can always be performed directly against
+any Solana RPC endpoint. The API targets use cases in which snaproot’s integrity anchoring is
+embedded as a building block in document management systems, content pipelines, or compliance
+platforms.
+Selectable metadata binding. As described in Section 4.4, metadata is currently stored in
+cleartext on-chain and is not part of the hash input. A first level of metadata control is already
+implemented: the pre-submission screen (Section 4.7) displays the GPS availability status before
+anchoring, and GPS coordinates are included only when location access has been granted and
+GPS is available; the system gracefully degrades to anchoring without geolocation metadata
+otherwise. A planned extension will let the user choose, on a per-use-case basis, among three
+modes: attaching no metadata at all; storing metadata in cleartext as today; or using the
+cryptographic commitment scheme described in the following subsection. The choice is a trade-
+off among on-chain legibility, cryptographic binding, and confidentiality, and is best made per
+application rather than fixed globally.
+29
+
+7.3 Cryptographic Metadata Commitments
+The absence of a cryptographic binding between on-chain metadata and file content is the single
+most significant architectural limitation of the current system for compliance, forensics, and legal
+applications. A metadata field that is immutable on-chain but not bound to the file it describes
+can be set to any value at registration time; a verifier can confirm that the metadata has not
+changed since registration, but cannot confirm that it accurately described the file at registration
+time. This section sets out the planned construction that addresses this limitation.
+Proposed commitment scheme. The planned metadata commitment scheme separates file
+integrity from metadata integrity while binding both to the same on-chain anchor:
+H
+file 
+= SHA256(File)
+H
+meta 
+= SHA256(Metadata ∥ s)
+H
+anchor 
+= SHA256(H
+file 
+∥ H
+meta
+)
+where s is a user-held salt. Only H
+anchor 
+is stored on-chain; neither Metadata nor s appear
+in the ledger. This construction achieves three goals simultaneously. First, the file can be
+verified independently: a verifier who holds the file computes H
+file 
+and checks it against the
+component committed in H
+anchor
+. Second, the metadata is cryptographically bound to the
+file: any modification of either the file or its metadata produces a different H
+anchor
+, which is
+detectable. Third, the salt s prevents brute-force recovery of low-entropy metadata — such as
+GPS coordinates or filenames — by an adversary who observes the on-chain anchor.
+Selective disclosure. A notable property of the scheme is selective disclosure: the registrant
+can prove the file unaltered without revealing the metadata, by presenting H
+file 
+and the commit-
+ment path without disclosing Metadata or s. Conversely, the registrant can prove both file and
+metadata integrity to an auditor by presenting all inputs. This property is directly relevant to
+compliance use cases where the existence proof must be demonstrable to an external regulator
+without disclosing sensitive operational metadata.
+Relationship to the current system. In the current implementation, H
+anchor 
+= H
+file 
+=
+SHA256(File) and metadata is stored in cleartext. The commitment scheme generalises this: a
+system that stores H
+anchor 
+on-chain is backward-compatible in the sense that a file-only verifier
+can still extract and verify H
+file 
+from the commitment, as long as the commitment path is
+retained alongside the anchor. The transition from the current design to the commitment scheme
+is therefore a client-side change with no on-chain protocol modification required.
+7.4 Outlook
+The following concepts are not on the near-term or medium-term development path. We describe
+them because we expect questions about long-term persistence, multi-party protocols, and sub-
+strate independence to arise as the system matures, and because articulating a coherent design
+now ensures that the system can be extended in those directions without architectural surprises.
+Cross-chain migration (3a–3c) is positioned as a long-term safety net that becomes relevant only
+when the lifetime of the current substrate comes into question. The Bilateral snaproot Commit-
+ment Protocol (BSCP) and the AI-augmented provenance direction are medium-to-long-term
+items whose realization depends on application-layer workflow development beyond the core
+anchoring mechanism.
+30
+
+Cross-chain trust migration: anchoring older chain generations within newer ones
+(3a). As blockchains evolve, the particular chain on which snaproot operates today may be
+superseded by a newer protocol version. A provider — which may be snaproot itself, or any
+other party with sufficient archival capacity — can produce a verifiable snapshot of the relevant
+chain history, compute a canonical hash over this snapshot, and anchor that hash within the
+newer chain using the same snaproot mechanism. A verifier in the future can then prove the
+integrity of any record on the older chain by (a) producing the record from an archive, (b)
+showing that the archive snapshot hashes to the value anchored in the newer chain, and (c)
+verifying the newer-chain anchor. Diversity among independent snapshot providers provides
+additional robustness: if multiple parties independently publish snapshot hashes and they agree,
+manipulation is detectable.
+Cross-chain hash migration: user-initiated, wallet-bound (3b). A user can elect to
+migrate all snaproots created under their wallet W to a different blockchain — for example,
+from Solana to Ethereum. This migration is performed as a single aggregated transaction on the
+target chain. The migration record contains the source-wallet pubkey, the migration timestamp,
+and a commitment to the set of migrated records (for example, their Merkle root). The exact
+data structure of the commitment is a design question that we leave open here: a pure Merkle
+root minimizes on-chain footprint but requires the user to hold the proof set externally; an
+explicit hash list is self-contained but larger; a Merkle root combined with a locally retained
+proof set combines the efficiency of the former with the verifiability of the latter. We anticipate
+the third variant to be the most natural fit for snaproot’s user-sovereignty property, since it
+places the proof material in the user’s own keeping. Migration is purely user-initiated: no party
+other than the holder of the source wallet’s private key can migrate records, which preserves the
+user-sovereignty property of the trust architecture across the chain boundary.
+Substrate independence of snaproot as a whole (3c). Mechanism 3b above is the foun-
+dation on which snaproot itself can be ported to a different blockchain substrate in the future,
+while preserving the verifiability of records created on the current substrate. The choice of
+Solana today is an operational decision optimized for the latency and cost profile of the current
+chain ecosystem; it is not an architectural commitment. A future snaproot client on a different
+chain would (i) anchor new records natively on the new chain, (ii) recognize migrated records
+via their cross-chain migration commitments, and (iii) optionally provide a fallback verification
+path against archives of the old chain. The design space for the user-facing presentation of pre-
+migration records in a post-migration client (sorting, search, display of provenance across chains)
+is part of this outlook but does not affect the underlying cryptographic guarantees.
+Bilateral snaproot Commitment Protocol (BSCP) for multi-party document anchor-
+ing (4). A recurring scenario in legal, commercial, and regulatory contexts is that two parties
+wish to jointly anchor a shared document — for example, a contract — such that neither can
+later claim a different version was the agreed original. The naive approach of each party inde-
+pendently anchoring the document is insufficient, because it admits a manipulation attack: one
+party could anchor a subtly modified version of the document before the other party anchors
+the agreed version, thereby manufacturing an earlier on-chain existence claim for the altered
+content. This is a content-level frontrunning attack, distinct from the transaction-level frontrun-
+ning discussed in Section 3.1, because it does not require knowledge of the other party’s pending
+transaction — it requires only that the attacker anchor first.
+The Bilateral snaproot Commitment Protocol (BSCP) addresses this by requiring both par-
+ties to produce on-chain evidence of agreement to the same hash. We describe two variants of
+increasing strength.
+31
+
+In the loosely coupled variant, both parties independently anchor the same hash H = SHA256(D)
+of the agreed document D under their respective wallets, within a defined time window. A ver-
+ifier confirms that (i) both anchors carry the same hash, and (ii) both block times fall within
+the agreed window. This provides mutual attestation without sequential dependency: neither
+party needs to wait for the other’s transaction to be confirmed before submitting their own. The
+limitation is that it does not prove that each party had seen the other’s anchor at the time of
+submission; a party could in principle anchor a different version of the document under a different
+transaction and later claim their intended anchor was the loosely coupled one.
+In the tightly coupled variant, the second party’s anchor payload includes the transaction
+signature of the first party’s confirmed anchor. This creates a cryptographic chain: the second
+anchor provably post-dates the first and explicitly acknowledges it. A verifier can confirm that
+(i) Party A anchored H at time t
+A
+, (ii) Party B anchored H at time t
+B 
+> t
+A
+, and (iii) Party B’s
+anchor payload references Party A’s transaction signature, proving that Party B was aware of
+Party A’s anchor. The tight coupling eliminates the ambiguity of the loosely coupled variant
+but requires sequential submission: Party B must wait for Party A’s transaction to be confirmed
+before constructing their own anchor payload.
+Both variants rely on snaproot’s existing wallet infrastructure: each party submits their
+anchor using their own snaproot user wallet, signed locally, with the relay wallet as fee payer.
+No protocol extension is required beyond the ability to include a reference transaction signature in
+the memo payload, which the current payload structure already accommodates. The application-
+level workflow — including the time window agreement, the handshake between wallets, and the
+presentation of the bilateral proof — is the subject of ongoing design work. The BSCP is
+positioned as a medium-term outlook item: the cryptographic primitives are already present in
+the deployed system, but the application-level coordination protocol requires dedicated design
+and implementation effort that goes beyond the near-term roadmap. A key open question is
+the handling of the non-participation case: if one party anchors and the other does not, the
+single-party anchor remains valid as a unilateral existence proof but does not constitute a BSCP
+commitment; the protocol should make this distinction explicit to users.
+Identity anchoring pattern as a user workflow. A user concerned about long-term prov-
+ability of authorship — not only existence — can anchor an identity-attesting image as one of
+the first records under their wallet (for example, a photograph of themselves holding an iden-
+tity document). Should the user later lose their private key, the existence-proof persistence
+(G2) ensures that the identity-attesting record itself remains verifiable; the user can then re-
+establish the authorship link by physical means (in-person identity verification, or automated
+face-against-document comparison [20]) combined with the chain-resident record. This pattern
+does not require any extension of the snaproot system; it relies entirely on existing functionality
+and on the structural separation between existence and authorship proofs discussed in Section 5.
+It is documented here as a recommended user practice, not as a planned feature.
+AI-augmented integrity and provenance verification (5). The integrity guarantees that
+snaproot provides are deterministic and binary: a file either matches its registered hash or it
+does not. This is complementary to, but structurally distinct from, the probabilistic judgements
+that AI-based content analysis produces — for example, whether an image appears to have been
+synthetically generated or manipulated. A longer-term direction for the snaproot ecosystem is
+to use the chain-resident existence record as a trusted anchor point for downstream AI-based
+provenance workflows.
+The envisioned integration works as follows. A file that has been registered via capture-
+time anchoring carries an immutable on-chain record of its state at the moment of capture.
+Any AI model subsequently applied to that file — for fake detection, deepfake identification,
+or content authenticity classification — can be given the guarantee that the file it is analysing
+32
+
+is cryptographically identical to the registered original: the hash comparison of Algorithm 2
+establishes this before the AI model is invoked. This eliminates a class of attacks in which an
+adversary substitutes a manipulated version of the file between registration and AI analysis,
+causing the model to render a verdict on the wrong input.
+Conversely, the AI model’s output can itself be anchored as a snaproot record, binding the
+model’s verdict to the specific file version and to the specific model version that produced it. This
+creates a verifiable provenance chain: the original file, its integrity proof, and the AI-generated
+analysis are all chain-resident and mutually linked, allowing any later party to reconstruct the
+full provenance of the authenticity claim.
+This direction is structured in two layers with different time horizons. The first layer — using
+snaproot’s chain-resident existence record as a trusted input anchor for AI-based fake detection
+— is a medium-term direction: it does not require changes to the snaproot core and depends
+primarily on the availability of suitable AI models and integration interfaces. The second layer —
+anchoring the AI model’s verdict itself as a snaproot record to create a full provenance chain — is
+a longer-term direction that depends on the maturation of standardised AI provenance interfaces,
+an active area of development in initiatives such as C2PA [14]. In both cases, the specific AI
+models and integration points are outside the scope of the snaproot core architecture. The
+snaproot contribution in this context is the provision of a tamper-evident, provider-independent
+anchor that any conforming AI provenance workflow can reference without trusting the snaproot
+operator.
+8 Discussion
+The technical contributions described in Sections 4 through 7 support a higher-level claim that
+we made in the introduction: snaproot realizes a trust architecture whose integrity guarantees do
+not depend on any single trusted party and remain verifiable across organizational, technological,
+and generational boundaries. We now revisit this claim in the light of the technical material
+and discuss how it manifests in two illustrative application domains: media authenticity and
+compliance.
+8.1 The Four-Tier Trust Architecture, in Retrospect
+The four tiers introduced in Section 1 are now backed in different ways. The first three are
+realized by specific technical mechanisms in the deployed system; the fourth is set out as a
+coherent design rather than as a delivered mechanism. User sovereignty is realized through locally
+generated keypairs, locally performed hashing, and a verification path that requires no snaproot
+infrastructure (Section 5, G5). Within-chain integrity (Section 5, G1) reduces formally to the
+second-preimage resistance of SHA-256, and to the safety of Solana consensus for the persistence
+of the recorded hash. Cross-fork verifiability (Section 5, G6) follows from the distinction between
+safety and liveness: a network event that affects liveness does not retroactively change confirmed
+records. Cross-chain trust migration (Section 7.4) is the prospective fourth tier; if realized, it
+would extend the architecture so that records can outlive the specific blockchain on which they
+were created. For the present system, the long-term existence guarantee is carried by the first
+three tiers, with the fourth held in reserve as an additional safety net for horizons that exceed
+the lifetime of any single substrate.
+A structural property that runs through all four tiers is the separation between existence
+proof and authorship proof. The claim that a file with a given hash existed at a given time is
+a chain-resident fact, verifiable by anyone with the file and any working RPC endpoint; this
+claim is robust to private-key loss, organizational change, and chain migration. The claim that
+a specific natural or legal person produced the file is bound to a private key and can be forfeited
+or transferred. The two claims compose in the natural way: an identity-anchoring user work-
+33
+
+flow rebinds a lost authorship claim to a chain-resident identity-attesting record, recovering the
+property in practice while preserving the structural separation in theory.
+A practical consequence worth noting explicitly: snaproot users do not need to trust the
+snaproot operator to verify their own records. If the snaproot organization were to cease opera-
+tions tomorrow, every existing snaproot record on Solana Mainnet would remain fully verifiable
+using the public verification protocol of Algorithm 2 against any Solana RPC endpoint. This is
+not a contingency or a fallback mechanism; it is the default state of the system. Trust in the
+snaproot operator is needed only for convenience features — the web frontend, the certificate ren-
+dering, the mobile-app user interface — none of which sit on the critical path for cryptographic
+verification.
+8.2 Application Domain: Media Authenticity
+Generative AI has made it possible to produce highly realistic synthetic images, video, and
+audio that cannot be distinguished from authentic material by visual inspection alone [2, 9].
+Approaches based on classifying suspected content as “authentic” or “synthetic” are inherently
+probabilistic and degrade as generative quality improves: they answer a question (whether a piece
+of content is generated) that depends on the state of generative technology, when the answerable
+question is whether a piece of content has changed since a known reference point.
+snaproot answers the latter question deterministically. Given a published image I that has
+been registered on-chain at time t, any later version I
+′ 
+that differs from I in even a single bit will
+produce a different hash and will be detected as modified. Manipulation of an already-published
+image, whether by re-encoding, deepfake overlay, or fully synthetic re-rendering of a similar scene,
+leaves a chain-evident trace: the modified image’s hash does not appear in the chain, while the
+original’s hash does.
+Two sub-cases must be distinguished, as we noted in Section 4.7.
+Post-publication manipulation. The image is registered before publication. After publica-
+tion, an adversary creates a modified or fully fabricated variant. snaproot detects this determin-
+istically: the original retains a chain-anchored existence proof; the variant does not. The trust
+assumption is that the original was published truthfully.
+Pre-publication manipulation. The image is fabricated by the publisher and registered
+as if it were authentic. In this case snaproot alone cannot detect the fabrication, since the
+registered hash is the hash of the fabricated content. Capture-time anchoring within a trusted
+capture application materially reduces this gap: the adversary must compromise either the device
+or the application to produce a fraudulent registration, rather than simply post-process a file
+before registering it. Combined with hardware-attested capture (an active area in the C2PA
+ecosystem [14]), this reduces the trust surface to the integrity of well-defined hardware and
+software components rather than to the credibility of the publisher.
+In both sub-cases, snaproot complements rather than competes with AI-based detection:
+where the latter produces a probabilistic estimate that may be revisited as new generators emerge,
+snaproot produces a binary fact that does not depend on generator-specific knowledge.
+8.3 Application Domain: Tamper-Evident Records in Regulated Environ-
+ments
+Many regulatory regimes require organizations to maintain integrity of audit logs, financial
+records, or operational documentation for extended retention periods. Such requirements appear
+in regimes such as the German GoBD principles for digital business records, ISO/IEC 27001
+controls on logging and monitoring, GDPR data-processing logs, SOX-related financial controls,
+and NIS2 incident-record obligations. We do not claim that snaproot in itself satisfies any
+34
+
+specific control of these regimes; rather, we discuss it as a technical building block that may
+complement an organization’s existing compliance mechanisms. The common requirement that
+motivates the discussion is that records must be demonstrably unaltered after creation, and that
+this demonstration must be acceptable to external auditors.
+Existing approaches to this requirement typically rely on organization-controlled storage with
+limited write privileges (WORM-style storage), on signatures using organization-held keys, or
+on logging to external third-party services. Each of these places at least some trust in a party
+that may have an interest in the records’ appearance. WORM-storage relies on the organization
+to configure and operate it correctly; organization-signed logs can be reissued under new keys
+if the originals are lost or compromised; external logging services are subject to the same trust
+assumptions as any third-party service provider.
+snaproot offers a structurally different building block that may complement these existing
+approaches. By anchoring the hashes of integrity-relevant records on a public blockchain, the
+organization commits the records to a substrate that the organization itself does not control. An
+auditor can subsequently verify integrity of any specific record by hashing it and looking up the
+corresponding on-chain entry — a procedure that requires no cooperation from the organization
+being audited and no trust in any party that the organization could plausibly influence. The
+trust surface for the integrity check shifts from the organization (which has an incentive in the
+audit outcome) to the blockchain substrate (which does not). This is a supplementary integrity
+signal alongside the organization’s primary controls, not a replacement for them.
+Two operational granularities are relevant for compliance use cases. For records that are
+critical individually — privilege escalations, contract signatures, key custody operations — each
+event can be anchored separately as its own memo transaction, at a per-event cost dominated
+by the Solana transaction fee (Section 6). For high-volume records such as access logs and
+system audit trails, aggregated registration via Merkle trees (a roadmap feature, Section 7.2)
+allows a single on-chain anchoring transaction to commit to all log events within a fixed period,
+amortizing the cost while preserving the per-entry verifiability.
+For both granularities, the user-sovereignty property of the trust architecture has a specific
+compliance consequence: the organization anchors records under its own wallet, and any auditor
+can verify those records without going through snaproot. This avoids creating a new third-party
+dependency in the compliance chain.
+One caveat applies specifically in this domain. The immutability that makes the ledger
+attractive for tamper-evidence is in tension with data-protection requirements that provide for a
+right to erasure, such as the GDPR. Anchoring the hash of a record raises no concern, since the
+hash is not reversible to its content; but compliance deployments must ensure that no personal
+data is written into cleartext metadata, since on-chain data cannot later be erased. The hash-
+bound metadata mode on the roadmap (Section 7.2) is the appropriate choice where record
+metadata must be retained in a manner compatible with such regimes.
+We close this discussion with a deliberate restraint. None of the regulatory regimes named
+above recognizes blockchain anchoring as a substitute for its primary control mechanisms; de-
+ployments must continue to satisfy those mechanisms in their own right. The contribution of
+snaproot in this context is narrower: it provides an externally verifiable integrity signal that an
+auditor can check without trusting the audited organization or any single third-party service. A
+serious treatment of how this integrates with the control catalogues of a specific regime is beyond
+the scope of the present paper.
+8.4 Positioning Relative to Prior Hash-Anchoring Systems
+OpenTimestamps, OriginStamp, and Chainpoint share with snaproot the hash-anchoring paradigm
+and the goal of providing integrity guarantees that do not depend on a trusted authority. We
+have argued throughout this paper that snaproot differs from these systems along three proper-
+ties: user sovereignty (records are signed by the user, not by an operator’s aggregator), latency
+35
+
+profile (sub-five-second confirmation on Devnet, supporting capture-time workflows under typical
+conditions), and a designed-in path toward substrate independence (cross-chain trust migration
+as an explicit outlook rather than an afterthought).
+The first of these is a delivered property of the trust architecture. The second is specific to
+the substrate choice and is the main technical reason that the present work positions Solana,
+despite its more concentrated validator set compared to Bitcoin, as a reasonable substrate for
+this application class. The third is prospective rather than realized; its value at this stage is
+that the architecture leaves room for it, not that the system already provides it. The trade-off
+in the substrate choice is explicit: snaproot accepts a weaker liveness-decentralization profile in
+exchange for a substantially better latency profile, while preserving safety guarantees for already-
+confirmed records and holding the cross-chain migration outlook in reserve as a longer-term safety
+net.
+9 Conclusion
+We have presented snaproot, a system for decentralized file integrity verification through blockchain-
+anchored cryptographic hashing on Solana. Beyond the basic anchoring mechanism, the contri-
+bution of this work is the articulation and partial realization of a four-tier trust architecture
+that combines user sovereignty, within-chain integrity, cross-fork verifiability, and a substrate-
+independent migration outlook. We have identified the structural separation between existence
+proof and authorship proof as a property that distinguishes snaproot from designs in which a sin-
+gle secret carries both claims, and have shown that this separation makes the existence guarantee
+robust to the loss of any specific key and to the lifetime of any specific operator.
+We have formalized the threat model, derived the integrity guarantee from the second-
+preimage resistance of SHA-256, and discussed authorship, public verifiability, provider inde-
+pendence, and cross-fork verifiability as separate security goals. We have evaluated the system
+empirically on Solana Devnet, characterizing hashing performance across file sizes from 1 KB
+to 500 MB and registration and verification latencies under typical conditions, and have shown
+that the resulting latency profile makes capture-time anchoring of photographs a practical work-
+flow rather than an aspirational feature. The system is deployed on Solana Mainnet and is in
+productive use.
+We have also been explicit about what snaproot does not provide: it does not certify the
+authenticity of pre-registration content, it does not currently defend against frontrunning of
+unconfirmed registrations, and it does not eliminate the long-term reliance on blockchain archive
+availability. We have set out a roadmap and a longer-term outlook to address these limitations
+as the system matures, while keeping the core architecture stable.
+snaproot is not a replacement for content authentication systems or for compliance frame-
+works; rather, it provides a tamper-evident record of a file’s state at a given point in time, with
+a trust profile that existing centralized integrity services cannot match. Used together with
+capture-time provenance tools and with established compliance frameworks, it can serve as a
+structural building block for digital trust in legal documentation, content authentication, and
+regulatory-grade record-keeping.
+Author Contributions and Intellectual Property
+snaproot is an idea, design, and development of Chain Horizon GmbH. The conception, sys-
+tem architecture, and implementation of snaproot originated within Chain Horizon GmbH prior
+to the preparation of this manuscript. “snaproot” is a registered word mark (Wortmarke) of
+Chain Horizon GmbH with the German Patent and Trademark Office (Deutsches Patent- und
+Markenamt, DPMA).
+36
+
+Arslan Brömme and Tarkan Yavas are affiliated with Chain Horizon GmbH and led the
+conception, design, and development of the snaproot system. They are the sole authors of this
+manuscript.
+All rights, title, and interest in and to snaproot — including, without limitation, the system,
+its source code, the name “snaproot”, the associated design, and the corresponding DPMA reg-
+istration — remain exclusively with Chain Horizon GmbH. Authorship of this manuscript does
+not constitute, transfer, grant, or imply any ownership, license, or other proprietary rights in or
+to snaproot or its underlying intellectual property.
+Acknowledgments
+The authors gratefully acknowledge the contribution of Ramazan Karataş, who, during his in-
+ternship at Chain Horizon GmbH, conducted the empirical evaluation work reported in Section 6,
+namely the measurements of hashing performance, transaction latency, throughput, and cost.
+Use of AI Tools
+The authors used the following AI-assisted tools during the preparation of this manuscript:
+ChatGPT (OpenAI, accessed 2025–2026) and Claude Opus 4 (Anthropic, accessed via Claude.ai,
+2025–2026). These tools were employed to support literature research, language editing, struc-
+turing of the manuscript, and refinement of academic writing.
+All intellectual contributions reflected in this manuscript — including research design, anal-
+ysis, interpretation, and conclusions — remain solely those of the human authors. Rights in the
+snaproot system and its underlying intellectual property are governed by the Author Contribu-
+tions and Intellectual Property section above and remain exclusively with Chain Horizon GmbH.
+AI-generated outputs were reviewed, edited, and validated by the authors prior to inclusion.
+References
+[1] Alfred J. Menezes, Paul C. van Oorschot, and Scott A. Vanstone. Handbook of Applied
+Cryptography. CRC Press, 1996. ISBN 978-0849385230.
+[2] Andreas Rössler, Davide Cozzolino, Luisa Verdoliva, Christian Riess, Justus Thies, and
+Matthias Nießner. FaceForensics++: Learning to detect manipulated facial images. In
+Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV), pages
+1–11, 2019.
+[3] J. R. Prins. DigiNotar certificate authority breach “Operation Black Tulip”. Interim report,
+Fox-IT, September 2011.
+[4] Satoshi Nakamoto. Bitcoin: A peer-to-peer electronic cash system. https://bitcoin.or
+g/bitcoin.pdf, 2008.
+[5] Stuart Haber and W. Scott Stornetta. How to time-stamp a digital document. Journal of
+Cryptology, 3(2):99–111, 1991.
+[6] Peter Todd. OpenTimestamps: Scalable, trust-minimized, distributed timestamping with
+Bitcoin. https://petertodd.org/2016/opentimestamps-announcement, 2016.
+[7] Bela Gipp, Norman Meuschke, and Andre Gernandt. Decentralized trusted timestamping
+using the crypto currency Bitcoin. In Proceedings of the iConference 2015, Newport Beach,
+CA, USA, March 2015.
+37
+
+[8] Wayne Vaughan, Jason Bukowski, and Shawn Wilkinson. Chainpoint: A scalable protocol
+for anchoring data in the blockchain and generating blockchain receipts, July 2016. Chain-
+point Whitepaper v2.0.
+[9] Yuezun Li, Ming-Ching Chang, and Siwei Lyu. In Ictu Oculi: Exposing AI-generated
+video by detecting eye blinking. In Proceedings of the IEEE International Workshop on
+Information Forensics and Security (WIFS), pages 1–7, 2018.
+[10] Juan Benet. IPFS – content addressed, versioned, P2P file system, 2014. arXiv:1407.3561
+[cs.NI].
+[11] Protocol Labs. Filecoin: A decentralized storage network, 2017. Protocol Labs Whitepaper.
+[12] William Entriken, Dieter Shirley, Jacob Evans, and Nastassia Sachs. ERC-721 non-fungible
+token standard, 2018. Ethereum Improvement Proposal 721.
+[13] Sarah Barrington and Nick Merrill. The “Fungibility” of non-fungible tokens: A quantitative
+analysis of ERC-721 metadata, 2022. arXiv:2209.14517 [cs.CY].
+[14] Coalition for Content Provenance and Authenticity. C2PA technical specification, 2023.
+Version 1.3.
+[15] Ben Laurie, Adam Langley, and Emilia Kasper. Certificate transparency, June 2013. RFC
+6962, IETF.
+[16] Leslie Lamport. Proving the correctness of multiprocess programs. IEEE Transactions on
+Software Engineering, SE-3(2):125–143, 1977. doi: 10.1109/TSE.1977.229904.
+[17] National Institute of Standards and Technology. Secure hash standard (SHS). FIPS Publi-
+cation 180-4, NIST, 2015.
+[18] Anatoly Yakovenko. Solana: A new architecture for a high performance blockchain, 2018.
+Solana Labs Technical Whitepaper, v0.8.13.
+[19] Gilles Brassard, Peter Høyer, and Alain Tapp. Quantum algorithm for the collision problem.
+In Proceedings of LATIN’98: Theoretical Informatics, volume 1380 of Lecture Notes in
+Computer Science, pages 163–169, 1998.
+[20] Luuk J. Spreeuwers, Anne J. Hendrikse, and Kees J. Gerritsen. Evaluation of automatic face
+recognition for automatic border control on actual data recorded of travellers at Schiphol
+airport. In Arslan Brömme and Christoph Busch, editors, Proceedings of the International
+Conference of the Biometrics Special Interest Group (BIOSIG 2012), volume P-196 of Lec-
+ture Notes in Informatics (LNI), pages 1–6, Bonn, Germany, 2012. Gesellschaft für Infor-
+matik.
+38

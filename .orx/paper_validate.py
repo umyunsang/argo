@@ -652,6 +652,9 @@ def main():
             + json.loads(
                 (ROOT / "paper/sources/arxiv-metadata-literature-round64-receipt.json").read_text(encoding="utf-8")
             ).get("records", [])
+            + json.loads(
+                (ROOT / "paper/sources/arxiv-metadata-literature-round66-receipt.json").read_text(encoding="utf-8")
+            ).get("records", [])
         )
         combined_metadata_ids = [x.get("source_id") for x in combined_metadata_records]
         duplicate_metadata_ids = sorted(k for k, v in collections.Counter(combined_metadata_ids).items() if v > 1)
@@ -1871,10 +1874,37 @@ def main():
                 continue
             text = source.read_text(encoding="utf-8", errors="replace")
             skip_prefix = scan_cfg.get("external_artifact_prefix")
-            for match in pattern.finditer(text):
-                ref = match.group(1)
-                # Paths under the external prefix are classified below, not here, or a
-                # re-fetchable archive would be reported twice and as the wrong kind.
+
+            def path_values(node):
+                """Yield only values recorded under a key that names a path.
+
+                A regex over raw text cannot tell a repository path from a member name
+                inside an upstream archive that happens to begin with the same word, so
+                the scan walks the structure and trusts the key instead of the shape.
+                """
+                if isinstance(node, dict):
+                    for key, value in node.items():
+                        if isinstance(value, str) and (key.endswith("path") or key.endswith("paths")):
+                            yield value
+                        elif isinstance(value, list) and (key.endswith("path") or key.endswith("paths")):
+                            for item in value:
+                                if isinstance(item, str):
+                                    yield item
+                        else:
+                            yield from path_values(value)
+                elif isinstance(node, list):
+                    for value in node:
+                        yield from path_values(value)
+
+            try:
+                parsed_paths = json.loads(text)
+            except json.JSONDecodeError:
+                parsed_paths = None
+            refs = set(path_values(parsed_paths)) if parsed_paths is not None else {
+                m.group(1) for m in pattern.finditer(text)}
+            for ref in sorted(refs):
+                if not pattern.fullmatch('"' + ref + '"'):
+                    continue
                 if skip_prefix and ref.startswith(skip_prefix):
                     continue
                 if not (ROOT / ref).exists():

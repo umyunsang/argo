@@ -1,14 +1,22 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** rewrite the tex_files lists in the earlier source receipts as repository paths too, so every listed source file is checkable rather than only the most recent round.
+- **next_first_action:** verify the restored source files against recorded digests where the receipts hold per-file hashes, since the repair so far proves archive identity rather than per-file identity.
 
-- **last_updated:** 2026-09-03T02:36:08+09:00
+- **last_updated:** 2026-09-03T02:41:53+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 37 closed — the admission rule applied to its own motivating data; 48 of 48 historical episodes unscorable
+- **current_phase:** cycle 38 closed — 190 of 780 listed source files were absent and were restored by digest-verified re-fetch
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 38 — the manifests asserted 190 files that were not there
+
+- **Gap picked:** source receipts listed files whose existence had never been checked.
+- **Measured:** 36 receipts, 127 records, **780 listed files**. **190 did not exist**, across 16 sources. No claim locator depended on any of them, but the manifests asserted their presence.
+- **Repaired, not deleted:** every affected archive was re-fetched and accepted **only on a digest match**, then re-extracted. All 190 restored; zero missing afterwards. This also exercised the external-artifact policy on **16 sources** rather than the 4 spot checks recorded earlier.
+- **Two conventions, both recorded.** Rewriting the lists to repository paths broke a receipt contract expecting archive member names; keeping member names left strings that look like repository paths. Both are now recorded, and the reference scan was made **structural** so it trusts the key rather than the shape of the string.
+- **Failing-first check:** a placeholder value under a path-named key made the gate fire.
 
 ### Cycle 37 — the rule was applied to the data that motivated it
 
