@@ -48,3 +48,19 @@ tokens between conditions because the full condition mounts an evidence pack. RD
 is falsified and replaced by RD-2026-09-02-24A: context and marginal tokens are reported
 separately and neither is treated as a constant.
 
+## 2026-09-02 — repeat variance, and why one episode is not a value
+
+Six episodes, one burned task, three repeats per condition, identical workspace digest
+within each condition.
+
+| condition | context mean | context sd | CV | within range |
+|---|---:|---:|---:|---:|
+| C00 minimal | 51,138 | 1,484 | 2.9% | 2,746 |
+| C11 scaffold + retrieval | 79,320 | 8,997 | 11.34% | 17,231 |
+
+Six-episode cost: $0.07032. Cumulative measured model cost: $0.16606. GPU credit units remain 0.
+
+The retrieval condition varies about four times more than the minimal one, and its
+within-condition range covers 61.1% of the between-condition gap. RD-2026-09-02-24A is
+refined by RD-2026-09-02-25A: cost is reported as a mean over repeats with its spread.
+

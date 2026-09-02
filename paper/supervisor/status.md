@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** run repeats of one condition to test whether context tokens are stable within a condition, which is the falsifier of RD-2026-09-02-24A.
+- **next_first_action:** instrument evidence-file reads per episode to test whether retrieval context cost is agent-chosen, which is currently only a hypothesis.
 
-- **last_updated:** 2026-09-03T00:58:46+09:00
+- **last_updated:** 2026-09-03T01:06:15+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 19 closed — the cost decision from cycle 18 was falsified by its own pre-registered falsifier one cycle later
+- **current_phase:** cycle 20 closed — three straight cycles in which a cost decision was corrected by its own falsifier
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 20 — one episode is a draw, not a value
+
+- **Gap picked:** cost was being reported per episode without ever testing whether a single episode is stable.
+- **Executed:** six episodes on one burned task, three repeats per condition, with **identical workspace digests inside each condition**, so any spread is not workspace drift.
+- **Result:** the minimal condition varied by **2.90%** around 51,138 context tokens; the retrieval condition varied by **11.34%** around 79,320. The retrieval within-condition range of 17,231 tokens covers **61.1% of the gap between conditions**.
+- **The falsifier of `RD-2026-09-02-24A` fired for one condition.** That decision is now `REFINED_BY_MEASUREMENT` and `RD-2026-09-02-25A` replaces it: every cost quantity is a mean over repeats with its spread, never a single episode, and the retrieval condition needs more repeats than the minimal one.
+- **A mechanism is offered as a hypothesis, not a result:** with retrieval available the agent chooses how much of the evidence pack to read, so context cost may be partly an outcome of its behaviour. Testing it needs per-episode read instrumentation this design does not yet have.
+- **Consistency check passed:** the two single episodes from the previous cycle fall inside the ranges measured here, so the earlier numbers were not outliers.
 
 ### Cycle 19 — the previous cycle's cost decision was falsified by its own falsifier
 
