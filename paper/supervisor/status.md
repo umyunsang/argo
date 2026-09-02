@@ -1,9 +1,9 @@
 # ARGO paper autonomous-research status
 
-- **last_updated:** 2026-09-02T21:52:42+09:00
+- **last_updated:** 2026-09-02T22:01:22+09:00
 - **goal:** active — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** standing loop active; cycle 1 closed (round 9 design competition + release sandbox EXECUTED); cycle 2 starting on independent scoring calibration and the fixed runner
+- **current_phase:** standing loop; cycle 2 closed — all three pilot prerequisites EXECUTED and passing; pilot blocked only on task freeze and backend pin
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
@@ -24,10 +24,18 @@
 
 | Prerequisite | State |
 |---|---|
-| hidden-task release sandbox and integrity probes | **done, executed** |
-| independent scoring calibration and judge agreement fixture | next unit, no GPU needed |
-| fixed Study A runner as one command | next unit, no GPU needed |
-| 16-episode pilot | runs once the two above pass |
+| hidden-task release sandbox and integrity probes | **PASS**, 10/10 checks, six probes demonstrated firing |
+| independent scoring calibration and judge agreement fixture | **PASS**, 9/9 checks, identical across three runs |
+| fixed Study A runner as one command | **PASS**, 7/7 checks |
+| 16-episode pilot | blocked only on task freeze, backend pin, and burned-task entries |
+
+### Cycle 2 under the standing loop
+
+- **Gap picked:** the two remaining pilot prerequisites, both GPU-free, per instruction #0006.
+- **Built and executed:** `experiments/study_a/scoring.py` (deterministic redlines, one judge call per dimension, calibration on agreement, severity, halo) and `experiments/study_a/run_episode.py` (fixed one-command runner refusing incomplete configuration, condition/factor mismatch, or a fired pre-launch probe).
+- **Three defects were found by the fixtures, not by reading:** the manipulation probe ran pre-launch where no artifact exists and blocked every structured-state episode; the calibration fixture seeded randomness with the salted builtin hash and was therefore non-reproducible; judge severity was computed on the 30-point total but tolerated at half a point. All three are fixed and recorded in `paper/sources/study-a-prerequisite-receipt.json`.
+- **Local reproduction of a reviewed finding:** a judge with agreement `0.9653` against the human anchor was still inadmissible at severity `-1.78`, which is why agreement alone is not the admission test.
+- **Remaining before the pilot:** freeze four tasks with withheld targets, pin the model backend, and open the two burned-task entries approved in Q-0004.
 
 ### Resume procedure (instruction #0004 §2)
 
