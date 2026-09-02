@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** rebuild the artifact from a clean checkout and confirm the gate passes there, closing the loop between the builder and an independent verifier.
+- **next_first_action:** add the clean-clone rebuild-and-compare step to the validation run so artifact reproducibility is re-proved automatically rather than by hand.
 
-- **last_updated:** 2026-09-03T00:31:29+09:00
+- **last_updated:** 2026-09-03T00:34:19+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 14 closed — submission artifact format is now guarded by the deterministic gate, proven by five mutations
+- **current_phase:** cycle 15 closed — submission artifact is byte-reproducible across checkouts after diagnosing two timestamp sources
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 15 — the artifact was not reproducible, and now is
+
+- **Gap picked:** the artifact digest was pinned in the receipts but the artifact had never been rebuilt anywhere else, so the pin proved a machine rather than a build.
+- **Measured first:** a clean clone at the same commit rebuilt the artifact to a **different digest**. The pinned receipt would have failed for any independent verifier.
+- **Diagnosed from the bytes:** exactly one part differed in content, `docProps/core.xml`, carrying created and modified timestamps, and every zip entry carried the build time.
+- **Fixed and re-measured:** every packed entry timestamp and both document-property timestamps are pinned to the epoch already used for the deterministic PDF, and parts are written in sorted order. A repeat build on this machine and a rebuild in the clean clone now produce the **same digest** `15a69f22`.
+- **Literature loop:** 9 discovery calls, 3 new `FULL_PAPER_READ` records. One sharpened the goal: reproducibility alone is not verifiability, because a verifier must also recover the source state and build instructions, which is why the builder is committed beside the artifact rather than only its digest (`RD-2026-09-02-21A`).
+- **Honest ceiling recorded:** attested builds bind artifacts to their environment with hardware support this project does not use, so this is reproducibility without attestation.
 
 ### Cycle 14 — the artifact format is now guarded, not merely asserted
 

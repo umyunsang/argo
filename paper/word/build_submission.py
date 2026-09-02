@@ -18,11 +18,49 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+PROTOCOL = ROOT / ".orx" / "paper_protocol.json"
 PANDOC = "/usr/local/bin/quarto"
 PAPER = ROOT / "paper.tex"
 SUMMARY = ROOT / "paper" / "korean-summary.txt"
 OUT = ROOT / "paper" / "word" / "graduation-thesis.docx"
 REF = ROOT / "paper" / "word" / "reference.docx"
+
+
+def fixed_epoch() -> int:
+    """Timestamp used for every packed entry so rebuilds are byte-identical."""
+    try:
+        return int(json.loads(PROTOCOL.read_text(encoding="utf-8"))["source_date_epoch"])
+    except Exception:
+        return 1735689600
+
+
+def normalise_for_reproducibility(parts: dict, epoch: int) -> dict:
+    """Remove the two build-time timestamps that made the artifact irreproducible.
+
+    A clean-clone rebuild previously produced a different digest, which would fail
+    the receipt gate even though the content was identical. The zip entry times and
+    the document properties are pinned to a fixed epoch (RD-2026-09-02-21A).
+    """
+    import time
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
+    core = parts.get("docProps/core.xml")
+    if core is not None:
+        text = core.decode("utf-8")
+        text = re.sub(r"(<dcterms:created[^>]*>)[^<]*(</dcterms:created>)", r"\g<1>" + stamp + r"\g<2>", text)
+        text = re.sub(r"(<dcterms:modified[^>]*>)[^<]*(</dcterms:modified>)", r"\g<1>" + stamp + r"\g<2>", text)
+        parts["docProps/core.xml"] = text.encode("utf-8")
+    return parts
+
+
+def write_zip(path: Path, parts: dict, epoch: int) -> None:
+    import time, zipfile
+    dt = time.gmtime(epoch)[:6]
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as out:
+        for name in sorted(parts):
+            info = zipfile.ZipInfo(name, date_time=dt)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o600 << 16
+            out.writestr(info, parts[name])
 
 
 def run(args: list[str], **kw) -> subprocess.CompletedProcess:
@@ -185,9 +223,7 @@ def apply_official_format(docx_path: Path, front_matter_heading: str) -> dict:
     parts["word/document.xml"] = doc.encode("utf-8")
 
     tmp = docx_path.with_suffix(".tmp.docx")
-    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as out:
-        for name, data in parts.items():
-            out.writestr(name, data)
+    write_zip(tmp, normalise_for_reproducibility(parts, fixed_epoch()), fixed_epoch())
     shutil.move(str(tmp), str(docx_path))
     return applied
 

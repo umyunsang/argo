@@ -1,0 +1,159 @@
+% Verifiability metadata: source repository, source revision, compiler/interpreter version, packaging timestamp, build backend build tool and version, dependencies, vcs-based package version
+
+% Build processes: Create gitless snapshot, construct build command and build first using no-isolation 
+
+
+% \comment[Oreofe]{Third, it compares the rebuilt artifact against the published artifact using six equivalence levels that capture increasingly relaxed notions of artifact reproducibility.}
+
+% https://github.com/jvm-repo-rebuild/reproducible-central/blob/master/doc/BUILDSPEC.md
+
+
+% \comment[Oreofe]{The attestion format varies by ecosystem. PyPI attestation embed source metadata as \textit{X.509} certificate extensions in Sigstore-signed certificates. npm uses SLSA provenance attestions; where \toolname parses the DSSE envelope from the npm attestion API, supporting both SLSA v1.0 (via \texttt{buildDefinition.resolvedDependencies}) and SLSA v0.2 (via \texttt{invocation.configSource}) predicate formats to extract the commit SHA, repository URL, and workflow path. For crates.io, published \textit{.crates} archives contain a \textit{.cargo\_vcs\_info.json} file that records the exact Git commit SHA and monorepo subpath used during \texttt{cargo package}. The file provides a built-in source-to-artifact mapping that is more reliable than heuristic tag matching(see ~\ref{heuristic-rec}), since it is recorded by Cargo at packaging time. Crates.io also recently introduced Trusted Publishing, which provides publisher-attested commit metadata.}
+% It extracts the source repository URL, source commit, and workflow URI from CI/CD claims embedded as X.509 certificate extensions.
+% It then parses the referenced workflow YAML file to identify the compiler or interpreter and its version using ecosystem-specific scripts.
+% This method may fail for older artifacts when the referenced workflow files are no longer available.
+% Our replication package documents the certificate structure and the fields used to recover each metadata item.
+
+
+% \comment[Oreofe]{The specific metadata sources differ by ecosystem. PyPI wheel artifacts contain a \texttt{.dist-info/WHEEL} file with a \texttt{Generator:} field that identifies the build backend and version (e.g., \texttt{hatchling 1.27.0}). \toolname parses \texttt{pyproject.toml} to extract \texttt{[build-system].requires} dependencies. For npm, \toolname reads \texttt{package.json} to detect the package manager (\texttt{npm}, \texttt{yarn}, or \texttt{pnpm}) via the \texttt{packageManager} field or lockfile presence (\texttt{yarn.lock}, \texttt{pnpm-lock.yaml}), build scripts, and release tools such as semantic-release or changesets. For crates.io, Cargo is the sole build system but its version matters; it is bundled with \texttt{rustc}, so selecting the correct Rust toolchain also selects the correct Cargo packaging behavior. \toolname infers the Rust toolchain version from \texttt{rust-toolchain.toml} in the source tree, the MSRV (\texttt{rust-version}) and edition fields in the crate's \texttt{Cargo.toml.orig}, and the \texttt{Cargo.lock} format version.}
+
+% \comment[Oreofe]{For crates.io, \toolname additionally detects whether the publisher set \texttt{SOURCE\_DATE\_EPOCH} by checking whether all file modification times in the published \texttt{.crate} archive are uniform. If so, it reuses that timestamp; otherwise, it falls back to the Git commit epoch.}
+
+\section{Design and Implementation of Artifact Verification Pipeline (\toolname)}
+\label{sec:toolname-design}
+
+
+\begin{figure*}
+    \centering
+    % \includegraphics[width=\linewidth, trim={1.5cm 15cm 1.5cm 1.5cm}, clip]{fig/methodology-5.pdf}
+    \includegraphics[width=0.90\linewidth]{figures/verifiability-method-diagram.pdf}
+    \caption{
+    Methodology Overview and Artifact Verification Pipeline Design and Implementation.
+   }
+    \label{fig:method_overview}
+\end{figure*}
+
+We implement \toolname from the models in \cref{sec:verifiability-model} for four decentralized-build ecosystems: Crates.io, npm, PyPI, and RubyGems. As shown in \cref{fig:method_overview}, it operates in three stages: recovering rebuild metadata, rebuilding the artifact, and comparing the rebuild with the published artifact.
+
+\subsection{Stage 1: Recover Rebuild Metadata}
+
+The first stage recovers the metadata needed to rebuild an artifact:
+  \emph{source metadata}, to identify the source code to rebuild;
+  and
+  \emph{build metadata}, to identify the tools, dependencies, timestamps, and commands needed to reconstruct the artifact.
+
+\subsubsection{Recovering Source Metadata}
+\label{subsubsec:stage-1-source-recovery}
+
+Source metadata consists of the repository URL, source commit, and package subpath.
+\toolname recovers this metadata from three sources, in order of preference: provenance attestations, embedded source metadata, and heuristics.
+
+For artifacts with provenance metadata, such as attestations (npm~\cite{npm-provenance}, PyPI~\cite{pep740}, RubyGems) or trusted publishing information (Crates.io~\cite{crates-trusted-publishing}), \toolname extracts the repository URL, commit hash, and GitHub Actions workflow URI from the provenance attestation or trusted publishing information present in the artifact's registry metadata.
+In addition, for Crates.io packages with artifact-embedded source metadata (\eg \texttt{.cargo\_vcs\_info.json}~\cite{cargo-package}), \toolname extracts the commit and package subpath from the embedded file.
+
+When these sources are unavailable, \toolname combines heuristics from prior work~\cite{hassanshahiUnlockingReproducibilityAutomating2025, google_oss_rebuild, keshani_aroma_2024}.
+It recovers repository URLs from registry fields such as project URL, homepage, and description~\cite{gao_pyradar_2024, vu_lastpymile_2021}, then normalizes and validates candidate URLs.
+It recovers commits using three ordered strategies: \textit{tag matching} against the artifact version; \textit{version-string search} in commits within \texttt{[-7d, +2d]} of artifact upload time; and, as a final fallback, the \textit{latest default-branch commit} before upload.
+Finally, it identifies the package subpath by locating the directory whose package definition matches the artifact name, using lexical matching when no exact match exists.
+
+\subsubsection{Recovering Build Metadata}
+
+Build metadata consists of the tools, versions, dependencies, commands, and timestamps needed to rebuild the artifact. \toolname recovers it from ecosystem-specific files in the artifact and source tree---for example, the build backend, its version, and dependencies from PyPI's \texttt{pyproject.toml}, or the package manager from npm's \texttt{package.json} and lockfiles---and then constructs the build and packaging commands from the ecosystem and recovered build tool.
+
+% As discussed in \cref{subsec:verifier-model}, \toolname supports two rebuild strategies.
+% For artifacts with provenance attestations, \toolname recovers the CI/CD workflow using the recovered workflow URI.
+% \toolname also identifies the ecosystem-default build and packaging commands based on the recovered build tool.
+
+Finally, to reduce non-determinism from file modification times, \toolname uses the published artifact's uniform modification time as the build timestamp when one exists, and otherwise the recovered source-commit timestamp, following reproducible-builds guidance~\cite{reproducible-builds-sde}.
+
+
+% \comment[Oreofe]{For PyPI packages, \toolname copies the source tree into a gitless snapshot by removing the \texttt{.git} directory. This prevents version-control-aware build tools such as \texttt{setuptools-scm} from deriving version strings from the local repository. This step is not needed for npm (\texttt{npm pack} does not inspect Git history) or crates.io (\texttt{cargo package} records VCS info at packaging time independently).}
+% \comment[Oreofe]{
+% First, \toolname clones the recovered source repository and checks out the recovered source revision.
+% For PyPI packages, \toolname then creates up to three variants of the source tree to account for version-control-aware build tools such as \texttt{setuptools-scm}:
+% (1)~a snapshot with the \texttt{.git} directory preserved (\textit{with\_git}),
+% (2)~a snapshot with \texttt{.git} preserved and version-pretend environment variables set (\textit{with\_git\_pretend}), and
+% (3)~a gitless snapshot with \texttt{.git} removed (\textit{without\_git}).
+% The pipeline selects the variant that produces the closest match to the published artifact.
+% For npm, \texttt{npm pack} does not inspect Git history, so this step is unnecessary.
+% For crates.io, \texttt{cargo package} records VCS info at packaging time independently, so the source tree is used as-is.
+
+% }
+
+% \comment[Oreofe]{For npm, \toolname activates the detected package manager via Corepack for Yarn 2+ and pnpm, installs dependencies from the lockfile, and runs ecosystem-specific build scripts (\texttt{npm run build}). For monorepo packages, it detects and invokes workspace orchestrators such as Turbo and Nx. Many npm packages use semantic-release or changesets, which inject version placeholders (e.g., \texttt{0.0.0-development}) at publish time; \toolname patches these placeholders with the actual version before packaging. If the \texttt{package.json} version still does not match the target after placeholder patching, \toolname performs an unconditional version rewrite, replicating the version injection that \texttt{npm version} and release tools perform at publish time. It also resolves pnpm \texttt{workspace:*} protocol references to concrete versions, replicating the transformation that pnpm performs at publish time. During comparison, \toolname normalizes \texttt{package.json} by removing fields injected by \texttt{npm publish} (e.g., \texttt{\_npmVersion}, \texttt{\_nodeVersion}, \texttt{gitHead}, \texttt{\_id}) before content-level comparison. For crates.io, \toolname restores the \texttt{Cargo.lock} from the published crate into the workspace root to pin exact dependency versions, and tries multiple combinations of Rust toolchain version and \texttt{SOURCE\_DATE\_EPOCH} strategy, selecting the combination that produces the closest match.}
+
+% \comment[Oreofe]{For PyPI, the default command is \texttt{python -m build --no-isolation}, with a fallback to isolated mode if dependencies are missing. Compiled manylinux wheels are built inside manylinux container images via Podman or Docker. For npm, \toolname runs the package's build script followed by \texttt{npm pack}. For crates.io, it runs \texttt{cargo package --allow-dirty --no-verify} using \texttt{cargo +VERSION} syntax to invoke the exact Rust toolchain version.}
+\subsection{Stage 2: Rebuild the Artifact}
+
+The second stage uses the recovered metadata to produce an independent rebuild.
+Following our independent verifier model (\cref{subsec:verifier-model}), \toolname uses ecosystem-default build and packaging commands to rebuild the artifact.
+
+AVP first prepares up to three variants of the checked-out source tree: without Git metadata, with Git metadata, and with Git metadata plus build-tool \path{pretend-version} variables, to accommodate tools that derive versions or timestamps from version control. 
+It then installs the recovered build tools and dependencies, sets \path{SOURCE_DATE_EPOCH} to the recovered timestamp, applies tool-specific setup (e.g., Corepack for pnpm), and runs the recovered build and packaging commands.
+% Canonical rebuild proceeds in three steps.
+% First, \toolname prepares up to three variants of the checked-out source tree to support build tools that derive versions or timestamps from version-control metadata.
+% The variants are: one without Git metadata, one with Git metadata, and one with Git metadata and pretend-version variables.\footnote{Examples include \path{SETUPTOOLS_SCM_PRETEND_VERSION}, \path{HATCH_VCS_PRETEND_VERSION}, and \path{PDM_BUILD_SCM_VERSION}.}
+
+% Second, \toolname installs the recovered build tools and dependencies, sets \path{SOURCE_DATE_EPOCH} to the recovered timestamp, and applies tool-specific setup such as enabling pnpm through Corepack.
+% Third, \toolname executes the ecosystem-specific build and packaging commands associated with the recovered build tool to produce the rebuilt artifact.
+
+% \mock{Oreofe do we still do this workflow replay or we should remove it?}
+
+% \mock{OS: So i'll say we should leave it; so what i realized is that we still had that fallback but it ran in cases but failed to produce a better result; my intution is that due to the heterogeneity of these workflow files; it hard to get successful reply. so we can say we tried it but only helpful for a very small subset of "simple"  workflow packages}
+% \subsubsection{Workflow Replay}
+% For artifacts with a recovered CI/CD workflow, \toolname also attempts a best-effort replay: it rewrites publication commands to local packaging (e.g., \texttt{npm publish}~$\rightarrow$~\texttt{npm pack}) and executes the workflow in a local container with \texttt{act}, passing any produced artifacts to the comparison stage. Replay is a fallback, not the default: as \Cref{subsec:results-rq2} reports, it seldom yields artifacts the canonical path does not, because workflows commonly require unavailable secrets, services, or runner state.
+
+% For artifacts with a recovered CI/CD workflow, \toolname also attempts a best-effort workflow replay.
+% This strategy captures package-specific environment configuration and build steps that may not be expressible through ecosystem-default commands.
+
+% \toolname first rewrites the workflow to replace publication commands with local packaging commands, such as replacing \texttt{npm publish} with \texttt{npm pack}.
+% This prevents publication while still producing a local artifact for comparison.
+% It then uses \texttt{act} to execute the GitHub Actions workflow inside a local container containing the recovered source tree.
+% Finally, \toolname collects the artifacts produced by the replayed workflow and passes them to the comparison stage.
+
+
+ % \comment[Oreofe]{
+ %    \item[\textbf{L4: Metadata-only mismatch.}]
+ %    The published and rebuilt artifacts differ only in packaging metadata files that are generated or modified by the build tool at packaging time.
+ %    For PyPI, these include \texttt{RECORD}, \texttt{WHEEL}, and \texttt{PKG-INFO}.
+ %    For npm, this includes \texttt{package.json} fields injected by \texttt{npm publish} (e.g., \texttt{\_npmVersion}, \texttt{gitHead}).
+ %    For crates.io, these include \texttt{Cargo.toml}, \texttt{Cargo.lock}, \texttt{Cargo.toml.orig}, and \texttt{.cargo\_vcs\_info.json}.
+ %    }
+ %    \comment[Oreofe]{\item[\textbf{L5: Non-reproducible.}]
+ %    The published and rebuilt artifacts differ in non-metadata content even after normalization.}
+
+ %    \comment[Oreofe]{ \item[\textbf{L6: Build or infrastructure error.}]
+ %    The artifact could not be rebuilt due to a build failure, missing dependencies, clone failure, or other infrastructure error.
+ %    These cases are excluded from reproducibility statistics but reported separately.}
+
+ % \comment[Oreofe]{We can break down L4 into possible common root cause tax. i.e L4a: Source-tree-only mismatch, L4b: Content Mismatch, and L4c: Combined mismatch}
+ %    The published and rebuilt artifacts differ even after normalization.
+ %    \toolname further classifies these failures as \textit{source-tree-only mismatches}, where files appear in only one artifact; \textit{content-only mismatches}, where shared files differ in content; or \textit{combined mismatches}, where both source-tree and content differences occur.
+ %    \comment[Oreofe]{\toolname further refines L4 failures with ecosystem-specific categories. For PyPI, it identifies \textit{CRLF divergence}, where all content differences are line-ending normalization. For npm, it identifies \textit{metadata-only mismatches}, where only \texttt{package.json} differs (typically due to version injection at publish time). For crates.io, it identifies \textit{Cargo-metadata-only mismatches}, where only Cargo-generated files (\texttt{Cargo.toml}, \texttt{Cargo.lock}, \texttt{.cargo\_vcs\_info.json}) differ from the published crate.}
+
+ 
+% \comment[Oreofe]{How do we come up with the allowlist? One thought was to use a list of ext. of known exec files, can look at the distribution of $\complement$ of that set; we can give ourselves a good idea of stuff we need to apply as non-exec}.
+\subsection{Stage 3: Compare Artifacts}
+\label{subsec:stage-3}
+
+Stage~3 compares each rebuilt artifact with the published one and reports the strongest level reached. L1 compares artifact hashes; L2 compares per-file content hashes while allowing archive-metadata differences; L3 checks that residual differences fall within a small, fixed catalog of non-executable metadata files and fields built from ecosystem documentation (e.g., PyPI's \texttt{RECORD}, \texttt{METADATA}, \texttt{WHEEL}, \texttt{PKG-INFO}, and generated \texttt{\_version.py} files, npm's \texttt{package.json} metadata fields, and Cargo's \texttt{.cargo\_vcs\_info.json}, and \texttt{Cargo.lock}). Artifacts reaching none are not verified; we do not operationalize L4.
+
+% "entry_points.txt", "top_level.txt",
+    % "requires.txt", "dependency_links.txt",
+    % "direct_url.json
+
+
+% Stage~3 compares each rebuilt artifact with the published one and reports the strongest level reached. L1 compares artifact hashes; L2 compares per-file content hashes while allowing archive-metadata differences; L3 checks that residual differences fall within a catalog of non-executable metadata files and fields built from ecosystem documentation. Artifacts reaching none are not verified; we do not operationalize L4.
+
+% The third stage compares all rebuilt artifacts from stage 2 with the published artifact using the comparison model from \cref{subsec:artifact-comparison-model} and selects the strongest level satisfied by any artifact pair.
+
+% For L1 equivalence, \toolname compares the cryptographic hashes of the two artifacts.
+% For L2 equivalence, it extracts both artifacts and compares the content hash of each file at each path, allowing differences only in archive-level metadata.
+% For L3 equivalence, \toolname checks whether remaining differences are limited to ecosystem-specific metadata files or fields that are treated as non-executable under our comparison model.
+% We construct this metadata catalog from ecosystem documentation and use it to classify file- and field-level differences.
+
+% Artifacts that do not satisfy L1, L2, or L3 are classified as not verified.
+% Although the comparison model includes L4 behavioral equivalence, \toolname does not operationalize L4 in this study.
+
+
+

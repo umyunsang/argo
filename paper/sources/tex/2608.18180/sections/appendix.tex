@@ -1,0 +1,196 @@
+% \appendix
+
+% \section{Case Study: Build Environment Extraction and Matched-Toolchain Rebuild}
+% \label{appendix:rpds-rebuild}
+
+% We present a detailed case study of \texttt{rpds-py~0.30.0}, a compiled
+% Rust extension for persistent data structures that appeared in the
+% \emph{content\_diff} bucket of our criticality sample.
+% This case illustrates both the feasibility and the remaining limits of
+% artifact-driven build environment recovery.
+
+% \subsection*{Information Sources in the Artifact}
+
+% The released wheel
+% \texttt{rpds\_py-0.30.0-cp313-cp313-manylinux\_2\_17\_x86\_64.whl}
+% exposes four independent channels of build environment information
+% without requiring access to any CI logs or build metadata outside the
+% artifact itself.
+
+% \begin{enumerate}
+%   \item \textbf{Wheel filename.} The platform tag
+%     \texttt{manylinux\_2\_17\_x86\_64} specifies the minimum glibc ABI
+%     (2.17) and architecture (x86\_64), uniquely identifying the
+%     \texttt{manylinux2014} container family as the build environment.
+
+%   \item \textbf{\texttt{WHEEL} metadata.} The \texttt{Generator} field
+%     records \texttt{maturin (1.10.2)}, pinning the exact build-tool
+%     version.
+
+%   \item \textbf{ELF \texttt{.comment} section.} Running
+%     \texttt{readelf~-p~.comment} on the bundled shared object reveals
+%     the full compiler chain embedded by the linker:
+%     \begin{itemize}
+%       \item \texttt{rustc 1.91.1 (ed61e7d7e 2025-11-07)}
+%       \item \texttt{GCC: (GNU) 10.2.1 20210130 (Red Hat 10.2.1-11)}
+%       \item \texttt{Linker: LLD 21.1.2}
+%     \end{itemize}
+%     The GCC version (10.2.1) independently corroborates the
+%     \texttt{manylinux2014} container, whose base image ships exactly
+%     that compiler.
+
+%   \item \textbf{Source repository.} Fetching \texttt{pyproject.toml} at
+%     the attested commit (\texttt{c38c9795}, recovered from the Fulcio
+%     X.509 certificate) confirms \texttt{build-backend = "maturin"} with
+%     no \texttt{rust-toolchain.toml} present for this release.
+% \end{enumerate}
+
+% \subsection*{Matched-Toolchain Rebuild}
+
+% Using the information above we performed a controlled rebuild inside a
+% fresh \texttt{quay.io/pypa/manylinux2014\_x86\_64} container:
+% \texttt{rustup install 1.91.1} pinned the Rust toolchain, and
+% \texttt{pip install maturin==1.10.2} pinned the build tool.
+% We then ran \texttt{maturin build --release} at commit \texttt{c38c9795}.
+
+% The resulting \texttt{.comment} section was byte-for-byte identical to
+% the original:
+
+% \begin{quote}
+% \small
+% \texttt{GCC: (GNU) 10.2.1 20210130 (Red Hat 10.2.1-11)}\\
+% \texttt{Linker: LLD 21.1.2 (/checkout/src/llvm-project/llvm 8c30b9c...)}\\
+% \texttt{rustc version 1.91.1 (ed61e7d7e 2025-11-07)}
+% \end{quote}
+
+% Every section header, symbol count (\texttt{.symtab}: \texttt{0x12300}
+% entries), and code section (\texttt{.text}: \texttt{0x086adf} bytes)
+% matched between the two wheels.
+% The overall archive size converged from a 281~KB discrepancy (when
+% \texttt{-{}-strip} was incorrectly applied) to a 232-byte residual.
+
+% \subsection*{Residual Nondeterminism: Cargo Registry Path Hashes}
+
+% Despite identical toolchain, build tool, container, commit, and build
+% flags, the SHA-256 of the rebuilt wheel differed from the original.
+% Section-level comparison isolated the divergence to three small regions:
+
+% \begin{center}
+% \begin{tabular}{lrrl}
+% \toprule
+% Section & Original & Rebuilt & Delta \\
+% \midrule
+% \texttt{.rodata}       & 32,416 B & 32,360 B & $-$56 B \\
+% \texttt{.eh\_frame}    & 64,308 B & 64,312 B & $+$4 B  \\
+% \texttt{.relro\_padding} & 696 B  &  744 B   & $+$48 B \\
+% \texttt{.strtab}       & 206,566 B & 206,352 B & $-$182 B \\
+% \bottomrule
+% \end{tabular}
+% \end{center}
+
+% The \texttt{.strtab} divergence is caused by Cargo embedding absolute
+% paths to cached \texttt{.rlib} files in the symbol table.
+% These paths include the Cargo registry index hash, e.g.,
+% \texttt{/root/.cargo/registry/src/index.crates.io-\textit{HASH}/rpds-1.2.0/}.
+% The registry index hash is derived from the registry URL and the
+% snapshot timestamp of the local \texttt{crates.io} index, which differs
+% between the original CI run and our fresh clone.
+% This is a known source of build nondeterminism in Cargo that is
+% independent of the source code, toolchain, or build flags~\cite{cargo-nondeterminism}.
+
+% \subsection*{Implications}
+
+% This experiment demonstrates that the artifact itself provides sufficient
+% information to reconstruct the build environment for compiled Rust
+% extensions (\textbf{RQ4}): toolchain, container, and build tool can all
+% be recovered without CI logs.
+% The remaining barrier is Cargo's registry-path embedding, which would
+% require either (a) a \texttt{CARGO\_REGISTRY\_TOKEN}-equivalent cache
+% snapshot from the original build, or (b) upstream support for
+% \texttt{CARGO\_HOME} normalisation analogous to
+% \texttt{SOURCE\_DATE\_EPOCH} for timestamps.
+% Until such normalisation is adopted, compiled Rust wheels face an
+% irreducible nondeterminism floor that prevents byte-exact reproduction
+% even under matched toolchains.
+
+% % ─────────────────────────────────────────────────────────────────────────────
+
+% \section{Case Study: Container Environment Mismatch in C-Extension Wheels}
+% \label{appendix:pillow-rebuild}
+
+% While the \texttt{rpds-py} case study isolates Cargo-level nondeterminism
+% under a matched toolchain, the dominant failure mode for compiled wheels in
+% our criticality sample is structurally earlier: the verifier's rebuild runs
+% on the native host rather than inside the manylinux container the publisher
+% used.
+% We illustrate this with \texttt{Pillow~12.1.1}, a widely used C imaging
+% library (\emph{cf.} the \texttt{preshed}, \texttt{srsly}, and
+% \texttt{scikit-learn} cases, which exhibit the same root cause).
+
+% \subsection*{Observed Divergence}
+
+% The published wheel carries the platform tag
+% \texttt{manylinux2014\_x86\_64} / \texttt{manylinux\_2\_17\_x86\_64},
+% indicating it was produced inside a \texttt{quay.io/pypa/manylinux2014\_x86\_64}
+% container (glibc $\geq$ 2.17, GCC 10.2.1).
+% Our pipeline rebuilt Pillow natively on a Fedora~42 host (GCC~15.2.1),
+% producing a wheel tagged \texttt{linux\_x86\_64}.
+% The platform tag divergence is visible without even inspecting the binaries.
+
+% Extracting the ELF \texttt{.comment} section from
+% \texttt{\_avif.cpython-313-x86\_64-linux-gnu.so} in the published wheel
+% confirms:
+
+% \begin{quote}
+% \small\texttt{GCC: (GNU) 10.2.1 20210130 (Red Hat 10.2.1-11)}
+% \end{quote}
+
+% Our rebuilt \texttt{.so} files, compiled with GCC 15.2.1, differ in
+% every section that contains compiler-generated code: \texttt{.text},
+% \texttt{.rodata}, \texttt{.eh\_frame}, and \texttt{.data.rel.ro}.
+% All 8~shared objects in the wheel differ; only pure-Python files and
+% \texttt{METADATA} match.
+
+% \subsection*{Compounding Factor: Bundled Libraries}
+
+% manylinux wheels statically bundle system libraries (libjpeg, libpng,
+% libwebp, libtiff, libfreetype) that are not present on a standard host.
+% Pillow's CI uses \texttt{auditwheel repair} to embed patched copies of
+% these libraries into the wheel before upload.
+% A native build links against the host's dynamic libraries, producing a
+% structurally different binary even if the Pillow source and GCC version
+% were somehow matched.
+% This means that for manylinux wheels with bundled dependencies,
+% \emph{matching the container alone is insufficient}: the exact
+% \texttt{auditwheel} invocation and library versions must also be reproduced.
+
+% \subsection*{Cython Source Nondeterminism: \texttt{srsly~2.5.3}}
+
+% A related but distinct failure appears in \texttt{srsly~2.5.3}
+% (9~content-differing files), which uses Cython to compile msgpack and
+% ujson bindings.
+% Beyond the expected \texttt{.so} divergence, the published wheel ships
+% pre-generated Cython C++ sources (\texttt{\_packer.cpp},
+% \texttt{\_unpacker.cpp}, \texttt{\_epoch.cpp}) directly in the wheel
+% archive.
+% These files differ from our rebuild because the installed Cython version
+% on the host generates different C++ output than the version used during
+% the original release build.
+% The wheel thus embeds two layers of nondeterminism: the compiled object
+% code and the intermediate C++ source it was compiled from.
+
+% \subsection*{Implications}
+
+% Together, \texttt{Pillow}, \texttt{preshed}, \texttt{scikit-learn}, and
+% \texttt{srsly} represent a failure class distinct from the Cargo hash
+% nondeterminism in \texttt{rpds-py}.
+% The cause here is not residual build-system nondeterminism under a matched
+% environment but a \emph{missing container layer}: the verifier pipeline
+% did not detect that the target wheel was built inside a manylinux container
+% and therefore did not reproduce that container before rebuilding.
+% The fix — inferring the required container from the wheel's platform tag
+% and the published \texttt{.so}'s \texttt{.comment} section (as
+% \texttt{extract\_build\_env.py} does) — is well-defined and automatable.
+% Until container-aware rebuild is integrated into the pipeline, all
+% manylinux-tagged compiled wheels will fall into the
+% \emph{other\_content\_mismatch} bucket regardless of source availability.
