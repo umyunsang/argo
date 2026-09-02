@@ -1,14 +1,22 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** compute the budget completion rate per condition over the 16-episode block and report it in the manuscript beside the integrity results, with denominators stated.
+- **next_first_action:** extend the block with a third repeat on both tasks so the completion intervals narrow enough to be informative, or state the required block size from these intervals.
 
-- **last_updated:** 2026-09-03T03:28:27+09:00
+- **last_updated:** 2026-09-03T03:30:23+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 46 closed — budget completion declared as a secondary outcome; a stale variable nearly corrupted the design document
+- **current_phase:** cycle 47 closed — budget completion reported with denominators and intervals that refuse the obvious reading
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 47 — the rate is reported, and the reading is refused
+
+- **Computed** over the first admissible block, four episodes per condition: minimal, retrieval-only and scaffold-only all completed **4/4**; scaffold-plus-retrieval completed **3/4**.
+- **Reported with denominators and Wilson intervals**, because the bare rates invite a conclusion the data cannot carry. Every interval spans more than half the range, the widest is **0.653** wide, and **all four overlap**.
+- **Stated plainly in the manuscript:** four episodes per condition can show that a ceiling bound and where it bound; they cannot show that completion differs by condition. Small screening blocks read as settled questions can produce worse decisions than no block at all.
+- **Kept separate from quality:** the quality endpoint is still not computed, because judged scoring remains inadmissible without a human-anchored calibration set.
+- **Bound two-sidedly:** editing the rate in the prose alone and editing it in the receipt alone each fail the gate. Claim checks now stand at 37.
 
 ### Cycle 46 — budget failure became an outcome, and a stale name nearly corrupted the design
 
