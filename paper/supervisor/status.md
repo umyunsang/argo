@@ -1,14 +1,23 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** verify the restored source files against recorded digests where the receipts hold per-file hashes, since the repair so far proves archive identity rather than per-file identity.
+- **next_first_action:** run the byte-level verification over the remaining source receipts, since only four of thirty-six have been checked at that level.
 
-- **last_updated:** 2026-09-03T02:41:53+09:00
+- **last_updated:** 2026-09-03T02:47:27+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 38 closed — 190 of 780 listed source files were absent and were restored by digest-verified re-fetch
+- **current_phase:** cycle 39 closed — source evidence verified at claim, archive and byte level
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 39 — archive identity is not file identity
+
+- **Gap picked:** the repair proved the *archive* was authentic; it did not prove the file in the repository came out of it.
+- **Three levels, reported separately.** Claim: every locator's file digest and the excerpt hash at its recorded line range. Archive: accepted only on a digest match before anything is read. Byte: each committed file compared byte for byte with the same archive member.
+- **Results:** **170 of 170** locators verify with zero file-digest and zero excerpt-hash failures. **27 archives** verified, **138 of 138** compared files byte identical, zero mismatches.
+- **One record reported as incomplete, not verified:** a versioned PDF with no TeX members has no file list to compare, so it is excluded rather than counted as a pass.
+- **7 fixtures, 6 of 6 mutations caught**, including two that would have reported success while checking nothing — treating an incomplete record as verified, and claiming verified while offline.
+- **Coverage stated:** the byte level has been run over 4 of 36 receipt files. The rest are checkable by the same command and have not been run.
 
 ### Cycle 38 — the manifests asserted 190 files that were not there
 
