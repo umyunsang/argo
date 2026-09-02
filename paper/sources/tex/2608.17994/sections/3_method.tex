@@ -1,0 +1,220 @@
+\section{Methodology}
+\label{sec:method}
+
+We propose a risk-controlled framework for LLM-as-a-judge evaluation. The framework calibrates uncertainty thresholds on a held-out set with human labels so that, among all instances the judge evaluates, the probability of producing an incorrect verdict is bounded by a user-specified risk level $\alpha$~\citep{angelopoulos2023gentle, angelopoulos2024conformal}. When the judge is uncertain, the framework first attempts to improve the evaluation through web retrieval; if the judge remains uncertain after retrieval, it abstains and flags the instance for human review~\footnote{We do not implement human review; the term indicates that these instances are excluded from automated evaluation.}.
+
+\subsection{Problem Formulation}
+\label{sec:formulation}
+
+\paragraph{Task.}
+Let $F\!:\!\mathcal{X}\!\to\!\mathcal{Y}$ be an examinee LLM that, given a question $\mathbf{x} \in \mathcal{X}$, generates a candidate answer $\hat{y} \in \mathcal{Y}$, and let $y^* \in \mathcal{Y}$ be the corresponding ground-truth answer. A judge LLM $\mathcal{J}\!:\!\mathcal{X}\!\times\!\mathcal{Y}\!\to\!\{0,1\}$ evaluates whether $\hat{y}$ correctly answers~$\mathbf{x}$, producing a binary verdict $v \in \{0,1\}$, where $v\!=\!1$ means the judge deems $\hat{y}$ correct.
+
+\paragraph{Admission function.}
+The ground-truth evaluation label $e^* \in \{0,1\}$ indicates whether $\hat{y}$ is truly correct. It can be obtained from human annotation, or by applying a task-specific relevance function $\mathcal{A}_{\mathrm{ref}}\!:\!\mathcal{Y}\!\times\!\mathcal{Y}\!\to\![0,1]$ with a threshold~$\lambda_A$:
+\begin{equation}
+\label{eq:gt_label}
+  e^* = \ind\!\left[\mathcal{A}_{\mathrm{ref}}(\hat{y},\, y^*) \geq \lambda_A\right].
+\end{equation}
+A verdict~$v$ is admissible if it matches the ground truth:
+\begin{equation}
+\label{eq:admission}
+  \mathcal{A}(v,\, e^*) = \ind\!\left[v = e^*\right].
+\end{equation}
+
+\paragraph{Selective evaluation.}
+Rather than always outputting a verdict, the judge is allowed to abstain when it is uncertain. We define a failure indicator $W = \ind[v \neq e^*]$. Given an uncertainty score $U$ (defined in \S\ref{sec:uncertainty}), the judge outputs a verdict only when $U \leq t$ for some threshold~$t$. The false discovery rate (FDR) is:
+\begin{equation}
+\label{eq:fdr}
+  R(t) = \mathbb{E}\!\left[W \mid U \leq t\right],
+\end{equation}
+i.e., the error rate among instances the judge chooses to evaluate.
+
+\paragraph{Goal.}
+For a user-specified risk level $\alpha \in (0,1)$ and significance level $\delta$ (e.g., $0.05$), we seek a threshold~$t$ such that:
+\begin{equation}
+\label{eq:goal}
+  \Pr\!\left(R(t) \leq \alpha\right) \geq 1 - \delta,
+\end{equation}
+where the probability is over the randomness of the calibration data. With high confidence ($1\!-\!\delta$), the error rate among the judge's non-abstained outputs is at most~$\alpha$.
+
+\paragraph{Calibration data.}
+We hold out $N$ calibration samples $\mathcal{D}_{\mathrm{cal}} = \{(\mathbf{x}_i, \hat{y}_i, y^*_i)\}_{i=1}^{N}$ with known ground-truth labels $e_i^*$, drawn i.i.d.\ from the data-generating distribution~$\mathcal{D}$.
+
+\subsection{Uncertainty Quantification (UQ)}
+\label{sec:uncertainty}
+
+Accurate uncertainty estimation is critical for selective evaluation: the better the uncertainty score separates correct from incorrect verdicts, the higher the coverage (fewer abstentions) at a given risk level. %Our framework is agnostic to the specific UQ method and supports both white-box and black-box settings.
+
+\subsection{Risk-Bounded Selective Evaluation}
+\label{sec:single}
+
+We now describe how to calibrate the uncertainty threshold to satisfy the guarantee in Eq.~\eqref{eq:goal}. This section presents the base case where the judge uses only its parametric knowledge (no retrieval); we extend to retrieval-augmented judging in \S\ref{sec:routing}.
+
+\paragraph{Empirical failure analysis.}
+For each calibration instance, we obtain the judge's verdict $v_i$ and uncertainty score $U_i$. Given a candidate threshold~$t$, we compute the number of instances the judge would evaluate (selection size):
+\begin{equation}
+\label{eq:mcal}
+  \hat{m}_{\mathrm{cal}}(t) = \sum_{i=1}^{N} \ind\!\left\{U_i \leq t\right\},
+\end{equation}
+and the number of errors among them (error count):
+\begin{equation}
+\label{eq:wcal}
+  \hat{w}_{\mathrm{cal}}(t) = \sum_{i=1}^{N} \ind\!\left\{U_i \leq t\right\}\!\cdot\!(1 - c_i),
+\end{equation}
+where $c_i = \mathcal{A}(v_i, e^*_i)$ is the correctness indicator. The empirical FDR is $\hat{r}_{\mathrm{cal}}(t) = \hat{w}_{\mathrm{cal}}(t) / \hat{m}_{\mathrm{cal}}(t)$.
+
+% make sure to add UQ limitations in addition to sampling variability
+\paragraph{Upper confidence bound (UCB).}
+The empirical FDR is an unbiased point estimate of the true failure rate, but may underestimate it on any given calibration set due to sampling variability. To obtain a rigorous bound, we leverage the Clopper--Pearson exact method. Since the calibration instances are i.i.d.\ and the selection event $\{U_i \leq t\}$ is a deterministic function of $(\mathbf{x}_i, \hat{y}_i)$, the failure indicators of selected instances are i.i.d.\ Bernoulli with parameter $R(t)$. We can therefore apply the one-sided Clopper--Pearson bound:
+\begin{equation}
+\label{eq:ucb}
+  \hat{R}^{\mathrm{upper}}_{1-\delta}(t) =
+  \mathrm{BetaInv}\!\big(
+  1 - \delta;\;
+  \hat{w}_{\mathrm{cal}}(t) + 1,\;
+  \hat{m}_{\mathrm{cal}}(t) - \hat{w}_{\mathrm{cal}}(t)
+  \big),
+\end{equation}
+which satisfies $\Pr(R(t) \leq \hat{R}^{\mathrm{upper}}_{1-\delta}(t)) \geq 1 - \delta$ (Appendix~\ref{app:proof_ucb}).
+
+\paragraph{Threshold selection.}
+We select the largest threshold whose UCB stays below the risk level $\alpha$:
+\begin{equation}
+\label{eq:that_single}
+  \hat{t} = \sup\big\{t : \hat{R}^{\mathrm{upper}}_{1-\delta}(t') \leq \alpha \;\text{for all}\; t' \leq t\big\}.
+\end{equation}
+This maximizes the number of instances the judge evaluates while targeting Eq.~\eqref{eq:goal}.
+
+\subsection{Adaptive Retrieval via Two-Mode Routing}
+\label{sec:routing}
+Inspired by LLM-based agents that leverage external tools to overcome the base model limitations, we equip the judge with web search as a tool to bridge its knowledge gaps. When the judge is not confident based on its parametric knowledge alone, it retrieves relevant evidence from the web and re-evaluates with this augmented context. This recovers coverage on exactly the instances that the single-mode framework would abstain on, turning abstention into an opportunity for informed evaluation.
+
+\paragraph{Two evaluation modes.}
+For each instance $(\mathbf{x}_i, \hat{y}_i)$, we define:
+\begin{itemize}
+  \item \textbf{Mode~1} (direct): $\mathcal{J}$ evaluates using only its internal knowledge, producing verdict $v_1^{(i)}$ with uncertainty $U_1^{(i)}$.
+  \item \textbf{Mode~2} (retrieval-augmented): The system queries a web search engine using the question $\mathbf{x}_i$, retrieving the top-$k$ results, each containing a title, text snippet, and source URL. These are concatenated into an evidence passage $\mathcal{E}_i$ appended to the judge's prompt. The judge $\mathcal{J}$ re-evaluates with this context, producing $v_2^{(i)}$ with uncertainty $U_2^{(i)}$.
+\end{itemize}
+We denote the correctness of each mode as $c_k^{(i)} = \mathcal{A}(v_k^{(i)}, e^*_i)$ for $k \in \{1, 2\}$.
+
+\paragraph{Routing logic.}
+At test time, given calibrated thresholds $(\hat{t}_1, \hat{t}_2)$:
+\begin{equation}
+\label{eq:routing}
+  \text{output} =
+  \begin{cases}
+    v_1, & \text{if } U_1 \leq \hat{t}_1, \\
+    v_2, & \text{if } U_1 > \hat{t}_1 \;\text{and}\; U_2 \leq \hat{t}_2, \\
+    \textsc{abstain}, & \text{otherwise.}
+  \end{cases}
+\end{equation}
+Retrieval is invoked only when Mode~1 is uncertain, so confident instances incur zero retrieval cost.
+
+\paragraph{Joint threshold calibration.}
+During calibration, we pre-compute both modes for all $N$ instances in $\mathcal{D}_{\mathrm{cal}}$. For a candidate pair $(t_1, t_2)$, the selection size counts instances accepted via either mode:
+\begin{equation}
+\label{eq:mcal_route}
+  \hat{m}_{\mathrm{cal}}(t_1, t_2) = \sum_{i=1}^{N} \Big[\ind\!\left\{U_1^{(i)} \leq t_1\right\} + \ind\!\big\{U_1^{(i)} > t_1 \;\text{and}\; U_2^{(i)} \leq t_2\big\}\Big].
+\end{equation}
+The error count among selected instances is:
+\begin{equation}
+\label{eq:wcal_route}
+  \hat{w}_{\mathrm{cal}}(t_1, t_2) = \sum_{i=1}^{N} \Big[\ind\!\{U_1^{(i)} \leq t_1\}(1 - c_1^{(i)}) + \ind\!\{U_1^{(i)} > t_1 \wedge U_2^{(i)} \leq t_2\}(1 - c_2^{(i)})\Big].
+\end{equation}
+The empirical FDR and UCB follow as before:
+\begin{align}
+  \hat{r}_{\mathrm{cal}}(t_1, t_2) &= \frac{\hat{w}_{\mathrm{cal}}(t_1, t_2)}{\hat{m}_{\mathrm{cal}}(t_1, t_2)}, \label{eq:fdr_route} \\[4pt]
+  \hat{R}^{\mathrm{upper}}_{1-\delta}(t_1, t_2) &= \mathrm{BetaInv}\!\big(1 - \delta;\; \hat{w}_{\mathrm{cal}} + 1,\; \hat{m}_{\mathrm{cal}} - \hat{w}_{\mathrm{cal}}\big). \label{eq:ucb_route}
+\end{align}
+We select the threshold pair that maximizes coverage subject to the risk constraint:
+\begin{equation}
+\label{eq:that_route}
+  (\hat{t}_1, \hat{t}_2) = \argmax_{t_1,\, t_2} \hat{m}_{\mathrm{cal}}(t_1, t_2) \quad \text{s.t.} \quad \hat{R}^{\mathrm{upper}}_{1-\delta}(t_1, t_2) \leq \alpha.
+\end{equation}
+In practice, this is solved by search over the sorted unique uncertainty values on the calibration set. For each candidate $t_1$, cumulative sums enable evaluating all $t_2$ candidates in $O(|\mathcal{T}_2|)$ time, yielding $O(|\mathcal{T}_1| \cdot |\mathcal{T}_2|)$ total complexity (Algorithm~\ref{alg:calibration}). Because this search evaluates many threshold pairs, we additionally report a conservative variant that corrects for it via a Bonferroni adjustment ($\delta' = \delta/(|\mathcal{T}_1|\,|\mathcal{T}_2|)$) (see Appendix~\ref{app:bonferroni}).
+
+\subsection{Theoretical Guarantee}
+\label{sec:guarantee}
+
+The central theoretical question is whether the single-mode Clopper–Pearson guarantee (Eq.~\ref{eq:goal}) extends to the two-mode routing setting. It does, because the routing decision for each instance is entirely determined by its uncertainty scores and the fixed thresholds, introducing no additional randomness.
+
+\begin{lemma}[Bernoulli structure under routing]
+\label{lem:routing}
+Let $(\mathbf{x}_i, \hat{y}_i, y^*_i)$ be i.i.d.\ samples from $\mathcal{D}$, and let $(t_1, t_2)$ be fixed thresholds. Under the routing policy (Eq.~\ref{eq:routing}), the failure indicators $\{W_i\}$ over the selected subset are i.i.d.\ $\mathrm{Bernoulli}(R(t_1, t_2))$.
+\end{lemma}
+
+\noindent The proof (Appendix~\ref{app:proof_routing}) shows that the selection indicator and the correctness of selected instances are both deterministic functions of $(\mathbf{x}_i, \hat{y}_i, y^*_i)$. Since the original data is i.i.d., conditioning on selection preserves independence and identical distribution. Combined with the Clopper--Pearson bound, this yields a guarantee for any fixed threshold pair:
+\begin{equation}
+\label{eq:guarantee_route}
+  \boxed{\;\Pr\!\left(R(t_1, t_2) \leq \hat{R}^{\mathrm{upper}}_{1-\delta}(t_1, t_2)\right) \geq 1 - \delta.\;}
+\end{equation}
+In particular, any fixed pair whose bound satisfies $\hat{R}^{\mathrm{upper}}_{1-\delta}(t_1,t_2) \leq \alpha$ controls the error rate at $\alpha$ with confidence $1-\delta$. 
+% \paragraph{Validity under threshold selection.}
+% We selected the deployed threshold pair $(\hat{t}_1, \hat{t}_2)$ using the calibration data rather than fixed beforehand. Specifically, we choose the pair that maximizes coverage while satisfying $\hat{R}^{\mathrm{upper}}_{1-\delta} \leq \alpha$ (Eq.~\ref{eq:that_route}). Although the guarantee above holds for each candidate pair on its own, certifying the selected pair requires accounting for this search. The conservative variant addresses this directly which evaluates all $|\mathcal{T}_1|\,|\mathcal{T}_2|$ candidate pairs using the corrected confidence level $\delta'=\delta/(|\mathcal{T}_1|\,|\mathcal{T}_2|)$. By a union-bound argument, the guarantee then holds simultaneously for every candidate pair, implying that the selected pair satisfies $\Pr(R(\hat{t}_1,\hat{t}_2)\leq\alpha)\geq1-\delta$ (see Appendix~\ref{app:bonferroni}). In practice, however, we find that the simpler uncorrected selection already provides effective risk control (see Section~\ref{sec:results}). For this reason, we use the coverage-maximizing thresholds in our main experiments, while treating the conservative procedure as a theoretically valid alternative.
+
+\begin{figure}[t]
+\begin{minipage}[t]{0.52\textwidth}
+\begin{algorithm}[H]
+\small
+\caption{Calibration (offline)}
+\label{alg:calibration}
+\begin{algorithmic}[1]
+\Require Calibration set $\mathcal{D}_{\mathrm{cal}}$, judge $\mathcal{J}$
+\Require Risk level $\alpha$, significance level $\delta$
+\Ensure Calibrated thresholds $\hat{t}_1$, $\hat{t}_2$
+\Statex
+\For{each $(\mathbf{x}_i, \hat{y}_i, y_i^*) \in \mathcal{D}_{\mathrm{cal}}$}
+    \State $v_1^{(i)}, U_1^{(i)} \gets \mathcal{J}(\mathbf{x}_i, \hat{y}_i)$
+    \State $\mathcal{E}_i \gets \textsc{Retrieve}(\mathbf{x}_i)$
+    \State $v_2^{(i)}, U_2^{(i)} \gets \mathcal{J}(\mathbf{x}_i, \hat{y}_i, \mathcal{E}_i)$
+    \State $c_1^{(i)} \!\gets\! \mathcal{A}(v_1^{(i)}, e_i^*)$;\; $c_2^{(i)} \!\gets\! \mathcal{A}(v_2^{(i)}, e_i^*)$
+\EndFor
+\Statex
+\State $\mathcal{T}_1 \gets$ sorted unique $\{U_1^{(i)}\}_{i=1}^{N}$
+\State $\mathcal{T}_2 \gets$ sorted unique $\{U_2^{(i)}\}_{i=1}^{N}$
+\State $\hat{t}_1, \hat{t}_2 \gets \textsc{null}$;\; $m^* \gets 0$
+\For{$t_1$ in $\mathcal{T}_1$}
+    \For{$t_2$ in $\mathcal{T}_2$}
+        \State Compute $\hat{m}_{\mathrm{cal}},\, \hat{w}_{\mathrm{cal}}$
+        \State $R^+ \!\gets\! \mathrm{BetaInv}(1\!-\!\delta;\, \hat{w}_{\mathrm{cal}}\!+\!1,\, \hat{m}_{\mathrm{cal}}\!-\!\hat{w}_{\mathrm{cal}})$
+        \If{$R^+ \leq \alpha$ \textbf{and} $\hat{m}_{\mathrm{cal}} > m^*$}
+            \State $\hat{t}_1 \!\gets\! t_1$; $\hat{t}_2 \!\gets\! t_2$; $m^* \!\gets\! \hat{m}_{\mathrm{cal}}$
+        \EndIf
+    \EndFor
+\EndFor
+\State \Return $\hat{t}_1$, $\hat{t}_2$
+\end{algorithmic}
+\end{algorithm}
+\end{minipage}%
+\hfill
+\begin{minipage}[t]{0.45\textwidth}
+\begin{algorithm}[H]
+\small
+\caption{Test-time evaluation (online)}
+\label{alg:test}
+\begin{algorithmic}[1]
+\Require Instance $(\mathbf{x}, \hat{y})$, judge $\mathcal{J}$
+\Require Thresholds $\hat{t}_1$, $\hat{t}_2$
+\Ensure Verdict $v \in \{0, 1\}$ or \textsc{abstain}
+\Statex
+\State $v_1, U_1 \gets \mathcal{J}(\mathbf{x}, \hat{y})$
+\If{$U_1 \leq \hat{t}_1$}
+    \State \Return $v_1$ \Comment{Confident}
+\EndIf
+\Statex
+\State $\mathcal{E} \gets \textsc{Retrieve}(\mathbf{x})$
+\State $v_2, U_2 \gets \mathcal{J}(\mathbf{x}, \hat{y}, \mathcal{E})$
+\If{$U_2 \leq \hat{t}_2$}
+    \State \Return $v_2$ \Comment{Retrieval helped}
+\EndIf
+\Statex
+\State \Return \textsc{abstain} \Comment{Human review}
+\end{algorithmic}
+\end{algorithm}
+\vspace{0.5em}
+\small
+\textbf{Cost analysis.} Let $p$ be the fraction of instances accepted by Mode~1. Test-time retrieval is invoked for only $(1\!-\!p)$ of instances. At $\alpha\!=\!0.20$ with Qwen3-14B, $p\!\approx\!0.45$ on TriviaQA, so nearly half of evaluations incur zero retrieval cost. On harder benchmarks $p$ decreases, but the framework still avoids retrieval for the most confident instances.
+\end{minipage}
+\end{figure}
+% \paragraph{Scope and limitations.}
+% The guarantee is tied to the retrieval snapshot used during calibration. Because retrieval relies on a non-stationary web index, a query may return different evidence at deployment than it did at calibration. Such retrieval drift affects the guarantee only if it changes the conditional error rate of Mode~2 verdicts. As long as this error rate remains stable, the calibrated thresholds continue to transfer. We evaluate this scenario in Section~\ref{sec:drift} by re-querying the web several months after calibration and find that FDR control is preserved. If the quality of the retrieved evidence changes substantially, recalibration restores the guarantee. Likewise, any change to the task, candidate model, or judge model violates the exchangeability assumption and requires recalibration.

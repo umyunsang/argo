@@ -1,0 +1,2520 @@
+
+Warning: orx 0.1.117 is outdated (latest 0.1.118). A newer release is available; upgrade to stay compatible with the API. Run `orx update` to upgrade.
+
+alphaXiv: https://www.alphaxiv.org/abs/2608.17994
+
+Published as a conference paper at COLM 2026
+Judge, Retrieve, or Abstain: Uncertainty-Guarded LLM Judg-
+ing with Provable Risk Guarantees
+Sher Badshah
+1,2
+, Ali Emami
+3
+, Hassan Sajjad
+1,2
+1
+Dalhousie University 
+2
+New York University Abu Dhabi 
+3
+Emory University
+{sh545346,hsajjad}@dal.ca
+ali.emami@emory.edu
+Abstract
+Using LLMs as judges has become standard practice for evaluating model
+outputs at scale. This is particularly common for subjective, open-ended
+tasks such as assessing helpfulness or alignment, where no single reference
+answer exists. However, objective tasks introduce a distinct reliability chal-
+lenge for reference-free LLM judging. In the absence of a reference answer,
+the judge evaluates factual correctness either through its parametric knowl-
+edge or through tool augmentation. Although the former enables efficient
+evaluation, the judge may hallucinate or lack sufficient evidence for its
+verdict. Conversely, tool augmentation can provide additional evidence
+but introduces extra computational cost and requires an appropriate mech-
+anism to determine when and how that evidence should be used reliably.
+More importantly, neither approach alone provides formal control over
+the risk of accepted verdicts or guarantees their reliability at a specified
+level. We propose a risk-controlled framework that calibrates uncertainty
+thresholds on a held-out set so that the false discovery rate among accepted
+verdicts remains below a user-specified level α with high probability, using
+finite-sample Clopper–Pearson intervals. When the parametric mode is
+not sufficiently confident, the instance is routed to a retrieval-augmented
+mode, where the judge gathers web evidence and re-evaluates the instance
+under a second calibrated threshold. The finite-sample guarantee carries
+over to this two-threshold routing without additional assumptions. Across
+open-domain QA benchmarks and judges of varying scales, the frame-
+work maintains the target error rate while achieving substantially higher
+coverage than single-mode baselines.
+1 Introduction
+LLM-as-a-judge has emerged as a scalable alternative to human evaluation for assessing
+language model outputs (Zheng et al., 2023). It enables practitioners to evaluate thousands
+of model outputs at a fraction of the cost and time required for human annotation (Gu et al.,
+2024; Tan et al., 2025). However, most existing work employs LLM judges for subjective
+evaluation (Badshah et al., 2025), such as scoring outputs for helpfulness, harmlessness, or
+style in reward modeling, where no single correct answer exists and approximate agreement
+suffices (Yuan et al., 2024; Liu et al., 2023). Extending LLM-as-a-judge to objective, factual
+evaluation remains an open challenge.
+In factual and open-domain QA, answers are either correct or incorrect, and the judge
+must make this determination reliably. However, obtaining ground-truth annotations
+for this purpose is expensive at scale (Chiang & Lee, 2023; Ma ˜nas et al., 2024), requires
+domain expertise for specialized questions, and is entirely infeasible when LLMs operate as
+autonomous agents answering open-ended queries in real-world environments where no
+pre-collected labels exist. LLM-as-a-judge offers a reference-free alternative that eliminates
+this dependency. Nevertheless, utilizing LLM judges to assess correctness without explicit
+references introduces two key reliability challenges (Schroeder & Wood-Doughty, 2025;
+Badshah & Sajjad, 2025).
+1
+arXiv:2608.17994v1 [cs.CL] 18 Aug 2026
+
+Published as a conference paper at COLM 2026
+First, LLM judges are bounded by their training data and may lack knowledge of recent
+events, rare entities, or specialized domains (Wen et al., 2025). Such limitations can prevent
+reliable distinction between correct answers and plausible fabrications. Second, even if the
+judge has the relevant knowledge, hallucinations may still cause it to produce confident
+but incorrect verdicts (Huang et al., 2025). In both cases, the failures are silent as the judge
+provides no indication that its verdict is unreliable. Without a mechanism to quantify and
+act on this uncertainty, incorrect evaluations can propagate undetected into downstream
+decisions.
+Selective evaluation provides a natural mitigation strategy by allowing the judge to abstain
+when uncertain and produce a verdict only when it is likely to be correct. Uncertainty
+quantification methods can identify unreliable verdicts (Shorinwa et al., 2025). However,
+applying a heuristic threshold to these scores provides no formal guarantee on the error
+rate among accepted evaluations (Badshah et al., 2026a). Recent work on risk-controlled
+selective prediction addresses this gap by calibrating statistically valid thresholds that
+bound the False Discovery Rate (FDR) among selected outputs with high probability (Wang
+et al., 2026; 2025a). However, existing methods are designed to filter examinee answers
+in Question-Answering (QA) tasks rather than control errors in a meta-evaluation setting.
+Moreover, earlier methods treat abstention as the only recourse for uncertain instances. This
+discards cases where the judge’s uncertainty stems from a knowledge gap or hallucination
+that could be resolved with additional evidence (Badshah et al., 2026b).
+In this paper, we propose a risk-controlled selective evaluation framework for LLM-as-a-
+judge that addresses the above limitations. Inspired by LLM-based agents that leverage
+external tools to overcome their parametric limitations, we equip the judge with web
+search as a tool to bridge its knowledge gaps. Our framework operates in two modes. In
+Mode 1, the judge model evaluates using only its parametric knowledge without any tool-
+augmentation. If the judge is confident, the verdict is accepted. If uncertain, the instance is
+routed to Mode 2 where the judge retrieves relevant evidence from the web and re-evaluates
+with this augmented context. If the judge remains uncertain after retrieval, it abstains and
+flags the instance for human review. Both thresholds are jointly calibrated on a held-out set
+with known ground-truth labels via Clopper–Pearson upper confidence bounds (Clopper &
+Pearson, 1934). We prove that the finite-sample FDR guarantee for a fixed threshold pair
+extends to the two-threshold routing setting without additional distributional assumptions.
+Our contributions are:
+• We formulate risk-controlled selective evaluation for LLM-as-a-judge on factual
+QA.
+• We introduce a two-mode routing mechanism that equips the judge with adaptive
+web retrieval to resolve uncertainty before resorting to abstention.
+• We show that the Bernoulli structure required for the Clopper–Pearson bound
+extends to the two-threshold routing setting.
+• Experiments across open-domain QA benchmarks and judges of varying scales
+demonstrate that adaptive retrieval recovers substantial coverage over single-mode
+baselines while controlling the judge’s error rate.
+2 Related Work
+LLM-as-a-Judge. Using LLMs to evaluate the outputs of other models has gained
+widespread adoption as a cost-effective alternative to human annotation. Strong LLMs can
+approximate human preferences on subjective dimensions (Liu et al., 2023). As a result,
+they have been adopted for reward modeling and reinforcement learning (Son et al., 2024).
+More recently, LLM judges have been extended to objective tasks such as factual evaluation.
+SAFE (Wei et al., 2024) uses an LLM agent with web search to verify individual facts in
+long-form responses. Similarly, SAGE (Badshah et al., 2026b) employs a tool-augmented
+agent that iteratively retrieves and synthesizes external evidence for reference-free QA
+evaluation. These works improve judge accuracy but provide no formal guarantee on the
+reliability of verdicts.
+2
+
+Published as a conference paper at COLM 2026
+Uncertainty quantification for LLM evaluation. Existing methods generally fall into two
+categories. White-box methods estimate uncertainty from the judge’s token probabilities.
+The most common choice is the predictive entropy of the output distribution (Malinin &
+Gales, 2021). These probabilities are often well calibrated with respect to correctness (Ka-
+davath et al., 2022). Black-box methods, in contrast, estimate uncertainty by querying the
+judge repeatedly and measuring how consistent its verdicts are (Wang et al., 2023; 2024).
+Both signals correlate with judge accuracy and can flag low-confidence verdicts (Badshah
+et al., 2026a). However, they remain heuristic. For instance, a threshold chosen by hand
+or tuned on a validation set gives no formal guarantee on the error rate among accepted
+verdicts.
+Uncertainty-based routing and tool use. A parallel line of work uses uncertainty to
+determine when additional resources are needed. FrugalGPT (Chen et al., 2023) and Au-
+toMix (Aggarwal et al., 2024) use confidence to route queries across models with different
+capabilities, trading off cost against quality. In contrast, FLARE (Jiang et al., 2023) uses
+token-level uncertainty to decide when to retrieve external information during generation.
+More recently, SAGE (Badshah et al., 2026b) introduced search-augmented retrieval for LLM
+judges, where the judge acts as an agent that gathers targeted evidence when evaluating
+free-form answers. However, these approaches often rely on unconditional retrieval, which
+introduces unnecessary computation. Furthermore, they do not provide formal guarantees
+on the error rate of the resulting evaluations.
+Risk-controlled selective evaluation. Conformal prediction provides distribution-free,
+finite-sample coverage guarantees by constructing prediction sets calibrated on held-out
+data (Angelopoulos & Bates, 2023). Conformal risk control generalizes this beyond coverage
+to bound arbitrary loss functions, including the FDR, at user-specified levels (Angelopoulos
+et al., 2024). Recent work has applied these guarantees to question answering. SConU builds
+prediction sets that cover admissible answers with high probability (Wang et al., 2025b).
+Similarly, COIN (Wang et al., 2025a) calibrates an uncertainty threshold that bounds the
+FDR among accepted answers using Clopper–Pearson upper confidence bounds (Clopper
+& Pearson, 1934). Closer to our setting, Trust or Escalate (Jung et al., 2025) and SCOPE (Bad-
+shah et al., 2026a) adapt risk-controlled selective prediction to pairwise evaluation and
+provide guarantee on human agreement among accepted judgments. However, both target
+subjective preference tasks where the judge compares two responses rather than evaluating
+factual correctness (i.e., objective evaluation).
+Our framework introduces risk-controlled retrieval-augmented evaluation, where retrieval
+is selectively activated based on calibrated uncertainty thresholds. Unlike unconditional
+retrieval approaches, it provides formal FDR guarantees for the accepted verdicts.
+3 Methodology
+We propose a risk-controlled framework for LLM-as-a-judge evaluation. The framework
+calibrates uncertainty thresholds on a held-out set with human labels so that, among all
+instances the judge evaluates, the probability of producing an incorrect verdict is bounded
+by a user-specified risk level α (Angelopoulos & Bates, 2023; Angelopoulos et al., 2024).
+When the judge is uncertain, the framework first attempts to improve the evaluation through
+web retrieval; if the judge remains uncertain after retrieval, it abstains and flags the instance
+for human review 
+1
+.
+3.1 Problem Formulation
+Task. Let F : X → Y be an examinee LLM that, given a question x ∈ X , generates a
+candidate answer ˆ
+y ∈ Y
+, and let y
+∗ 
+∈ Y be the corresponding ground-truth answer. A judge
+1
+We do not implement human review; the term indicates that these instances are excluded from
+automated evaluation.
+3
+
+Published as a conference paper at COLM 2026
+LLM J : X ×Y → {0, 1} evaluates whether ˆy correctly answers x, producing a binary verdict
+v ∈ {0, 1}, where v = 1 means the judge deems ˆy correct.
+Admission function. The ground-truth evaluation label e
+∗ 
+∈ {0, 1} indicates whether ˆy
+is truly correct. It can be obtained from human annotation, or by applying a task-specific
+relevance function A
+ref 
+: Y ×Y → [0, 1] with a threshold λ
+A
+:
+e
+∗ 
+= 1
+[
+A
+ref
+( 
+ˆ
+y, y
+∗
+) ≥ λ
+A
+] 
+. (1)
+A verdict v is admissible if it matches the ground truth:
+A(v, e
+∗
+) = 1
+[
+v = e
+∗
+] 
+. (2)
+Selective evaluation. Rather than always outputting a verdict, the judge is allowed to
+abstain when it is uncertain. We define a failure indicator W = 1[v̸ = e
+∗
+]. Given an
+uncertainty score U (defined in §3.2), the judge outputs a verdict only when U ≤ t for some
+threshold t. The false discovery rate (FDR) is:
+R(t) = E
+[
+W | U ≤ t
+] 
+, (3)
+i.e., the error rate among instances the judge chooses to evaluate.
+Goal. For a user-specified risk level α ∈ (0, 1) and significance level δ (e.g., 0.05), we seek
+a threshold t such that:
+Pr
+(
+R(t) ≤ α
+) 
+≥ 1 − δ, (4)
+where the probability is over the randomness of the calibration data. With high confidence
+(1−δ), the error rate among the judge’s non-abstained outputs is at most α.
+Calibration data. We hold out N calibration samples D
+cal 
+= {(x
+i
+, ˆ
+y
+i
+, y
+∗
+i 
+)}
+N
+i=1 
+with known
+ground-truth labels e
+∗
+i 
+, drawn i.i.d. from the data-generating distribution D.
+3.2 Uncertainty Quantification (UQ)
+Accurate uncertainty estimation is critical for selective evaluation: the better the uncertainty
+score separates correct from incorrect verdicts, the higher the coverage (fewer abstentions)
+at a given risk level.
+3.3 Risk-Bounded Selective Evaluation
+We now describe how to calibrate the uncertainty threshold to satisfy the guarantee in Eq. (4).
+This section presents the base case where the judge uses only its parametric knowledge (no
+retrieval); we extend to retrieval-augmented judging in §3.4.
+Empirical failure analysis. For each calibration instance, we obtain the judge’s verdict
+v
+i 
+and uncertainty score U
+i
+. Given a candidate threshold t, we compute the number of
+instances the judge would evaluate (selection size):
+ˆ
+m
+cal
+(t) =
+N
+∑
+i=1
+1
+{
+U
+i 
+≤ t
+} 
+, (5)
+and the number of errors among them (error count):
+ˆ
+w
+cal
+(t) =
+N
+∑
+i=1
+1
+{
+U
+i 
+≤ t
+}·
+(1 − c
+i
+), (6)
+where c
+i 
+= A(v
+i
+, e
+∗
+i 
+) is the correctness indicator. The empirical FDR is ˆr
+cal
+(t) =
+ˆ
+w
+cal
+(t)/ ˆm
+cal
+(t).
+4
+
+Published as a conference paper at COLM 2026
+Upper confidence bound (UCB). The empirical FDR is an unbiased point estimate of the
+true failure rate, but may underestimate it on any given calibration set due to sampling
+variability. To obtain a rigorous bound, we leverage the Clopper–Pearson exact method.
+Since the calibration instances are i.i.d. and the selection event {U
+i 
+≤ t} is a deterministic
+function of (x
+i
+, ˆy
+i
+), the failure indicators of selected instances are i.i.d. Bernoulli with
+parameter R(t). We can therefore apply the one-sided Clopper–Pearson bound:
+ˆ
+R
+upper
+1−δ 
+(t) = BetaInv
+
+1 − δ; 
+ˆ
+w
+cal
+(t) + 1, 
+ˆ
+m
+cal
+(t) − 
+ˆ
+w
+cal
+(t)
+
+, (7)
+which satisfies Pr(R(t) ≤ 
+ˆ
+R
+upper
+1−δ 
+(t)) ≥ 1 − δ (Appendix A.1).
+Threshold selection. We select the largest threshold whose UCB stays below the risk level
+α: 
+ˆ
+t = sup 
+
+t : ˆR
+upper
+1−δ 
+(t
+′
+) ≤ α for all t
+′ 
+≤ t . (8)
+This maximizes the number of instances the judge evaluates while targeting Eq. (4).
+3.4 Adaptive Retrieval via Two-Mode Routing
+Inspired by LLM-based agents that leverage external tools to overcome the base model
+limitations, we equip the judge with web search as a tool to bridge its knowledge gaps.
+When the judge is not confident based on its parametric knowledge alone, it retrieves
+relevant evidence from the web and re-evaluates with this augmented context. This recovers
+coverage on exactly the instances that the single-mode framework would abstain on, turning
+abstention into an opportunity for informed evaluation.
+Two evaluation modes. For each instance (x
+i
+, ˆy
+i
+), we define:
+• 
+Mode 1 (direct): J evaluates using only its internal knowledge, producing verdict
+v
+(i)
+1 
+with uncertainty U
+(i)
+1 
+.
+• Mode 2 (retrieval-augmented): The system queries a web search engine using the
+question x
+i
+, retrieving the top-k results, each containing a title, text snippet, and
+source URL. These are concatenated into an evidence passage E
+i 
+appended to the
+judge’s prompt. The judge J re-evaluates with this context, producing v
+(i)
+2 
+with
+uncertainty U
+(i)
+2 
+.
+We denote the correctness of each mode as c
+(i)
+k 
+= A(v
+(i)
+k 
+, e
+∗
+i 
+) for k ∈ {1, 2}.
+Routing logic. At test time, given calibrated thresholds (
+ˆ
+t
+1
+, ˆt
+2
+):
+output =
+
+
+
+v
+1
+, if U
+1 
+≤ 
+ˆ
+t
+1
+,
+v
+2
+, if U
+1 
+> 
+ˆ
+t
+1 
+and U
+2 
+≤ 
+ˆ
+t
+2
+,
+ABSTAIN, otherwise.
+(9)
+Retrieval is invoked only when Mode 1 is uncertain, so confident instances incur zero
+retrieval cost.
+Joint threshold calibration. During calibration, we pre-compute both modes for all N
+instances in D
+cal
+. For a candidate pair (t
+1
+, t
+2
+), the selection size counts instances accepted
+via either mode:
+ˆ
+m
+cal
+(t
+1
+, t
+2
+) =
+N
+∑
+i=1
+h
+1
+n
+U
+(i)
+1 
+≤ t
+1
+o
++ 1
+
+U
+(i)
+1 
+> t
+1 
+and U
+(i)
+2 
+≤ t
+2
+i
+. (10)
+The error count among selected instances is:
+ˆ
+w
+cal
+(t
+1
+, t
+2
+) =
+N
+∑
+i=1
+h
+1{U
+(i)
+1 
+≤ t
+1
+}(1 − c
+(i)
+1 
+) + 1{U
+(i)
+1 
+> t
+1 
+∧ U
+(i)
+2 
+≤ t
+2
+}(1 − c
+(i)
+2 
+)
+i
+. (11)
+5
+
+Published as a conference paper at COLM 2026
+The empirical FDR and UCB follow as before:
+ˆ
+r
+cal
+(t
+1
+, t
+2
+) = 
+ˆ
+w
+cal
+(t
+1
+, t
+2
+)
+ˆ
+m
+cal
+(t
+1
+, t
+2
+) 
+, (12)
+ˆ
+R
+upper
+1−δ 
+(t
+1
+, t
+2
+) = BetaInv
+
+1 − δ; 
+ˆ
+w
+cal 
++ 1, 
+ˆ
+m
+cal 
+− 
+ˆ
+w
+cal
+
+. (13)
+We select the threshold pair that maximizes coverage subject to the risk constraint:
+(
+ˆ
+t
+1
+, ˆt
+2
+) = arg max
+t
+1
+, t
+2
+ˆ
+m
+cal
+(t
+1
+, t
+2
+) s.t. 
+ˆ
+R
+upper
+1−δ 
+(t
+1
+, t
+2
+) ≤ α. (14)
+In practice, this is solved by search over the sorted unique uncertainty values on the
+calibration set. For each candidate t
+1
+, cumulative sums enable evaluating all t
+2 
+candidates
+in O(|T
+2
+|) time, yielding O(|T
+1
+| · |T
+2
+|) total complexity (Algorithm 1). Because this search
+evaluates many threshold pairs, we additionally report a conservative variant that corrects
+for it via a Bonferroni adjustment (δ
+′ 
+= δ/(|T
+1
+| |T
+2
+|)) (see Appendix D.4).
+3.5 Theoretical Guarantee
+The central theoretical question is whether the single-mode Clopper–Pearson guarantee
+(Eq. 4) extends to the two-mode routing setting. It does, because the routing decision for
+each instance is entirely determined by its uncertainty scores and the fixed thresholds,
+introducing no additional randomness.
+Lemma 1 (Bernoulli structure under routing). Let (x
+i
+, ˆy
+i
+, y
+∗
+i 
+) be i.i.d. samples from D, and let
+(t
+1
+, t
+2
+) be fixed thresholds. Under the routing policy (Eq. 9), the failure indicators {W
+i
+} over the
+selected subset are i.i.d. Bernoulli(R(t
+1
+, t
+2
+)).
+The proof (Appendix A.2) shows that the selection indicator and the correctness of selected
+instances are both deterministic functions of (x
+i
+, ˆy
+i
+, y
+∗
+i 
+). Since the original data is i.i.d.,
+conditioning on selection preserves independence and identical distribution. Combined
+with the Clopper–Pearson bound, this yields a guarantee for any fixed threshold pair:
+Pr
+
+R(t
+1
+, t
+2
+) ≤ 
+ˆ
+R
+upper
+1−δ 
+(t
+1
+, t
+2
+)
+
+≥ 1 − δ. (15)
+In particular, any fixed pair whose bound satisfies ˆR
+upper
+1−δ 
+(t
+1
+, t
+2
+) ≤ α controls the error rate
+at α with confidence 1 − δ.
+4 Experiments
+Datasets and models. We evaluate on four open-domain QA benchmarks: TriviaQA (Joshi
+et al., 2017), Natural Questions (NQ) (Kwiatkowski et al., 2019), HotpotQA (Yang et al.,
+2018), and PopQA (Mallen et al., 2022). From each benchmark’s standard held-out split, we
+sample 2,000 instances using seed 42.
+We use two candidate models: Qwen3-8B (Qwen Team, 2025b) and LLaMA-3.1-70B (Meta AI,
+2024). For judges, we employ four models: Qwen3-4B, Qwen3-8B, and Qwen3-14B (Qwen
+Team, 2025b) and LLaMA-3.1-8B-Instruct (Meta AI, 2024). Each judge outputs a binary
+verdict (True/False) and a brief explanation.
+Admission functions. To evaluate whether the judge’s verdict is correct, we first determine
+whether the candidate’s answer is actually right by comparing it against the reference
+answer. This ground-truth label e
+∗ 
+is computed using three admission functions: (1) Exact
+Match (EM), (2) Token F1 (threshold ≥ 0.5), and (3) LLM Evaluator (Badshah & Sajjad,
+2025; Badshah et al., 2025), which uses Qwen2.5-7B-Instruct (Qwen Team, 2025a) as a
+reference-based evaluator to judge semantic equivalence.
+6
+
+Published as a conference paper at COLM 2026
+Algorithm 1 Calibration (offline)
+Require: Calibration set D
+cal
+, judge J
+Require: Risk level α, significance level δ
+Ensure: Calibrated thresholds ˆt
+1
+, ˆt
+2
+1: for each (x
+i
+, ˆy
+i
+, y
+∗
+i 
+) ∈ D
+cal 
+do
+2: v
+(i)
+1 
+, U
+(i)
+1 
+← J (x
+i
+, ˆy
+i 
+)
+3: E
+i 
+← RETRIEVE(x
+i 
+)
+4: v
+(i)
+2 
+, U
+(i)
+2 
+← J (x
+i
+, ˆy
+i
+, E
+i 
+)
+5: c
+(i)
+1 
+← A(v
+(i)
+1 
+, e
+∗
+i 
+); c
+(i)
+2 
+← A(v
+(i)
+2 
+, e
+∗
+i 
+)
+6: end for
+7: T
+1 
+← sorted unique {U
+(i)
+1 
+}
+N
+i=1
+8: T
+2 
+← sorted unique {U
+(i)
+2 
+}
+N
+i=1
+9: ˆt
+1
+, ˆt
+2 
+← NULL; m
+∗ 
+← 0
+10: for t
+1 
+in T
+1 
+do
+11: for t
+2 
+in T
+2 
+do
+12: Compute ˆm
+cal
+, 
+ˆ
+w
+cal
+13: R
++ 
+← BetaInv(1−δ; 
+ˆ
+w
+cal 
++1, 
+ˆ
+m
+cal 
+− 
+ˆ
+w
+cal
+)
+14: if R
++ 
+≤ α and 
+ˆ
+m
+cal 
+> m
+∗ 
+then
+15: 
+ˆ
+t
+1 
+← t
+1
+; ˆt
+2 
+← t
+2
+; m
+∗ 
+← 
+ˆ
+m
+cal
+16: end if
+17: end for
+18: end for
+19: return 
+ˆ
+t
+1
+, ˆt
+2
+Algorithm 2 Test-time evaluation (online)
+Require: Instance (x, ˆy), judge J
+Require: Thresholds ˆt
+1
+, ˆt
+2
+Ensure: Verdict v ∈ {0, 1} or ABSTAIN
+1: v
+1
+, U
+1 
+← J (x, ˆy)
+2: if U
+1 
+≤ 
+ˆ
+t
+1 
+then
+3: return v
+1 
+▷ Confident
+4: end if
+5: E ← RETRIEVE(x)
+6: v
+2
+, U
+2 
+← J (x, ˆy, E )
+7: if U
+2 
+≤ 
+ˆ
+t
+2 
+then
+8: return v
+2 
+▷ Retrieval helped
+9: end if
+10: return ABSTAIN ▷ Human review
+Cost analysis. Let p be the fraction of in-
+stances accepted by Mode 1. Test-time re-
+trieval is invoked for only (1− p) of instances.
+At α = 0.20 with Qwen3-14B, p ≈ 0.45 on
+TriviaQA, so nearly half of evaluations incur
+zero retrieval cost. On harder benchmarks
+p decreases, but the framework still avoids
+retrieval for the most confident instances.
+Uncertainty quantification. We use predictive entropy (PE) (Malinin & Gales, 2021) as
+the uncertainty measure. PE is computed from the judge’s token-level log-probabilities at
+the verdict position via a single forward pass (Kadavath et al., 2022). When the judge’s
+hidden states are available, PE can be replaced by supervised scores without changing the
+guarantee. We report a probe and a LoRA+Prompt variant in Appendix D.2.
+Retrieval. For Mode 2, we query a web search engine using the original question (i.e., the
+question provided to the candidate) and retrieve the top-k results, with k = 3 as the default
+setting. The retrieved results are concatenated into a single passage and appended to the
+judge prompt as additional context. We further study the effect of retrieval depth by varying
+k ∈ {3, 6, 9} on one candidate–judge pair (LLaMA-3.1-70B evaluated by Qwen3-8B).
+Calibration protocol. We run 100 random 50/50 calibration/test splits using the Clopper–
+Pearson exact binomial bound. We set δ = 0.05 and evaluate α ∈ {0.05, 0.10, 0.15, 0.20, 0.25}.
+Appendix D.1 reports sensitivity to both δ and the calibration-set size.
+Evaluation metrics. We report: (1) FDR, the fraction of accepted instances with incorrect
+verdicts (w
+test
+/m
+test
+); (2) Coverage, the fraction of instances accepted rather than abstained
+on (m
+test
+/N
+test
+); and (3) Routing distribution which is the split across Mode 1, Mode 2, and
+abstention.
+5 Results
+We evaluate whether the framework delivers on its two central promises: (1) the FDR
+guarantee holds empirically across judges, candidates, and datasets, and (2) adaptive
+retrieval recovers coverage that would otherwise be lost to abstention. We use predictive
+entropy and LLM evaluator for the main results, and additionally analyze the sensitivity of
+our framework to the choice of admission function and retrieval depth (§D.1).
+7
+
+Published as a conference paper at COLM 2026
+.05 .10 .15 .20 .25 .30
+0
+.05
+.10
+.15
+.20
+.25
+.30
+FDR
+Qwen3-8B
+TriviaQA
+.05 .10 .15 .20 .25 .30
+0
+.05
+.10
+.15
+.20
+.25
+.30
+FDR
+NQ-Open
+.05 .10 .15 .20 .25 .30
+0
+.05
+.10
+.15
+.20
+.25
+.30
+FDR
+PopQA
+.05 .10 .15 .20 .25 .30
+0
+.05
+.10
+.15
+.20
+.25
+.30
+FDR
+HotpotQA
+.05 .10 .15 .20 .25 .30
+Target
+0
+.05
+.10
+.15
+.20
+.25
+.30
+FDR
+Llama-3.1-70B
+.05 .10 .15 .20 .25 .30
+Target
+0
+.05
+.10
+.15
+.20
+.25
+.30
+FDR
+.05 .10 .15 .20 .25 .30
+Target
+0
+.05
+.10
+.15
+.20
+.25
+.30
+FDR
+.05 .10 .15 .20 .25 .30
+Target
+0
+.05
+.10
+.15
+.20
+.25
+.30
+FDR
+Qwen3-4B Qwen3-8B Qwen3-14B Llama-3.1-8B
+Figure 1: Test-time FDR (mean±std over 100 splits) across all 32 configurations. Rows
+correspond to the two candidate models; columns to the four datasets. Each line represents
+a different judge (see legend). The dashed diagonal marks FDR = α.
+5.1 FDR control holds across all configurations
+The most basic requirement of our framework is that the empirical FDR remains at or below
+the target α. Figure 1 tests this across all candidate–judge–dataset configurations. In every
+case, the FDR stays at or below α, satisfying the finite-sample guarantee (Eq. 15).
+Three observations are noteworthy. First, all four judges provide valid FDR control regard-
+less of their parameter count, showing that the guarantee does not require a strong judge.
+Second, FDR tracks close to α with narrow confidence bands (±0.01–0.02), which indicates
+stable calibration across 100 random splits. Third, the gap between FDR and α is smallest
+on TriviaQA and PopQA, which are relatively easy tasks where judges are most accurate.
+This demonstrates that the framework is tightest when the judge has sufficient knowledge
+to evaluate.
+5.2 Coverage scales with risk tolerance and judge capability
+Table 1 reports coverage across five risk levels. Coverage scales smoothly with α and is
+governed by two factors: dataset difficulty and judge capability. On easy benchmarks
+(TriviaQA, PopQA), even the smallest judge reaches near-full coverage by α = 0.25, while
+on knowledge-intensive tasks (NQ-Open, HotpotQA) only the larger judges (Qwen-14B,
+Llama-8B) surpass 80% at α = 0.20 for the Qwen-8B candidate — Qwen-4B remains below
+15% on these same benchmarks. Evaluating the stronger Llama-70B candidate is consistently
+harder: coverage drops across all judges compared to Qwen-8B, with the best judge reaching
+only 53% on HotpotQA at α = 0.20. This gap reflects both the answer diversity of the 70B
+model and the increased knowledge demands it places on the judge.
+5.3 Adaptive retrieval recovers substantial coverage
+Figure 2 breaks down accepted instances by routing mode. It is depicted that retrieval
+is the dominant acceptance mechanism. Across various configurations, Mode 2 accounts
+for the majority of non-abstained verdicts. This does not necessarily mean the judge lacks
+the knowledge to evaluate correctly, but rather that its uncertainty signal in Mode 1 is not
+confident enough to satisfy the calibrated threshold. Crucially, these are instances where
+a single-mode framework would abstain entirely. By grounding the judge in retrieved
+8
+
+Published as a conference paper at COLM 2026
+Table 1: Coverage of the joint two-mode framework (two-threshold routing with retrieval)
+at α ∈ {.05, .10, .15, .20, .25} (mean over 100 splits) across all datasets.
+TriviaQA NQ-Open PopQA HotpotQA
+Cand. Judge .05 .10 .15 .20 .25 .05 .10 .15 .20 .25 .05 .10 .15 .20 .25 .05 .10 .15 .20 .25
+Qwen-8B
+ 
+Qwen-4B .03 .39 .66 .91 1.0 .00 .03 .08 .14 .28 .00 .01 .91 1.0 1.0 .00 .04 .09 .14 .30
+Qwen-8B .12 .63 .91 1.0 1.0 .00 .02 .24 .82 1.0 .00 .87 1.0 1.0 1.0 .00 .04 .49 .74 .96
+Qwen-14B .21 .78 .98 1.0 1.0 .00 .05 .56 .81 .99 .19 .89 1.0 1.0 1.0 .02 .26 .64 .86 1.0
+Llama-8B .13 .61 .86 1.0 1.0 .00 .20 .61 .83 1.0 .02 .88 1.0 1.0 1.0 .01 .30 .65 .85 1.0
+Llama-70B
+ 
+Qwen-4B .05 .37 .80 .98 1.0 .00 .05 .18 .32 .48 .00 .00 .11 .35 .92 .00 .09 .20 .34 .55
+Qwen-8B 
+.17 .44 .83 .99 1.0 .01 .10 .25 .47 .73 .00 .06 .11 .48 .98 .00 .11 .31 .47 .65
+Qwen-14B .12 .46 .85 1.0 1.0 .00 .05 .23 .51 .75 .00 .04 .31 .77 .99 .00 .07 .31 .53 .76
+Llama-8B .04 .32 .67 .86 1.0 .00 .02 .13 .32 .59 .00 .07 .23 .77 .98 .00 .02 .11 .27 .51
+evidence, Mode 2 reduces uncertainty below the second threshold and converts these
+abstentions into accepted verdicts. This trade-off also depends on the underlying judge
+model. Models with better-calibrated uncertainty estimates allow a larger fraction of
+instances to be resolved by Mode 1 directly. For instance, at α = 0.20 on TriviaQA, Qwen3-
+14B resolves 45% of evaluations parametrically versus 9% for Qwen3-4B. On harder tasks
+like HotpotQA and NQ-Open, all judges rely predominantly on retrieved evidence.
+Although retrieval substantially expands coverage, it does not always improve the judge’s
+confidence. For 14–29% of instances, retrieval increases rather than decreases uncertainty
+(Appendix E.1). The second calibrated threshold identifies these cases and routes them to
+abstention. Consequently, only retrieval-based verdicts that satisfy the desired risk level are
+accepted.
+.05 .10 .15 .20 .25
+0
+.25
+.50
+.75
+1.0
+Proportion
+Qwen3-8B
+TriviaQA
+.05 .10 .15 .20 .25
+0
+.25
+.50
+.75
+1.0
+Proportion
+NQ-Open
+.05 .10 .15 .20 .25
+0
+.25
+.50
+.75
+1.0
+Proportion
+PopQA
+.05 .10 .15 .20 .25
+0
+.25
+.50
+.75
+1.0
+Proportion
+HotpotQA
+.05 .10 .15 .20 .25
+Target
+0
+.25
+.50
+.75
+1.0
+Proportion
+Llama-3.1-70B
+.05 .10 .15 .20 .25
+Target
+0
+.25
+.50
+.75
+1.0
+Proportion
+.05 .10 .15 .20 .25
+Target
+0
+.25
+.50
+.75
+1.0
+Proportion
+.05 .10 .15 .20 .25
+Target
+0
+.25
+.50
+.75
+1.0
+Proportion
+Mode 1 (Parametric) Mode 2 (Retrieval) Abstain
+Figure 2: Routing distribution across configurations. Within each group of four bars, judges
+are ordered left to right: Qwen3-4B, Qwen3-8B, Qwen3-14B, Llama-3.1-8B.
+5.4 Single-mode vs. joint two-mode routing
+Table 2 isolates the contribution of adaptive retrieval by comparing Mode 1 Only against
+the full joint framework. On TriviaQA, Mode 1 already achieves high coverage for strong
+judges (87% for Qwen3-14B), so retrieval provides a modest but consistent gain. The effect
+is more pronounced: on NQ-Open, coverage for Qwen3-8B increases from 7% to 82%; on
+HotpotQA, coverage for Llama-8B increases from 40% to 85%. Similarly, the weakest judge
+(Qwen3-4B) benefits substantially on PopQA, with coverage increasing from 4% to 100%.
+9
+
+Published as a conference paper at COLM 2026
+Table 2: Coverage at α = 0.20: Mode 1 Only vs. Joint (two-threshold routing with retrieval).
+TriviaQA NQ-Open PopQA HotpotQA
+Cand. Judge 
+M1 Only Joint M1 Only Joint M1 Only Joint M1 Only Joint
+Qwen-8B
+ 
+Qwen-4B .47 .91 .01 .14 .04 1.0 .00 .14
+Qwen-8B 
+.59 1.0 .07 .82 .03 1.0 .05 .74
+Qwen-14B .87 1.0 .14 .81 .15 1.0 .35 .86
+Llama-8B .77 1.0 .22 .83 .21 1.0 .40 .85
+Llama-70B
+ 
+Qwen-4B .67 .98 .07 .32 .05 .35 .09 .34
+Qwen-8B .82 .99 .22 .47 .08 .48 .27 .47
+Qwen-14B .84 1.0 .12 .51 .15 .77 .24 .53
+Llama-8B .48 .86 .02 .32 .12 .77 .02 .27
+5.5 Robustness to retrieval non-stationarity
+Web search results change over time, which §3.5 identified as the main practical threat to
+the determinism the guarantee assumes for Mode 2. We measure the effect directly on
+the main configuration (Qwen3-8B candidate, Qwen3-8B judge, LLM evaluator, k = 3).
+We re-query the same 2,000 questions on TriviaQA and HotpotQA roughly three months
+after the original snapshot and recompute the Mode 2 verdicts on the fresh evidence. The
+retrieved pages turn over substantially. The mean per-item Jaccard overlap between the
+original (τ
+0
+) and re-queried (τ
+1
+) ranked top-3 URL lists is 0.30 for TriviaQA and 0.24 for
+HotpotQA. When ignoring the retrieval rank and considering only URL membership, the
+corresponding position-blind top-3 overlaps are 0.47 and 0.40, respectively.
+To evaluate whether the calibrated thresholds remain valid after retrieval drift, we calibrate
+(
+ˆ
+t
+1
+, ˆt
+2
+) on the original data and apply them to test instances evaluated with the updated
+Mode 2 verdicts (while keeping Mode 1 unchanged). We repeat this evaluation over 100
+random 50/50 splits. Table 3 summarizes the results. Across all settings, the empirical
+FDR remains below the target level α. Similarly, coverage remains largely stable after
+redeployment. This indicates that drift changes which pages are returned more than the
+overall quality of the evidence. Therefore, the calibrated thresholds remain effective after
+redeployment.
+Table 3: FDR and coverage under retrieval drift from the original (τ
+0
+) to the re-queried
+snapshot (τ
+1
+, ∼3 months later). ∆ = τ
+1 
+− τ
+0
+.
+TriviaQA HotpotQA
+FDR Coverage FDR Coverage
+α τ
+0 
+τ
+1 
+∆ τ
+0 
+τ
+1 
+∆ τ
+0 
+τ
+1 
+∆ τ
+0 
+τ
+1 
+∆
+.05 .03 .04 .00 .12 .17 +.05 .00 .00 .00 .00 .00 .00
+.10 .08 .09 .00 .63 .68 +.06 .05 .03 −.01 .04 .02 −.02
+.15 .14 .13 .00 .91 .94 +.04 .13 .13 .00 .49 .49 .00
+.20 .16 .15 −.01 1.0 1.0 .00 .18 .18 .00 .74 .72 −.02
+.25 
+.16 .15 −.01 1.0 1.0 .00 .23 .23 .00 .96 .96 .00
+6 Conclusion
+We introduced a risk-controlled selective evaluation framework for LLM-as-a-judge with
+finite-sample guarantees on the reliability of accepted verdicts. The framework uses a
+calibrated two-mode policy that routes uncertain instances to a second evaluation mode
+and achieves higher coverage than single-mode abstention. More importantly, the Clopper–
+Pearson FDR guarantee remains valid under the joint two-threshold policy without requiring
+additional distributional assumptions. Across all tested configurations, the observed FDR
+remains at or below the specified target. Future work will consider graded and subjective
+evaluation settings, as well as black-box judges without access to logits.
+10
+
+Published as a conference paper at COLM 2026
+Acknowledgments
+We acknowledge the support of the Natural Sciences and Engineering Research Council of
+Canada (NSERC), the Canada Foundation for Innovation (CFI), and Research Nova Scotia.
+Advanced computing resources are provided by ACENET, the regional partner in Atlantic
+Canada, and the Digital Research Alliance of Canada.
+References
+Pranjal Aggarwal, Aman Madaan, Ankit Anand, Srividya Pranavi Potharaju, Swaroop
+Mishra, Pei Zhou, Aditya Gupta, Dheeraj Rajagopal, Karthik Kappaganthu, Yiming
+Yang, Shyam Upadhyay, Manaal Faruqui, and Mausam Mausam. Automix: Auto-
+matically mixing language models. In A. Globerson, L. Mackey, D. Belgrave, A. Fan,
+U. Paquet, J. Tomczak, and C. Zhang (eds.), Advances in Neural Information Process-
+ing Systems, volume 37, pp. 131000–131034. Curran Associates, Inc., 2024. doi: 10.
+52202/079017-4164. URL https://proceedings.neurips.cc/paper files/paper/2024/
+file/ecda225cb187b40ea8edc1f46b03ffda-Paper-Conference.pdf.
+Anastasios N Angelopoulos and Stephen Bates. A gentle introduction to conformal predic-
+tion and distribution-free uncertainty quantification. Foundations and Trends® in Machine
+Learning, 16(4):494–591, 2023.
+Anastasios Nikolas Angelopoulos, Stephen Bates, Adam Fisch, Lihua Lei, and Tal Schuster.
+Conformal risk control. In The Twelfth International Conference on Learning Representations,
+2024. URL https://openreview.net/forum?id=33XGfHLtZg.
+Sher Badshah and Hassan Sajjad. Reference-guided verdict: LLMs-as-judges in automatic
+evaluation of free-form QA. In Chen Zhang, Emily Allaway, Hua Shen, Lesly Miculicich,
+Yinqiao Li, Meryem M’hamdi, Peerat Limkonchotiwat, Richard He Bai, Santosh T.y.s.s.,
+Sophia Simeng Han, Surendrabikram Thapa, and Wiem Ben Rim (eds.), Proceedings of the
+9th Widening NLP Workshop, pp. 251–267, Suzhou, China, November 2025. Association for
+Computational Linguistics. ISBN 979-8-89176-351-7. doi: 10.18653/v1/2025.winlp-main.
+37. URL https://aclanthology.org/2025.winlp-main.37/.
+Sher Badshah, Moamen Moustafa, and Hassan Sajjad. CLEV: LLM-based evaluation through
+lightweight efficient voting for free-form question-answering. In Kentaro Inui, Sakriani
+Sakti, Haofen Wang, Derek F. Wong, Pushpak Bhattacharyya, Biplab Banerjee, Asif
+Ekbal, Tanmoy Chakraborty, and Dhirendra Pratap Singh (eds.), Proceedings of the 14th
+International Joint Conference on Natural Language Processing and the 4th Conference of the
+Asia-Pacific Chapter of the Association for Computational Linguistics, pp. 1513–1531, Mumbai,
+India, December 2025. The Asian Federation of Natural Language Processing and The
+Association for Computational Linguistics. ISBN 979-8-89176-303-6. URL https://
+aclanthology.org/2025.findings-ijcnlp.93/.
+Sher Badshah, Ali Emami, and Hassan Sajjad. SCOPE: Selective Conformal Optimized
+Pairwise LLM Judging. In Proceedings of the 43rd International Conference on Machine
+Learning, volume 306 of Proceedings of Machine Learning Research. PMLR, 2026a.
+Sher Badshah, Ali Emami, and Hassan Sajjad. SAGE: A Search-AuGmented Evalua-
+tion of large language models on free-form QA. In Maria Liakata, Viviane P. Mor-
+eira, Jiajun Zhang, and David Jurgens (eds.), Proceedings of the 64th Annual Meeting
+of the Association for Computational Linguistics (Volume 1: Long Papers), pp. 1466–1491,
+San Diego, California, United States, July 2026b. Association for Computational Lin-
+guistics. ISBN 979-8-89176-390-6. doi: 10.18653/v1/2026.acl-long.66. URL https:
+//aclanthology.org/2026.acl-long.66/.
+Lingjiao Chen, Matei Zaharia, and James Zou. Frugalgpt: How to use large language models
+while reducing cost and improving performance, 2023. URL https://arxiv.org/abs/
+2305.05176.
+11
+
+Published as a conference paper at COLM 2026
+Cheng-Han Chiang and Hung-yi Lee. Can large language models be an alternative to human
+evaluations? In Anna Rogers, Jordan Boyd-Graber, and Naoaki Okazaki (eds.), Proceedings
+of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long
+Papers), pp. 15607–15631, Toronto, Canada, July 2023. Association for Computational
+Linguistics. doi: 10.18653/v1/2023.acl-long.870. URL https://aclanthology.org/2023.
+acl-long.870/.
+C. J. Clopper and E. S. Pearson. The use of confidence or fiducial limits illustrated in the
+case of the binomial. Biometrika, 26(4):404–413, 1934. ISSN 00063444, 14643510. URL
+http://www.jstor.org/stable/2331986.
+Jiawei Gu, Xuhui Jiang, Zhichao Shi, Hexiang Tan, Xuehao Zhai, Chengjin Xu, Wei Li,
+Yinghan Shen, Shengjie Ma, Honghao Liu, et al. A survey on llm-as-a-judge. The Innovation,
+2024.
+Lei Huang, Weijiang Yu, Weitao Ma, Weihong Zhong, Zhangyin Feng, Haotian Wang,
+Qianglong Chen, Weihua Peng, Xiaocheng Feng, Bing Qin, and Ting Liu. A survey
+on hallucination in large language models: Principles, taxonomy, challenges, and open
+questions. ACM Trans. Inf. Syst., 43(2), January 2025. ISSN 1046-8188. doi: 10.1145/3703155.
+URL https://doi.org/10.1145/3703155.
+Zhengbao Jiang, Frank Xu, Luyu Gao, Zhiqing Sun, Qian Liu, Jane Dwivedi-Yu, Yiming
+Yang, Jamie Callan, and Graham Neubig. Active retrieval augmented generation. In
+Houda Bouamor, Juan Pino, and Kalika Bali (eds.), Proceedings of the 2023 Conference on
+Empirical Methods in Natural Language Processing, pp. 7969–7992, Singapore, December
+2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.emnlp-main.495.
+URL https://aclanthology.org/2023.emnlp-main.495/.
+Mandar Joshi, Eunsol Choi, Daniel S. Weld, and Luke Zettlemoyer. Triviaqa: A large
+scale distantly supervised challenge dataset for reading comprehension, 2017. URL
+https://arxiv.org/abs/1705.03551.
+Jaehun Jung, Faeze Brahman, and Yejin Choi. Trust or escalate: LLM judges with provable
+guarantees for human agreement. In The Thirteenth International Conference on Learning
+Representations, 2025. URL https://openreview.net/forum?id=UHPnqSTBPO.
+Saurav Kadavath, Tom Conerly, Amanda Askell, Tom Henighan, Dawn Drain, Ethan Perez,
+Nicholas Schiefer, Zac Hatfield-Dodds, Nova DasSarma, Eli Tran-Johnson, Scott Johnston,
+Sheer El-Showk, Andy Jones, Nelson Elhage, Tristan Hume, Anna Chen, Yuntao Bai,
+Sam Bowman, Stanislav Fort, Deep Ganguli, Danny Hernandez, Josh Jacobson, Jackson
+Kernion, Shauna Kravec, Liane Lovitt, Kamal Ndousse, Catherine Olsson, Sam Ringer,
+Dario Amodei, Tom Brown, Jack Clark, Nicholas Joseph, Ben Mann, Sam McCandlish,
+Chris Olah, and Jared Kaplan. Language models (mostly) know what they know, 2022.
+URL https://arxiv.org/abs/2207.05221.
+Sanyam Kapoor, Nate Gruver, Manley Roberts, Katherine Collins, Arka Pal, Umang Bhatt,
+Adrian Weller, Samuel Dooley, Micah Goldblum, and Andrew Wilson. Large language
+models must be taught to know what they don’t know. In A. Globerson, L. Mackey,
+D. Belgrave, A. Fan, U. Paquet, J. Tomczak, and C. Zhang (eds.), Advances in Neural
+Information Processing Systems, volume 37, pp. 85932–85972. Curran Associates, Inc., 2024.
+doi: 10.52202/079017-2729. URL https://proceedings.neurips.cc/paper files/paper/
+2024/file/9c20f16b05f5e5e70fa07e2a4364b80e-Paper-Conference.pdf.
+Tom Kwiatkowski, Jennimaria Palomaki, Olivia Redfield, Michael Collins, Ankur Parikh,
+Chris Alberti, Danielle Epstein, Illia Polosukhin, Jacob Devlin, Kenton Lee, Kristina
+Toutanova, Llion Jones, Matthew Kelcey, Ming-Wei Chang, Andrew M. Dai, Jakob Uszko-
+reit, Quoc Le, and Slav Petrov. Natural questions: A benchmark for question answering
+research. Transactions of the Association for Computational Linguistics, 7:452–466, 2019. doi:
+10.1162/tacl a 00276. URL https://aclanthology.org/Q19-1026.
+Yang Liu, Dan Iter, Yichong Xu, Shuohang Wang, Ruochen Xu, and Chenguang Zhu. G-
+eval: NLG evaluation using gpt-4 with better human alignment. In Houda Bouamor,
+12
+
+Published as a conference paper at COLM 2026
+Juan Pino, and Kalika Bali (eds.), Proceedings of the 2023 Conference on Empirical Methods
+in Natural Language Processing, pp. 2511–2522, Singapore, December 2023. Association
+for Computational Linguistics. doi: 10.18653/v1/2023.emnlp-main.153. URL https:
+//aclanthology.org/2023.emnlp-main.153/.
+Andrey Malinin and Mark Gales. Uncertainty estimation in autoregressive structured
+prediction. In International Conference on Learning Representations, 2021. URL https:
+//openreview.net/forum?id=jN5y-zb5Q7m.
+Alex Mallen, Akari Asai, Victor Zhong, Rajarshi Das, Hannaneh Hajishirzi, and Daniel
+Khashabi. When not to trust language models: Investigating effectiveness and limitations
+of parametric and non-parametric memories. arXiv preprint, 2022.
+Oscar Ma ˜nas, Benno Krojer, and Aishwarya Agrawal. Improving automatic vqa evaluation
+using large language models. In Proceedings of the AAAI Conference on Artificial Intelligence,
+volume 38, pp. 4171–4179, 2024. URL https://arxiv.org/pdf/2310.02567v2.
+Meta AI. The llama 3 herd of models, 2024. URL https://arxiv.org/abs/2407.21783.
+Qwen Team. Qwen2.5 technical report, 2025a. URL https://arxiv.org/abs/2412.15115.
+Qwen Team. Qwen3 technical report, 2025b. URL https://arxiv.org/abs/2505.09388.
+Kayla Schroeder and Zach Wood-Doughty. Can you trust llm judgments? reliability of
+llm-as-a-judge, 2025. URL https://arxiv.org/abs/2412.12509.
+Ola Shorinwa, Zhiting Mei, Justin Lidard, Allen Z. Ren, and Anirudha Majumdar. A
+survey on uncertainty quantification of large language models: Taxonomy, open research
+challenges, and future directions. ACM Comput. Surv., 58(3), September 2025. ISSN
+0360-0300. doi: 10.1145/3744238. URL https://doi.org/10.1145/3744238.
+Guijin Son, Hyunwoo Ko, Hoyoung Lee, Yewon Kim, and Seunghyeok Hong. Llm-as-a-
+judge and reward model: What they can and cannot do, 2024. URL https://arxiv.org/
+abs/2409.11239.
+Sijun Tan, Siyuan Zhuang, Kyle Montgomery, William Y. Tang, Alejandro Cuadron, Chen-
+guang Wang, Raluca Ada Popa, and Ion Stoica. Judgebench: A benchmark for evaluating
+llm-based judges, 2025. URL https://arxiv.org/abs/2410.12784.
+Qingni Wang, Yue Fan, and Xin Wang. SAFER: Risk-constrained sample-then-filter in
+large language models. In C. Vondrick, B. Hariharan, C. Raffel, L. Pinto, D. Yang, and
+A. Faust (eds.), International Conference on Learning Representations, volume 2026, pp.
+53723–53747, 2026. URL https://proceedings.iclr.cc/paper files/paper/2026/file/
+582e9771ac8527cb6390e5e9444a0fee-Paper-Conference.pdf.
+Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc V. Le, Ed H. Chi, Sharan Narang,
+Aakanksha Chowdhery, and Denny Zhou. Self-consistency improves chain of thought
+reasoning in language models. In The Eleventh International Conference on Learning Rep-
+resentations, ICLR 2023, Kigali, Rwanda, May 1-5, 2023. OpenReview.net, 2023. URL
+https://openreview.net/forum?id=1PL1NIMMrw.
+Zhiyuan Wang, Jinhao Duan, Lu Cheng, Yue Zhang, Qingni Wang, Xiaoshuang Shi, Kaidi
+Xu, Heng Tao Shen, and Xiaofeng Zhu. ConU: Conformal uncertainty in large language
+models with correctness coverage guarantees. In Yaser Al-Onaizan, Mohit Bansal, and
+Yun-Nung Chen (eds.), Findings of the Association for Computational Linguistics: EMNLP
+2024, pp. 6886–6898, Miami, Florida, USA, November 2024. Association for Computational
+Linguistics. doi: 10.18653/v1/2024.findings-emnlp.404. URL https://aclanthology.
+org/2024.findings-emnlp.404/.
+Zhiyuan Wang, Jinhao Duan, Qingni Wang, Xiaofeng Zhu, Tianlong Chen, Xiaoshuang Shi,
+and Kaidi Xu. COIN: Uncertainty-guarding selective question answering for foundation
+models with provable risk guarantees, 2025a. URL https://arxiv.org/abs/2506.20178.
+13
+
+Published as a conference paper at COLM 2026
+Zhiyuan Wang, Qingni Wang, Yue Zhang, Tianlong Chen, Xiaofeng Zhu, Xiaoshuang
+Shi, and Kaidi Xu. SConU: Selective conformal uncertainty in large language models.
+In Wanxiang Che, Joyce Nabende, Ekaterina Shutova, and Mohammad Taher Pilehvar
+(eds.), Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics
+(Volume 1: Long Papers), pp. 19052–19075, Vienna, Austria, July 2025b. Association for
+Computational Linguistics. ISBN 979-8-89176-251-0. doi: 10.18653/v1/2025.acl-long.934.
+URL https://aclanthology.org/2025.acl-long.934/.
+Jerry Wei, Chengrun Yang, Xinying Song, Yifeng Lu, Nathan Hu, Jie Huang, Dustin
+Tran, Daiyi Peng, Ruibo Liu, Da Huang, Cosmo Du, and Quoc V. Le. Long-form fac-
+tuality in large language models. In A. Globerson, L. Mackey, D. Belgrave, A. Fan,
+U. Paquet, J. Tomczak, and C. Zhang (eds.), Advances in Neural Information Process-
+ing Systems, volume 37, pp. 80756–80827. Curran Associates, Inc., 2024. doi: 10.
+52202/079017-2567. URL https://proceedings.neurips.cc/paper files/paper/2024/
+file/937ae0e83eb08d2cb8627fe1def8c751-Paper-Conference.pdf.
+Bingbing Wen, Jihan Yao, Shangbin Feng, Chenjun Xu, Yulia Tsvetkov, Bill Howe, and
+Lucy Lu Wang. Know your limits: A survey of abstention in large language models.
+Transactions of the Association for Computational Linguistics, 13:529–556, 06 2025. ISSN
+2307-387X. doi: 10.1162/tacl a 00754. URL https://doi.org/10.1162/tacl a 00754.
+Zhilin Yang, Peng Qi, Saizheng Zhang, Yoshua Bengio, William W. Cohen, Ruslan Salakhut-
+dinov, and Christopher D. Manning. Hotpotqa: A dataset for diverse, explainable multi-
+hop question answering, 2018. URL https://arxiv.org/abs/1809.09600.
+Tongxin Yuan, Zhiwei He, Lingzhong Dong, Yiming Wang, Ruijie Zhao, Tian Xia, Lizhen
+Xu, Binglin Zhou, Fangqi Li, Zhuosheng Zhang, Rui Wang, and Gongshen Liu. R-judge:
+Benchmarking safety risk awareness for LLM agents. In Yaser Al-Onaizan, Mohit Bansal,
+and Yun-Nung Chen (eds.), Findings of the Association for Computational Linguistics: EMNLP
+2024, pp. 1467–1490, Miami, Florida, USA, November 2024. Association for Computational
+Linguistics. doi: 10.18653/v1/2024.findings-emnlp.79. URL https://aclanthology.org/
+2024.findings-emnlp.79/.
+Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao
+Zhuang, Zi Lin, Zhuohan Li, Dacheng Li, Eric Xing, Hao Zhang, Joseph E Gonzalez,
+and Ion Stoica. Judging llm-as-a-judge with mt-bench and chatbot arena. In A. Oh,
+T. Naumann, A. Globerson, K. Saenko, M. Hardt, and S. Levine (eds.), Advances in Neural
+Information Processing Systems, volume 36, pp. 46595–46623. Curran Associates, Inc., 2023.
+URL https://openreview.net/forum?id=uccHPGDlao.
+A Proofs
+A.1 Clopper–Pearson UCB Validity
+We show that ˆR
+upper
+1−δ 
+(t) in Eq. (7) satisfies Pr(R(t) ≤ 
+ˆ
+R
+upper
+1−δ 
+(t)) ≥ 1 − δ.
+Proof. Under the Bernoulli structure, the observed failure count among 
+ˆ
+m
+cal
+(t) 
+selected
+instances follows ˆ
+w
+cal
+(t) ∼ Binomial( 
+ˆ
+m
+cal
+(t)
+, R(t)). Define the CDF of the empirical failure
+rate:
+D(r | R(t)) = Pr
+ 
+ˆ
+R(t) ≤ r | R(t)
+ 
+, (16)
+where ˆR(t) = 
+ˆ
+w
+cal
+(t)/ ˆm
+cal
+(t). By definition:
+ˆ
+R
+upper
+1−δ 
+(t) = sup
+{
+R ∈ [0, 1] : D(
+ˆ
+r
+cal
+(t) | R) ≥ δ
+} 
+. (17)
+Since D(r | R) is monotonically decreasing in R (higher true rate makes low empirical rates
+less likely), R(t) > 
+ˆ
+R
+upper
+1−δ 
+(t) implies D(
+ˆ
+r
+cal
+(t) | R(t)) < δ. Therefore:
+Pr
+
+R(t) > 
+ˆ
+R
+upper
+1−δ 
+(t)
+
+≤ Pr
+(
+D(
+ˆ
+r
+cal
+(t) | R(t)) < δ
+) 
+≤ δ, (18)
+where the last step uses the super-uniformity property: Pr(D(
+ˆ
+r
+cal
+(t) | R(t)) < δ) ≤ δ for
+discrete distributions. Hence Pr(R(t) ≤ 
+ˆ
+R
+upper
+1−δ 
+(t)) ≥ 1 − δ.
+14
+
+Published as a conference paper at COLM 2026
+A.2 Bernoulli Structure under Two-Mode Routing
+Proof of Lemma 1. For fixed thresholds (t
+1
+, t
+2
+), we define the selection indicator:
+I
+i 
+:= 1
+n
+U
+(i)
+1 
+≤ t
+1
+o
++ 1
+n
+U
+(i)
+1 
+> t
+1 
+and U
+(i)
+2 
+≤ t
+2
+o
+. (19)
+Both U
+(i)
+1 
+= U(J (x
+i
+, ˆy
+i
+)) and U
+(i)
+2 
+= U(J (x
+i
+, ˆy
+i
+, E
+i
+)) are deterministic functions of (x
+i
+, ˆy
+i
+):
+the judge’s computation and the retrieval process E
+i 
+are both determined by the input.
+Hence I
+i 
+is a deterministic function of (x
+i
+, ˆy
+i
+).
+The correctness of the selected verdict is:
+c
+i 
+= 1
+n
+U
+(i)
+1 
+≤ t
+1
+o
+c
+(i)
+1
++ 1
+n
+U
+(i)
+1 
+> t
+1 
+∧ U
+(i)
+2 
+≤ t
+2
+o
+c
+(i)
+2 
+, (20)
+which is a deterministic function of (x
+i
+, ˆy
+i
+, y
+∗
+i 
+), since the routing decision depends on (x
+i
+, ˆy
+i
+)
+and correctness additionally depends on y
+∗
+i 
+.
+Since (x
+i
+, ˆy
+i
+, y
+∗
+i 
+) are i.i.d. from D:
+1. 
+Independence: The selection events {I
+i 
+= 1} depend on disjoint instances, so
+they are mutually independent. Conditioning on selection preserves independence
+across instances.
+2. 
+Identical distribution: Each selected instance satisfies (x
+i
+, ˆ
+y
+i
+, y
+∗
+i 
+) ∼ D
+t
+1
+,t
+2 
+, where
+D
+t
+1
+,t
+2 
+:= D | I = 1 is the conditional distribution.
+Note that I
+i 
+∈ {0, 1} because the two indicator terms are mutually exclusive: the second
+requires U
+(i)
+1 
+> t
+1
+, which precludes the first.
+The failure indicators W
+i 
+= 1 − c
+i 
+over the selected subset are therefore i.i.d.
+Bernoulli(R(t
+1
+, t
+2
+)), where R(t
+1
+, t
+2
+) = E[W | I = 1].
+Scope and limitations. The guarantee is tied to the retrieval snapshot used during calibra-
+tion. Because retrieval relies on a non-stationary web index, a query may return different
+evidence at deployment than it did at calibration. Such retrieval drift affects the guarantee
+only if it changes the conditional error rate of Mode 2 verdicts. As long as this error rate
+remains stable, the calibrated thresholds continue to transfer. We evaluate this scenario in
+Section 5.5 by re-querying the web several months after calibration and find that FDR control
+is preserved. If the quality of the retrieved evidence changes substantially, recalibration
+restores the guarantee. Likewise, any change to the task, candidate model, or judge model
+violates the exchangeability assumption and requires recalibration.
+B Experimental Details
+B.1 Notation
+Table 4 provides a complete reference of all symbols.
+B.2 Implementation
+Candidate generation. We generate candidate answers using greedy decoding for
+both Qwen3-8B and LLaMA-3.1-70B. For Qwen3-8B, thinking mode is disabled
+(enable thinking=False) to prevent the <think> block from consuming the generation
+budget.
+15
+
+Published as a conference paper at COLM 2026
+Table 4: Notation reference.
+Symbol Description
+x, 
+ˆ
+y, y
+∗ 
+Question, candidate answer, ground
+truth
+F, J Examinee LLM, judge LLM
+v ∈ {0, 1} Evaluation verdict
+e
+∗ 
+∈ {0, 1} Ground-truth evaluation label
+A(v, e
+∗
+) Admission function: 1[v = e
+∗
+]
+A
+ref
+, λ
+A 
+Relevance function and threshold
+W Failure indicator: 1[v̸ = e
+∗
+]
+U, U
+1
+, U
+2 
+Uncertainty (general / Mode 1 /
+Mode 2)
+v
+1
+, v
+2 
+Verdict from Mode 1 / Mode 2
+c
+1
+, c
+2 
+Correctness of Mode 1 / Mode 2
+E Retrieved external evidence
+D
+cal 
+Calibration set (N instances)
+ˆ
+m
+cal 
+Selection size on calibration set
+ˆ
+w
+cal 
+Error count on calibration set
+ˆ
+r
+cal 
+Empirical FDR
+R(t) True FDR
+ˆ
+R
+upper
+1−δ 
+Clopper–Pearson UCB
+ˆ
+t
+1
+, ˆt
+2 
+Calibrated thresholds (Mode 1, 2)
+α User-specified risk level
+δ Significance level (default 0.05)
+K Sampling size for black-box UQ
+Coverage(t) Coverage: |{i : U
+i 
+≤ t}|/N
+test
+Judge inference. For predictive entropy (PE), we perform a single forward pass at the
+verdict token position and extract the log-probabilities for the True and False tokens. PE is
+computed as binary entropy: −p
+true 
+log p
+true 
+− (1 − p
+true
+) log(1 − p
+true
+). This requires no
+additional inference beyond the greedy decoding pass used to produce the verdict.
+Retrieval. We query the Serper API with the original question and retrieve the top-k
+results. Each result contains a title, text snippet, and source URL. Results are concatenated
+into a single evidence passage appended to the Mode 2 judge prompt.
+Calibration. We run 100 random 50/50 calibration/test splits. For each split, we perform
+a grid search over all unique uncertainty values on the calibration set to find the threshold
+pair (
+ˆ
+t
+1
+, ˆt
+2
+) that maximizes correctly accepted instances subject to the Clopper–Pearson
+UCB constraint ˆ
+R
+upper
+1−δ 
+(t
+1
+, t
+2
+) ≤ α. The grid search uses cumulative sums for O(|T
+1
+| · |T
+2
+|)
+complexity.
+B.3 Prompt Templates
+B.3.1 Judge Prompts
+Mode 1 (parametric evaluation). The judge receives a system prompt and a user message
+containing the question and candidate answer. The prompt includes a one-shot example to
+establish the output format.
+16
+
+Published as a conference paper at COLM 2026
+Mode 1: Judge System Prompt
+You are a helpful assistant acting as an impartial judge. You will be given a Question and a
+Candidate Answer. Your task is to judge whether the Candidate Answer is correct using your
+own knowledge. If the Candidate Answer is correct, choose ‘True’, otherwise, choose ‘False’.
+Provide a brief explanation for your decision.
+Provide your response in the following format:
+Decision: [True/False]
+Explanation: [Your brief explanation]
+Example:
+Question: What is the capital of France?
+Candidate Answer: Paris is the capital of France.
+Decision: True
+Explanation: Paris is indeed the capital of France.
+Mode 1: User Message
+Question: {question}
+Candidate Answer: {candidate answer
+}
+Mode 2 (retrieval-augmented evaluation). The judge additionally receives retrieved web
+search results. Each result is formatted as: [i] Title / Snippet / Source: URL.
+Mode 2: Judge System Prompt
+You are a helpful assistant acting as an impartial judge. You will be given a Question, a
+Candidate Answer, and Web Search Results. Your task is to judge whether the Candidate
+Answer is correct using the provided search results. If the search results support the Candidate
+Answer, choose ‘True’. If the search results contradict it, choose ‘False’. If the search results
+are inconclusive, use your best judgment. Provide a brief explanation for your decision.
+Provide your response in the following format:
+Decision: [True/False]
+Explanation: [Your brief explanation]
+Mode 2: User Message
+Question: {question}
+Candidate Answer: {candidate answer}
+Web Search Results: {evidence}
+B.4 LLM Evaluator Prompt
+The LLM evaluator (Qwen2.5-7B-Instruct) determines whether the candidate answer is
+semantically equivalent to any reference answer (Badshah & Sajjad, 2025), serving as the
+admission function for computing the ground-truth label e
+∗
+.
+17
+
+Published as a conference paper at COLM 2026
+LLM Evaluator (Admission Function)
+You are a helpful assistant acting as an impartial evaluator. Given a question, a candidate
+answer, and reference answers, determine if the candidate answer is correct.
+The candidate answer is correct if it conveys the same meaning as ANY of the reference an-
+swers, even if the candidate answer is longer, contains additional explanation, uses synonyms,
+abbreviations, or alternate names. Focus on whether the final answer or conclusion matches a
+reference, not on surface form.
+Question: {question}
+Candidate Answer: {candidate answer}
+Reference Answers: {references}
+Is the candidate answer correct? Respond with ONLY “True” or “False”.
+C Additional Results
+This appendix provides additional results that complement the main paper, including
+raw judge accuracy, an analysis of the joint framework across different risk levels, and
+per-dataset coverage and FDR curves.
+C.1 Judge Verdict Accuracy
+Table 5 reports the raw verdict accuracy of each judge in Mode 1 (parametric) and Mode 2
+(retrieval-augmented) before any calibration or selective prediction. Retrieval consistently
+improves accuracy across all configurations, with the largest gains on PopQA (up to 44
+percentage points), showing that retrieval provides useful evidence.
+Table 5: Judge verdict accuracy (%) before calibration. Mode 1 uses parametric knowledge
+only whereas Mode 2 uses retrieval-augmented evaluation (k = 3). LLM evaluator as
+admission function.
+TriviaQA NQ-Open PopQA HotpotQA
+Cand. Judge M1 M2 M1 M2 M1 M2 M1 M2
+Qwen-8B
+ 
+Qwen-4B 68 79 52 71 47 84 54 69
+Qwen-8B 71 84 54 79 44 88 58 76
+Qwen-14B 78 86 61 77 65 88 67 78
+Llama-8B 77 82 63 78 68 88 68 78
+Llama-70B
+ 
+Qwen-4B 75 81 62 69 60 75 63 68
+Qwen-8B 
+78 81 63 71 61 77 65 69
+Qwen-14B 78 82 64 72 66 77 67 72
+Llama-8B 72 78 63 70 64 77 64 68
+C.2 FDR and Coverage Across Risk Levels
+Table 6 reports FDR and coverage for the joint two-mode framework (two-threshold routing
+with retrieval) at all evaluated α levels for the Qwen-8B candidate across all four datasets
+and all four judges (LLM evaluator, PE, k = 3).
+C.2.1 Coverage Curves
+Figure 3 shows coverage as a function of α across all 32 configurations.
+C.2.2 Per-Dataset FDR
+Figures 4–7 provide per-dataset FDR plots for detailed examination.
+18
+
+Published as a conference paper at COLM 2026
+Table 6: Full results for the joint two-mode framework at all α levels across all four datasets.
+Candidate: Qwen3-8B, LLM evaluator, PE, k = 3.
+α
+Judge Metric .05 .10 .15 .20 .25 .30 .35 .40 .45 .50 .55 .60
+TriviaQA
+Qwen-4B 
+FDR .03 .08 .13 .18 .21 .21 .21 .21 .21 .21 .21 .21
+Cov. .03 .39 .66 .91 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0
+Qwen-8B 
+FDR 
+.03 .08 .14 .16 .16 .16 .16 .16 .16 .16 .16 .16
+Cov. .12 .63 .91 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0
+Qwen-14B 
+FDR .04 .09 .13 .14 .14 .14 .14 .14 .14 .14 .14 .14
+Cov. .21 .78 .98 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0
+Llama-8B 
+FDR 
+.03 .09 .14 .18 .18 .18 .18 .18 .18 .18 .18 .18
+Cov. .13 .61 .86 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0
+NQ-Open
+Qwen-4B 
+FDR .00 .05 .11 .17 .22 .27 .29 .29 .29 .29 .29 .29
+Cov. .00 .03 .08 .14 .28 .93 1.0 1.0 1.0 1.0 1.0 1.0
+Qwen-8B 
+FDR .00 .05 .13 .18 .22 .22 .22 .22 .22 .22 .22 .22
+Cov. .00 .02 .24 .82 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0
+Qwen-14B 
+FDR 
+.00 .05 .13 .18 .22 .23 .23 .23 .23 .23 .23 .23
+Cov. .00 .05 .56 .81 .99 1.0 1.0 1.0 1.0 1.0 1.0 1.0
+Llama-8B 
+FDR .00 .09 .13 .18 .22 .22 .22 .22 .22 .22 .22 .22
+Cov. .00 .20 .61 .83 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0
+PopQA
+Qwen-4B 
+FDR .00 .01 .13 .16 .16 .16 .16 .16 .16 .16 .16 .16
+Cov. .00 .01 .91 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0
+Qwen-8B 
+FDR .00 .09 .12 .12 .12 .12 .12 .12 .12 .12 .12 .12
+Cov. 
+.00 .87 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0
+Qwen-14B 
+FDR 
+.02 .09 .12 .12 .12 .12 .12 .12 .12 .12 .12 .12
+Cov. 
+.19 .89 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0
+Llama-8B 
+FDR .00 .09 .12 .13 .13 .13 .13 .13 .13 .13 .13 .13
+Cov. .02 .88 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0
+HotpotQA
+Qwen-4B 
+FDR .00 .05 .10 .15 .21 .27 .31 .31 .31 .31 .31 .31
+Cov. .00 .04 .09 .14 .30 .58 .86 .86 .86 .86 .86 .86
+Qwen-8B 
+FDR .00 .05 .13 .18 .23 .24 .24 .24 .24 .24 .24 .24
+Cov. 
+.00 .04 .49 .74 .96 1.0 1.0 1.0 1.0 1.0 1.0 1.0
+Qwen-14B 
+FDR 
+.02 .08 .13 .18 .22 .22 .22 .22 .22 .22 .22 .22
+Cov. 
+.02 .26 .64 .86 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0
+Llama-8B 
+FDR .01 .08 .13 .18 .22 .22 .22 .22 .22 .22 .22 .22
+Cov. .01 .30 .65 .85 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0
+D Ablations and Robustness
+We evaluate the framework across several dimensions. This includes pipeline design choices,
+the calibration procedure, the uncertainty score, and the choice of no-retrieval baseline. In
+all cases, the finite-sample FDR guarantee is preserved, with conservative choices reducing
+coverage rather than compromising risk control.
+D.1 Sensitivity Analyses
+Correctness criterion (admission function). Table 7 compares three admission functions
+across three risk levels on a representative pair (Qwen3-8B candidate, Qwen3-14B judge).
+The LLM evaluator consistently achieves the highest coverage, with the gap most pro-
+19
+
+Published as a conference paper at COLM 2026
+.10 .20 .30
+0
+.25
+.50
+.75
+1.0
+Coverage
+Qwen3-8B
+TriviaQA
+.10 .20 .30
+0
+.25
+.50
+.75
+1.0
+Coverage
+NQ-Open
+.10 .20 .30
+0
+.25
+.50
+.75
+1.0
+Coverage
+PopQA
+.10 .20 .30
+0
+.25
+.50
+.75
+1.0
+Coverage
+HotpotQA
+.10 .20 .30
+Target
+0
+.25
+.50
+.75
+1.0
+Coverage
+Llama-3.1-70B
+.10 .20 .30
+Target
+0
+.25
+.50
+.75
+1.0
+Coverage
+.10 .20 .30
+Target
+0
+.25
+.50
+.75
+1.0
+Coverage
+.10 .20 .30
+Target
+0
+.25
+.50
+.75
+1.0
+Coverage
+Qwen3-4B Qwen3-8B Qwen3-14B Llama-3.1-8B
+Figure 3: Coverage (mean±std over 100 splits) across all 32 configurations. Rows: candi-
+dates; columns: datasets.
+0.05 0.10 0.15 0.20 0.25 0.30
+Target
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+FDR
+Candidate: Qwen3-8B
+0.05 0.10 0.15 0.20 0.25 0.30
+Target
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+FDR
+Candidate: Llama-3.1-70B
+Qwen3-4B Qwen3-8B Qwen3-14B Llama-3.1-8B
+Figure 4: FDR control on TriviaQA.
+0.05 0.10 0.15 0.20 0.25 0.30
+Target
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+FDR
+Candidate: Qwen3-8B
+0.05 0.10 0.15 0.20 0.25 0.30
+Target
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+FDR
+Candidate: Llama-3.1-70B
+Qwen3-4B Qwen3-8B Qwen3-14B Llama-3.1-8B
+Figure 5: FDR control on NQ-Open.
+nounced on knowledge-intensive benchmarks: on NQ-Open at α = 0.15, it reaches 56%
+while both exact match and token F1 remain at 0%. This gap arises because string-matching
+20
+
+Published as a conference paper at COLM 2026
+0.05 0.10 0.15 0.20 0.25 0.30
+Target
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+FDR
+Candidate: Qwen3-8B
+0.05 0.10 0.15 0.20 0.25 0.30
+Target
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+FDR
+Candidate: Llama-3.1-70B
+Qwen3-4B Qwen3-8B Qwen3-14B Llama-3.1-8B
+Figure 6: FDR control on PopQA.
+0.05 0.10 0.15 0.20 0.25 0.30
+Target
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+FDR
+Candidate: Qwen3-8B
+0.05 0.10 0.15 0.20 0.25 0.30
+Target
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+FDR
+Candidate: Llama-3.1-70B
+Qwen3-4B Qwen3-8B Qwen3-14B Llama-3.1-8B
+Figure 7: FDR control on HotpotQA.
+criteria penalize semantically correct but surface-different answers, inflating the judge’s
+apparent error rate. FDR control holds under all three criteria.
+Table 7: Sensitivity to admission function. Candidate: Qwen3-8B, Judge: Qwen3-14B, UQ:
+PE (white-box). FDR and coverage at α ∈ {.15, .20, .25}.
+Exact Match Token F1 LLM Evaluator
+FDR Coverage FDR Coverage FDR Coverage
+Dataset .15 .20 .25 .15 .20 .25 .15 .20 .25 .15 .20 .25 .15 .20 .25 .15 .20 .25
+TriviaQA .13 .14 .14 .97 1.0 1.0 .13 .18 .18 .72 .98 1.0 .13 .14 .14 .98 1.0 1.0
+NQ-Open .00 .05 .22 .00 .11 .69 .00 .00 .18 .00 .00 .45 .13 .18 .22 .56 .81 .99
+PopQA .12 .12 .12 1.0 1.0 1.0 .13 .13 .13 .99 1.0 1.0 .12 .12 .12 1.0 1.0 1.0
+HotpotQA 
+.04 .18 .23 .03 .57 .86 .04 .17 .23 .04 .47 .83 .13 .18 .22 .64 .86 1.0
+Retrieval depth. Table 8 ablates the number of retrieved passages (k ∈ {3, 6, 9}) on a
+representative pair (Llama-70B candidate, Qwen3-8B judge). Coverage and FDR are stable
+across retrieval depths, with differences within 1–2 percentage points. k = 3 already provides
+sufficient evidence.
+Confidence level δ. Table 9 varies the confidence level. Tightening δ from 0.05 to 0.01
+trades coverage for confidence, with the cost concentrated at low α and on the harder dataset;
+FDR stays controlled throughout.
+21
+
+Published as a conference paper at COLM 2026
+Table 8: Retrieval depth ablation at α = 0.20. Candidate: Llama-70B, Judge: Qwen3-8B, LLM
+evaluator.
+k = 3 k = 6 k = 9
+Dataset FDR Cov. FDR Cov. FDR Cov.
+TriviaQA .18 .99 .17 1.0 .17 .99
+NQ-Open .18 .47 .18 .46 .18 .46
+PopQA .18 .48 .18 .41 .17 .36
+HotpotQA 
+.18 .47 .18 .46 .18 .46
+Table 9: Sensitivity to the confidence level δ (coverage). Candidate: Qwen3-8B, Judge:
+Qwen3-8B, LLM evaluator, k = 3, PE. FDR is controlled at the target α under both settings.
+TriviaQA HotpotQA
+δ \ α .05 .10 .15 .20 .25 .05 .10 .15 .20 .25
+0.05 .12 .63 .91 1.0 1.0 .00 .04 .49 .74 .96
+0.01 .04 .53 .87 1.0 1.0 .00 .01 .37 .69 .93
+Calibration-set size. Table 10 sweeps the calibration fraction n
+cal
+/n over the 2,000 items
+per dataset. Coverage on the easier TriviaQA is stable across the range, while on HotpotQA
+it degrades gracefully as the calibration set shrinks; FDR is controlled at every size.
+Table 10: Sensitivity to calibration-set size (coverage). n
+cal
+/n is the fraction of the 2,000
+items used for calibration. Candidate: Qwen3-8B, Judge: Qwen3-8B, LLM evaluator, k = 3,
+PE. FDR is controlled at the target α for every size.
+TriviaQA HotpotQA
+n
+cal
+/n \ α 
+.05 .10 .15 .20 .25 .05 .10 .15 .20 .25
+0.10 .02 .38 .81 .96 .99 .00 .03 .25 .55 .83
+0.25 
+.08 .54 .89 .99 1.0 .00 .04 .41 .70 .92
+0.50 .12 .63 .91 1.0 1.0 .00 .04 .49 .74 .96
+0.75 .15 .66 .92 1.0 1.0 .00 .04 .53 .77 .98
+D.2 Alternative Uncertainty Estimators
+The FDR guarantee depends only on the binary correctness indicator. As a result, the choice
+of uncertainty score affects coverage but not whether the target risk level is controlled. In
+addition to the white-box predictive entropy (PE) used in the main paper, we evaluate
+two supervised uncertainty scores derived from the judge’s last-layer hidden state at the
+verdict position. Following Kapoor et al. (2024), we consider a small MLP (Probe) and a
+LoRA+Prompt adapter fine-tuned to predict verdict correctness.
+Both models are trained using 5-fold cross-validation on the calibration set so that every
+calibration instance receives an out-of-sample uncertainty score before conformal calibration.
+Table 11 reports the resulting coverage. All three uncertainty scores satisfy the target FDR
+level across every setting.
+LoRA+Prompt consistently achieves the highest coverage, particularly on datasets where
+PE is less informative. For example, coverage increases from 0.04 to 0.44 on HotpotQA at
+α = 0.10 and from 0.00 to 0.71 on PopQA at α = 0.05. The Probe also improves over PE on
+more challenging datasets at moderate risk levels (e.g., NQ-Open at α = 0.15, 0.24 → 0.42),
+although it performs worse at the lowest risk levels.
+D.3 Baseline Comparison
+To isolate the contribution of retrieved evidence, Table 12 compares our joint two-mode
+policy against three controls that keep the identical calibration but change what the accepted
+22
+
+Published as a conference paper at COLM 2026
+Table 11: Coverage under three uncertainty scores: the white-box predictive entropy (PE)
+used in the main paper and two supervised scores, a Probe and a LoRA+Prompt adapter on
+the judge’s hidden states. Candidate: Qwen3-8B, Judge: Qwen3-8B, LLM evaluator, k = 3.
+FDR is controlled at the target α for all three.
+TriviaQA NQ-Open PopQA HotpotQA
+α PE Probe LoRA PE Probe LoRA PE Probe LoRA PE Probe LoRA
+.05 .12 .00 .00 .00 .00 .02 .00 .31 .71 .00 .00 .02
+.10 .63 .14 .70 .02 .07 .28 .87 .82 .94 .04 .02 .44
+.15 
+.91 .90 .94 .24 .42 .64 1.0 1.0 1.0 .49 .47 .76
+.20 1.0 1.0 1.0 .82 .79 .86 1.0 1.0 1.0 .74 .78 .95
+.25 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 .96 .99 1.0
+verdict is based on. Direct accepts only Mode 1 (no retrieval). Self-eval adds a second Mode 1
+pass in which the judge is asked whether its own initial verdict is correct, using no new
+evidence. Empty runs the Mode 2 prompt with an empty evidence slot. FDR is controlled
+for every variant. The joint policy dominates all three at nearly every operating point, and
+the gap is largest on the knowledge-intensive HotpotQA (0.74 versus at most 0.07 for the
+no-retrieval controls at α = 0.20). A second evaluation pass without new evidence (Self-eval)
+barely helps, confirming that the coverage gains come from the retrieved evidence rather
+than from simply re-querying the judge.
+Table 12: Baseline comparison (coverage). Candidate: Qwen3-8B, Judge: Qwen3-8B, LLM
+evaluator, k = 3, PE. FDR is controlled at the target α for every variant.
+TriviaQA HotpotQA
+Variant \ α .05 .10 .15 .20 .25 .05 .10 .15 .20 .25
+Direct .03 .28 .47 .59 .74 .00 .00 .01 .05 .17
+Self-eval .02 .32 .49 .60 .75 .00 .00 .02 .07 .19
+Empty .04 .38 .63 .83 .99 .00 .09 .32 .57 .84
+Joint (ours) .12 .63 .91 1.0 1.0 .00 .04 .49 .74 .96
+D.4 Conservative Joint Calibration
+We selected the deployed threshold pair (
+ˆ
+t
+1
+, ˆt
+2
+) using the calibration data rather than
+fixing them beforehand. Specifically, we choose the pair that maximizes coverage while
+satisfying 
+ˆ
+R
+upper
+1−δ 
+≤ α (Eq. 14). Although the Clopper–Pearson bound holds for each
+candidate pair on its own, certifying the selected pair requires accounting for this search.
+The conservative variant addresses this directly by evaluating all |T
+1
+| |T
+2
+| candidate pairs
+using the corrected confidence level δ
+′ 
+= δ/(|T
+1
+| |T
+2
+|). By a union-bound argument, the
+guarantee then holds simultaneously for every candidate pair, implying that the selected
+pair satisfies Pr(R(
+ˆ
+t
+1
+, ˆt
+2
+) ≤ α) ≥ 1 − δ. In practice, however, we find that the simpler
+uncorrected selection already provides effective risk control (see Section 5). For this reason,
+we use the coverage-maximizing thresholds in our main experiments, while treating the
+conservative procedure as a theoretically valid alternative.
+One subtlety is that the grid is data-dependent, since T
+1 
+and T
+2 
+are the observed uncertainty
+values, making both the candidate pairs and their count random. Because each mode
+contributes at most N distinct thresholds, replacing |T
+1
+| |T
+2
+| with the data-independent
+bound N
+2 
+(equivalently, correcting at level δ/N
+2
+) makes the union bound hold over a
+fixed family and leaves the conclusion unchanged at negligible cost; pre-specifying the grid
+removes the dependence altogether.
+Table 13 compares the coverage of the main-paper calibration (Pointwise, per-pair level δ)
+with this Conservative variant (grid-corrected level δ
+′
+). FDR is controlled under both. The
+correction is nearly free on the easier datasets (TriviaQA, PopQA) but costs substantial
+coverage on the harder ones (NQ-Open, HotpotQA), where the empirical FDR sits close
+23
+
+Published as a conference paper at COLM 2026
+to α. Bonferroni is a worst-case union bound and adjacent grid thresholds select almost the
+same instances, so it is very loose. The truly attainable jointly-valid coverage lies between
+the two rows which is much closer to the pointwise figures.
+Table 13: Conservative joint calibration (coverage). Per dataset, Point. and Cons. denote the
+pointwise and conservative coverage, and ∆ = Cons. − Point. (computed on unrounded
+values). Candidate: Qwen3-8B, Judge: Qwen3-8B, LLM evaluator, k = 3, PE. FDR is
+controlled at the target α under both variants.
+TriviaQA NQ-Open PopQA HotpotQA
+α Point. Cons. ∆ Point. Cons. ∆ Point. Cons. ∆ Point. Cons. ∆
+.05 .12 .00 −.12 .00 .00 .00 .00 .00 .00 .00 .00 .00
+.10 .63 .01 −.62 .02 .00 −.02 .87 .00 −.87 .04 .00 −.04
+.15 .91 .64 −.27 .24 .00 −.24 1.0 .93 −.07 .49 .00 −.49
+.20 
+1.0 .93 −.07 .82 .05 −.76 1.0 1.0 .00 .74 .30 −.45
+.25 1.0 1.0 .00 1.0 .80 −.20 1.0 1.0 .00 .96 .72 −.24
+E Analysis
+This section moves beyond aggregate metrics to analyze how retrieval improves evaluation,
+including its impact on judge uncertainty, examples where it corrects incorrect verdicts, and
+the residual failure modes.
+E.1 Effect of Retrieval on Uncertainty
+Retrieval does not lower the judge’s uncertainty uniformly. Table 14 reports, per dataset,
+the fraction of items on which Mode 2 uncertainty is higher than Mode 1 (U
+2 
+> U
+1
+) versus
+lower, with the mean signed change ∆U = U
+2 
+− U
+1 
+within each group. On most items
+retrieval reduces uncertainty, but on 14–29% it raises it, concentrated on the multi-hop
+HotpotQA and NQ-Open, where retrieved snippets are only partially relevant or sources
+disagree. These are exactly the items the second threshold ˆt
+2 
+routes to abstention when
+retrieval fails to resolve the judge’s uncertainty.
+Table 14: Effect of retrieval on judge uncertainty. Results are obtained with Qwen3-8B as
+both candidate and judge, the LLM evaluator, and k = 3 retrieval using predictive entropy
+(PE). The “raised” and “lowered” columns report the fraction of instances where retrieval
+increases or decreases uncertainty, respectively. Mean ∆U is averaged within each group.
+TriviaQA NQ-Open PopQA HotpotQA
+% raised (U
+2 
+> U
+1
+) 20.1 27.9 14.3 29.1
+mean ∆U +0.10 +0.11 +0.10 +0.12
+% lowered (U
+2 
+< U
+1
+) 68.0 68.8 84.6 69.7
+mean ∆U −0.07 −0.09 −0.10 −0.12
+E.2 Qualitative Examples
+Tables 15 and 16 show representative cases where the judge issues an incorrect verdict in
+Mode 1 but corrects it after retrieval in Mode 2. In each case, Mode 1 confidently hallucinated
+while retrieved evidence grounded the judge in verifiable facts.
+E.3 Failure Modes
+When retrieval does not fix an incorrect Mode 1 verdict, the residual errors fall into four
+qualitative classes. (i) Off-topic retrieval: an ambiguous or under-specified question yields
+search queries that miss the relevant evidence. (ii) Insufficient evidence: the retrieved snippets
+24
+
+Published as a conference paper at COLM 2026
+Table 15: Examples where retrieval corrects the judge’s verdict. Candidate: Qwen3-8B,
+Judge: Qwen3-14B.
+Question Candidate Gold Mode 1 (Wrong) Mode 2 (Corrected)
+Who voices Jack Kahuna
+Laguna in SpongeBob
+SquarePants?
+Steve Carell Johnny
+Depp
+“Steve Carell provided the voice. . . This is a
+well-documented fact.”
+Verdict: True
+“The web search results indicate that Johnny
+Depp, not Steve Carell, provided the
+voice. . . ”
+Verdict: False
+Which North African
+country’s flag is just the
+colour green?
+Chad Libya “The flag of Chad is indeed a single solid
+green rectangle. . . ”
+Verdict: True
+“The search results indicate that Libya’s flag
+was a single green field. . . ”
+Verdict: False
+‘The Great American
+Chocolate Bar’ is better
+known as?
+Milky Way Hershey “The Great American Chocolate Bar is indeed
+known as the Milky Way bar. . . ”
+Verdict: True
+“The search results indicate that it is a
+nickname for the Hershey Milk Chocolate
+Bar. . . ”
+Verdict: False
+Table 16: Retrieved evidence (k = 3) for the examples in Table 15. The first result in each case
+directly contains the correct answer.
+Question # Retrieved Snippet
+Who voices Jack Kahuna
+Laguna in SpongeBob?
+1 “. . . American actor and musician Johnny Depp guest starred in the episode as the voice of Jack
+Kahuna Laguna, a surf guru. . . ” — Wikipedia
+2 
+“Jack Kahuna Laguna has a striking resemblance to his voice actor, Johnny Depp.” — Fandom
+3 “. . . it guest starred Johnny Depp as the legendary surfer, Jack Kahuna Laguna.” — IMDb
+Which N. African
+country’s flag is just
+green?
+1 “The flag of the Libyan Arab Jamahiriya. . . consisted of a simple green field. It was the only
+national flag. . . with only one colour.” — Wikipedia
+2 “Republic of Ireland and the Ivory Coast the flags are the same. . . ” — Facebook
+3 “Green is an important colour in Islam. . . ” — Reddit
+‘The Great American
+Chocolate Bar’ is better
+known as?
+1 “The classic HERSHEY’S Milk Chocolate bar has been referred to as ‘The Great American
+Chocolate Bar.’ ” — Hershey
+2 “Hershey refers to it as ‘The Great American Chocolate Bar’. First sold in 1900.” — Wikipedia
+3 “The Great American Chocolate Bar campaign served the company well. . . ” — Hershey
+Archives
+are only partially relevant and lack the specific fact needed to verify the candidate. (iii) Judge
+reasoning error: the snippets contain the relevant evidence, but the judge still returns a
+wrong verdict. For example defaulting to False in the absence of an exact lexical match.
+(iv) Admission function disagreement: the candidate is semantically close to the gold answer
+but the admission function scores it as different. The two-threshold policy sends many such
+cases to abstention rather than accepting them, which is why coverage rather than FDR
+absorbs the difficulty on the hardest datasets.
+25

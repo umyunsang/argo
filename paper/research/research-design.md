@@ -87,9 +87,13 @@ Execution-graded closed-loop replication is not part of this cycle. It is deferr
 
 Every pairwise contrast is reported against a pre-registered resolution target, and a contrast that cannot meet it is marked unresolved rather than null (`RD-2026-09-02-09B`). A non-significant structured-state contrast is additionally tested against a pre-registered equivalence margin with TOST on a task-clustered bootstrap, so absence of effect is a bounded claim rather than an absence of power.
 
+### Reference-anchored analytic scoring
+
+The primary deterministic score is coverage of an evaluator-owned element checklist derived from the withheld target design of each task, with every element scored separately rather than in one holistic judgement (`RD-2026-09-02-11A`). On the retained pilot artifacts this produced a graded range of 0.667 to 1.000 where fabrication redlines produced no signal at all.
+
 ### Judge admission
 
-Rubric scores enter the analysis only after a calibration run on a human-anchored subset reports agreement, severity relative to the human anchor, and halo across dimensions; dimensions are scored in separate calls, and a step-level pass reviews trajectories for failures that are silent in the artifact (`RD-2026-09-02-09C`).
+Rubric scores enter the analysis only through a selective evaluator that fails closed while uncalibrated and selects its confidence threshold with an upper confidence bound on the error rate, so the error among non-abstained verdicts is bounded at a declared risk level and abstained items escalate (`RD-2026-09-02-11B`). The calibration set size follows from that guarantee rather than from convention: at 95 percent confidence a flawless set of 25 labels certifies a 10 percent risk level, 11 certifies 20 percent, and 52 certifies 5 percent, so the adopted target is at least 25 human-anchored labels on tasks disjoint from the burned pilot set (`RD-2026-09-02-11C`). Calibration additionally reports agreement, severity relative to the human anchor, and halo across dimensions; dimensions are scored in separate calls, and a step-level pass reviews trajectories for failures that are silent in the artifact (`RD-2026-09-02-09C`).
 
 ### Baselines
 

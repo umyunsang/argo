@@ -1,0 +1,70 @@
+\section{Cascaded Selective Evaluation}
+% To realize this guarantee, we propose selective evaluation, a framework that considers not only the predicted preference from an LLM, but also the confidence that the LLM preference would agree with that of humans.
+When performing pairwise evaluation with LLMs, we want a type of guarantee that the model agrees with the majority of human annotators. To realize this guarantee, we propose \textit{selective evaluation}, a framework that employs an abstention policy to decide whether an LLM is sufficiently confident to evaluate an instance. More formally, let $f_\textit{LM}: \mathcal{X} \rightarrow \mathcal{Y}$ denote the LLM judge, where the input $x \in \mathcal{X}$ consists of a query $q$ and a pair of generations $(a_1, a_2)$, and the output $y \in \mathcal{Y}$ is a preference label between $a_1$ and $a_2$ (\eg $a_1 \succ a_2$). 
+% In addition, we introduce a confidence measure $c_\textit{LM}: \mathcal{X} \rightarrow [0, 1]$ to define a selective evaluator as
+Introducing a confidence measure $c_\textit{LM}: \mathcal{X} \rightarrow [0, 1]$, we define selective evaluator as:
+\begin{equation}\label{eq:selective_evaluator}
+    (f_\textit{LM}, c_\textit{LM})(x) = \begin{cases}
+        f_\textit{LM}(x) & \text{if } c_\textit{LM}(x) \ge \lambda, \\
+        \quad\emptyset & \text{otherwise}.
+    \end{cases}
+\end{equation}
+An example of $c_\textit{LM}$ is the probability assigned by $f_\textit{LM}$ to its predicted label (predictive probability), a popular choice of confidence measure in selective classification \citep{selective-classification}. $\lambda$ is a hyperparameter that trades off the precision (\ie the accuracy of evaluator aligning with human judgements) against the coverage (\ie the ratio of instances evaluated without abstention). The key advantage of selective evaluation is that by calibrating $\lambda$ in a principled manner, we can provide a rigorous guarantee of human agreement while maintaining high coverage. That is, given a user-defined risk tolerance $\alpha$ and an error level $\delta$, one can provably guarantee that
+\begin{equation}\label{eq:human-agreement-guarantee}
+    P(f_\textit{LM}(x)=y_\textit{human} | c_\textit{LM}(x) \ge \lambda) \ge 1 - \alpha
+\end{equation}
+is satisfied with probability at least $1 - \delta$. In the following sections, we illustrate how to search for $\widehat{\lambda}$ that satisfies this guarantee (\S\ref{sec:providing_human_agreement_guarantee}), how to define a good confidence measure $c_\textit{LM}$ (\S\ref{sec:simulated_annotators}), and how to extend selective evaluation from a single model to cascades of judge models (\S\ref{sec:cascaded_eval}).
+
+\subsection{Providing Human Agreement Guarantee}\label{sec:providing_human_agreement_guarantee}
+Our human agreement guarantee can be satisfied by formulating selection of $\lambda$ as a multiple hypothesis testing problem \citep{rcps, ltt}. Specifically, given access to a small calibration set $D_\textit{cal} \sim P(x, y_\textit{human})$ of human preferences\footnote{When we have multiple human annotation $y_i$s per input $x$, we define $y_\textit{human} \coloneqq \argmax_y \sum_{i} \mathbbm{1}\{y_i = y\}$.}, we can measure an empirical risk $\widehat{R}(\lambda)$ of disagreeing with humans when using a threshold $\lambda$:
+%\faeze{suggestion: $D_\textit{cal}=\{(X_1, Y_1), (X_2, Y_2), ..., (X_n, Y_n)\} \subset \mathcal{X} \times \mathcal{Y}  $}
+\begin{equation}
+    \widehat{R}(\lambda) = \frac{1}{n(\lambda)}\sum_{(x, y_\textit{human}) \in D_\textit{cal}} \mathbbm{1}\{f_\textit{LM}(x) \neq y_\textit{human} \land c_\textit{LM}(x) \ge \lambda\},
+\end{equation}
+where $n(\lambda) \coloneqq \sum_{(x, y_\textit{human}) \in D_\textit{cal}} \mathbbm{1}\{c_\textit{LM}(x) \ge \lambda\}$. Since the empirical risk is a binomial random variable with $n(\lambda)$ trials, we can compute the exact $(1 - \delta)$ upper confidence bound of the risk as:
+\begin{equation}\label{eq:r-hat}
+    \widehat{R}^{+}(\lambda) = \sup \big\{R: P(\bin(n(\lambda), R) \le \lceil n(\lambda) \widehat{R}(\lambda)\rceil) \ge \delta\big\}.
+\end{equation}
+Note here that the risk is near-monotonic, \ie it tends to increase as $\lambda$ decreases. This allows us to use fixed sequence testing \citep{fixed-sequence-testing}, wherein we test from the largest value of $\lambda$ (\eg 0.999) to a progressively smaller value, and stop at the last time $\widehat{R}^{+}(\lambda)$ is below the target risk $\alpha$.
+\begin{equation}
+    \widehat{\lambda} = \inf \big\{\lambda: \widehat{R}^{+}(\lambda') \le \alpha \text{ for } \forall \, \lambda' \ge \lambda\big\}.
+\end{equation}
+
+\begin{theorem}\label{thm:1}
+    Consider a threshold $\widehat{\lambda}$ chosen as above, and a selective evaluator $(f_\textit{LM}, c_\textit{LM})$ operating based on $\widehat{\lambda}$. Then, Equation (\ref{eq:human-agreement-guarantee}) is satisfied with probability at least $1 - \delta$.
+\end{theorem}
+
+We leave the proof in \S \ref{app:proof_of_theorem1}. Our test procedure resembles that of selection with guaranteed risk \citep{selective-classification}, but we adopt fixed-sequence testing instead of Bonferroni correction, which may be too conservative for a large hypothesis space. Compared to recent works on risk control for LLMs, we provide exact, tighter bound on the selective risk (instead of approximating it; \citealt{conformal-abstention}), and guarantee with high probability that the risk is below $\alpha$ conditional on the calibration data (as opposed to being marginally centered at $\alpha$; \citealt{conformal-alignment}).
+
+\subsection{Simulated Annotators}\label{sec:simulated_annotators}
+While human agreement guarantee can be met with any choice of (near-monotonic) confidence measure, the coverage of selective evaluation essentially depends on how good this measure is---\ie whether $c_\textit{LM}$ truly reflects if humans would agree with LLM evaluation. In this section, we first test out popular confidence estimation methods for LLMs and show that they fail to accurately represent model uncertainty. We then introduce \textit{Simulated Annotators} as a promising alternative.
+
+\input{tables/simulated_annotators_main}
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=.96\textwidth]{figures/simulated_annotators_main.pdf}
+    \caption{Reliability plot for confidence estimation methods, using GPT-4 as judge on AlpacaEval. Dashed lines denote perfect calibration, and darker bars denote more samples in the corresponding bins. \textbf{Simulated Annotators reduces expected calibration error by 50\% compared to the baselines, mitigating over-confidence} observed in predictive probability and verbalized confidence.}
+    \vspace{-10pt}
+    \label{fig:simulated_annotators_main}
+\end{figure*}
+
+\paragraph{Existing Methods.} We first consider two types of existing confidence measure\footnote{We also consider more sophisticated methods (\eg sampling chain-of-thoughts and estimating their \textit{semantic entropy}; \citealt{semantic-entropy}) in \S \ref{app:additional_results_on_confidence_estimation}, but find their performance to be mostly on-par with the above methods, despite the increased cost.}---(1) \textit{predictive probability}: as the most straightforward proxy of confidence, we use the likelihood of preference label predicted by the LLM judge, \ie $c_\textit{LM}(x) = \max_y p_\textit{LM}(y|x)$; (2) \textit{verbalized confidence}: following \cite{verbalized-confidence}, we directly prompt the LLM judge to express its confidence in a scalar value. We evaluate these methods in terms of the expected calibration error \citep{ece}, AUROC and AUPRC, using the non-tied instances in two standard benchmarks: AlpacaEval \citep{alpacafarm} for open-domain chat assistant and TL;DR \citep{summarize-from-human-feedback} for summarization.
+
+\paragraph{Canonical methods overestimate human agreement.} 
+The results are shown in Table \ref{tab:simulated_annotators_main} and Figure \ref{fig:simulated_annotators_main} (left, middle). Unlike prior reports that the canonical methods work well for tasks with small label space \citep{language-models-mostly-know-what-they-know, verbalized-confidence}, they consistently lead to over-confidence when used for preference evaluation. Notably, the results are pronounced even with the strongest LLM judge \textit{GPT-4-turbo}, although its agreement with human majority is known to be comparable to an average human annotator \citep{evaluation-metrics-in-the-era, mt-bench}.
+
+The above results suggest that simply achieving human-level performance may not be sufficient for reliable evaluation: while an LLM judge can be as accurate as a single human annotator, it tends to be over-confident in estimating its agreement with the majority of annotators. This contrasts with the standard practice in human evaluation, which involves collecting multiple annotations per instance and assessing the level of agreement between them; the evaluation is deemed reliable only when there is high inter-annotator agreement. Motivated by this discrepancy, we derive \textit{Simulated Annotators}, a confidence measure that simulates diverse annotator preferences with in-context learning. Concretely, given $K$ (\eg 3) examples of preference annotations per $N$ (\eg 5) human annotators, we simulate annotators by $K$-shot prompting the model for $N$ times and ensemble the results:
+\begin{equation*}
+    c_\textit{LM}(x) = \max_{y} \frac{1}{N} \sum_{j=1}^{N} p_\textit{LM}(y|x;(x_{1,j}, y_{1,j}), \cdots, (x_{K,j}, y_{K,j})),
+\end{equation*}
+where $(x_{i,j}, y_{i,j})$ is the $i$-th in-context example from the $j$-th annotator. Likewise, the judge prediction $f_\textit{LM}(x)$ is defined as $\argmax_{y} \sum_{j=1}^{N} p_\textit{LM}(y|x;(x_{1,j}, y_{1,j}), \cdots, (x_{K,j}, y_{K,j}))$. Intuitively, the confidence $c_\textit{LM}$ becomes low when multiple simulated annotators disagree with each other. We typically set $K, N \le 5$, and ablate the effect of number of simulated annotators in \S \ref{sec:impact_of_number_of_simulated_annotators}.
+
+\paragraph{Simulated Annotators improves reliability, even for weaker judge models.} The results with $K = N = 5$ are shown in Table \ref{tab:simulated_annotators_main} (\textit{Simulated Annotators (Ind.)}) and Figure \ref{fig:simulated_annotators_main} (right). Simulated Annotators significantly outperforms popular confidence measures, reducing ECE by 50\% and improving AUROC by 13\% for GPT-4. Surprisingly, our method improves the reliability of even the weaker judge models---while they do underperform GPT-4 in accuracy, their estimated confidence is on-par or even better than GPT-4 when using the baseline confidence measures.
+
+Despite the substantial performance gain in Simulated Annotators, it remains unclear whether the gain truly comes from simulating diverse human preferences. We analyze this using two ablations on the few-shot examples given to the LLM judge: (1) \textit{randomized annotators}: using the same set of inputs $x_{i, j}$ but random-assigning labels $y_{i, j} \sim \ber(0.5)$, and (2) \textit{simulated annotators (majority)}: using $(x_{i,j}, y_{i, \textit{human}})$ where $y_{i, \textit{human}}$ is the majority preference of human annotators given input $x_{i, j}$.\footnote{Here, as each input instance is associated with a single majority label $y_\textit{human}$, we induce difference between simulations by using different set of inputs $x_{i,j}$ per simulated annotator.} We fix $K = 5$ and $N = 5$ for all ablations. As shown in Table \ref{tab:simulated_annotators_main}, \textit{Simulated Annotators (Maj.)} is consistently better than \textit{Randomized Annotators}, but slightly underperforms \textit{Simulated Annotators (Ind.)} that models individual preference. The performance of majority-based Simulated Annotators, however, is encouraging, as the method can be applied to cases where we do not have access to diverse human annotations per each instance $x$. Overall, the result demonstrates that simulating diverse annotator preferences is helpful, and even in the absence of such data, our method improves the reliability of LLM judges over the existing methods.
+
+\subsection{Cascading Selective Evaluators}\label{sec:cascaded_eval}
+\input{algorithms/cascaded_selective_evaluation}
+The strong performance of Simulated Annotators demonstrates that even the weaker LLM judges---despite not as accurate as a larger judge---may accurately predict when they are likely to agree with human annotators. Leveraging this finding, we propose \textbf{Cascaded Selective Evaluation}, as illustrated in Figure \ref{fig:teaser} and formalized in Algorithm \ref{alg:cascaded_selective_evaluation}. Given a list of judge models $\mathcal{M}$,  we start with a weaker yet cheaper model as an evaluator, and only when the model is not sufficiently confident, we iteratively move on to a stronger model. Notably, the confidence threshold $\lambda$ for each judge model can be chosen following the same process as in \S\ref{sec:providing_human_agreement_guarantee}, providing the guarantee of risk control across the cascades of models (see \S \ref{app:cascades_of_judge_models} for details). This way, selective evaluation can operate at a significantly lower cost than using the strongest model from the start, while still maintaining a rigorous guarantee of human agreement.
+% This way, selective evaluation can be done with significantly less cost than using the strongest model from the start, while still maintaining a rigorous guarantee of human agreement.
+

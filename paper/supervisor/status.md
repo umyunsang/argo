@@ -1,15 +1,25 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** freeze four unseen confirmation tasks that are disjoint from the four burned pilot tasks, then re-validate the frozen structural checks on them.
+- **next_first_action:** collect the 25-label human-anchored calibration set on tasks disjoint from the burned pilot set, starting by drafting the label protocol and the four unseen confirmation tasks.
 
-- **last_updated:** 2026-09-02T22:37:10+09:00
+- **last_updated:** 2026-09-02T22:44:13+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 3 closed — 16-episode instrument pilot EXECUTED; three instrument corrections recorded; confirmation not started
+- **current_phase:** cycle 4 closed — scoring anchor solved: reference-anchored analytic coverage executed on pilot artifacts, judge admission bounded, calibration size computed
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
 
+### Cycle 4 — the scoring anchor gap is closed by construction
+
+- **Gap picked:** rubric scores were inadmissible without a human anchor, and the deterministic layer alone could not carry the validity endpoint.
+- **Literature loop:** 9 discovery calls across 3 objectives, 6 new `FULL_PAPER_READ` records, 8 line-anchored locators. Record: `paper/research/literature-round10-retrieval-record.json`.
+- **Anchor found in prior work:** criteria can be derived from an expert reference rather than authored freely, analytic per-criterion scoring avoids holistic halo, and selective evaluation bounds judge error through calibrated abstention.
+- **Executed:** reference-anchored analytic coverage over evaluator-owned element checklists, measured on all 16 retained pilot artifacts. Coverage ranges 0.667 to 1.000 and names the missed elements, where fabrication redlines had produced no signal at all.
+- **Defect found by fixture:** the first selective-evaluation implementation chose its threshold from the empirical error rate, which overfits a finite calibration set. Replaced with a one-sided binomial upper bound, so an undersized set is now refused and the required size is reported.
+- **The blocker became a number:** at 95 percent confidence a flawless calibration set of **25** labels certifies a 10 percent risk level, **11** certifies 20 percent, and **52** certifies 5 percent. The adopted target is at least 25 labels on tasks disjoint from the burned pilot set (`RD-2026-09-02-11C`).
+- **Suites:** reference-anchor 13/13, scoring 14/14, sandbox 10/10, runner 7/7.
+- **exa MCP usage this cycle: not used.**
 ### Cycle 3 — instrument pilot EXECUTED
 
 - **Backend probe (live):** session provider `HTTP 429 usage limit reached`, reset in about 4.8 days; one hosted provider timed out at 240 s; one router `HTTP 402 insufficient credits`; two selectors answered. Treatment pinned to one selector, judging reserved for a different family (`RD-2026-09-02-10C`).
