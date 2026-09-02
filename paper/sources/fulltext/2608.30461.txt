@@ -1,0 +1,1572 @@
+
+Warning: orx 0.1.117 is outdated (latest 0.1.118). A newer release is available; upgrade to stay compatible with the API. Run `orx update` to upgrade.
+
+alphaXiv: https://www.alphaxiv.org/abs/2608.30461
+
+From Final Artifacts to Trajectories: Retrospective Process Supervision for
+Evidence-Grounded Long-Form Generation
+Junjie Huang
+1
+, Jiarui Qin
+2
+, Di Yin
+2
+, Weiwen Liu
+1
+,
+Yong Yu
+1
+, Xing Sun
+2
+, Weinan Zhang
+1
+1
+Shanghai Jiao Tong University, 
+2
+Tencent Youtu Lab
+huangjunjie2019@sjtu.edu.cn, qinjr@icloud.com
+Abstract
+Trajectory data is getting more vital for training
+large language models for boosting the agentic
+abilities. Unlike the verifiable domains such as
+coding or mathematics, scaling trajectory data
+for open-ended tasks is much more difficult
+because these tasks lack singular ground truth
+and are costly to annotate or verify. In this pa-
+per, we propose RETROGEN, a self-improving
+framework of retrospective process supervision.
+Our key observation is that although expert tra-
+jectories are scarce, high-quality final artifacts
+such as literature reviews, analyst reports and
+legal judgments, are abundant in pre-training
+data and can be viewed as compressed traces of
+the evidence-seeking processes that produced
+them. RETROGEN reconstructs candidate la-
+tent trajectories from expert artifacts, verifies
+them against both the artifact and supporting
+evidence, and trains models on their own suc-
+cessful reconstruction data, without requiring
+trajectory data from stronger models. Experi-
+ments show that RETROGEN improves ground-
+ing, faithful synthesis, and long-form evidence-
+seeking agent tasks.
+1 Introduction
+Large language models (LLMs) are increasingly
+being extended into autonomous agents capable of
+planning, tool use, and multi-step interaction (Yao
+et al., 2022; Shinn et al., 2023; Wang et al., 2024a;
+Qin et al., 2024). A key factor driving this progress
+is trajectory-level supervision: training models not
+only on final answers, but also on intermediate rea-
+soning, actions, observations, and revisions (Zelik-
+man et al., 2022; Lightman et al., 2024; Shao et al.,
+2024). In verifiable domains such as mathemat-
+ics, coding, and closed-ended question answering,
+generating trajectory data at scale is more feasible
+because the data can be verified using clear signals.
+However, this reliance on objective verifica-
+tion creates a fundamental bottleneck for open-
+ended, evidence-grounded tasks, such as synthesiz-
+Evidence-Constrained Verification
+Agent Self-Evolution
+Human Annotation
+"Investigate how retrieval
+improves generation in
+knowledge-intensive tasks."
+Initial Prompt
+Suboptimal
+Teacher Model
+Threshold Filter
+Synthesis
+Expensive 
+Stronger
+Artifact
+Fidelity
+Recover
+Sources
+95%
+Faithfulness 
+Plausibility
+88%
+Procedural
+90%
+Evidence
+Infer Task
+Wandering
+Search
+Planning
+Blindness
+Clear Goal
+Lack of
+Hallucination
+Hallucination
+Expensive
+Human Annotation
+Stronger
+Teacher Model
+Expert Artifact
+(The Anchor)
+Retrieval-
+Augmented Generation
+for Knowledge-
+Intensive NLP Tasks
+Authors:
+Title:
+Patrick Lewis, Ethan
+Perez et al.
+12
+Evidence-Seeking
+Trajectory
+Reconstruct
+3 4
+(a) Forward Generation
+(Scarce and Wandering)
+(b) RetroGen: Target-anchored Retrospective
+Reconstruction (Abundant & Goal-directed)
+Figure 1: Illustration of our motivation. RETROGEN
+conceptualizes abundant expert artifacts as compressed
+processes, enabling scalable and grounded process su-
+pervision for open-ended agents without costly human
+or teacher model annotation.
+ing literature reviews (Asai et al., 2024; McDonald
+et al., 2022), composing financial analyst reports
+grounded in filings (Loukas et al., 2021), or draft-
+ing legal judgments (Guha et al., 2023; Dai et al.,
+2025). Unlike closed-ended problems, these tasks
+lack a singular ground truth that can validate the
+generated trajectory. Even when a final output ap-
+pears coherent, it remains difficult to automatically
+determine whether the selected evidence is suffi-
+cient, whether claims are faithfully grounded, and
+whether the reasoning path follows domain-specific
+standards of rigor. As a result, scalable process
+supervision for evidence-grounded long-form gen-
+eration remains an important open challenge.
+Existing approaches typically obtain trajectory
+supervision by distilling from stronger teacher mod-
+els or relying on human experts (Liu et al., 2023;
+Qin et al., 2023; Lightman et al., 2024). Yet,
+both sources are inherently unscalable: teacher
+distillation requires repeated access to costly pro-
+prietary models, while human annotation is pro-
+hibitively expensive for evidence-intensive work-
+flows. Moreover, relying on forward trajectory
+generation in open-ended domains often leads to
+arXiv:2608.30461v1 [cs.CL] 31 Aug 2026
+
+wandering search behaviors, as models lack the
+holistic foresight required to synthesize complex
+information.
+This motivates a more self-improving, target-
+driven alternative. As illustrated in Figure 1, we
+observe that while high-quality open-ended trajec-
+tories are exceptionally scarce, high-quality final
+artifacts produced by domain experts are remark-
+ably abundant. A published literature review or a
+binding legal judgment is not merely a static output;
+rather, it is a lossy compression of a latent, multi-
+step evidence-seeking process. A well-crafted re-
+lated work section implicitly encodes how an au-
+thor searched, filtered, compared, and synthesized
+prior studies into a coherent narrative. Crucially,
+because these artifacts are rigorously vetted by do-
+main experts (e.g., peer reviewers), they provide
+strong quality prior for reverse-engineering the pro-
+cesses that produced them.
+This perspective transforms expert-curated ar-
+tifacts into verifiable targets for scalable process
+supervision. Instead of demanding an external
+teacher to demonstrate a full forward trajectory,
+the agent is tasked with reconstructing a plausi-
+ble evidence-seeking trajectory that arrives at the
+known expert artifact.
+In this paper, we introduce RETROGEN, a self-
+improving framework that operationalizes retro-
+spective process supervision. Given an expert arti-
+fact, RETROGEN first establishes an evidence en-
+vironment by retrieving and organizing relevant
+sources. The agent then reconstructs a trace de-
+tailing how the artifact was derived, encompassing
+evidence selection, claim grounding, and interme-
+diate synthesis. Rather than treating all generated
+traces as valid supervision, RETROGEN employs
+a rubric-guided verification step that quantitatively
+scores candidate trajectories across multiple dimen-
+sions. By applying a weighted thresholding mech-
+anism, the agent selectively filters reconstructions
+based on their comprehensive performance in arti-
+fact fidelity, evidence faithfulness, and procedural
+plausibility. This establishes an iterative artifact-to-
+trajectory-to-agent training loop.
+Our contributions are summarized as follows:
+• We formulate expert-curated artifacts as a scal-
+able source of retrospective process supervision,
+reframing static outputs as verifiable targets for
+trajectory reconstruction.
+• We propose RETROGEN, an iterative framework
+that autonomously generates, verifies, and trains
+on reconstructed trajectories without relying on
+stronger teacher models.
+The proposed RETROGEN significantly im-
+proves evidence-grounded long text generation on
+both static and agentic benchmarks, while preserv-
+ing general capabilities. A verification ablation
+further shows that combining scoring dimensions
+outperforms any single filter.
+2 Problem Formulation
+We study open-ended, evidence-grounded long-
+form generation tasks where the final output is an
+expert-written artifact, but the generative process
+is unobserved. Given only an artifact y
+∗ 
+(e.g., a
+related-work section, financial analysis report, or
+legal judgment), our goal is to reconstruct a plausi-
+ble evidence-seeking trajectory that yields it.
+Latent Expert Process. We formulate y
+∗ 
+as the
+outcome of an unobserved expert workflow:
+(x
+∗
+, E
+∗
+, τ 
+∗
+) 7 → y
+∗
+, (1)
+where x
+∗ 
+is the underlying task specification, E
+∗
+represents the supporting evidence consulted by the
+expert, and τ 
+∗ 
+is the latent process transforming
+the task and evidence into the final artifact. Be-
+cause these variables are unobserved, we rely on
+the assumption that y
+∗ 
+serves as a lossy but highly
+informative compression of this latent process.
+Retrospective Reconstruction. Recognizing
+that the exact historical process τ 
+∗ 
+is unknowable,
+we instead aim to reconstruct a plausible sequence:
+ˆx = g
+x
+(y
+∗
+), 
+ˆ
+E = g
+e
+(y
+∗
+), ˆτ = g
+τ 
+(y
+∗
+, ˆx, 
+ˆ
+E), (2)
+where ˆx is the reconstructed task, 
+ˆ
+E is the recov-
+ered evidence set, and ˆτ is a reverse-engineered
+trace describing how an agent could derive an out-
+put consistent with y
+∗
+. Because the exact historical
+process τ 
+∗ 
+is unobserved, we treat ˆτ as an exe-
+cutable surrogate trajectory: a tool-using workflow
+that is faithful to y
+∗ 
+and useful for training, rather
+than a reconstruction of the expert’s unrecorded
+trial-and-error history.
+Desiderata. A high-quality reconstructed trace ˆτ
+should satisfy three properties:
+• Artifact Fidelity: Preserving the essential content
+and structural organization of y
+∗
+.
+• Evidence Faithfulness: Grounding intermediate
+reasoning and final claims strictly within the re-
+covered evidence 
+ˆ
+E.
+
+• Procedural Plausibility: Exhibiting a logical do-
+main workflow (e.g., search, inspect, compare)
+rather than hallucinating leaps in logic.
+3 Method
+Given an expert artifact y
+∗
+, RETROGEN constructs
+retrospective process-supervision data through a
+structured pipeline.
+3.1 Artifact-Anchored Initialization
+Because the forward task is underdetermined, we
+first infer the starting conditions directly from the
+expert artifact. Leveraging its inherent reasoning
+capabilities, the agent infers a plausible task speci-
+fication ˆx that aligns with the final output.
+Concurrently, it induces an instance-specific
+rubric R = {(r
+k
+, c
+k
+)}
+K
+k=1 
+to serve as the evalu-
+ation standard for later verification. Rather than
+relying on generic quality metrics, this rubric ex-
+tracts fine-grained, checkable criteria (r
+k
+) mapped
+to specific target aspects (c
+k
+) inherent in the arti-
+fact. For instance, if the artifact is a legal judgment
+document, a criterion r
+k 
+might demand "explicitly
+invoking the specific tort law precedent", targeting
+the aspect c
+k 
+of "statutory grounding". Alterna-
+tively, for an academic survey, r
+k 
+might require
+"contrasting the computational overhead of two
+specific baseline models", mapping to c
+k 
+for "com-
+parative analysis".
+Finally, to establish the evidence environment,
+we extract concrete cues, such as explicit citations,
+statutory references, or key entities, from the ar-
+tifact. These cues seed an artifact-conditioned re-
+trieval over domain-specific corpora, yielding the
+recovered evidence set 
+ˆ
+E. Crucially, this entire ini-
+tialization phase is fully self-bootstrapped, requir-
+ing zero human-authored process traces or external
+teacher models.
+3.2 Trajectory Reconstruction
+Given ˆx and 
+ˆ
+E, the agent autonomously formulates
+a high-level operational plan ˆπ = (s
+1
+, s
+2
+, ..., s
+T 
+)
+utilizing a shared abstract action vocabulary A =
+{Search, Open, Extract, Compare, Outline, Draft}.
+This plan is subsequently materialized into
+candidate tool-augmented traces:
+ˆτ = (ˆo
+0
+, ˆa
+1
+, ˆo
+1
+, . . . , ˆn
+t
+| {z }
+denoted as ˆτ 
+pre
+, ˜y), (3)
+where ˆa
+t 
+∈ A denotes a specific tool invocation,
+ˆo
+t 
+represents the corresponding environmental ob-
+servation, and ˆn
+t 
+is an intermediate synthesis note.
+Collectively, these intermediate elements form the
+reasoning and evidence-seeking prefix ˆτ 
+pre
+, and ˜y
+is the final generated artifact. Crucially, the obser-
+vations ˆo
+t 
+are populated via actual tool executions
+rather than model hallucinations, ensuring that the
+reconstructed traces are empirically faithful rather
+than merely narratively plausible.
+To prevent the reconstructed dataset from col-
+lapsing into a single, homogeneous trace style, we
+inject controlled diversity across query formula-
+tion, plan realization, outline granularity, reflection
+frequency, and surface formatting. This acts as a
+form of procedural regularization, ensuring that the
+model learns robust and generalizable evidence-
+seeking behaviors instead of merely memorizing a
+rigid procedural template.
+3.3 Evidence-Constrained Verification
+Each candidate trace ˆτ is evaluated with respect
+to the desiderata in Section 2: artifact fidelity, evi-
+dence faithfulness, and procedural plausibility. We
+operationalize this through a rubric-guided, multi-
+dimensional scoring mechanism that yields four
+complementary signals.
+First, a rubric score (s
+rub
+) quantifies whether the
+synthesized artifact ˜y fully satisfies, partially satis-
+fies, or misses each self-induced criterion within R.
+Second, a holistic quality score (s
+qual
+) measures
+overarching domain rigor, encompassing dimen-
+sions such as coherence, factual accuracy, legal
+correctness, or analytical depth, depending on the
+specific task. Third, a grounding score (s
+grd
+) en-
+sures that intermediate synthesis notes ˆn
+t 
+and final
+claims are strictly supported by the recovered evi-
+dence environment 
+ˆ
+E. Fourth, a trace-consistency
+score (s
+con
+) verifies the internal logic of the work-
+flow—checking, for example, whether comparison
+steps correctly reference previously opened docu-
+ments, whether outlines are reflected in the final
+structure, and whether final claims are logically
+licensed by earlier observations. The overall trace
+score is computed as a weighted sum:
+Score(ˆτ ) = λ
+r
+s
+rub 
++ λ
+q
+s
+qual 
++ λ
+g
+s
+grd 
++ λ
+c
+s
+con
+,
+(4)
+where λ
+{r,q,g,c} 
+denote the respective mixing
+weights. Traces exhibiting failed retrievals, mal-
+formed tool executions, or overall scores falling
+below a domain-specific threshold are automati-
+cally discarded. Crucially, this weighted threshold-
+ing mechanism does not attempt to certify that a
+trace is historically identical to the original human
+
+workflow. Instead, it acts as a scalable proxy for
+process quality, ensuring that the retained trajec-
+tories are faithful to the expert anchor, grounded
+in evidence, and procedurally robust, all without
+requiring human oversight.
+3.4 Retrospective Process Supervision
+After the evidence-constrained verification, we re-
+tain the successfully filtered candidate traces. Cru-
+cially, rather than forcing the model to predict the
+exact original expert artifact y
+∗ 
+at the end of the se-
+quence, we pair the retained trace prefix ˆτ 
+pre
+i 
+with
+its corresponding synthesized draft ˜y
+i
+. Concretely,
+each training sample encompasses the inferred task
+specification, the recovered evidence context, the
+tool-interaction trace, the intermediate notes, and
+the verified synthetic artifact:
+(ˆx
+i
+, 
+ˆ
+E
+i
+, ˆτ 
+pre
+i 
+, ˜y
+i
+). (5)
+Using the synthesized output ˜y
+i 
+instead of the origi-
+nal y
+∗
+i 
+ensures strict causal consistency between the
+intermediate reasoning steps and the final genera-
+tion. Because the trace has already passed our rigor-
+ous multi-dimensional verification—which guaran-
+tees high fidelity to the original artifact—˜y
+i 
+main-
+tains high quality for the agent to learn from. We
+serialize each sample into a single autoregressive
+sequence and optimize the model using standard
+language modeling:
+z
+i 
+= Serialize(ˆx
+i
+, 
+ˆ
+E
+i
+, ˆτ 
+pre
+i 
+, ˜y
+i
+), (6)
+L(θ) = 
+X
+i
+X
+t
+log p
+θ
+(z
+i,t 
+| z
+i,<t
+). (7)
+Compared with final-output-only supervision, this
+self-improving objective teaches the model not only
+what high-quality artifact to produce, but also how
+to autonomously decompose an open-ended task,
+gather and organize evidence, and synthesize it into
+a rigorously grounded long-form output.
+4 Experiments
+4.1 Experimental Setup
+Domains and Artifacts. We evaluate RETRO-
+GEN on three evidence-grounded long-form gen-
+eration domains: (i) scientific writing, where the
+task is to draft a related-work section conditioned
+on a paper abstract and the expert artifact y
+∗ 
+is the
+author-written related-work section from the corre-
+sponding paper; (ii) financial analysis, where the
+agent produces an analyst-style report grounded
+in U.S. SEC 10-K filings from the EDGAR cor-
+pus (Loukas et al., 2021) and y
+∗ 
+is a human-written
+financial narrative; and (iii) legal judgment draft-
+ing, where the agent drafts a first-instance judg-
+ment grounded in statutes and prior cases, with y
+∗
+given by the official adjudicated judgment. These
+domains stress-test RetroGen under distinct evi-
+dence regimes: citation-heavy scientific synthe-
+sis, document-grounded financial reasoning, and
+statute/case-grounded legal argumentation.
+Tools and Execution Environment. All trajec-
+tories are generated using domain-specific instan-
+tiations of the abstract action space A defined in
+Section 3. To ensure that supervision reflects ex-
+ecutable evidence-seeking behavior, observations
+are populated through actual tool calls rather than
+model-imagined snippets. We cap each trajectory
+at 30 tool steps and maintain an 8,000-character
+sliding context window.
+Backbone Models. We evaluate RETROGEN on
+four open-source LLMs: Qwen3-8B (Yang et al.,
+2025), Qwen2.5-7B (Yang et al., 2024), Mistral-
+7B-v0.3 (Jiang et al., 2023), and Olmo-3-1025-
+7B (Olmo et al., 2025).
+Training Corpus. For each backbone, RETRO-
+GEN reconstructs candidate trajectories from ex-
+pert artifacts and filters them using the multi-
+dimensional verification score in Section 3 with
+uniform weights λ = 0.25. Thresholds are cali-
+brated per domain from the score distribution (0.52
+/ 0.48 / 0.63 for scientific / financial / legal; Ap-
+pendix B), retaining approximately 25K verified
+trajectories. We construct a ∼50M-token SFT cor-
+pus with a fixed token-budgeted mixture: 80% veri-
+fied agentic trajectories, split 40:20:20 across scien-
+tific, financial, and legal domains, and 20% general
+instruction-following, math, coding, and multi-turn
+dialogue data. This mixture preserves general ca-
+pabilities while emphasizing evidence-seeking be-
+havior.
+Baselines and Ablations. We compare against
+controlled alternatives under the same token budget,
+sequence length, and optimization configuration:
+(1) Initial: the checkpoint before training.
+(2) 
+ForwardGen: trajectories generated by the
+same backbone from the task specification ˆx
+without access to the expert artifact, isolating
+the value of target-anchored retrospective re-
+construction.
+
+Qwen3-8B Mistral-7B-v0.3
+Method ALCE ScholarQA QASPER LAiW LegalBench Method ALCE ScholarQA QASPER LAiW LegalBench
+Initial 83.33 66.36 53.25 34.14 74.93 Initial 68.58 27.54 54.45 20.82 53.3
+ForwardGen 85.18 65.42 51.84 33.52 74.95 ForwardGen 62.41 48.65 51.34 32.15 60.27
+Artifact-Only 87.86 67.18 52.52 34.69 74.93 Artifact-Only 63.64 55.83 50.21 34.82 62.22
+WebGLM 84.52 65.84 53.36 36.61 76.12 WebGLM 65.11 53.27 50.81 39.41 61.25
+WebCPM 46.73 60.27 49.89 23.23 74.92 WebCPM 57.90 50.41 54.40 38.68 63.10
+RetroGen (Ours) 88.03 67.71 56.15 37.65 75.37 RetroGen (Ours) 68.93 61.12 56.27 41.29 65.98
+Qwen2.5-7B Olmo-3-1025-7B
+Method ALCE ScholarQA QASPER LAiW LegalBench Method ALCE ScholarQA QASPER LAiW LegalBench
+Initial 85.37 56.42 47.03 34.71 72.16 Initial 90.70 53.86 55.17 39.24 63.57
+ForwardGen 86.27 58.36 49.62 34.18 71.32 ForwardGen 89.34 55.42 53.62 37.42 64.84
+Artifact-Only 87.48 62.74 50.04 33.39 72.41 Artifact-Only 91.42 58.17 54.36 38.27 66.18
+WebGLM 84.26 59.85 50.15 35.24 71.27 WebGLM 91.27 56.78 52.97 36.61 64.25
+WebCPM 67.75 54.27 48.85 31.95 72.80 WebCPM 74.17 53.41 51.84 34.71 64.25
+RetroGen (Ours) 90.50 64.18 51.64 36.00 75.01 RetroGen (Ours) 92.83 61.78 56.42 39.65 67.30
+Table 1: Main results across four open-source backbone models. RETROGEN achieves the best average performance
+across evidence-grounded generation and domain-specific reasoning benchmarks.
+Filter ALCE ScholarQA QASPER LAiW LegalBench Avg
+Initial 83.33 66.36 53.25 34.14 74.93 62.40
+only s
+qual 
+84.88 66.62 53.48 34.72 75.46 63.03
+only s
+con 
+85.42 66.18 53.86 35.64 75.22 63.26
+next-N replace 86.42 66.74 54.18 35.86 75.12 63.66
+only s
+grd 
+86.18 66.52 55.42 36.48 75.44 64.01
+only s
+rub 
+88.18 67.82 55.28 36.05 74.96 64.46
+RetroGen (λ=0.25) 88.03 67.71 56.15 37.65 75.37 64.98
+Table 2: Verification-dimension ablation on Qwen3-8B under a matched token budget. Uniformly weighted scoring
+yields the best average; single-signal filters and next-N replacement remain above the initial checkpoint but are less
+stable.
+(3) Artifact-Only: the same reconstructed dataset
+with all intermediate tool interactions removed,
+isolating trajectory-level process supervision
+from input-output supervision.
+(4) Public-Baseline: the 80% agentic slice is re-
+placed with WebGLM-QA (Liu et al., 2023)
+and WebCPM-WK (Qin et al., 2023), two pub-
+lic citation-grounded long-form generation cor-
+pora that provide retrieve-then-write supervi-
+sion distilled from stronger systems.
+Evaluation. We evaluate along three axes. First,
+evidence-grounded long-form generation is mea-
+sured by ALCE (Gao et al., 2023), Schol-
+arQA (Asai et al., 2024), and QASPER (McDonald
+et al., 2022). Second, domain-specific grounded
+reasoning is assessed with legal reasoning bench-
+marks including LAiW (Dai et al., 2025) and Legal-
+Bench (Guha et al., 2023). Third, general capa-
+bility retention is measured by GSM8K (Cobbe
+et al., 2021), MMLU-Pro (Wang et al., 2024b),
+IFEval (Zhou et al., 2023), and HumanEval (Chen
+et al., 2021). All evaluations use vLLM-backed
+zero/few-shot inference (Kwon et al., 2023), with
+details deferred to Appendix.
+4.2 Main Results
+Table 1 reports the performance of RETROGEN and
+all baselines across the four backbone models. We
+summarize three main observations.
+• Retrospective anchoring improves evidence-
+grounded generation. Across ALCE, Schol-
+arQA, and QASPER, RETROGEN consistently
+outperforms the Initial and ForwardGen mod-
+els across backbones. Compared with Forward-
+Gen, which generates trajectories from the task
+specification ˆx without access to the expert arti-
+fact, RETROGEN improves the average evidence-
+grounded generation score by +4.8 points, with
+gains of +4.3 on ALCE, +6.7 on ScholarQA, and
++3.5 on QASPER. This suggests that anchoring
+trajectory reconstruction on expert artifacts helps
+reduce unguided exploration and produces more
+reliable evidence-seeking behavior.
+• Trajectory-level supervision provides gains be-
+
+Accuracy Precision Coverage
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Score
+0.20
+0.40
++20.0
+0.33
+0.67
++34.0
+0.60 0.60
+(a) LitQA2
+Base
+RetroGen
+Global avg Ingredient
+recall
+Answer
+precision
+Citation
+precision
+Citation
+recall
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+1.2
+Score
+0.47
+0.59
++12.0
+0.26 
+0.30
++4.0
+0.82 
+0.82
+0.47
+0.67
++20.1
+0.33
+0.57
++24.1
+(b) SQA
+Figure 2: AstaBench literature-understanding performance on LitQA2 and SQA.
+Search Read END
+Next action
+START
+Search
+Read
+Current action
+(a) Base
+0.91 0.01 0.08
+0.54 0.15 0.31
+0.55 0.25 0.20
+Search Read END
+Next action
+(b) RetroGen
+0.99 0.01
+0.39 0.23 0.38
+0.20 0.25 0.55
+Search Read END
+Next action
+(c) (RetroGen Base)
++0.08 -0.01 -0.07
+-0.15 +0.09 +0.06
+-0.34 -0.00 +0.35
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+0.3
+0.2
+0.1
+0.0
+0.1
+0.2
+0.3
+Figure 3: AstaBench action-transition matrices, where each cell denotes the probability of transitioning from the
+current action to the next action.
+yond final-artifact imitation. The comparison
+with Artifact-Only isolates the value of interme-
+diate tool-interaction traces. On domain-specific
+reasoning benchmarks, RETROGEN improves
+over Artifact-Only by +2.7 points on average,
+with gains of +3.4 on LAiW and +2.0 on Legal-
+Bench. This indicates that final artifacts alone do
+not fully expose the procedural structure needed
+for grounded reasoning; reconstructing how ev-
+idence is searched, selected, and organized pro-
+vides additional supervision for complex synthe-
+sis tasks.
+• Verified agentic trajectories are more effec-
+tive than collapsed retrieve-then-write super-
+vision. RETROGEN also outperforms the Public-
+Baseline, where the same token budget is allo-
+cated to public web-grounded long-form QA data
+in a retrieve-then-write format. The gains are
+most pronounced on tasks requiring multi-step
+evidence aggregation, suggesting that supervi-
+sion over explicit tool-use trajectories teaches
+the model more than observing only a retrieved
+context and final answer.
+4.3 In-Depth Analysis
+4.3.1 Verification-Dimension Ablation
+The main results use a uniformly weighted com-
+bination of the four verification signals. To test
+whether this combination is necessary, we retrain
+Qwen3-8B under the same token budget while
+filtering with a single score, or while replacing
+the selected traces with the next-highest-scoring
+ones (next-N replace). Table 2 shows that the
+weighted verifier achieves the best average. Single-
+dimension filters remain above the initial check-
+point, so moderately scored traces can still help;
+however, next-N replace underperforms full RET-
+ROGEN, indicating that usefulness is graded and
+that the threshold trades quality against data vol-
+ume.
+4.3.2 Dynamic Agentic Evaluation on
+AstaBench
+Standard evidence-grounded generation bench-
+marks evaluate the quality of final answers, but they
+only partially reveal whether a model can behave
+as a reliable research agent. To further examine
+the process-level behavior learned by RETROGEN,
+we evaluate on AstaBench (Bragg et al., 2025), a
+dynamic agentic benchmark for scientific research
+tasks. Unlike static QA benchmarks, AstaBench
+
+30 40 50 60 70 80 90
+Score (%)
+MMLU-Pro
+GSM8K
+HumanEval
+IFEval
+MMLU-Pro
+GSM8K
+HumanEval
+IFEval
+MMLU-Pro
+GSM8K
+HumanEval
+IFEval
+MMLU-Pro
+GSM8K
+HumanEval
+IFEval
++0.2
++1.1
+-0.6
++1.5
++0.7
++1.2
+-1.2
++3.9
+-1.2
++3.0
++5.5
++7.4
++3.4
++1.4
++1.2
++0.2
+Qwen3-8B
+Qwen2.5-7B
+Mistral-7B
+Olmo-3-7B
+Base
+RetroGen
+Figure 4: General capability retention across four back-
+bone models. Dumbbell markers compare each initial
+checkpoint with its RETROGEN-trained counterpart.
+requires the model to iteratively search for papers,
+inspect retrieved content, and decide when suffi-
+cient evidence has been collected. This makes it
+well suited for testing whether retrospective process
+supervision improves the agent’s evidence-seeking
+policy rather than only its final-output style.
+Benchmark and protocol. We focus on the
+literature-understanding tasks LitQA2-Validation
+and SQA (details in Appendix A.4). The ini-
+tial model and its RETROGEN-trained counterpart
+use the same backbone, tool inventory, sampling
+configuration, and maximum interaction budget
+(max_rounds= 15).
+Performance on literature understanding. Fig-
+ure 2 shows that RETROGEN improves most
+AstaBench literature-understanding metrics. On
+LitQA2, RETROGEN doubles accuracy from 0.20
+to 0.40 and improves precision from 0.33 to 0.67,
+while maintaining the same coverage of 0.60. This
+indicates that the model becomes more accurate
+and selective without simply abstaining more of-
+ten. On SQA, RETROGEN improves the global
+average from 0.47 to 0.59. The largest gains come
+from citation-related metrics: citation precision
+increases from 0.47 to 0.67, and citation recall in-
+creases from 0.33 to 0.57. Answer precision re-
+mains unchanged at 0.82, suggesting that the main
+benefit is not merely more fluent answer genera-
+tion, but better grounding and attribution of claims
+to supporting evidence.
+Q: UK Parliament: How does it all work and what are the numbers?
+R E T R I E V E D PA S S A G E S
+[1] "Your UK Parliament: the essentials guide" [2] "Parliament's role"
+[3] "BU Research Blog | parliament" [4] "What Parliament does"
+Original
+The UK Parliament is a democratic
+institution that makes laws, debates issues,
+and oversees the government's spending. It
+consists of two houses: the House of
+Commons and the House of Lords.
+×8
+repeated
+The Parliament's role is to ensure
+that the UK runs efficiently
+as a country, and it does this by
+making laws, debating
+issues, and overseeing the
+government's spending. The
+Parliament's work is influenced by
+the government, but it
+also has the power to hold the
+government accountable.
+RetroGen
+The UK Parliament is a democratic
+institution that makes laws, debates
+issues, and oversees the use of taxes to
+run the country [4] . It consists of two
+houses: the House of Commons and the
+House of Lords [2] . MPs and members
+of the House of Lords represent the public
+and engage with Parliament to ensure the
+UK remains a fair and democratic place
+[1] . Parliament's work is supported by
+research, which helps inform decision-
+making and policy development [3] .
+No source link Repetitive Low information 
+Evidence-grounded No repetition
+×N
+Figure 5: Case study under the same question. RETRO-
+GEN produces a more evidence-grounded, less repeti-
+tive, and higher-density answer.
+Action-transition analysis. To understand
+where these gains come from, we further analyze
+the action transitions recorded by the AstaBench
+sandbox. We collapse raw tool calls into three
+high-level action types: SEARCH, READ, and
+END. Figure 3 compares the empirical transition
+matrices of the initial model and RETROGEN. The
+initial model frequently repeats search actions
+after searching, with a search-to-search probability
+of 0.54, suggesting redundant exploration. In
+contrast, RETROGEN reduces this probability to
+0.39 and increases the search-to-read transition
+from 0.15 to 0.23, indicating that it is more
+likely to inspect retrieved evidence rather than
+continue issuing new searches. After reading,
+RETROGEN also transitions to END much more
+often, increasing the read-to-end probability from
+0.20 to 0.55.
+Together, these patterns suggest that RETRO-
+GEN learns a more goal-directed research policy:
+it searches to identify candidate evidence, reads to
+verify and extract support, and terminates once suf-
+ficient evidence has been gathered. This provides
+process-level evidence for our main claim that ret-
+rospective supervision improves the structure of
+evidence-seeking behavior, not only the quality of
+the final generated response.
+4.3.3 General Capability Retention
+A potential concern with training on long agentic
+trajectories is that the model may become overly
+specialized to evidence-seeking workflows and lose
+general instruction-following or reasoning abilities.
+
+Figure 4 compares each initial checkpoint with
+its RETROGEN-trained counterpart on GSM8K,
+MMLU-Pro, IFEval, and HumanEval. Across back-
+bones, RETROGEN shows no systematic degrada-
+tion: most points are comparable to or slightly
+above the initial checkpoint. Mixed with a mod-
+est amount of general SFT data, verified agentic
+trajectories therefore improve grounded long-form
+behavior without inducing catastrophic forgetting.
+4.3.4 Case Study
+Figure 5 compares the initial model and RETRO-
+GEN on the same question, “UK Parliament: How
+does it all work and what are the numbers?”. The
+initial model generates a plausible overview, but
+does not attach source links and quickly degen-
+erates into repeated statements, resulting in low
+information density.
+In contrast, RETROGEN produces a more com-
+pact and grounded synthesis. It links claims to
+the retrieved passages, covers multiple aspects
+of the question—including Parliament’s role, its
+two houses, public representation, and research-
+supported policymaking—and avoids repetitive
+phrasing. This case study illustrates that retro-
+spective process supervision improves not only ev-
+idence use, but also the organization and density of
+the final answer.
+5 Related Work
+Evidence-grounded long-form generation.
+Retrieval-augmented generation improves the
+factuality and verifiability of language models by
+grounding generation in external evidence (Lewis
+et al., 2020). Recent work extends this paradigm to
+web-grounded and citation-grounded long-form
+generation, where models must synthesize evi-
+dence from multiple sources and provide faithful
+attributions (Liu et al., 2023; Qin et al., 2023; Gao
+et al., 2023). Scientific and legal domains further
+stress these abilities, as reliable generation often
+requires long-document reading, evidence compari-
+son, and well-supported argumentation (Asai et al.,
+2024; McDonald et al., 2022; Guha et al., 2023;
+Dai et al., 2025). However, most existing pipelines
+supervise models through final answers, retrieved
+contexts, or distilled responses, collapsing the
+intermediate evidence-seeking process into a single
+input-output mapping. RETROGEN instead treats
+expert-written artifacts as compressed traces of
+latent evidence-seeking processes and reconstructs
+explicit tool-use trajectories from them.
+Tool-use agents and process supervision. A
+growing line of work studies language models as
+agents that interleave reasoning with external ac-
+tions such as search, retrieval, API calls, and envi-
+ronment interaction (Wang et al., 2024a; Yao et al.,
+2022; Qin et al., 2024). While tool use extends
+models beyond parametric knowledge, training re-
+liable agents remains challenging because high-
+quality process trajectories are scarce. Process su-
+pervision shows that intermediate reasoning steps
+can improve reliability over outcome-only supervi-
+sion (Lightman et al., 2024), and reasoning boot-
+strapping suggests that models can benefit from
+learning from their own intermediate rationales (Ze-
+likman et al., 2022; Shao et al., 2024). Unlike
+these settings, evidence-seeking agents require not
+only plausible reasoning chains but also faithful
+observations produced by executable tools. RET-
+ROGEN therefore reconstructs candidate trajecto-
+ries retrospectively and filters them with evidence-
+constrained verification.
+Self-improvement without stronger teachers.
+Self-improving agents have been explored through
+verbal feedback, reflection, and iterative refine-
+ment (Shinn et al., 2023). However, many data-
+generation pipelines still rely on stronger teacher
+models, human demonstrations, or preference la-
+bels to produce supervision at scale. Web-grounded
+systems such as WebGLM and WebCPM show the
+value of retrieval-enhanced supervision for long-
+form QA (Liu et al., 2023; Qin et al., 2023), but
+typically organize supervision around retrieve-then-
+write outputs rather than reusable multi-step agen-
+tic processes. RETROGEN differs by using expert-
+curated artifacts as target anchors: instead of asking
+a stronger model or human annotator to generate
+trajectories forward, it infers plausible evidence-
+seeking trajectories backward from the artifact, ver-
+ifies them automatically, and trains the backbone
+on the resulting retrospective process supervision.
+6 Conclusion
+We presented RETROGEN, a framework for retro-
+spective process supervision that trains evidence-
+seeking agents from expert-curated final artifacts.
+Rather than collecting costly human process an-
+notations or relying on stronger teacher models,
+RETROGEN reconstructs candidate tool-use trajec-
+tories from high-quality artifacts and filters them
+through evidence-constrained verification for arti-
+fact fidelity, evidence faithfulness, and procedural
+
+plausibility.
+Across scientific writing, financial analysis,
+and legal judgment drafting, RETROGEN im-
+proves evidence-grounded long-form generation
+and domain-specific reasoning over various base-
+lines. Ablations show that the four verification sig-
+nals are complementary, and in-depth analyses fur-
+ther show that the method induces more structured
+agentic behavior on dynamic research tasks while
+preserving general capabilities. These findings sug-
+gest that expert artifacts can serve not only as final
+targets, but also as scalable sources of process su-
+pervision for self-improving open-ended agents.
+Limitations
+RETROGEN relies on the availability of high-
+quality expert artifacts. While such artifacts are
+often more abundant than process annotations,
+their usefulness depends on whether they contain
+enough recoverable evidence and structural sig-
+nals to support retrospective reconstruction. In
+domains where final outputs are highly underspeci-
+fied, stylistically diverse, or weakly grounded in ex-
+plicit evidence, the reconstructed trajectories may
+be less reliable.
+Our experiments focus on evidence-grounded
+long-form generation with retrieval-oriented tools.
+Although the framework is designed to be general,
+further work is needed to evaluate retrospective
+process supervision in domains requiring richer in-
+teractive environments, longer-horizon planning, or
+non-textual tools such as code execution, database
+operations, and multimodal perception.
+Acknowledgments
+The work is supported by National Natural Science
+Foundation of China (62502310,62322603).
+References
+Akari Asai, Jacqueline He*, Rulin Shao*, Weijia
+Shi, Amanpreet Singh, Joseph Chee Chang, Kyle
+Lo, Luca Soldaini, Sergey Feldman, Tian, D’arcy
+Mike, David Wadden, Matt Latzke, Minyang, Pan
+Ji, Shengyan Liu, Hao Tong, Bohao Wu, Yanyu
+Xiong, Luke Zettlemoyer, and 6 others. 2024.
+OpenScholar: Synthesizing scientific literature with
+retrieval-augmented language models. Arxiv.
+Jonathan Bragg, Mike D’Arcy, Nishant Balepur, Dan
+Bareket, Bhavana Dalvi, Sergey Feldman, Dany Had-
+dad, Jena D Hwang, Peter Jansen, Varsha Kishore,
+and 1 others. 2025. Astabench: Rigorous benchmark-
+ing of ai agents with a scientific research suite. arXiv
+preprint arXiv:2510.21652.
+Mark Chen, Jerry Tworek, Heewoo Jun, Qiming Yuan,
+Henrique Ponde de Oliveira Pinto, Jared Kaplan,
+Harri Edwards, Yuri Burda, Nicholas Joseph, Greg
+Brockman, Alex Ray, Raul Puri, Gretchen Krueger,
+Michael Petrov, Heidy Khlaaf, Girish Sastry, Pamela
+Mishkin, Brooke Chan, Scott Gray, and 39 others.
+2021. Evaluating large language models trained on
+code.
+Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian,
+Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias
+Plappert, Jerry Tworek, Jacob Hilton, Reiichiro
+Nakano, Christopher Hesse, and John Schulman.
+2021. Training verifiers to solve math word prob-
+lems. arXiv preprint arXiv:2110.14168.
+Yongfu Dai, Duanyu Feng, Jimin Huang, Haochen Jia,
+Qianqian Xie, Yifang Zhang, Weiguang Han, Wei
+Tian, and Hao Wang. 2025. Laiw: A chinese legal
+large language models benchmark. In Proceedings of
+the 31st International conference on computational
+linguistics, pages 10738–10766.
+Tianyu Gao, Howard Yen, Jiatong Yu, and Danqi Chen.
+2023. Enabling large language models to generate
+text with citations. In Proceedings of the 2023 Con-
+ference on Empirical Methods in Natural Language
+Processing, pages 6465–6488.
+Neel Guha, Julian Nyarko, Daniel Ho, Christopher Ré,
+Adam Chilton, Alex Chohlas-Wood, Austin Peters,
+Brandon Waldon, Daniel Rockmore, Diego Zam-
+brano, and 1 others. 2023. Legalbench: A collab-
+oratively built benchmark for measuring legal reason-
+ing in large language models. Advances in neural
+information processing systems, 36:44123–44279.
+Albert Qiaochu Jiang, Alexandre Sablayrolles, Arthur
+Mensch, Chris Bamford, Devendra Singh Chap-
+lot, Diego de Las Casas, Florian Bressand, Gi-
+anna Lengyel, Guillaume Lample, Lucile Saulnier,
+Lélio Renard Lavaud, Marie-Anne Lachaux, Pierre
+Stock, Teven Le Scao, Thibaut Lavril, Thomas Wang,
+Timothée Lacroix, and William El Sayed. 2023. Mis-
+tral 7b. ArXiv, abs/2310.06825.
+Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying
+Sheng, Lianmin Zheng, Cody Hao Yu, Joseph Gon-
+zalez, Hao Zhang, and Ion Stoica. 2023. Efficient
+memory management for large language model serv-
+ing with pagedattention. In Proceedings of the 29th
+symposium on operating systems principles, pages
+611–626.
+Patrick Lewis, Ethan Perez, Aleksandra Piktus, Fabio
+Petroni, Vladimir Karpukhin, Naman Goyal, Hein-
+rich Küttler, Mike Lewis, Wen-tau Yih, Tim Rock-
+täschel, and 1 others. 2020. Retrieval-augmented gen-
+eration for knowledge-intensive nlp tasks. Advances
+in neural information processing systems, 33:9459–
+9474.
+
+Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harri-
+son Edwards, Bowen Baker, Teddy Lee, Jan Leike,
+John Schulman, Ilya Sutskever, and Karl Cobbe.
+2024. Let’s verify step by step. In International
+Conference on Learning Representations, volume
+2024, pages 39578–39601.
+Xiao Liu, Hanyu Lai, Hao Yu, Yifan Xu, Aohan
+Zeng, Zhengxiao Du, Peng Zhang, Yuxiao Dong,
+and Jie Tang. 2023. Webglm: towards an efficient
+web-enhanced question answering system with hu-
+man preferences. In Proceedings of the 29th ACM
+SIGKDD conference on knowledge discovery and
+data mining, pages 4549–4560.
+Lefteris Loukas, Manos Fergadiotis, Ion Androutsopou-
+los, and Prodromos Malakasiotis. 2021. Edgar-
+corpus: Billions of tokens make the world go round.
+In Proceedings of the Third Workshop on Economics
+and Natural Language Processing, pages 13–18.
+Tavish McDonald, Brian Tsan, Amar Saini, Juanita
+Ordonez, Luis Gutierrez, Phan Nguyen, Blake
+Mason, and Brenda Ng. 2022. Detect, retrieve,
+comprehend: a flexible framework for zero-shot
+document-level question answering. arXiv preprint
+arXiv:2210.01959.
+Team Olmo, Allyson Ettinger, Amanda Bertsch, Bailey
+Kuehl, David Graham, David Heineman, Dirk Groen-
+eveld, Faeze Brahman, Finbarr Timbers, Hamish Ivi-
+son, and 1 others. 2025. Olmo 3. arXiv preprint
+arXiv:2512.13961.
+Yujia Qin, Zihan Cai, Dian Jin, Lan Yan, Shihao
+Liang, Kunlun Zhu, Yankai Lin, Xu Han, Ning Ding,
+Huadong Wang, and 1 others. 2023. Webcpm: In-
+teractive web search for chinese long-form question
+answering. In Proceedings of the 61st Annual Meet-
+ing of the Association for Computational Linguistics
+(Volume 1: Long Papers), pages 8968–8988.
+Yujia Qin, Shihao Liang, Yining Ye, Kunlun Zhu, Lan
+Yan, Yaxi Lu, Yankai Lin, Xin Cong, Xiangru Tang,
+Bill Qian, and 1 others. 2024. Toolllm: Facilitating
+large language models to master 16000+ real-world
+apis. In International Conference on Learning Rep-
+resentations, volume 2024, pages 9695–9717.
+Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu,
+Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan
+Zhang, YK Li, Yang Wu, and 1 others. 2024.
+Deepseekmath: Pushing the limits of mathematical
+reasoning in open language models. arXiv preprint
+arXiv:2402.03300.
+Noah Shinn, Federico Cassano, Ashwin Gopinath,
+Karthik Narasimhan, and Shunyu Yao. 2023. Re-
+flexion: Language agents with verbal reinforcement
+learning. Advances in neural information processing
+systems, 36:8634–8652.
+Lei Wang, Chen Ma, Xueyang Feng, Zeyu Zhang, Hao
+Yang, Jingsen Zhang, Zhiyuan Chen, Jiakai Tang,
+Xu Chen, Yankai Lin, and 1 others. 2024a. A survey
+on large language model based autonomous agents.
+Frontiers of Computer Science, 18(6):186345.
+Yubo Wang, Xueguang Ma, Ge Zhang, Yuansheng Ni,
+Abhranil Chandra, Shiguang Guo, Weiming Ren,
+Aaran Arulraj, Xuan He, Ziyan Jiang, and 1 others.
+2024b. Mmlu-pro: A more robust and challenging
+multi-task language understanding benchmark. arXiv
+preprint arXiv:2406.01574.
+An Yang, Anfeng Li, Baosong Yang, Beichen Zhang,
+Binyuan Hui, Bo Zheng, Bowen Yu, Chang
+Gao, Chengen Huang, Chenxu Lv, and 1 others.
+2025. Qwen3 technical report. arXiv preprint
+arXiv:2505.09388.
+Qwen An Yang, Baosong Yang, Beichen Zhang,
+Binyuan Hui, Bo Zheng, Bowen Yu, Chengyuan
+Li, Dayiheng Liu, Fei Huang, Guanting Dong, Hao-
+ran Wei, Huan Lin, Jian Yang, Jianhong Tu, Jianwei
+Zhang, Jianxin Yang, Jiaxin Yang, Jingren Zhou, Jun-
+yang Lin, and 25 others. 2024. Qwen2.5 technical
+report. ArXiv, abs/2412.15115.
+Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak
+Shafran, Karthik Narasimhan, and Yuan Cao. 2022.
+React: Synergizing reasoning and acting in language
+models. arXiv preprint arXiv:2210.03629.
+Eric Zelikman, Yuhuai Wu, Jesse Mu, and Noah Good-
+man. 2022. Star: Bootstrapping reasoning with rea-
+soning. Advances in Neural Information Processing
+Systems, 35:15476–15488.
+Jeffrey Zhou, Tianjian Lu, Swaroop Mishra, Sid-
+dhartha Brahma, Sujoy Basu, Yi Luan, Denny Zhou,
+and Le Hou. 2023. Instruction-following evalu-
+ation for large language models. arXiv preprint
+arXiv:2311.07911.
+
+A Implementation Details
+A.1 Expert Artifact Corpora
+For each of the three domains in Section 4.1, the
+expert artifact y
+∗ 
+is drawn from a publicly available
+source and used as the anchor for retrospective
+reconstruction.
+• Scientific writing. We use author-written related-
+work sections as expert artifacts y
+∗
+. Each in-
+stance consists of a parsed related-work block
+together with the corresponding paper abstract
+and cited reference list. The abstract is used as
+side context for inducing the task specification
+ˆx, while the original related-work text is never
+exposed to the agent during executable trajectory
+generation.
+• 
+Financial analysis. We use Item 7 (Manage-
+ment’s Discussion and Analysis, MD&A) sec-
+tions of U.S. SEC 10-K filings from the EDGAR
+corpus (Loukas et al., 2021). Each MD&A sec-
+tion is treated as the expert artifact y
+∗ 
+and is
+indexed by company and fiscal year. The remain-
+ing filing content, such as business description,
+risk factors, and quantitative disclosures, is avail-
+able to the agent only through actual filing-reader
+tool calls.
+• Legal judgment drafting. We use Chinese first-
+instance civil and administrative judgments col-
+lected from publicly accessible court-record por-
+tals. Each judgment is normalized into plain text,
+with personal identifiers pseudonymized when
+necessary. Statutes and prior cases are not bun-
+dled with y
+∗ 
+and must be retrieved at trajectory
+time through the legal search and browse tools.
+Across all domains, the target artifact is used
+only as a retrospective anchor for task induction,
+evidence recovery, and verification. It is not avail-
+able as an observation during trajectory execution.
+A.2 Procedural Diversity
+To prevent the reconstructed corpus from collaps-
+ing into a single template, we randomize five
+axes when sampling each trajectory: (i) user-query
+phrasing; (ii) system prompt style, including vari-
+ations in tone, persona, and tool schema; (iii)
+high-level plan flow pattern; (iv) thought templates
+for each action type, such as SEARCH, BROWSE,
+SYNTHESIZE, ASSEMBLE, REFLECTION, TRAN-
+SITION, and ERRORRECOVERY; and (v) the sur-
+face formatting of tool-call blocks, such as JSON-
+style tool calls and ReAct-style Action/Action
+Input formatting. All random seeds are fixed
+within a single backbone run for reproducibility.
+A.3 SFT Mixture and Training
+The same SFT recipe is applied to all fine-tuned
+variants. The Base baseline denotes the original
+checkpoint without SFT.
+Token-budgeted mixture. We treat the train-
+ing corpus as a budget of 5 × 10
+7 
+tokens.
+For RETROGEN, this budget is split as: 40%
+TRAJECTORY-SCIENTIFIC, 20% TRAJECTORY-
+FINANCIAL, 20% TRAJECTORY-LEGAL, and 20%
+GENERAL. The GENERAL pool aggregates
+instruction-following, multi-turn dialogue, long-
+form writing, math, and code samples. Samples
+longer than 32,768 tokens are dropped. The same
+token budget and mixture proportions are used for
+the corresponding baselines, with only the 80%
+agentic slice changed according to the baseline def-
+inition.
+Baseline construction. For ForwardGen, trajec-
+tories are generated from the inferred task speci-
+fication ˆx without access to the expert artifact y
+∗
+as a target anchor. For Artifact-Only, we remove
+intermediate tool calls, observations, and synthe-
+sis notes while preserving the inferred task and
+final artifact. For Public-Baseline, we replace the
+80% agentic trajectory slice with WebGLM-QA
+and WebCPM-WK examples while keeping the
+same 20% general-data mixture. All fine-tuned
+variants share the same sequence length cap and
+optimization configuration.
+Optimization. Training is implemented with full-
+parameter supervised fine-tuning using DeepSpeed
+ZeRO-1 and sequence packing. We use AdamW
+with peak learning rate 1 × 10
+−5
+, cosine schedul-
+ing, warmup ratio 5%, weight decay 0.01, gradient
+clipping 1.0, gradient checkpointing, left trunca-
+tion, dropout off, and a target effective batch size
+of approximately 512K tokens per optimizer step.
+Each backbone is trained for one epoch with a fixed
+random seed. The same optimization configuration
+is used for every fine-tuned baseline.
+A.4 Evaluation Details
+All evaluations are run with a vLLM backend. We
+use max_length=32,768 for evidence-grounded
+
+and legal tasks and 4,096 otherwise. Unless other-
+wise specified, the random seed is fixed to 1234.
+For dynamic agentic evaluation in Section 4.3.2,
+we run AstaBench’s literature-understanding suite,
+including LitQA2-Validation and SQA. LitQA2
+measures accuracy, precision, and coverage on
+biomedical evidence-seeking questions. SQA re-
+ports ingredient recall, answer precision, citation
+precision, citation recall, and their global average.
+The base model and its RETROGEN-trained coun-
+terpart use the same backbone, tool inventory, sam-
+pling configuration, and maximum interaction bud-
+get (max_rounds=15). Judge-based metrics are
+rescored using the same local judge model for all
+systems.
+A.5 AstaBench Action Abstraction
+For the transition analysis in Figure 3, we collapse
+raw AstaBench tool calls into three high-level ac-
+tions: SEARCH, READ, and END. SEARCH in-
+cludes paper search, snippet search, citation ex-
+pansion, and other retrieval-oriented calls. READ
+includes opening paper metadata, reading paper
+content, and inspecting retrieved passages. END
+denotes the model’s decision to stop tool use and
+produce the final answer. We compute transition
+probabilities by counting each consecutive action
+pair and normalizing by the total outgoing transi-
+tions from the current action.
+A.6 Action Schema and Reusable Templates
+For all three domains, an assistant turn may contain
+one or more tool calls followed by an optional free-
+form note. A final-answer turn emits no tool call.
+The default schema is:
+<tool_call>{"name":"<tool>","arguments":{...}}</tool_call>
+Tool results are returned in the next user turn:
+<tool_response>...</tool_response>
+We additionally sample a ReAct-style variant at
+fixed probability per trajectory:
+Action: <tool>
+Action Input: {...}
+This improves robustness to different tool-call sur-
+face forms. Thought templates that bracket each
+action are drawn from a large pool of paraphrases
+to avoid wording collapse during SFT.
+B Verification Protocol
+Verification is performed by the same backbone
+that generates the candidate trace, under a rubric-
+guided scoring protocol; we do not introduce a
+Domain Mean Median P25 P75 Thr.
+Scientific 0.571 0.594 0.412 0.743 0.52
+Financial 0.508 0.517 0.273 0.738 0.48
+Legal 0.624 0.668 0.480 0.799 0.63
+Table 3: Domain-wise distribution of the overall verifi-
+cation score and the corresponding filtering threshold.
+Thresholds cut the low-score tail while retaining enough
+traces for the 50M-token SFT mixture, yielding approx-
+imately 25K verified trajectories.
+stronger external judge. Each retained trace re-
+ceives four scores in [0, 1]—rubric satisfaction s
+rub
+,
+holistic quality s
+qual
+, evidence grounding s
+grd
+, and
+trace consistency s
+con
+—which are averaged with
+uniform weights λ = 0.25.
+Domain-specific thresholds. Table 3 reports the
+score distribution used to calibrate filters. Rather
+than applying a global cutoff, we remove the low-
+score tail in each domain while retaining enough
+data for the 50M-token SFT mixture. The resulting
+thresholds are 0.52 / 0.48 / 0.63 for scientific /
+financial / legal traces, yielding approximately 25K
+verified trajectories.
+Failure modes. Rejected traces typically exhibit
+missed evidence themes, weak grounding, shal-
+low comparison, or incomplete finals. For exam-
+ple, one rejected scientific trajectory (overall score
+0.30, rubric score 0.00) is asked to write a related-
+work section on adaptive optimization under partial
+observability, but produces fluent prose about un-
+certainty and decision-making while omitting the
+required themes. This is a common rejection pat-
+tern: a plausible-sounding workflow that recovers
+the wrong evidence lineage. Accepted traces, by
+contrast, search and browse in a noisy retrieval
+space, retain relevant sources, discard weakly re-
+lated results, and synthesize an artifact that covers
+the self-induced rubric.
+C Prompts and Anti-Leakage
+We include simplified prompt templates used for
+rubric extraction and task induction in the scientific-
+writing domain. Financial and legal domains follow
+the same structure with domain-specific criteria
+(coverage of filings or statutes, analytical depth,
+and citation of controlling authority).
+Rubric extraction.
+The scientific-writing prompt template is:
+
+Analyze the following Related Work section and extract a
+structured
+evaluation rubric.
+## Related Work Section
+{related_work}
+## Instructions
+Identify specific quality criteria that a reconstructed
+trajectory
+should satisfy. Each item should be categorized as one of:
+coverage | structure | synthesis | citation
+Output JSON:
+{
+"rubric_items": [
+{
+"id": "R1",
+"category": "coverage|structure|synthesis|citation",
+"description": "Specific requirement description"
+}
+]
+}
+An example extracted item is:
+{
+"id": "R1",
+"category": "synthesis",
+"description": "Compare greedy frameworks for adaptive
+optimization with Stochastic Depletion problems."
+}
+Task induction with anti-leakage. The inferred
+query must specify a realistic professional intent
+without leaking the evidence the agent is expected
+to recover:
+Based on the following Related Work section, generate a task
+description for an AI agent that needs to write a similar
+Related
+Work section using only web search.
+## Related Work Section
+{related_work}
+## Rubric
+{rubric}
+## Instructions
+1. Infer what paper this Related Work belongs to.
+2. Specify the domain and key themes.
+3. Do NOT reveal specific paper titles/authors, target
+citations,
+exact conclusions, or evidence that the agent must
+recover
+via search.
+4. Provide enough high-level guidance for search.
+A representative inferred task is: write a related-
+work section on trust-aware recommender systems
+and matrix factorization, covering fundamental
+factorization algorithms, social-network structure,
+and trust propagation. The prompt names the re-
+search intent and topical scope, but still requires
+the agent to search, inspect, select, and synthesize
+evidence. During trajectory execution the original
+artifact y
+∗ 
+is used only offline as a retrospective
+anchor.

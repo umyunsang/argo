@@ -1,14 +1,22 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** apply the admission path to the 32 retained variance-block episodes, whose usage was never measured and which are therefore currently unscorable under the new rule.
+- **next_first_action:** rewrite the tex_files lists in the earlier source receipts as repository paths too, so every listed source file is checkable rather than only the most recent round.
 
-- **last_updated:** 2026-09-03T02:32:49+09:00
+- **last_updated:** 2026-09-03T02:36:08+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 36 closed — ceiling violations can no longer reach the scorer
+- **current_phase:** cycle 37 closed — the admission rule applied to its own motivating data; 48 of 48 historical episodes unscorable
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 37 — the rule was applied to the data that motivated it
+
+- **Gap picked:** the new admission rule had never been applied to the blocks that produced the evidence for it. Exempting that data is how a rule becomes ceremonial.
+- **Result:** of the **48** episodes in the pilot and variance blocks, **none is scorable**, for a single reason — their usage was never measured, so compliance cannot be shown. Only the **6** episodes run in structured output mode pass.
+- **Nothing is retracted.** No score or effect was ever claimed from those blocks, and judged scoring was already inadmissible pending calibration, so the rule adds a second independent reason rather than overturning a claim.
+- **What it does change:** the variance components and the allocation and minimum detectable effect derived from them are now labelled **provisional design inputs** taken from episodes that would not be admitted today. The confirmatory block must measure usage on every episode and re-derive its own allocation rather than inherit these numbers.
+- **The reference gate caught a real ambiguity:** one upstream archive stores its sections under an internal directory named `paper`, so member names looked like repository paths and failed to resolve. Source receipts now record repository-relative paths, which removes the false reference *and* makes every listed file checkable.
 
 ### Cycle 36 — enforcement moved into the admission path
 

@@ -1,0 +1,264 @@
+\newpage
+\appendix
+
+\section{Implementation Details}
+\label{app:impl}
+
+\subsection{Expert Artifact Corpora}
+\label{app:corpora}
+
+For each of the three domains in Section~\ref{sec:setup}, the expert
+artifact $y^\ast$ is drawn from a publicly available source and used as
+the anchor for retrospective reconstruction.
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Scientific writing.}
+    We use author-written related-work sections as expert artifacts
+    $y^\ast$. Each instance consists of a parsed related-work block
+    together with the corresponding paper abstract and cited reference
+    list. The abstract is used as side context for inducing the task
+    specification $\hat{x}$, while the original related-work text is
+    never exposed to the agent during executable trajectory generation.
+
+  \item \textbf{Financial analysis.}
+    We use Item~7 (Management's Discussion and Analysis, MD\&A)
+    sections of U.S. SEC 10-K filings from the EDGAR corpus
+    \citep{loukas2021edgar}. Each MD\&A section is treated as the
+    expert artifact $y^\ast$ and is indexed by company and fiscal year.
+    The remaining filing content, such as business description, risk
+    factors, and quantitative disclosures, is available to the agent
+    only through actual filing-reader tool calls.
+
+  \item \textbf{Legal judgment drafting.}
+    We use Chinese first-instance civil and administrative judgments
+    collected from publicly accessible court-record portals. Each
+    judgment is normalized into plain text, with personal identifiers
+    pseudonymized when necessary. Statutes and prior cases are not
+    bundled with $y^\ast$ and must be retrieved at trajectory time
+    through the legal search and browse tools.
+\end{itemize}
+
+Across all domains, the target artifact is used only as a retrospective
+anchor for task induction, evidence recovery, and verification. It is not
+available as an observation during trajectory execution.
+
+\subsection{Procedural Diversity}
+\label{app:diversity}
+
+To prevent the reconstructed corpus from collapsing into a single
+template, we randomize five axes when sampling each trajectory:
+(i) user-query phrasing;
+(ii) system prompt style, including variations in tone, persona, and
+tool schema;
+(iii) high-level plan flow pattern;
+(iv) thought templates for each action type, such as \textsc{Search},
+\textsc{Browse}, \textsc{Synthesize}, \textsc{Assemble},
+\textsc{Reflection}, \textsc{Transition}, and \textsc{ErrorRecovery};
+and (v) the surface formatting of tool-call blocks, such as JSON-style
+tool calls and ReAct-style \texttt{Action/Action Input} formatting. All
+random seeds are fixed within a single backbone run for reproducibility.
+
+\subsection{SFT Mixture and Training}
+\label{app:sft}
+
+The same SFT recipe is applied to all fine-tuned variants. The
+\textbf{Base} baseline denotes the original checkpoint without SFT.
+
+\paragraph{Token-budgeted mixture.}
+We treat the training corpus as a budget of $5\times10^{7}$ tokens. For
+\textsc{RetroGen}, this budget is split as:
+$40\%$ \textsc{Trajectory-Scientific},
+$20\%$ \textsc{Trajectory-Financial},
+$20\%$ \textsc{Trajectory-Legal}, and
+$20\%$ \textsc{General}. The \textsc{General} pool aggregates
+instruction-following, multi-turn dialogue, long-form writing, math,
+and code samples. Samples longer than $32{,}768$ tokens are dropped.
+The same token budget and mixture proportions are used for the
+corresponding baselines, with only the $80\%$ agentic slice changed
+according to the baseline definition.
+
+\paragraph{Baseline construction.}
+For \textbf{ForwardGen}, trajectories are generated from the inferred
+task specification $\hat{x}$ without access to the expert artifact
+$y^\ast$ as a target anchor. For \textbf{Artifact-Only}, we remove
+intermediate tool calls, observations, and synthesis notes while
+preserving the inferred task and final artifact. For
+\textbf{Public-Baseline}, we replace the $80\%$ agentic trajectory
+slice with WebGLM-QA and WebCPM-WK examples while keeping the same
+$20\%$ general-data mixture. All fine-tuned variants share the same
+sequence length cap and optimization configuration.
+
+\paragraph{Optimization.}
+Training is implemented with full-parameter supervised fine-tuning
+using DeepSpeed ZeRO-1 and sequence packing. We use AdamW with peak
+learning rate $1\times10^{-5}$, cosine scheduling, warmup ratio $5\%$,
+weight decay $0.01$, gradient clipping $1.0$, gradient checkpointing,
+left truncation, dropout off, and a target effective batch size of
+approximately $512$K tokens per optimizer step. Each backbone is
+trained for one epoch with a fixed random seed. The same optimization
+configuration is used for every fine-tuned baseline.
+
+\subsection{Evaluation Details}
+\label{app:eval}
+
+All evaluations are run with a vLLM backend.
+We use \texttt{max\_length}=32{,}768 for evidence-grounded and legal
+tasks and $4{,}096$ otherwise. Unless otherwise specified, the random
+seed is fixed to $1234$. 
+
+For dynamic agentic evaluation in Section~\ref{sec:astabench}, we run
+AstaBench's literature-understanding suite, including
+LitQA2-Validation and SQA. LitQA2 measures accuracy, precision, and
+coverage on biomedical evidence-seeking questions. SQA reports
+ingredient recall, answer precision, citation precision, citation
+recall, and their global average. The base model and its
+\textsc{RetroGen}-trained counterpart use the same backbone, tool
+inventory, sampling configuration, and maximum interaction budget
+(\texttt{max\_rounds}=15). Judge-based metrics are rescored using the
+same local judge model for all systems.
+
+\subsection{AstaBench Action Abstraction}
+\label{app:astabench_actions}
+
+For the transition analysis in Figure~\ref{fig:exp_trans}, we collapse
+raw AstaBench tool calls into three high-level actions:
+\textsc{Search}, \textsc{Read}, and \textsc{END}. \textsc{Search}
+includes paper search, snippet search, citation expansion, and other
+retrieval-oriented calls. \textsc{Read} includes opening paper
+metadata, reading paper content, and inspecting retrieved passages.
+\textsc{END} denotes the model's decision to stop tool use and produce
+the final answer. We compute transition probabilities by counting each
+consecutive action pair and normalizing by the total outgoing
+transitions from the current action.
+
+\subsection{Action Schema and Reusable Templates}
+\label{app:schema}
+
+For all three domains, an assistant turn may contain one or more tool
+calls followed by an optional free-form note. A final-answer turn emits
+no tool call. The default schema is:
+\begin{lstlisting}[basicstyle=\ttfamily\scriptsize,breaklines=true]
+<tool_call>{"name":"<tool>","arguments":{...}}</tool_call>
+\end{lstlisting}
+Tool results are returned in the next user turn:
+\begin{lstlisting}[basicstyle=\ttfamily\scriptsize,breaklines=true]
+<tool_response>...</tool_response>
+\end{lstlisting}
+We additionally sample a ReAct-style variant at fixed probability per
+trajectory:
+\begin{lstlisting}[basicstyle=\ttfamily\scriptsize,breaklines=true]
+Action: <tool>
+Action Input: {...}
+\end{lstlisting}
+This improves robustness to different tool-call surface forms. Thought
+templates that bracket each action are drawn from a large pool of
+paraphrases to avoid wording collapse during SFT.
+
+\section{Verification Protocol}
+\label{app:verification}
+
+Verification is performed by the same backbone that generates the
+candidate trace, under a rubric-guided scoring protocol; we do not
+introduce a stronger external judge. Each retained trace receives four
+scores in $[0,1]$---rubric satisfaction $s_{\mathrm{rub}}$, holistic
+quality $s_{\mathrm{qual}}$, evidence grounding $s_{\mathrm{grd}}$, and
+trace consistency $s_{\mathrm{con}}$---which are averaged with uniform
+weights $\lambda=0.25$.
+
+\paragraph{Domain-specific thresholds.}
+Table~\ref{tab:score_thresholds} reports the score distribution used to
+calibrate filters. Rather than applying a global cutoff, we remove the
+low-score tail in each domain while retaining enough data for the
+50M-token SFT mixture. The resulting thresholds are $0.52$ / $0.48$ /
+$0.63$ for scientific / financial / legal traces, yielding approximately
+$25$K verified trajectories.
+
+\input{tables/score_thresholds}
+
+\paragraph{Failure modes.}
+Rejected traces typically exhibit missed evidence themes, weak
+grounding, shallow comparison, or incomplete finals. For example, one
+rejected scientific trajectory (overall score $0.30$, rubric score
+$0.00$) is asked to write a related-work section on adaptive
+optimization under partial observability, but produces fluent prose
+about uncertainty and decision-making while omitting the required
+themes. This is a common rejection pattern: a plausible-sounding
+workflow that recovers the wrong evidence lineage. Accepted traces, by
+contrast, search and browse in a noisy retrieval space, retain relevant
+sources, discard weakly related results, and synthesize an artifact that
+covers the self-induced rubric.
+
+\section{Prompts and Anti-Leakage}
+\label{app:prompts}
+
+We include simplified prompt templates used for rubric extraction and
+task induction in the scientific-writing domain. Financial and legal
+domains follow the same structure with domain-specific criteria
+(coverage of filings or statutes, analytical depth, and citation of
+controlling authority).
+
+\vspace{2.5pt}
+\noindent\textbf{Rubric extraction.}\\[0.6ex]
+The scientific-writing prompt template is:
+\vspace{0.55ex}
+\begin{lstlisting}
+Analyze the following Related Work section and extract a structured
+evaluation rubric.
+
+## Related Work Section
+{related_work}
+
+## Instructions
+Identify specific quality criteria that a reconstructed trajectory
+should satisfy. Each item should be categorized as one of:
+coverage | structure | synthesis | citation
+
+Output JSON:
+{
+  "rubric_items": [
+    {
+      "id": "R1",
+      "category": "coverage|structure|synthesis|citation",
+      "description": "Specific requirement description"
+    }
+  ]
+}
+\end{lstlisting}
+An example extracted item is:
+\begin{lstlisting}
+{
+  "id": "R1",
+  "category": "synthesis",
+  "description": "Compare greedy frameworks for adaptive
+optimization with Stochastic Depletion problems."
+}
+\end{lstlisting}
+
+\paragraph{Task induction with anti-leakage.}
+The inferred query must specify a realistic professional intent without
+leaking the evidence the agent is expected to recover:
+\begin{lstlisting}[basicstyle=\ttfamily\scriptsize,breaklines=true]
+Based on the following Related Work section, generate a task
+description for an AI agent that needs to write a similar Related
+Work section using only web search.
+
+## Related Work Section
+{related_work}
+## Rubric
+{rubric}
+
+## Instructions
+1. Infer what paper this Related Work belongs to.
+2. Specify the domain and key themes.
+3. Do NOT reveal specific paper titles/authors, target citations,
+   exact conclusions, or evidence that the agent must recover
+   via search.
+4. Provide enough high-level guidance for search.
+\end{lstlisting}
+A representative inferred task is: \emph{write a related-work section on
+trust-aware recommender systems and matrix factorization, covering
+fundamental factorization algorithms, social-network structure, and
+trust propagation.} The prompt names the research intent and topical
+scope, but still requires the agent to search, inspect, select, and
+synthesize evidence. During trajectory execution the original artifact
+$y^{*}$ is used only offline as a retrospective anchor.

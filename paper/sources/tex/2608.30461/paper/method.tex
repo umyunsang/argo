@@ -1,0 +1,46 @@
+\section{Method}
+\label{sec:method}
+
+Given an expert artifact $y^{*}$, \textsc{RetroGen} constructs retrospective process-supervision data through a structured pipeline. 
+
+\subsection{Artifact-Anchored Initialization}
+Because the forward task is underdetermined, we first infer the starting conditions directly from the expert artifact. Leveraging its inherent reasoning capabilities, the agent infers a plausible task specification $\hat{x}$ that aligns with the final output.
+
+Concurrently, it induces an instance-specific rubric $R=\{(r_{k},c_{k})\}_{k=1}^{K}$ to serve as the evaluation standard for later verification. Rather than relying on generic quality metrics, this rubric extracts fine-grained, checkable criteria ($r_{k}$) mapped to specific target aspects ($c_{k}$) inherent in the artifact. For instance, if the artifact is a legal judgment document, a criterion $r_{k}$ might demand "explicitly invoking the specific tort law precedent", targeting the aspect $c_{k}$ of "statutory grounding". Alternatively, for an academic survey, $r_{k}$ might require "contrasting the computational overhead of two specific baseline models", mapping to $c_{k}$ for "comparative analysis". 
+
+Finally, to establish the evidence environment, we extract concrete cues, such as explicit citations, statutory references, or key entities, from the artifact. These cues seed an artifact-conditioned retrieval over domain-specific corpora, yielding the recovered evidence set $\hat{\mathcal{E}}$. Crucially, this entire initialization phase is fully self-bootstrapped, requiring zero human-authored process traces or external teacher models.
+
+\subsection{Trajectory Reconstruction}
+Given $\hat{x}$ and $\hat{\mathcal{E}}$, the agent autonomously formulates a high-level operational plan $\hat{\pi}=(s_{1},s_{2},...,s_{T})$ utilizing a shared abstract action vocabulary $\mathcal{A} = \{\text{Search}, \text{Open}, \text{Extract}, \text{Compare}, \text{Outline}, \text{Draft}\}$. 
+This plan is subsequently materialized into candidate tool-augmented traces:
+\begin{equation}
+\hat{\tau} = (\underbrace{\hat{o}_{0}, \hat{a}_{1}, \hat{o}_{1}, \dots, \hat{n}_{t}}_{\text{denoted as } \hat{\tau}^{\mathrm{pre}}}, \tilde{y}),
+\end{equation}
+where $\hat{a}_{t} \in \mathcal{A}$ denotes a specific tool invocation, $\hat{o}_{t}$ represents the corresponding environmental observation, and $\hat{n}_{t}$ is an intermediate synthesis note. Collectively, these intermediate elements form the reasoning and evidence-seeking prefix $\hat{\tau}^{\mathrm{pre}}$, and $\tilde{y}$ is the final generated artifact.
+Crucially, the observations $\hat{o}_{t}$ are populated via actual tool executions rather than model hallucinations, ensuring that the reconstructed traces are empirically faithful rather than merely narratively plausible.
+
+To prevent the reconstructed dataset from collapsing into a single, homogeneous trace style, we inject controlled diversity across query formulation, plan realization, outline granularity, reflection frequency, and surface formatting. This acts as a form of procedural regularization, ensuring that the model learns robust and generalizable evidence-seeking behaviors instead of merely memorizing a rigid procedural template.
+
+\subsection{Evidence-Constrained Verification}
+Each candidate trace $\hat{\tau}$ is evaluated with respect to the desiderata in Section~\ref{sec:problem}: artifact fidelity, evidence faithfulness, and procedural plausibility. We operationalize this through a rubric-guided, multi-dimensional scoring mechanism that yields four complementary signals.
+
+First, a rubric score ($s_{\mathrm{rub}}$) quantifies whether the synthesized artifact $\tilde{y}$ fully satisfies, partially satisfies, or misses each self-induced criterion within $R$.
+Second, a holistic quality score ($s_{\mathrm{qual}}$) measures overarching domain rigor, encompassing dimensions such as coherence, factual accuracy, legal correctness, or analytical depth, depending on the specific task.
+Third, a grounding score ($s_{\mathrm{grd}}$) ensures that intermediate synthesis notes $\hat{n}_t$ and final claims are strictly supported by the recovered evidence environment $\hat{\mathcal{E}}$.
+Fourth, a trace-consistency score ($s_{\mathrm{con}}$) verifies the internal logic of the workflow—checking, for example, whether comparison steps correctly reference previously opened documents, whether outlines are reflected in the final structure, and whether final claims are logically licensed by earlier observations.
+The overall trace score is computed as a weighted sum:
+\begin{equation}
+    \mathrm{Score}(\hat{\tau})=\lambda_r s_{\mathrm{rub}}+\lambda_q s_{\mathrm{qual}}+\lambda_g s_{\mathrm{grd}}+\lambda_c s_{\mathrm{con}},\end{equation} where $\lambda_{\{r,q,g,c\}}$ denote the respective mixing weights. Traces exhibiting failed retrievals, malformed tool executions, or overall scores falling below a domain-specific threshold are automatically discarded.
+    Crucially, this weighted thresholding mechanism does not attempt to certify that a trace is historically identical to the original human workflow. Instead, it acts as a scalable proxy for process quality, ensuring that the retained trajectories are faithful to the expert anchor, grounded in evidence, and procedurally robust, all without requiring human oversight.
+
+
+\subsection{Retrospective Process Supervision}
+
+After the evidence-constrained verification, we retain the successfully filtered candidate traces. Crucially, rather than forcing the model to predict the exact original expert artifact $y^*$ at the end of the sequence, we pair the retained trace prefix $\hat{\tau}^{\mathrm{pre}}_i$ with its corresponding synthesized draft $\tilde{y}_i$. Concretely, each training sample encompasses the inferred task specification, the recovered evidence context, the tool-interaction trace, the intermediate notes, and the verified synthetic artifact:\begin{equation}(\hat{x}_i, \hat{\mathcal{E}}_i, \hat{\tau}^{\mathrm{pre}}_i, \tilde{y}_i).\end{equation}Using the synthesized output $\tilde{y}_i$ instead of the original $y_i^*$ ensures strict causal consistency between the intermediate reasoning steps and the final generation. Because the trace has already passed our rigorous multi-dimensional verification—which guarantees high fidelity to the original artifact—$\tilde{y}_i$ maintains high quality for the agent to learn from.
+We serialize each sample into a single autoregressive sequence and optimize the model using standard language modeling:
+\begin{equation}
+z_i = \mathrm{Serialize}(\hat{x}_i, \hat{\mathcal{E}}_i, \hat{\tau}^{\mathrm{pre}}_i, \tilde{y}_i),
+\end{equation}
+\begin{equation}
+\mathcal{L}(\theta)=\sum_i \sum_t\log p_\theta(z_{i,t} \mid z_{i,<t}).\end{equation}
+Compared with final-output-only supervision, this self-improving objective teaches the model not only what high-quality artifact to produce, but also how to autonomously decompose an open-ended task, gather and organize evidence, and synthesize it into a rigorously grounded long-form output.
