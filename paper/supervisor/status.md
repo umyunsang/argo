@@ -1,14 +1,22 @@
 # ARGO paper autonomous-research status
 
-- **next_first_action:** verify Roman chapter numerals, double spacing, and page numbering inside the Word artifact against the official form, since those properties are still inherited untested from the reference document.
+- **next_first_action:** move the artifact format checks into the deterministic validator so a rebuild that loses numerals, spacing, page numbers, or citations fails the gate instead of passing silently.
 
-- **last_updated:** 2026-09-03T00:25:24+09:00
+- **last_updated:** 2026-09-03T00:28:19+09:00
 - **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
 - **model:** `openai-codex/gpt-5.6-sol`
-- **current_phase:** cycle 12 closed — Word artifact now carries the Korean front matter and 57 bracketed citations, built by a committed builder
+- **current_phase:** cycle 13 closed — official format properties verified from artifact bytes and implemented in the builder
 - **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
 
 ## Completed in current phase
+
+### Cycle 13 — the inherited format properties were all missing
+
+- **Gap picked:** Roman numerals, double spacing, and page numbers were inherited from a reference document and had never been checked. Assuming them would repeat the earlier mistake of trusting an unverified inheritance.
+- **Measured from the artifact parts, all three were absent:** chapter headings carried no numerals, no line spacing was set anywhere, and the file had **no footer part at all**.
+- **Implemented in the committed builder** so every rebuild reasserts them: chapters numbered I to V with the Korean front matter deliberately left unnumbered, double spacing written into document defaults, and a page-number footer wired through the footer part, relationship, content-type override, and section reference (`RD-2026-09-02-19A`).
+- **Re-verified from bytes after the rebuild:** five Roman chapters, front matter unnumbered, `w:line=480` in defaults, footer with a PAGE field, 57 bracketed citations, zero forbidden names, and the artifact re-opens cleanly.
+- **Honest limit:** the word processor PDF export still does not complete unattended on this machine, so what the parts declare has not been confirmed against a rendered page. The deterministic toolchain PDF remains the visual reference.
 
 ### Cycle 12 — the submission artifact is now complete and correct
 

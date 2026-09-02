@@ -106,6 +106,92 @@ def numbered_source(paper_text: str) -> tuple[str, int]:
     return re.sub(r"\\citep?\{([^}]+)\}", repl, paper_text), len(order)
 
 
+ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"]
+FOOTER_XML = (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+    '<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+    '<w:p><w:pPr><w:jc w:val="center"/></w:pPr>'
+    '<w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+    '<w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r>'
+    '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+    '<w:r><w:t>1</w:t></w:r>'
+    '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
+    '</w:p></w:ftr>'
+)
+
+
+def apply_official_format(docx_path: Path, front_matter_heading: str) -> dict:
+    """Apply the three official properties the converter does not supply.
+
+    Chapters carry Roman numerals, body text is double spaced, and pages are
+    numbered. Front matter before the first chapter is not numbered.
+    """
+    import shutil, zipfile
+    src = zipfile.ZipFile(docx_path)
+    parts = {n: src.read(n) for n in src.namelist()}
+    src.close()
+
+    doc = parts["word/document.xml"].decode("utf-8")
+    applied = {"numbered_chapters": [], "double_spacing": False, "page_numbers": False}
+
+    def number_headings(text: str) -> str:
+        index = {"n": 0}
+
+        def repl(m: re.Match) -> str:
+            block = m.group(0)
+            if 'w:val="Heading1"' not in block:
+                return block
+            label = re.sub(r"<[^>]+>", "", "".join(re.findall(r"<w:t[^>]*>(.*?)</w:t>", block, re.S)))
+            if label.strip() == front_matter_heading:
+                return block
+            if index["n"] >= len(ROMAN):
+                return block
+            numeral = ROMAN[index["n"]]
+            index["n"] += 1
+            applied["numbered_chapters"].append(f"{numeral}. {label}")
+            return re.sub(r"(<w:t[^>]*>)", r"\g<1>" + f"{numeral}. ", block, count=1)
+
+        return re.sub(r"<w:p[ >].*?</w:p>", repl, text, flags=re.S)
+
+    doc = number_headings(doc)
+
+    styles = parts["word/styles.xml"].decode("utf-8")
+    double = '<w:spacing w:line="480" w:lineRule="auto" w:after="0"/>'
+    if "<w:docDefaults>" in styles:
+        styles = re.sub(r"(<w:pPrDefault><w:pPr>)", r"\g<1>" + double, styles, count=1)
+        if double not in styles:
+            styles = styles.replace("<w:docDefaults>",
+                                    "<w:docDefaults><w:pPrDefault><w:pPr>" + double + "</w:pPr></w:pPrDefault>", 1)
+        applied["double_spacing"] = double in styles
+    parts["word/styles.xml"] = styles.encode("utf-8")
+
+    parts["word/footer1.xml"] = FOOTER_XML.encode("utf-8")
+    rels = parts["word/_rels/document.xml.rels"].decode("utf-8")
+    if "footer1.xml" not in rels:
+        rels = rels.replace("</Relationships>",
+            '<Relationship Id="rIdFtr1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer"'
+            ' Target="footer1.xml"/></Relationships>')
+    parts["word/_rels/document.xml.rels"] = rels.encode("utf-8")
+    ct = parts["[Content_Types].xml"].decode("utf-8")
+    if "footer+xml" not in ct:
+        ct = ct.replace("</Types>",
+            '<Override PartName="/word/footer1.xml"'
+            ' ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/></Types>')
+    parts["[Content_Types].xml"] = ct.encode("utf-8")
+    if "<w:footerReference" not in doc:
+        doc = re.sub(r"(<w:sectPr[^>]*>)", r"\g<1>" + '<w:footerReference w:type="default" r:id="rIdFtr1"/>',
+                     doc, count=1)
+    applied["page_numbers"] = "<w:footerReference" in doc
+    parts["word/document.xml"] = doc.encode("utf-8")
+
+    tmp = docx_path.with_suffix(".tmp.docx")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as out:
+        for name, data in parts.items():
+            out.writestr(name, data)
+    shutil.move(str(tmp), str(docx_path))
+    return applied
+
+
 def main() -> int:
     _, summary, keywords = front_matter()
     numbered, n_refs = numbered_source(PAPER.read_text(encoding="utf-8"))
@@ -119,10 +205,12 @@ def main() -> int:
         print(conv.stderr[-800:]); return 1
     staged.unlink(missing_ok=True)
     inject_front_matter(OUT, summary, keywords)
+    applied = apply_official_format(OUT, "국문 요약")
     digest = hashlib.sha256(OUT.read_bytes()).hexdigest()
     print(json.dumps({"artifact": str(OUT.relative_to(ROOT)), "bytes": OUT.stat().st_size,
                       "sha256": digest, "korean_summary_chars": len(summary),
-                      "keywords": keywords, "numbered_references": n_refs}, ensure_ascii=False, indent=2))
+                      "keywords": keywords, "numbered_references": n_refs,
+                      "official_format": applied}, ensure_ascii=False, indent=2))
     return 0
 
 
