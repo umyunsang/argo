@@ -156,4 +156,12 @@ change the pending completion-arm question. GPU credit units remain 0.
 | 2026-09-03T05:26:37+09:00 | gpt-image-2 | 1 | HTTP 429 `credit_balance_exhausted`, 이미지 미반환 | 0.00 |
 
 누적 이미지 USD **0.00**. 자격 증명은 유효하나 계정 크레딧이 없어 벡터 폴백을 유지한다.
+## Study B 하네스 비교 지출 (Study B harness comparison spend)
 
+| 시각 | 단계 | 아암 | 과제 | 시드 | 모델 | 토큰 | USD | 비고 |
+|---|---|---|---|---|---|---:|---:|---|
+| 2026-09-03T15:08:45+09:00 | 드라이런 | B0 | T3 | 42 | anthropic/claude-haiku-4-5 | 405,799 | 0.134 | PIPELINE_DRY_RUN (answers.json 제출 완료, 검증기 1/5) |
+| 2026-09-03T15:08:45+09:00 | 드라이런 | B1 | T3 | 42 | anthropic/claude-haiku-4-5 | 391,973 | 0.138 | PIPELINE_DRY_RUN (answers.json 제출 완료, 검증기 2/5) |
+| 2026-09-03T15:08:45+09:00 | 드라이런 | B2 | T3 | 42 | anthropic/claude-haiku-4-5 | 547,290 | 0.118 | PIPELINE_DRY_RUN (answers.json 제출 완료, 검증기 1/5) |
+| **드라이런 합계** | — | **3개** | **T3** | — | — | **1,345,062** | **0.390** | **드라이런 상한 $2.00 이내 (잔여 $1.610)** |
+| **스크리닝 누적** | — | — | — | — | — | **0** | **0.000** | **스크리닝 상한 $48.47 미사용 (0014a)** |

@@ -47,6 +47,29 @@ def parse_usage(transcript_text: str) -> dict:
     def _num(g):
         return int(g.replace(",", ""))
 
+    json_tokens = 0
+    json_cost = 0.0
+    found_event = False
+    for line in transcript_text.splitlines():
+        line = line.strip()
+        if not (line.startswith("{") and line.endswith("}")):
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        if ev.get("type") == "message_end":
+            msg = ev.get("message") or {}
+            if msg.get("role") == "assistant" and "usage" in msg:
+                u = msg["usage"]
+                json_tokens += int(u.get("totalTokens", 0))
+                c = (u.get("cost") or {}).get("total", 0.0)
+                json_cost += float(c)
+                found_event = True
+
+    if found_event:
+        return {"total_tokens": json_tokens, "cost_usd": round(json_cost, 6)}
+
     total = sum(_num(m.group(1)) for m in USAGE_PATTERNS[0].finditer(transcript_text))
     if total == 0:
         for pat in USAGE_PATTERNS[1:]:
@@ -69,7 +92,7 @@ def run_episode(arm: str, task: str, seed: int, workdir: Path, oracle_dir: Path,
     prompt = ARM_PROMPTS[arm] + "\n\n" + (workdir / "TASK.md").read_text(encoding="utf-8")
     prompt += ("\n\nWhen done, write answers.json in the same directory with the keys named "
                "in the task. This run is a PIPELINE DRY RUN; one attempt only." if dry_run else "")
-    cmd = ["prime-agent", "-p", "--no-session", "--cwd", str(workdir),
+    cmd = ["prime-agent", "-p", "--no-session", "--mode", "json", "--cwd", str(workdir),
            "--model", MODEL, "--thinking", "low", prompt]
     try:
         proc = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True,

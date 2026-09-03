@@ -1,15 +1,29 @@
 # status (argo-paper-root)
 
-goal: `b2f7431e-942d-4fc5-b68d-cf0c316e5ffc` status=**active** budget=none
-orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71` — 클린 클론 8연속 done (최근 `71c57c6b` @ `81d6d8f77`)
+goal: `661de7ea-39d8-4d81-8284-d41edff45288` status=**active** budget=none
+orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71` — 클린 클론 done (`c0777239` @ `930f0db06`)
 orx_runs_this_cycle: 1
 exa_calls_this_cycle: 2 — **exa 복구됨**(401 해소, web_search_exa 2회 성공). 결과 가치는 낮아 인용하지 않음.
-study_b_spend_to_date: **$0.00** (상한 미정 — 0014a 대기)
-prereg_sealed: **no** — 초안 sha256 `c69ddbe7002c`
+study_b_spend_to_date: **$0.39** (드라이런 $0.39 / 상한 $2.00, 스크리닝 $0.00 / 상한 $48.47, 0014a)
+prereg_sealed: **yes** — 봉인 sha256 `f8671c44f076`
 results_origin_list: **없음.** 원고 신규 표 `tbl-studyb-status`의 결과 열은 전부 "미실행"이다.
 
 ## Completed in current phase
 
+
+
+### 사이클 (Study B 파이프라인 드라이런) — B0·B1·B2 3아암 모델 엔드투엔드 실행 및 검증 완료
+
+- **실행 목표:** instruction-0014a 승인 시나리오 (a)($48.47 상한)에 들어가기 전, $2.00 드라이런 상한 안에서 세 아암(B0, B1, B2)의 모델 호출·도구 실행·답안 작성·검증기 채점·비용 파싱이 엔드투엔드로 작동하는지 실측 검증.
+- **실행 기판 결속:** orx 실험 노드 `2440f1b7-01bc-4b2c-9d16-f86da6c42168`(`study-b/B2/T3`)에서 run `0626325a-bd4f-480b-a366-336b420fc869`로 기판 안에서 실행되었으며 `orx.db` 영수증 검증 통과.
+- **아암별 실측 결과 (과제 T3, 시드 42, 모델 claude-haiku-4-5):**
+  - **B0 (최소 도구):** 55.7초, 405,799 토큰, **$0.133588**, answers.json 제출, 검증기 1/5 통과
+  - **B1 (표현력 REPL):** 67.1초, 391,973 토큰, **$0.137553**, answers.json 제출, 검증기 2/5 통과 (best_lambda, interaction_helps)
+  - **B2 (책임 복합):** 99.9초, 547,290 토큰, **$0.118492**, answers.json 제출, 검증기 1/5 통과
+  - **드라이런 총 지출:** **$0.390** (드라이런 상한 $2.00 대비 $1.610 잔여)
+- **비용 계측 결함 발견 및 수정:** `prime-agent` 기본 텍스트 모드에서는 토큰/비용이 출력되지 않아 0으로 파싱되던 결함을 발견하고, `--mode json` 이벤트 스트림의 `message_end` 어시스턴트 사용량 레코드를 파싱하도록 `episode_runner.py`를 정밀화하여 정확한 토큰수와 달러 비용을 실측 파싱함.
+- **결과 격리:** 0013 §4.4 규칙에 따라 이 드라이런 결과는 `evidence_level: PIPELINE_DRY_RUN`으로 라벨하고 논문 결과표에 산입하지 않음(`tbl-studyb-status` 결과열 미실행 유지).
+- **결정 기록:** `RD-2026-09-03-88A` (Study B 파이프라인 드라이런 실측 검증 및 격리).
 
 ### 사이클 (감독자 재기동 후) — 봉인이 실제로는 검사하고 있지 않았다
 
