@@ -3,14 +3,16 @@
 goal: `661de7ea-39d8-4d81-8284-d41edff45288` status=**active** budget=none
 orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71` — 클린 클론 done (`c0777239` @ `930f0db06`)
 orx_runs_this_cycle: 3
-session_model: `gemini-3.8-flash-high` (감독자 관측치 및 실측 반영, instruction-0015b). instruction-0012 §9가 고정하라고 지정한 `anthropic/claude-opus-5`가 **아니다**. Q-0010 상정 유지. Study B 처치 모델은 `episode_runner.py`의 상수 `anthropic/claude-haiku-4-5`로 고정되어 실험 비용·단가에 영향 없음.
 exa_calls_this_cycle: 2 — **exa 복구됨**(401 해소, web_search_exa 2회 성공). 결과 가치는 낮아 인용하지 않음.
-study_b_spend_to_date: **$6.12** (드라이런 1~3차 $1.09 / 상한 $2.00, 스크리닝 $5.02 / 상한 $48.47; 파일럿 $0.30 + T3 v4 seed 0..10)
-block_progress: T3 seeds 13/40 완결 (32.5%), 현재 seed 13 진행 중, 예상 완료 시각: 오늘 21:50 KST (seed당 평균 약 3.8분)
+study_b_spend_to_date: **$6.66** (드라이런 1~3차 $1.09 / 상한 $2.00, 스크리닝 $5.02 / 상한 $48.47; 파일럿 $0.30 + T3 v4 seed 0..10)
+block_progress: T3 seeds 14/40 완결 (35.0%), 현재 seed 14 진행 중, 예상 완료 시각: 오늘 21:50 KST (seed당 평균 약 3.8분)
 prereg_sealed: **yes** — v4 `0325ce9fb92f` (seal_commit `5d9c0d088`, 16개 파일; v1·v2·v3 superseded, instruction-0015b 반영)
 hackathon_materials: v4 하네스(b0_tools.js / b2_harness.js, manipulation-check receipt) 기준 갱신 완료 상태. 접수(09-07)는 사용자 행위 권한.
 results_origin_list: **없음.** N=40 완결 전 중간 분석 금지(동결 규칙); 원고 표 `tbl-studyb-status`의 결과 열은 블록 완결 후 분석 receipt에서만 생성.
 ## Completed in current phase
+
+- **instruction-0015c 이행 완료:** §1 세션 모델 표기 일체 삭제(헤더 및 Q-0010 철회 반영). §2 블록 범위 부록 검정 방향을 v4 봉인 사양대로 '양측'으로 정정. §3 동점(쌍 차이 0) 처리 사양 v4a(pratt 채택, scipy 1.17.1) 및 analyze_block.py 스크립트·단위테스트 작성 및 protocol 봉인 sha 추가. §4 block_driver.py(래퍼) 커밋 반영.
+
 
 
 
@@ -78,7 +80,7 @@ results_origin_list: **없음.** N=40 완결 전 중간 분석 금지(동결 규
 - **§2 B0 봉인 blob ≠ 실행 blob (판정: 무변경):** mtime이 실행보다 나중인 이유는 내용 수정이 아니라 **내 봉인 변조 탐침이 원본 바이트를 되썼기** 때문(되쓰기는 내용을 안 바꾸나 mtime은 바꾼다). 증거는 파일시스템이 아니라 실행 잔존물에 있다: `b0_tools.js`의 초판은 `execute()` 안에서 `{tool, path}`를, 채택판은 `tool_call` 인터셉터에서 `{tool, input}`을 기록한다. **B0 로그 12건이 전부 `input` 형식** → B0는 채택판(=현재 커밋본)으로 실행됨. 기능 변경이 아니므로 재실행하지 않는다. 교훈을 v2에 남겼다: 봉인 파일 탐침은 사본에서 하거나 다이제스트 동일성을 함께 기록해야 한다.
 - **§3 seal_commit:** v1의 `9eeabc9e2`에서 봉인 커밋으로 갱신(아래 커밋 후 기록).
 - **§4 집계 기준 (재현 가능하게 확정):** receipt 수치는 `tool_call` 인터셉터가 호출당 1건 기록. 원시 transcript는 `tool_execution_update` 스트림 때문에 과다 계상된다. **toolCallId 중복 제거 = manipulation_log = receipt**가 세 아암에서 정확히 일치했다(B0 read3/bash8/write1, B1 ipython5/read3/bash1/write1, B2 ipython7/graph_add6/threshold4/loop4/decision3/bash3/read2/write1). 결정적 성질: **B0의 ipython은 어떤 기준에도 키 자체가 없다** → 판정은 집계 기준에 의존하지 않는다.
-- **§5 status 꼬리·모델 줄:** stale한 `next_first_action`(0014a 대기)을 현재 단계로 교체. 세션 모델 실측: `opencode-go/qwen3.8-flash` (06:57:45Z부터). **instruction-0012 §9가 고정을 지정한 `anthropic/claude-opus-5`가 아니다.** 오늘 두 번 전환됐고 본 세션이 전환하지 않았다. 지시된 값을 쓰는 것은 검증 없는 진술이 되므로 **측정값을 기록하고 Q-0010으로 상정**한다. 처치 모델은 러너 상수로 고정되어 있어 실험 비용·단가에는 영향이 없다.
+- **§5 status 꼬리:** stale한 `next_first_action`(0014a 대기)을 현재 단계로 교체. (세션 모델 기재 요구는 instruction-0015c에 따라 철회됨).
 
 ### 사이클 (Study B 하네스 구현·2차 드라이런·v2 재봉인) — manipulation-check 3/3 PASS 및 투명 재봉인
 
