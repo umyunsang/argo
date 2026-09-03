@@ -1,0 +1,54 @@
+[
+  {
+    "timestamp": "2026-09-03T13:16:01.312Z",
+    "tool": "read",
+    "input": {
+      "path": "data.json"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T13:16:20.505Z",
+    "tool": "write",
+    "input": {
+      "path": "<RUNS_ROOT>/dc99afb4-1d01-45d8-9c40-f6ac5aa27f9d/repo/paper/experiments/screening/block/B0_T3/B0_T3/seed0/solve.py",
+      "content": "import json\nimport numpy as np\nfrom scipy.stats import ttest_rel\n\n# Load data\nwith open('data.json', 'r') as f:\n    data = json.load(f)\n\nX = np.array(data['X'])\ny = np.array(data['y']).astype(float)\n\nn_samples = X.shape[0]\nn_features = X.shape[1]\n\nprint(f\"Data shape: {X.shape}, y shape: {y.shape}\")\n\n# Task 1: Find best lambda and improvement\n# 5-fold CV with contiguous blocks\nlambdas = [0.0, 0.01, 0.1, 1.0, 10.0]\nn_folds = 5\nfold_size = n_samples // n_folds\n\ndef sigmoid(z):\n    return 1 / (1 + np.exp(-np.clip(z, -30, 30)))\n\ndef brier_score(y_true, y_pred):\n    return np.mean((y_true - y_pred) ** 2)\n\ndef fit_logistic(X_train, y_train, lambda_reg, learning_rate=0.1, iterations=200):\n    \"\"\"Fit logistic regression with specified conventions\"\"\"\n    n = X_train.shape[0]\n    d = X_train.shape[1]\n    \n    w = np.zeros(d)\n    b = 0.0\n    \n    for iteration in range(iterations):\n        # Forward pass\n        z = X_train @ w + b\n        z = np.clip(z, -30, 30)  # Clip logits\n        y_pred = sigmoid(z)\n        \n        # Gradient computation (binary cross-entropy loss)\n        error = y_pred - y_train\n        grad_w = X_train.T @ error / n\n        grad_b = np.mean(error)\n        \n        # Update (full-batch gradient descent)\n        w = w - learning_rate * (grad_w + lambda_reg * w)\n        b = b - learning_rate * grad_b\n    \n    return w, b\n\ndef predict_logistic(X_test, w, b):\n    \"\"\"Make predictions\"\"\"\n    z = X_test @ w + b\n    z = np.clip(z, -30, 30)\n    return sigmoid(z)\n\n# Evaluate all lambdas with 5-fold CV\ncv_scores = {lam: [] for lam in lambdas}\n\nfor fold_idx in range(n_folds):\n    # Create fold split: fold k is the k-th consecutive slice\n    test_start = fold_idx * fold_size\n    test_end = test_start + fold_size\n    \n    X_test_fold = X[test_start:test_end]\n    y_test_fold = y[test_start:test_end]\n    \n    X_train_fold = np.vstack([X[:test_start], X[test_end:]])\n    y_train_fold = np.hstack([y[:test_start], y[test_end:]])\n    \n    for lam in lambdas:\n        w, b = fit_logistic(X_train_fold, y_train_fold, lam)\n        y_pred = predict_logistic(X_test_fold, w, b)\n        brier = brier_score(y_test_fold, y_pred)\n        cv_scores[lam].append(brier)\n\n# Calculate mean CV scores\nmean_cv_scores = {lam: np.mean(cv_scores[lam]) for lam in lambdas}\nprint(\"\\nMean CV Brier scores:\")\nfor lam in lambdas:\n    print(f\"  lambda={lam}: {mean_cv_scores[lam]:.6f}\")\n\n# Find best lambda\nbest_lambda = min(mean_cv_scores, key=mean_cv_scores.get)\nimprovement = mean_cv_scores[0.0] - mean_cv_scores[best_lambda]\n\nprint(f\"\\nBest lambda: {best_lambda}\")\nprint(f\"Improvement over baseline (lambda=0): {improvement:.6f}\")\n\n# Task 2: Interaction features and paired t-test\n# Add products: x0*x1, x1*x2, x2*x3, x0*x3\nX_interaction = X.copy()\nX_interaction = np.hstack([\n    X_interaction,\n    (X[:, 0] * X[:, 1]).reshape(-1, 1),  # x0*x1\n    (X[:, 1] * X[:, 2]).reshape(-1, 1),  # x1*x2\n    (X[:, 2] * X[:, 3]).reshape(-1, 1),  # x2*x3\n    (X[:, 0] * X[:, 3]).reshape(-1, 1),  # x0*x3\n])\n\nprint(f\"\\nX_interaction shape: {X_interaction.shape}\")\n\n# Evaluate both models with lambda=0.1\nlambda_interaction = 0.1\nbrier_raw_folds = []\nbrier_interaction_folds = []\n\nfor fold_idx in range(n_folds):\n    test_start = fold_idx * fold_size\n    test_end = test_start + fold_size\n    \n    # Raw model\n    X_train_raw = np.vstack([X[:test_start], X[test_end:]])\n    y_train_fold = np.hstack([y[:test_start], y[test_end:]])\n    X_test_raw = X[test_start:test_end]\n    \n    w_raw, b_raw = fit_logistic(X_train_raw, y_train_fold, lambda_interaction)\n    y_pred_raw = predict_logistic(X_test_raw, w_raw, b_raw)\n    brier_raw = brier_score(y[test_start:test_end], y_pred_raw)\n    brier_raw_folds.append(brier_raw)\n    \n    # Interaction model\n    X_train_inter = np.vstack([X_interaction[:test_start], X_interaction[test_end:]])\n    X_test_inter = X_interaction[test_start:test_end]\n    \n    w_inter, b_inter = fit_logistic(X_train_inter, y_train_fold, lambda_interaction)\n    y_pred_inter = predict_logistic(X_test_inter, w_inter, b_inter)\n    brier_inter = brier_score(y[test_start:test_end], y_pred_inter)\n    brier_interaction_folds.append(brier_inter)\n\nprint(\"\\nRaw model Brier scores per fold:\")\nfor i, b in enumerate(brier_raw_folds):\n    print(f\"  Fold {i}: {b:.6f}\")\n\nprint(\"\\nInteraction model Brier scores per fold:\")\nfor i, b in enumerate(brier_interaction_folds):\n    print(f\"  Fold {i}: {b:.6f}\")\n\n# Paired t-test: raw minus interaction\ndifferences = np.array(brier_raw_folds) - np.array(brier_interaction_folds)\nprint(f\"\\nDifferences (raw - interaction): {differences}\")\n\nt_stat, p_value = ttest_rel(brier_raw_folds, brier_interaction_folds)\nprint(f\"Paired t-test t-statistic: {t_stat:.6f}\")\nprint(f\"P-value: {p_value:.6f}\")\n\ninteraction_helps = t_stat > 2.0\nprint(f\"Interaction helps (t > 2.0): {interaction_helps}\")\n\n# Task 3: Compression - sparsity and quantization\n# Fit dense model on all data with lambda=0.1\nw_dense, b_dense = fit_logistic(X, y, 0.1)\ny_pred_dense = predict_logistic(X, w_dense, b_dense)\nbrier_dense = brier_score(y, y_pred_dense)\n\nprint(f\"\\nDense model Brier score: {brier_dense:.6f}\")\n\n# Test all configurations\nsparsity_levels = [20, 40, 60]\nbit_levels = [8, 4]\n\nbest_config = None\nbest_retention = 0\n\nfor sparsity in sparsity_levels:\n    for bits in bit_levels:\n        # Apply sparsity: zero out smallest magnitude weights\n        k = round((sparsity / 100.0) * len(w_dense))\n        w_sparse = w_dense.copy()\n        \n        # Get indices of k smallest magnitude weights\n        magnitude = np.abs(w_sparse)\n        threshold_idx = np.argsort(magnitude)[: k]\n        w_sparse[threshold_idx] = 0\n        \n        # Apply quantization to non-zero weights\n        nonzero_mask = w_sparse != 0\n        if np.any(nonzero_mask):\n            w_nonzero = w_sparse[nonzero_mask]\n            min_val = np.min(w_nonzero)\n            max_val = np.max(w_nonzero)\n            \n            # Map to 2^bits levels\n            n_levels = 2 ** bits\n            if max_val > min_val:\n                w_sparse[nonzero_mask] = np.round(\n                    (w_nonzero - min_val) / (max_val - min_val) * (n_levels - 1)\n                ) / (n_levels - 1) * (max_val - min_val) + min_val\n        \n        # Evaluate compressed model\n        y_pred_compressed = predict_logistic(X, w_sparse, b_dense)\n        brier_compressed = brier_score(y, y_pred_compressed)\n        \n        # Retention = dense Brier / compressed Brier\n        retention = brier_dense / brier_compressed if brier_compressed > 0 else 0\n        \n        config_name = f\"sparsity{sparsity}_bits{bits}\"\n        print(f\"{config_name}: brier_compressed={brier_compressed:.6f}, retention={retention:.6f}\")\n        \n        if retention > best_retention:\n            best_retention = retention\n            best_config = config_name\n\nprint(f\"\\nBest config: {best_config} with retention: {best_retention:.6f}\")\n\n# Prepare answers\nanswers = {\n    \"best_lambda\": best_lambda,\n    \"improvement_over_baseline\": improvement,\n    \"paired_t_stat\": float(t_stat),\n    \"interaction_helps\": interaction_helps,\n    \"best_config\": best_config\n}\n\nprint(\"\\n\" + \"=\" * 50)\nprint(\"FINAL ANSWERS:\")\nprint(\"=\" * 50)\nprint(json.dumps(answers, indent=2))\n\n# Write answers to file\nwith open('answers.json', 'w') as f:\n    json.dump(answers, f, indent=2)\n\nprint(\"\\nAnswers written to answers.json\")\n"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T13:16:22.098Z",
+    "tool": "bash",
+    "input": {
+      "command": "cd <RUNS_ROOT>/dc99afb4-1d01-45d8-9c40-f6ac5aa27f9d/repo/paper/experiments/screening/block/B0_T3/B0_T3/seed0 && python solve.py"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T13:16:23.513Z",
+    "tool": "bash",
+    "input": {
+      "command": "cd <RUNS_ROOT>/dc99afb4-1d01-45d8-9c40-f6ac5aa27f9d/repo/paper/experiments/screening/block/B0_T3/B0_T3/seed0 && python3 solve.py"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T13:16:26.850Z",
+    "tool": "edit",
+    "input": {
+      "path": "<RUNS_ROOT>/dc99afb4-1d01-45d8-9c40-f6ac5aa27f9d/repo/paper/experiments/screening/block/B0_T3/B0_T3/seed0/solve.py",
+      "old_str": "# Prepare answers\nanswers = {\n    \"best_lambda\": best_lambda,\n    \"improvement_over_baseline\": improvement,\n    \"paired_t_stat\": float(t_stat),\n    \"interaction_helps\": interaction_helps,\n    \"best_config\": best_config\n}",
+      "new_str": "# Prepare answers\nanswers = {\n    \"best_lambda\": float(best_lambda),\n    \"improvement_over_baseline\": float(improvement),\n    \"paired_t_stat\": float(t_stat),\n    \"interaction_helps\": bool(interaction_helps),\n    \"best_config\": best_config\n}"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T13:16:28.442Z",
+    "tool": "bash",
+    "input": {
+      "command": "cd <RUNS_ROOT>/dc99afb4-1d01-45d8-9c40-f6ac5aa27f9d/repo/paper/experiments/screening/block/B0_T3/B0_T3/seed0 && python3 solve.py"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T13:16:30.513Z",
+    "tool": "read",
+    "input": {
+      "path": "<RUNS_ROOT>/dc99afb4-1d01-45d8-9c40-f6ac5aa27f9d/repo/paper/experiments/screening/block/B0_T3/B0_T3/seed0/answers.json"
+    }
+  }
+]
