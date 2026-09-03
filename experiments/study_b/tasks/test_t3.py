@@ -78,6 +78,23 @@ def main():
         r = run_t3.score(dict(perfect, interaction_helps=(not s2["interaction_helps"])), truth)
         check("a flipped boolean fails", r["checks"]["interaction_helps"] is False)
 
+        # The three stage-1 arms failed best_config on spelling alone. Meaning is
+        # scored, spelling is not.
+        tsp, tb = run_t3.parse_config(s3["best_config"])
+        for spelled in ("sparsity_%d_bits_%d" % (tsp, tb), "sparsity=%d%%_bits=%d" % (tsp, tb), {"sparsity": tsp, "bits": tb},
+                        "%d%% sparsity, %d-bit" % (tsp, tb), s3["best_config"], {"sparsity_percent": tsp / 100, "bit_width": tb},
+                        "sparsity %.2f bits %d" % (tsp / 100, tb)):
+            r = run_t3.score(dict(perfect, best_config=spelled), truth)
+            check("best_config is scored by meaning: %r" % (spelled,), r["checks"]["best_config"] is True, str(r["checks"]))
+        for other in ("sparsity_%d_bits_%d" % (tsp, 12 - tb), {"sparsity": 100 - tsp, "bits": tb}, "%d%% sparsity %d bit" % (tsp + 20 if tsp < 60 else 20, tb), None, "bits%d" % tb):
+            r = run_t3.score(dict(perfect, best_config=other), truth)
+            check("a different or unparseable config still fails: %r" % (other,), r["checks"]["best_config"] is False)
+
+        # The conventions the verifier relies on must be visible to the agent.
+        md = (ws / "TASK.md").read_text(encoding="utf-8")
+        for token in ("shuffle", "200", "gradient", "lambda * w", "magnitude", "weights", "min", "max", "retention", "sparsity20_bits4"):
+            check("TASK.md states the convention: %s" % token, token in md, md[:80])
+
     print(("\n%d failing checks" % len(F)) if F else "\nAll checks passed.")
     return 1 if F else 0
 

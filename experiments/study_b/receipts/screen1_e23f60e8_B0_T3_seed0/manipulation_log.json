@@ -1,0 +1,73 @@
+[
+  {
+    "timestamp": "2026-09-03T08:59:33.292Z",
+    "tool": "read",
+    "input": {
+      "path": "data.json"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T09:00:05.396Z",
+    "tool": "write",
+    "input": {
+      "path": "analysis.py",
+      "content": "import json\nimport numpy as np\nfrom sklearn.linear_model import LogisticRegression\nfrom sklearn.model_selection import KFold\nfrom sklearn.metrics import brier_score_loss\nfrom scipy import stats\n\n# Load data\nwith open('data.json', 'r') as f:\n    data = json.load(f)\n\nX = np.array(data['X'])\ny = np.array(data['y'])\n\nprint(f\"Data shape: X={X.shape}, y={y.shape}\")\n\n# ============================================================================\n# 1. LAMBDA TUNING: Find best L2 strength for Brier score\n# ============================================================================\nprint(\"\\n\" + \"=\"*70)\nprint(\"TASK 1: Lambda Tuning (L2 Regularization)\")\nprint(\"=\"*70)\n\nlambdas = [0.0, 0.01, 0.1, 1.0, 10.0]\nkf = KFold(n_splits=5, shuffle=True, random_state=42)\n\nbrier_scores_by_lambda = {}\n\nfor lam in lambdas:\n    brier_scores = []\n    \n    for fold_idx, (train_idx, test_idx) in enumerate(kf.split(X)):\n        X_train, X_test = X[train_idx], X[test_idx]\n        y_train, y_test = y[train_idx], y[test_idx]\n        \n        # Fit logistic regression with L2 penalty (C = 1/lambda)\n        if lam == 0.0:\n            C = 1e10  # No regularization (very large C)\n        else:\n            C = 1.0 / lam\n        \n        model = LogisticRegression(penalty='l2', C=C, solver='lbfgs', max_iter=1000, random_state=42)\n        model.fit(X_train, y_train)\n        \n        # Predict probabilities and compute Brier score\n        y_pred_proba = model.predict_proba(X_test)[:, 1]\n        brier = brier_score_loss(y_test, y_pred_proba)\n        brier_scores.append(brier)\n        \n        print(f\"  Lambda={lam:.2f}, Fold {fold_idx+1}: Brier={brier:.6f}\")\n    \n    mean_brier = np.mean(brier_scores)\n    brier_scores_by_lambda[lam] = mean_brier\n    print(f\"Lambda={lam:.2f} -> Mean Brier Score: {mean_brier:.6f}\\n\")\n\n# Find best lambda\nbest_lambda = min(brier_scores_by_lambda, key=brier_scores_by_lambda.get)\nbest_brier = brier_scores_by_lambda[best_lambda]\nbaseline_brier = brier_scores_by_lambda[0.0]  # Lambda=0 is baseline\nimprovement = baseline_brier - best_brier\n\nprint(f\"Best Lambda: {best_lambda:.2f}\")\nprint(f\"Best Brier Score: {best_brier:.6f}\")\nprint(f\"Baseline Brier (lambda=0.0): {baseline_brier:.6f}\")\nprint(f\"Improvement over baseline: {improvement:.6f}\")\n\n# ============================================================================\n# 2. INTERACTION FEATURES: Paired t-test\n# ============================================================================\nprint(\"\\n\" + \"=\"*70)\nprint(\"TASK 2: Interaction Features (Paired t-test)\")\nprint(\"=\"*70)\n\n# Create interaction features: x0*x1, x1*x2, x2*x3, x0*x3\nX_interactions = np.column_stack([\n    X[:, 0] * X[:, 1],  # x0*x1\n    X[:, 1] * X[:, 2],  # x1*x2\n    X[:, 2] * X[:, 3],  # x2*x3\n    X[:, 0] * X[:, 3],  # x0*x3\n])\n\nX_with_interactions = np.hstack([X, X_interactions])\n\nprint(f\"Original features: {X.shape[1]}\")\nprint(f\"Added interaction features: {X_interactions.shape[1]}\")\nprint(f\"Total features with interactions: {X_with_interactions.shape[1]}\")\n\n# Cross-validation: compare raw vs interactions\nraw_brier_scores = []\ninteraction_brier_scores = []\n\nfor fold_idx, (train_idx, test_idx) in enumerate(kf.split(X)):\n    # Raw features\n    X_train_raw, X_test_raw = X[train_idx], X[test_idx]\n    y_train, y_test = y[train_idx], y[test_idx]\n    \n    model_raw = LogisticRegression(penalty='l2', C=1.0, solver='lbfgs', max_iter=1000, random_state=42)\n    model_raw.fit(X_train_raw, y_train)\n    y_pred_raw = model_raw.predict_proba(X_test_raw)[:, 1]\n    brier_raw = brier_score_loss(y_test, y_pred_raw)\n    raw_brier_scores.append(brier_raw)\n    \n    # With interactions\n    X_train_int = X_with_interactions[train_idx]\n    X_test_int = X_with_interactions[test_idx]\n    \n    model_int = LogisticRegression(penalty='l2', C=1.0, solver='lbfgs', max_iter=1000, random_state=42)\n    model_int.fit(X_train_int, y_train)\n    y_pred_int = model_int.predict_proba(X_test_int)[:, 1]\n    brier_int = brier_score_loss(y_test, y_pred_int)\n    interaction_brier_scores.append(brier_int)\n    \n    print(f\"Fold {fold_idx+1}: Raw Brier={brier_raw:.6f}, Interaction Brier={brier_int:.6f}, Diff={brier_raw-brier_int:.6f}\")\n\nraw_brier_scores = np.array(raw_brier_scores)\ninteraction_brier_scores = np.array(interaction_brier_scores)\n\n# Paired t-test: H0: no difference in means\n# We want to test if interactions help (lower brier score)\n# So we compute differences: raw_brier - interaction_brier (positive means interactions help)\ndifferences = raw_brier_scores - interaction_brier_scores\nt_stat, p_value = stats.ttest_rel(raw_brier_scores, interaction_brier_scores)\n\nprint(f\"\\nPaired t-test results:\")\nprint(f\"  Raw Brier mean: {np.mean(raw_brier_scores):.6f}\")\nprint(f\"  Interaction Brier mean: {np.mean(interaction_brier_scores):.6f}\")\nprint(f\"  Mean difference (raw - interaction): {np.mean(differences):.6f}\")\nprint(f\"  t-statistic: {t_stat:.6f}\")\nprint(f\"  p-value: {p_value:.6f}\")\n\n# interaction_helps is True only if t > 2.0\ninteraction_helps = t_stat > 2.0\nprint(f\"  Interaction helps (t > 2.0)? {interaction_helps} (t={t_stat:.6f})\")\n\n# ============================================================================\n# 3. SPARSITY & QUANTIZATION: Best configuration\n# ============================================================================\nprint(\"\\n\" + \"=\"*70)\nprint(\"TASK 3: Sparsity & Quantization\")\nprint(\"=\"*70)\n\n# First, compute baseline (dense, no quantization)\nprint(\"\\nComputing baseline (dense model)...\")\nbaseline_brier_dense = []\n\nfor fold_idx, (train_idx, test_idx) in enumerate(kf.split(X)):\n    X_train, X_test = X[train_idx], X[test_idx]\n    y_train, y_test = y[train_idx], y[test_idx]\n    \n    model = LogisticRegression(penalty='l2', C=1.0, solver='lbfgs', max_iter=1000, random_state=42)\n    model.fit(X_train, y_train)\n    y_pred_proba = model.predict_proba(X_test)[:, 1]\n    brier = brier_score_loss(y_test, y_pred_proba)\n    baseline_brier_dense.append(brier)\n\nbaseline_dense_mean = np.mean(baseline_brier_dense)\nprint(f\"Baseline (dense) mean Brier: {baseline_dense_mean:.6f}\")\n\n# Test different sparsity and quantization levels\nsparsities = [20, 40, 60]  # percentage\nquantizations = [8, 4]  # bits\n\nresults = {}\n\ndef quantize_weights(weights, bits):\n    \"\"\"Simple uniform quantization\"\"\"\n    min_val = weights.min()\n    max_val = weights.max()\n    n_levels = 2 ** bits\n    \n    if max_val == min_val:\n        return weights.copy()\n    \n    # Scale to [0, n_levels-1] and round\n    scaled = (weights - min_val) / (max_val - min_val) * (n_levels - 1)\n    quantized = np.round(scaled) / (n_levels - 1) * (max_val - min_val) + min_val\n    return quantized\n\ndef sparsify_and_quantize(X, sparsity_pct, bits):\n    \"\"\"Apply sparsity and quantization\"\"\"\n    X_sparse = X.copy()\n    sparsity_ratio = sparsity_pct / 100.0\n    n_zero = int(X_sparse.shape[1] * sparsity_ratio)\n    \n    # Zero out smallest weights\n    if n_zero > 0:\n        abs_weights = np.abs(X_sparse)\n        threshold = np.sort(abs_weights.flatten())[n_zero - 1]\n        X_sparse[np.abs(X_sparse) <= threshold] = 0\n    \n    # Quantize non-zero weights\n    X_quant = quantize_weights(X_sparse, bits)\n    return X_quant\n\nfor sparsity in sparsities:\n    for bits in quantizations:\n        config_name = f\"sparsity_{sparsity}_bits_{bits}\"\n        config_brier = []\n        \n        for fold_idx, (train_idx, test_idx) in enumerate(kf.split(X)):\n            X_train, X_test = X[train_idx], X[test_idx]\n            y_train, y_test = y[train_idx], y[test_idx]\n            \n            # Train dense model\n            model = LogisticRegression(penalty='l2', C=1.0, solver='lbfgs', max_iter=1000, random_state=42)\n            model.fit(X_train, y_train)\n            \n            # Get coefficients and apply sparsity+quantization\n            coef = model.coef_[0].reshape(-1, 1)\n            coef_sparse = sparsify_and_quantize(coef, sparsity, bits).flatten()\n            \n            # Create modified predictions: apply sparsified coefficients\n            # For testing: use quantized weights\n            y_pred_logits = X_test @ coef_sparse + model.intercept_\n            y_pred_proba = 1 / (1 + np.exp(-y_pred_logits))\n            y_pred_proba = np.clip(y_pred_proba, 1e-15, 1 - 1e-15)\n            \n            brier = brier_score_loss(y_test, y_pred_proba)\n            config_brier.append(brier)\n        \n        mean_brier = np.mean(config_brier)\n        results[config_name] = mean_brier\n        retention_pct = (1 - (mean_brier - baseline_dense_mean) / baseline_dense_mean) * 100\n        print(f\"{config_name}: Brier={mean_brier:.6f}, Retention={retention_pct:.2f}%\")\n\n# Find best configuration (highest retention = lowest Brier)\nbest_config_name = min(results, key=results.get)\nbest_config_brier = results[best_config_name]\nbest_retention = (1 - (best_config_brier - baseline_dense_mean) / baseline_dense_mean) * 100\n\nprint(f\"\\nBest configuration: {best_config_name}\")\nprint(f\"  Brier score: {best_config_brier:.6f}\")\nprint(f\"  Performance retention: {best_retention:.2f}%\")\n\n# ============================================================================\n# SAVE RESULTS\n# ============================================================================\nprint(\"\\n\" + \"=\"*70)\nprint(\"SAVING RESULTS\")\nprint(\"=\"*70)\n\nanswers = {\n    \"best_lambda\": float(best_lambda),\n    \"improvement_over_baseline\": float(improvement),\n    \"paired_t_stat\": float(t_stat),\n    \"interaction_helps\": bool(interaction_helps),\n    \"best_config\": best_config_name\n}\n\nwith open('answers.json', 'w') as f:\n    json.dump(answers, f, indent=2)\n\nprint(\"Results saved to answers.json:\")\nprint(json.dumps(answers, indent=2))\n"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T09:00:07.942Z",
+    "tool": "bash",
+    "input": {
+      "command": "cd <RUNS_ROOT>/e23f60e8-3f36-4776-826b-2df51fb38bcb/repo/paper/experiments/screening/stage1/B0_T3/seed0 && python analysis.py"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T09:00:09.829Z",
+    "tool": "bash",
+    "input": {
+      "command": "cd <RUNS_ROOT>/e23f60e8-3f36-4776-826b-2df51fb38bcb/repo/paper/experiments/screening/stage1/B0_T3/seed0 && python3 analysis.py"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T09:00:11.549Z",
+    "tool": "bash",
+    "input": {
+      "command": "pip install scikit-learn scipy -q"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T09:00:13.161Z",
+    "tool": "bash",
+    "input": {
+      "command": "pip3 install scikit-learn scipy -q && echo \"Installation complete\""
+    }
+  },
+  {
+    "timestamp": "2026-09-03T09:00:15.217Z",
+    "tool": "bash",
+    "input": {
+      "command": "pip3 install --user scikit-learn scipy -q && echo \"Installation complete\""
+    }
+  },
+  {
+    "timestamp": "2026-09-03T09:00:16.983Z",
+    "tool": "bash",
+    "input": {
+      "command": "pip3 install --break-system-packages scikit-learn scipy -q && echo \"Installation complete\""
+    }
+  },
+  {
+    "timestamp": "2026-09-03T09:00:22.288Z",
+    "tool": "bash",
+    "input": {
+      "command": "cd <RUNS_ROOT>/e23f60e8-3f36-4776-826b-2df51fb38bcb/repo/paper/experiments/screening/stage1/B0_T3/seed0 && python3 analysis.py"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T09:00:42.835Z",
+    "tool": "read",
+    "input": {
+      "path": "answers.json"
+    }
+  }
+]

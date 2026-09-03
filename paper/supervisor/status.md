@@ -18,6 +18,17 @@ results_origin_list: **없음.** 원고 신규 표 `tbl-studyb-status`의 결과
 
 
 
+
+### 사이클 (RD-95A) — 스크리닝 1단계 파일럿: 세 아암 1/5, 원인은 T3 검증기의 미명시 규약
+
+- **파일럿 실행(기판 내, 실제 지출):** T3 seed 0, B0 `e23f60e8` $0.183918 (656k tok, 88 s, bash 7·ipython 0) → B1 `10c8db47` $0.040690 (36k tok, 52 s, ipython 5) → B2 `40bcbfbf` $0.075601 (122k tok, 95 s, decisions 3·thresholds 3·graph 8·pivot 1). Triple **$0.300209**; 조작검사 3/3 PASS; code identity 3/3 = v3 봉인.
+- **결과:** 세 아암 모두 5항목 중 **1개** 통과. B0·B1은 `best_lambda=10.0`, `t=2.1167`로 소수점까지 같은 오답 — 아암 차이가 아니라 검증기 신호.
+- **원인 추적(재현 프로브, seeds 0–4):** 오라클은 비셔플 연속 폴드 + **200스텝 미수렴 GD**로 적합하는데 TASK.md는 어느 것도 말하지 않았다. 수렴 솔버(lbfgs)는 best_lambda를 2/5 시드에서 다르게 고르고 improvement를 7배로 낸다(0.062 vs 0.007). `best_config`는 정확 문자열 `sparsity20_bits4` 요구라 세 아암 전부 **철자만으로** 탈락(`sparsity_20_bits_8`, dict, `sparsity=20%_bits=4`).
+- **판단:** 이 상태의 블록은 "검증기의 사적 규약을 맞혔는가"를 재므로 사전등록 엔드포인트가 아니다. **블록 지출 보류.**
+- **수정(과제 어댑터만, failing-first 37/37, 변이 4/4 적발):** TASK.md에 폴드·최적화 궤적·갱신식·압축 절차 명시; `best_config`는 (sparsity%, bits) 쌍으로 의미 채점(`parse_config`), 다른 쌍·파싱 불가는 여전히 실패. 오라클 규약 자체는 바꾸지 않음(수렴 솔버로 바꾸면 정답이 tolerance에 의존).
+- **v4 재봉인** digest `c9b69d25463e`: 변경 파일 `tasks/run_t3.py` 하나, 15개 바이트 동일. 파일럿 3건은 `PRE_V4_PILOT`으로 블록 제외(v4 채점기로 재채점 시 B2 best_config만 0→1; 아암 증거로 쓰지 않음).
+- **예산:** 스크리닝 **$0.300209 / $48.47**, dry run $1.090033 / $2.00. 실측 triple 단가 $0.30 → 잔여로 산술상 160 triple이나, 규모는 v4 재실행 단가로 확정.
+
 ### 사이클 (RD-93A·94A) — 봉인된 run command가 실행 불가였다; v3 재봉인, 첫 기판 내 실행 dry run
 
 - **결함:** v2가 봉인한 `run_block.py`는 전제조건만 검사하고 `PRECONDITIONS_OK`·exit 0으로 끝났다. 실행기를 import하지도, 모델을 호출하지도, `--out` 영수증을 쓰지도 않았다. **v2 아래서 스크리닝을 띄웠다면 333개 노드가 전부 "성공"하고 아무것도 남기지 않았을 것이다.** 스크리닝 지출 전에 발견(스크리닝 $0.00).
@@ -1068,4 +1079,4 @@ PDF 26쪽, 형식 규칙 13/13 ENFORCED PASS, 금지어 0건, 철회 토큰 0건
 ### 이번 사이클 결과표 숫자의 origin
 **없음.** `tbl-studyb-status`의 결과 열은 전부 "미실행"이며, MDE·단가는 설계 값으로 분리 표기했다.
 
-next_first_action: v3 봉인 커밋을 seal_commit에 기록하고 clean-clone 검증 뒤, 스크리닝 1단계(T3 seed 0 triple B0→B1→B2, 각 1 에피소드)를 기판 노드로 실행해 실측 단가로 규모를 확정한다.
+next_first_action: v4 봉인 커밋을 기록하고 clean-clone 검증 뒤, 1단계를 v4 아래 재실행(T3 seed 0 triple B0→B1→B2)한다. falsifier: 세 아암이 여전히 같은 오답에 수렴하면 오라클 자체 결함으로 과제 철회.

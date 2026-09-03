@@ -71,6 +71,23 @@ def blob_sha1(data: bytes) -> str:
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
+def run_store_commit(run_id) -> str:
+    """The substrate records which commit a run snapshot came from; the snapshot itself has no .git."""
+    if not run_id:
+        return ""
+    db = Path.home() / ".local/share/openresearch/orx.db"
+    if not db.is_file():
+        return ""
+    try:
+        import sqlite3
+        con = sqlite3.connect("file:%s?mode=ro" % db, uri=True)
+        row = con.execute("select commit_sha from runs where id = ?", (run_id,)).fetchone()
+        con.close()
+        return row[0] if row and row[0] else ""
+    except Exception:
+        return ""
+
+
 def code_identity() -> dict:
     """Identity of the code that ran, derived from bytes.
 
@@ -118,7 +135,7 @@ def build_receipt(arm, task, seeds, dry_run, episodes, usage_log, transcripts) -
         "executed": True,
         "arm": arm, "task": task, "seeds": seeds,
         "model_id": episode_runner.MODEL,
-        "harness_commit": git_commit() or "snapshot:" + code_identity()["arm_code_digest"][:16],
+        "harness_commit": git_commit() or run_store_commit(os.environ.get("ORX_RUN_ID")) or "snapshot:" + code_identity()["arm_code_digest"][:16],
         "code_identity": code_identity(),
         "protocol_fingerprint": hashlib.sha256(
             (Path(__file__).read_bytes() + (ROOT / "experiments/study_b/harness/arms.py").read_bytes())
@@ -128,7 +145,7 @@ def build_receipt(arm, task, seeds, dry_run, episodes, usage_log, transcripts) -
         "orx_project_id": os.environ.get("ORX_PROJECT_ID", ""),
         "orx_experiment_id": os.environ.get("ORX_EXPERIMENT_ID", ""),
         "orx_run_id": os.environ.get("ORX_RUN_ID", ""),
-        "node_commit": os.environ.get("ORX_NODE_COMMIT", "") or git_commit() or "snapshot:" + code_identity()["arm_code_digest"][:16],
+        "node_commit": os.environ.get("ORX_NODE_COMMIT", "") or git_commit() or run_store_commit(os.environ.get("ORX_RUN_ID")) or "snapshot:" + code_identity()["arm_code_digest"][:16],
         "episodes": episodes,
     }
 
