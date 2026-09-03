@@ -87,6 +87,15 @@ def main():
     check("cost is summed from the episodes that ran", abs(rcpt.get("total_cost_usd", 0) - 0.03) < 1e-9, str(rcpt.get("total_cost_usd")))
     check("the arm and task are echoed without being overwritten", rcpt.get("arm") == "B2" and rcpt.get("task") == "T3")
     check("the usage log sits beside the receipt", (out.parent / "usage_B2_T3.json").is_file())
+    ci = rcpt.get("code_identity", {})
+    ls = subprocess.run(["git", "ls-tree", "HEAD", "experiments/study_b/harness/arms.py"], cwd=ROOT,
+                        capture_output=True, text=True).stdout.split()
+    tree_blob = ls[2] if len(ls) > 2 else None
+    check("code identity is derived from bytes and names every sealed arm file",
+          len(ci.get("arm_blob_ids", {})) == 11 and all(ci["arm_blob_ids"].values()), str(ci)[:200])
+    check("the byte-derived blob id equals the repository tree blob when the file is unmodified",
+          tree_blob is None or ci["arm_blob_ids"].get("experiments/study_b/harness/arms.py") == tree_blob,
+          f"{tree_blob} vs {ci.get('arm_blob_ids', {}).get('experiments/study_b/harness/arms.py')}")
 
     out2 = TMP / "crash" / "receipt.json"
     rc, o = run(["--arm", "B0", "--task", "T3", "--seeds", "3"], {**SUB, "FIXTURE_CRASH_AT_SEED": "1"}, out2)

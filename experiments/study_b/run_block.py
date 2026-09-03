@@ -52,6 +52,41 @@ def git_commit() -> str:
         return ""
 
 
+SEALED_ARM_FILES = (
+    "experiments/study_b/run_block.py",
+    "experiments/study_b/episode_runner.py",
+    "experiments/study_b/harness/arms.py",
+    "experiments/study_b/harness/components.py",
+    "experiments/study_b/harness/extensions/b0_tools.js",
+    "experiments/study_b/harness/extensions/b2_harness.js",
+    "experiments/study_b/harness/prompts/b0_system_prompt.txt",
+    "experiments/study_b/harness/prompts/b1_system_prompt.txt",
+    "experiments/study_b/harness/prompts/b2_system_prompt.txt",
+    "experiments/study_b/tasks/run_t3.py",
+    "experiments/study_b/tasks/oracle_t3.py",
+)
+
+
+def blob_sha1(data: bytes) -> str:
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def code_identity() -> dict:
+    """Identity of the code that ran, derived from bytes.
+
+    The substrate executes a source snapshot without a .git directory, so on
+    2026-09-03 the first executed dry run recorded harness_commit="" and the
+    receipt named no code at all. Blob ids from bytes match `git ls-tree` in the
+    repository and verify in any copy.
+    """
+    blobs = {}
+    for rel in SEALED_ARM_FILES:
+        p = ROOT / rel
+        blobs[rel] = blob_sha1(p.read_bytes()) if p.is_file() else None
+    digest = hashlib.sha256(json.dumps(blobs, sort_keys=True).encode()).hexdigest()
+    return {"arm_blob_ids": blobs, "arm_code_digest": digest, "git_head_if_present": git_commit()}
+
+
 
 LOCAL_RUNS = Path(os.environ.get("ORX_LOCAL_RUNS",
                                  Path.home() / ".local/share/openresearch/local-runs"))
@@ -82,8 +117,9 @@ def build_receipt(arm, task, seeds, dry_run, episodes, usage_log, transcripts) -
         "evidence_level": "PIPELINE_DRY_RUN" if dry_run else "REPRODUCED_EXPERIMENT",
         "executed": True,
         "arm": arm, "task": task, "seeds": seeds,
-        "model_id": os.environ.get("STUDY_B_MODEL", ""),
-        "harness_commit": git_commit(),
+        "model_id": episode_runner.MODEL,
+        "harness_commit": git_commit() or "snapshot:" + code_identity()["arm_code_digest"][:16],
+        "code_identity": code_identity(),
         "protocol_fingerprint": hashlib.sha256(
             (Path(__file__).read_bytes() + (ROOT / "experiments/study_b/harness/arms.py").read_bytes())
         ).hexdigest(),
@@ -92,7 +128,7 @@ def build_receipt(arm, task, seeds, dry_run, episodes, usage_log, transcripts) -
         "orx_project_id": os.environ.get("ORX_PROJECT_ID", ""),
         "orx_experiment_id": os.environ.get("ORX_EXPERIMENT_ID", ""),
         "orx_run_id": os.environ.get("ORX_RUN_ID", ""),
-        "node_commit": os.environ.get("ORX_NODE_COMMIT", "") or git_commit(),
+        "node_commit": os.environ.get("ORX_NODE_COMMIT", "") or git_commit() or "snapshot:" + code_identity()["arm_code_digest"][:16],
         "episodes": episodes,
     }
 

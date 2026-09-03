@@ -181,3 +181,17 @@ change the pending completion-arm question. GPU credit units remain 0.
 | 스크리닝 누적 | $0.00 / $48.47 (변동 없음) |
 
 교훈: (1) 기판 검사가 문자열 존재만 봐서 위조 가능했다 → run id가 실제 run 디렉터리로 해석되는지 검사하도록 강화. (2) 실행기는 테스트에서 주입 가능해야 하며, 서브프로세스 긍정 검사는 실행기 주입 없이 돌리면 안 된다. (3) 지출 뒤 크래시가 영수증을 삼켰다 → 완료된 에피소드는 항상 영수증에 남기고 중단 상태를 기록하도록 수정.
+
+### 2026-09-03 18:0x — 3차 dry run (실행 가능한 run command의 첫 기판 내 실행)
+
+| 항목 | 값 |
+|---|---|
+| run | `2727d134-8d32-47b3-8cb3-576aa3cb4f00`, 스냅샷 커밋 `ce2bc723a`, B2/T3 seed 0, 1 에피소드, 81 s |
+| 지출 | **$0.178769**, 591,695 tokens |
+| 조작 검사 | PASS (decisions 1, thresholds 3, graph_add 1, loop_evaluate 3, gate_blocks 0) |
+| 영수증 | `paper/experiments/study-b-dryrun3-B2-T3-receipt.json` (`evidence_level=PIPELINE_DRY_RUN`, `executor=study_b.episode_runner:run_episode`, `orx_run_id` 실제 run 디렉터리) |
+| 결함 | `harness_commit=""` — 기판은 `.git` 없는 스냅샷을 실행하므로 git 기반 식별이 비었다. 다음 리비전부터 바이트 유도 blob id(`code_identity`)로 대체 |
+| dry-run 누적 | $0.911264 + $0.178769 = **$1.090033** / $2.00 (잔여 $0.909967) |
+| 스크리닝 누적 | $0.00 / $48.47 |
+
+단가 관찰: 1차 $0.130, 2차 $0.145, 3차 $0.179 (B2 단독). B2는 도구 사용이 많아 아암 중 가장 비싸다. 스크리닝 예산은 실측 triple 단가로 다시 산정한다.
