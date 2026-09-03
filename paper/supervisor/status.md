@@ -1137,3 +1137,18 @@ next_first_action: instruction-0016 §2 — METADATA_LOCATED_NOT_READ 13편 전�
 원장 블록 누적 행은 stage1v4 파일럿 seed 0 $0.300209을 누적에서 빠뜨린다(스크리닝 누적행은 $0.840625로 포함; s1 블록 누적 $1.083182 = 0.540416+0.542766). 실제 상한 대비 지출은 **$18.559314, 잔여 $29.910686**이며, 감독자 표기 잔여 $30.21과의 차이는 정확히 이 파일럿이다. 상한·승인 변경 없이 T1/T2 예산 산정을 잔여 $29.91 기준으로 한다.
 - **0016a #3 회계 판정:** 계획 밖 $0.085264는 dry-run 상한 $2.00 누적 **$1.090033 안에 이미 계상**돼 있다($0.826→$0.911264 구간, cost-ledger 172–181행). $48.47 스크리닝 한도 회계와는 별도 라인이라 이중 계상이 없고, 잔여는 **$29.910686**로 확정된다(별도였다면 $29.825422였을 것). cost-ledger에 동일 판정 기록.
 - **0016a #2 원고 반영:** thesis-ko.qmd §12를 "사전등록 완료, 미실행"에서 receipt 기반 완결 보고로 교체했다. 렌더 시 receipt SHA-256을 protocol `evidence_receipts` 등록값과 대조하는 게이트로 바꾸고(구 "미실행" assert 대체), 천장 효과 문단을 결과 표 직전에 둔다(0016 §1.1). 표 셀·만점 열·1차/2차 검정 문장 각주에 receipt 경로·키를 명시했다.
+
+## instruction-0016 §2 문헌 정독 완료 (2026-09-04)
+
+- 16편 전문 정독 완료: arXiv 원문(merged fulltext + tex tree)을 확보했고 161개 인용을
+  `paper/sources/claim-locators.json`에 locator로 등록했다(총 339). 각 locator는
+  `source_file_sha256`/`excerpt_sha256`/행 구간을 갖는다.
+- 그래프: 16개 `source:verified:*` 노드를 `VERIFIED_READ`/`FULL_PAPER_READ`/`IN_BIBLIOGRAPHY`로 갱신,
+  `claim_locator_ids` 부착, 메커니즘 7종에 `supports_prior_mechanism` 에지 16개 추가.
+  재검증 후보 3종 해소: graphrag(2404.16130)/graphofthoughts(2308.09687)/corebench(2409.11363) —
+  기존 노드가 가리키던 2606.25656/2605.22195는 각각 다른 작업, corebench는 NOT_LOCATED였다.
+- references.bib: 16개 BibTeX 엔트리 추가(§2.1 순서: source를 VERIFIED_READ로 승격한 뒤 추가).
+- §2.4 메커니즘-증거 테이블: `paper/research/mechanism-evidence-table.md` —
+  7개 메커니즘 arm별 논문·주장·측정 효과·grounds·locator 161행.
+- §2.3 검증 원칙 준수: 위 수치는 논문 보고치이며 검증 대상이지 사실로 채택하지 않는다;
+  본 프로젝트 로컬 efficacy 주장으로 쓰지 않는다.

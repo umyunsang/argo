@@ -1,0 +1,2164 @@
+FIX
+ NEW
+ 10pt
+
+[[INPUT sections/00_abstract.tex]]
+
+Language model (LM) agents are increasingly being used to automate complicated tasks in digital environments.
+Just as humans benefit from powerful software applications, such as integrated development environments, for complex tasks like software engineering, we posit that LM agents represent a new category of end users with their own needs and abilities, and would benefit from specially-built interfaces to the software they use.
+We investigate how interface design affects the performance of language model agents.
+As a result of this exploration, we introduce SWE-agent: a system that facilitates LM agents to autonomously use computers to solve software engineering tasks.
+SWE-agent's custom agent-computer interface (ACI) significantly enhances an agent's ability to create and edit code files, navigate entire repositories, and execute tests and other programs.
+We evaluate SWE-agent on SWE-bench and HumanEvalFix, achieving state-of-the-art performance on both with a pass@ 1 rate of 12.5% and 87.7%, respectively, far exceeding the previous state-of-the-art achieved with non-interactive LMs.
+Finally, we provide insight on how the design of the ACI can impact agents' behavior and performance.
+
+[[END sections/00_abstract.tex]]
+
+ ^* Equal contribution. 
+Correspondence to mailto:johnby@stanford.edujohnby@stanford.edu, mailto:carlosej@princeton.educarlosej@princeton.edu.
+
+ ~~Data, code, and leaderboard at https://swe-agent.com/swe-agent.com
+
+[[INPUT sections/01_intro.tex]]
+
+### SECTION: Introduction
+
+Recent work has demonstrated the efficacy of LM agents for code generation with execution feedback~[shinn2023reflexion].
+However, applying agents to more complex code tasks like software engineering remains unexplored.
+To solve programming tasks, LM agents are typically designed to use existing applications, such as the Linux shell or Python interpreter~[wu2024oscopilot, xie2024osworld,yang2023intercode].
+However, to perform more complex programming tasks such as software engineering~[jimenez2024swebench], human engineers benefit from sophisticated applications like VSCode with powerful tools and extensions.
+Inspired by human-computer interaction (HCI) studies on the efficacy of user interfaces for humans~[cooperaboutface], we investigate whether LM agents could similarly benefit from better-designed interfaces for performing software engineering tasks.
+
+ [FLOAT] 
+
+Consider the simple setting of an agent interacting directly with a Linux shell~[yang2023intercode].
+In practice, we find that LM agents can struggle to reliably take actions in this environment.
+For example, it fails to provide simple commands to edit a small file segment, and does not provide any feedback if the user makes an invalid edit.
+These deficits substantially hamper performance, motivating the need for an agent-computer interface (ACI), i.e., an abstraction layer between the LM agent and computer, to enhance the LM agent's abilities in computer environments (Figure~[fig:teaser]).
+
+From this effort, we introduce SWE-agent, an agent composed of an LM and ACI, that can interact with a computer to solve challenging real-world software engineering problems, such as those proposed in SWE-bench~[jimenez2024swebench].
+
+In contrast to the Linux Shell's granular, highly configurable action space, SWE-agent's ACI instead offers a small set of simple actions for viewing, searching through and editing files.
+The ACI uses guardrails to prevent common mistakes, and an agent receives specific, concise feedback about a command's effects at every turn.
+We show that ACIs tailored specifically for LMs outperform existing user interfaces (UIs) designed for human users, such as the Linux shell.
+
+Using GPT-4 Turbo as a base LM, SWE-agent solves 12.47% of the 2294 SWE-bench test tasks, substantially outperforming the previous best resolve rate of 3.8% by a non-interactive, retrieval-augmented system~[jimenez2024swebench].
+We perform an ablation study on a subset of 300 SWE-bench test instances (SWE-bench Lite) to analyze our ACI design choices.
+The results show that SWE-agent solves 10.7 percentage points more instances than the baseline agent, which uses only the default Linux shell.
+Although our ACI was developed for GPT-4 Turbo, we show that it is portable to a different LM; SWE-agent with Claude 3 Opus can solve 10.5% of the benchmark tasks.
+
+Our contributions are twofold.
+First, we introduce the concept of the agent-computer interface (ACI) and demonstrate how careful ACI design can substantially improve LM agent performance without modifying the underlying LM's weights.
+Second, we build, evaluate, and open-source SWE-agent, a system that provides LMs an ACI for solving real-world software engineering tasks.
+Unlike prior works that independently explore the merits of tool use, prompting techniques, and code execution in interactive settings, our approach unifies these factors within the ACI framework.
+We show that crafting LM-centric interactive components has meaningful effects on downstream task performance.
+
+[[END sections/01_intro.tex]]
+
+[[INPUT sections/02_aci.tex]]
+
+### SECTION: The Agent-Computer Interface
+
+An LM acts as an agent when it interacts with an environment by iteratively taking actions and receiving feedback~[sumers2023cognitive,yao2023react].
+Typically, the environment has hard constraints, as in robotics, where agents control actuators in the physical world.
+On the other hand, digital environments can be molded by abstractions in the form of application programming interfaces and user interfaces for software and humans respectively.
+Naturally, existing interfaces have been designed with one of these users in mind.
+We argue that LM agents represent a new category of end user, with their own needs and abilities.
+We refer to the interface LM agents use to interact with computers as the agent-computer interface (ACI).
+Figure~[fig:aci-hci] illustrates how ACIs provide LM agents with important functionality to interface with computers, similar to how code editors also help humans use computers more effectively.
+
+ [FLOAT] 
+
+Disparities in humans' and LMs' abilities and limitations motivates different interface design guidelines.
+For instance, the current generation of LMs lack the visual understanding abilities to directly operate GUI-based applications with rich visual components and signals.
+However, many of the features provided by these applications, such as syntax checking and navigation tools, could be useful to LM agents if they were presented in a suitable manner. 
+Additionally, humans can flexibly ignore unnecessary information, whereas all content has a fixed cost in memory and computation for LMs and distracting context can harm performance~[liu2023lost].
+Therefore, LM agents may be more effective at interacting with computers when provided an interface that was built informed by these differences.
+
+Ultimately, a well-designed ACI should help the LM agent understand the state of the application given previous changes, manage history to avoid unnecessary context from prior observations, and provide actions that models can use efficiently and reliably.
+The ACI specifies both the commands available to the LM and how the environment state is communicated back to the LM.
+It also tracks the history of all previous commands and observations and, at each step, manages how these should be formatted and combined with high-level instructions into a single input for the LM.
+
+In this paper, we assume a fixed LM and focus on designing the ACI to improve its performance. 
+This means that we shape the actions, their documentation, and environment feedback to complement an LM's limitations and abilities.
+We draw inspiration from the field of HCI, where user studies elicit insights about how compatible different interfaces are with respect to human intuition and performance~[cooperaboutface].
+We use two approaches to enhance performance on a development set: (1) manually inspect agent behavior to identify difficulties and propose improvements, and (2) run a grid search to select the best ACI configuration.
+
+Taking these two actions resulted in several insights about design principles that seem especially important for building effective ACIs:
+
+[leftmargin=*]
+ 
+- Actions should be simple and easy to understand for agents.
+ Many bash commands have documentation that includes dozens of options.
+ Simple commands with a few options and concise documentation are easier for agents to use, reducing the need for demonstrations or fine-tuning.
+ This is a defining principle for all SWE-agent commands that we describe in Section~[sec:sweagent].
+
+- Actions should be compact and efficient.
+ Important operations (e.g., file navigation, editing) should be consolidated into as few actions as possible.
+ Efficient actions help agents make meaningful progress towards a goal in a single step.
+ A poor design would therefore have many simple actions that must be composed across multiple turns for a higher order operation to take effect.
+ 
+ We show this idea in action in the Editing and Search interface analyses in Section~[sec:analysis:interface-design].
+
+- Environment feedback should be informative but concise.
+ High quality feedback should provide the agent with substantive information about the current environment state (and the effect of the agent's recent actions) without unnecessary details.
+ For instance, when editing a file, updating the agent about revised content is helpful.
+ Figures~[fig:sub_viewer], [fig:sub_editor] and Table~[tab:combined_ablations_summary] show this.
+
+- Guardrails mitigate error propagation and hasten recovery.
+ Like humans, LMs make mistakes when editing or searching and can struggle to recover from these errors.
+ Building in guardrails, such as a code syntax checker that automatically detects mistakes, can help agents recognize and quickly correct errors.
+ We show the effect of editing guardrails in Table~[tab:combined_ablations_summary].
+
+Analysis and ablation studies in Section~[sec:results] demonstrate how alternative ACIs affect LM performance.
+Our studies shows how these principles appear recurrently across actions, feedback, and workflows.
+
+[[END sections/02_aci.tex]]
+
+[[INPUT sections/03_sweagent.tex]]
+
+### SECTION: 
+
+SWE-agent: Designing an ACI for Software Engineering
+
+Here we describe how SWE-agent provides an ACI for LMs to act as software engineering agents, enabling them to effectively search, navigate, edit, and execute code commands.
+The ACI comprises several principal components, including search/navigation, file viewer, file editor, and context management.
+At each step, SWE-agent generates a thought and a command, then incorporates the feedback from the command's execution in the environment (ReAct;~[yao2023react]).
+Built atop the Linux shell, SWE-agent also allows access to common Linux commands and utilities when needed.
+
+Search and navigation.
+Navigating codebases requires finding the relevant file and content.
+A common strategy to do this involves looking up terms that might be useful, e.g., files, functions, or class definitions mentioned in an issue. 
+
+We introduce the special commands find_file, search_file, and search_dir, which output a summary of search results when searching for filenames and strings within files or directories.
+Figure~[fig.appx.swe_agent_components] shows examples of these search result formats. 
+The find_file command searches for filenames in the repository, while the search_file and search_dir locates strings in a file(s) of a subdirectory. Our interface encourages efficient searches by suppressing verbose results. The search commands return at most 50 results for each search query; if a search exceeds this number, we do not report the results and instead suggest that the agent write a more specific query.
+
+ [FLOAT] 
+
+File viewer.
+After finding a file they want to view, agents use the interactive file viewer by calling the command open on the relevant file path.
+The file viewer presents a window of at most 100 lines of the file at a time.
+The agent can move this window with the commands scroll_down and scroll_up or access a specific line with the goto command.
+To facilitate in-file navigation and code localization, we display: the full path of the open file, the total number of lines in the file, the number of lines omitted before and after the current window, and the line number (prepended to each visible line). 
+Figure~[fig:sub_viewer] shows an example of this interface.
+
+File editor.
+We provide a few commands that let LMs create and edit files.
+The edit command works in conjunction with the file viewer, allowing agents to replace a specific range of lines in the open file.
+This command takes 3 required arguments: the start line, end line, and replacement text.
+In a single step, agents can replace all lines between the start and end lines with the replacement text, as shown in Figure~[fig:sub_editor].
+After edits are applied, the file viewer automatically displays the updated content, helping the agent observe the effects of its edit immediately without invoking additional commands. Figure~[fig:sub_editor] shows an example agent response, including a file edit. 
+
+Similar to how humans can use tools like syntax highlighting to help them notice format errors when editing files in an IDE, we integrate a code linter into the edit function to alert the agent of mistakes it may have introduced when editing a file.
+Select errors from the linter are shown to the agent along with a snippet of the file contents before/after the error was introduced.
+
+Invalid edits are discarded, and the agent is asked to try editing the file again.
+
+Context management.
+The SWE-agent system uses informative prompts, error messages, and history processors to keep agent context concise and informative.
+
+Agents receive instructions, documentation, and demonstrations on the correct use of bash and ACI commands.
+At each step, the system instructs them to generate both a thought and an action~[yao2023react].
+Malformed generations trigger an error response, shown in Figure~[fig.prompts.error], asking the agent to try again, which is repeated until a valid generation is received.
+Once received, all past error messages except the first are omitted. 
+
+The agent's environment responses display computer output using the template shown in Figure~[fig.prompts.next_step]; however, if no output is generated, a specific message (``Your command ran successfully and did not produce any output'') is included to enhance clarity. To further improve context relevance, observations preceding the last 5 are each collapsed into a single line, shown in Figure~[fig.prompts.collapsed_obs].
+By removing most content from prior observations, we maintain essential information about the plan and action history while reducing unnecessary context, which allows for more interaction cycles and avoids showing outdated file information. provides further implementation details.
+
+[[END sections/03_sweagent.tex]]
+
+[[INPUT sections/04_experiments.tex]]
+
+### SECTION: Experimental Setup
+
+Datasets.
+We primarily evaluate on the SWE-bench dataset, which includes 2294 task instances from 12 different repositories of popular Python packages~[jimenez2024swebench].
+We report our main agent results on the full SWE-bench test set and ablations and analysis on the SWE-bench Lite test set, unless otherwise specified.
+SWE-bench Lite is a canonical subset of 300 instances from SWE-bench that focus on evaluating self-contained functional bug fixes.
+We also test SWE-agent's basic code editing abilities with HumanEvalFix, a short-form code debugging benchmark~[muennighoff2023octopack].
+
+Models.
+All results, ablations, and analyses are based on two leading LMs, GPT-4 Turbo (gpt-4-1106-preview)~[openai2023gpt4] and Claude 3 Opus (claude-3-opus-20240229)~[chiang2024chatbot].
+We experimented with a number of additional closed and open source models, including Llama 3 https://github.com/meta-llama/llama3 and DeepSeek Coder~[deepseek-coder], but found their performance in the agent setting to be subpar.
+Many LMs' context window is too small, such as Llama 3's context window of 8k.
+GPT-4 Turbo and Claude 3 Opus have 128k and 200k token context windows, respectively, Token counts for different models are not directly comparable since they use different tokenizers. which provides sufficient room for the LM to interact for several turns after being fed the system prompt, issue description, and optionally, a demonstration.
+
+Baselines.
+We compare SWE-agent to two baselines.
+The first setting is the non-interactive, retrieval-augmented generation (RAG) baselines established in [jimenez2024swebench].
+Here, a BM25 retrieval system retrieves the most relevant codebase files using the issue as the query; given these files, the model is asked to directly generate a patch file that resolves the issue.
+
+The second setting, called Shell-only, is adapted from the interactive coding framework introduced in [yang2023intercode].
+Following the InterCode environment, this baseline system asks the LM to resolve the issue by interacting with a shell process on Linux.
+Like SWE-agent, model prediction is generated automatically based on the final state of the codebase after interaction.
+
+Metrics. We report % Resolved or pass @ 1 as the main metric, which is the proportion of instances for which all tests pass successfully after the model generated patch is applied to the repository [jimenez2024swebench].
+We also report the $ Avg. Cost metric, the API inference cost incurred by SWE-agent averaged over all successfully resolved instances.
+
+Due to budget constraints, we set the per-instance budget to $4;
+if a run exceeded this budget, existing edits were submitted automatically.
+
+Configuration search.
+During the design process of SWE-agent, we arrived at the final ACI design through qualitative analysis of system behavior on a small set of hand-picked examples from the development split of SWE-bench.
+For the remaining hyperparameter choices, we performed a sweep over the window size, history processing, and decoding temperature, shown in .
+
+[[END sections/04_experiments.tex]]
+
+[[INPUT sections/05_analysis.tex]]
+
+ [1] red #1
+
+[[INPUT tables/results_main.tex]]
+
+ highlightcolorHTMLd4dcf7
+ [FLOAT] 
+
+[[END tables/results_main.tex]]
+
+### SECTION: Results
+
+Across all systems, SWE-agent w/ GPT-4 Turbo achieves the best performance all-around, successfully solving 12.47% ( 286/ 2294) of the full SWE-bench test set and 18.00% ( 54/ 300) of the Lite split.
+As shown in Table~[table:main-results], compared to RAG on Lite, SWE-agent is 8- 13x more costly but yields a 6.7-fold improved % Resolved rate.
+An LM-friendly ACI's value is confirmed by SWE-agent's 64% relative increase compared to Shell-only, both with GPT-4 Turbo.
+
+In Table~[tab.benchmark_humanevalfix], SWE-agent yields strong performance on HumanEvalFix with 88.3% pass@1 rate.
+Figure~[fig:pass_at_k] reveals that average performance variance is relatively low, but per-instance resolution can change considerably.
+More results are given in the appendix: shows that the success rate is uncorrelated to the issue age (controlling for possible test pollution), [appx:analyses:pass_at_k] presents more details on performance variance and pass @k , and [appx:analyses:additional_benchmarks] discusses extra evaluation details.
+
+### SECTION: Analysis of ACI Design
+
+We perform several ablations of the SWE-agent interface, specifically with respect to the SWE-agent w/ GPT-4 configuration, summarized in Table~[tab:combined_ablations_summary].
+Our case studies shed light on interesting agent behavior along with the impact of different ACI designs.
+
+Human user interfaces are not always suitable as agent-computer interfaces.
+Current LMs are vulnerable to a number of pitfalls when searching for relevant content in a Linux shell environment.
+Some exploration patterns (e.g., chains of cd, ls, cat) are extremely inefficient.
+grep or find look ups can perform better but occasionally produce many lines of irrelevant results.
+We hypothesize that better localization is possible with faster navigation and a more informative search interface. 
+
+ [FLOAT] 
+
+Figure~[fig.search.comparison] compares the Shell-only setting to two different search interfaces.
+Iterative search, directly inspired by traditional user interfaces for search, e.g., Vim or VSCode, shows results one by one via the file viewer.
+Agents can look through results using next and prev actions.
+Each result displays the matching line along with n surrounding lines of context.
+An advantage is that an agent can begin editing directly after seeing the relevant code in its search.
+However, when given a large number of search results, agents tend to look through every match exhaustively, calling next until each result has been inspected.
+This inefficient behavior can exhaust an agent's cost budget or context window, leading to even worse performance than the not having additional search tools at all ( 15.7% 2.3 for No search vs. 12.0% 6.0 with Iterative search).
+
+Compact, efficient file editing is critical to performance.
+SWE-agent's file editor and viewer are designed to consolidate the editing process into a single command that enables easy multi-line edits with consistent feedback and automatically updates the agent's view of the file after editing.
+In the No edit setting, editing options are restrictive and prone to errors; the primary methods available are either replacing entire files through redirection and overwriting or using utilities like sed for single-line or search-and-replace edits.
+Both methods have significant drawbacks.
+Redirection involves copying and rewriting entire files for even minor changes, which is both inefficient and error-prone.
+Although sed can facilitate specific edits, executing multi-line edits is cumbersome and can lead to unintended consequences that are challenging to detect.
+Moreover, both strategies lack immediate feedback about file updates, making these silent operations potentially confusing for models to interpret and increasing the risk of errors.
+Without SWE-agent's file editor interface, performance drops to ( 10.3% 7.7).
+We also find that agents are sensitive to the number of lines the file viewer displays.
+Either too little content (30 lines, 14.3% 3.7) or too much (entire file, 12.7% 5.3) lowers performance.
+
+Guardrails can improve error recovery.
+A prominent failure mode occurs when models repeatedly edit the same code snippet.
+The usual suspect for this behavior is an agent introducing a syntax error (e.g., incorrect indentation, extra parenthesis) via an errant edit.
+As discussed in Section~[sec:sweagent], we add an intervention to the edit logic that lets a modification apply only if it does not produce major errors.
+We compare this interface with the No edit and edit w/o linting alternatives in Figure~[fig.edit.comparison].
+This intervention improves performance considerably (without linting, 15.0% 3.0).
+
+### SECTION: Analysis of Agent Behavior
+
+Recurring problem-solving patterns emerge when LMs are equipped with a useful, intuitive ACI.
+We describe several model behaviors and problem-solving patterns that can be discerned from model performance and each model's corresponding trajectories.
+
+Reproduction and/or localization is the first step.
+SWE-agent usually begins with either writing reproduction code and/or localizing the issue's cause to specific lines of code.
+As shown in Figure~[fig:actions_per_turn], all trajectories begin with either create (reproduction) or find_file/search_dir (localization).
+To reproduce, models will create a new file, add reproduction code to it with an edit, then run with python; this is the most popular triple of actions in Table~[tab:most_common_triples_by_index].
+Using this feedback along with file names and symbols in the issue description, an agent will start with a broad, directory-level keyword search, before then zooming into specific files and lines.
+This is reflected in Figure~[fig:transition_probs_2gram], where the most likely actions following localization sequences like (python, find_file) and (search_dir, open) are search_file and goto, indicative of how an agent ``zooms in" on a bug.
+Extensive analysis on correlations between different groups of actions are discussed in 
+
+Remaining turns are mostly ``edit, then execute" loops.
+As exhibited in Figure~[fig:actions_per_turn], from turn 5 onwards, the most frequent two actions for all turns are edit and python.
+Captured as high probability next actions following (edit, python) in Figure~[fig:transition_probs_2gram], additional localization operations are often interspersed across these later turns, where agents might look at more in-file code with search_file, scroll_up/down, or other files altogether with search_dir, find_file.
+This behavior usually arises in response to new information from re-running the reproduction script.
+Submissions are distributed normally from turn 10 onwards, although resolved task instances correlate more with earlier submits (see ).
+A walk-through of common trajectory phases is in .
+
+Editing remains challenging for agents.
+A non-trivial minority of edit actions raise a linting error; out of 2294 task instances, 1185 ( 51.7%) of SWE-agent w/ GPT-4 Turbo trajectories have 1+ failed edits.
+While agents generally recover more often than not from failed edits, the odds of recovery decrease as the agent accumulates more failed edits.
+Recovery refers to a sequence of consecutive failed edits followed immediately by a successful edit.
+Any attempt at editing has a 90.5% chance of eventually being successful.
+This probability drops off to 57.2% after a single failed edit.
+More editing phenomena are discussed in , and data about agents' generated fixes are in .
+
+ [FLOAT] 
+
+Agents succeed quickly and fail slowly.
+We find that runs submitted relatively early are much more likely to be successful compared to those submitted after a larger number of steps or cost.
+We show in Table~[fig:appx:steps_vs_cost_resolved] the distribution of resolved and unresolved instances, including only instances that did not exhaust their budget.
+We observe that successful runs complete earlier and at a cheaper cost than unsuccessful ones. 
+In general, successful instances solved by SWE-agent w/ GPT 4 finish with a median cost of \ 1.21 and 12 steps compared to a mean of \ 2.52 and 21 steps for unsuccessful ones.
+Furthermore, we find that 93.0% of resolved instances are submitted before exhausting their cost budget, compared to 69.0% of instances overall.
+For these reasons, we suspect that increasing the maximum budget or token limit are unlikely to substantially increase performance.
+More statistics about how trajectories typically conclude are in .
+
+Most failures are incorrect implementations.
+We use GPT-4o to automatically categorize unresolved trajectories (SWE-agent w/ GPT-4 Turbo on SWE-bench Lite, n= 248) into one of 9 manually defined categories described in Table~[tab:appx:failure_categories].
+On a hand-labeled validation set, the LM's judgment agrees with the authors' on 87% of instances.
+From Figure~[fig:failure_modes_pie], about half ( 52.0%) of unresolved instances fall into the Incorrect Implementation or Overly Specific Implementation categories, suggesting that agents' proposed solutions often simply fail to functionally address the issue or are insufficiently general solutions.
+Cascading failed edits make up another 23.4% of failures.
+More details in .
+
+[[END sections/05_analysis.tex]]
+
+[[INPUT sections/06_related_work.tex]]
+
+### SECTION: Related Work
+
+### SECTION: Software Engineering Benchmarks
+
+Code generation benchmarks, which evaluate models on the task of synthesizing code from natural language descriptions, have served as a long-standing bellwether for measuring LM performance~[chen2021evaluating,austin2021program,hendrycks2021measuring,lu2021codexglue]. 
+Subsequent works have built upon the code generation task formulation to contribute new benchmarks that translate problems to different (programming) languages~[cassano2022multiple,wang2023mconala], incorporate third-party libraries~[lai2022ds1000,liu2024mlbench], introduce derivative code completion tasks~[huang2024mlagentbench,muennighoff2023octopack], increase test coverage~[evalplus], change the edit scope~[ding2023crosscodeeval,du2023classeval,Yu2023CoderEvalAB], and add robustness to dataset contamination~[jain2024livecodebench].
+Code generation problems are largely self-contained, with short problem descriptions ( 100 lines) and corresponding solutions that are similarly brief, requiring nothing more complex than basic language primitives.
+Tests are either handwritten or generated synthetically via fuzz testing.
+In recent months, the rapid development of LMs has begun to saturate many of these benchmarks.
+For instance, the top method solves 94.4% of HumanEval~[zhou2023language].
+
+Gauging future trends with the code generation task paradigm can be limited by the simplicity of this setting and cost of human-in-the-loop problem creation.
+In response, recent efforts have demonstrated that software engineering (SE) can serve as a diverse, challenging testbed for LM evaluation~[zhang2023repocoder,jimenez2024swebench,Liu2023RepoBenchBR].
+Repository-level code editing introduces many reasoning challenges grounded in real SE subtasks, such as spotting errant code and identifying cross-file relationships and understanding codebase-specific symbols and conventions.
+As a field, SE has generally studied tasks in a more isolated manner; prior benchmarks tended to frame problems in isolation from the rest of a codebase~[justJE2014defects,Karampatsis2019HowOD].
+
+We use SWE-bench because it unites many separate SE tasks, such as automated program repair~[fan2023automated,sobania2023analysis,xia2022less], bug localization~[chakraborty2018entropy,yang2024localization], and testing~[kang2023large,wang2023software,xia2023universal] under a single task formulation that faithfully mirrors practical SE.
+Furthermore, SWE-bench task instances are diverse, having been automatically collected from real GitHub issues across 12 different repositories.
+In addition, SWE-bench performance is based on rigorous, execution-based evaluation with human-written unit tests.
+
+### SECTION: Language Models as Agents
+
+The co-emergence of stronger LMs, increasingly challenging benchmarks, and practical use cases have together motivated a paradigm shift in LMs' inference setting.
+Instead of traditional zero/few-shot generation, LM agents~[hong2023metagpt,sumers2023cognitive,wang2024survey,xi2023rise] that interact with a real/virtual world have proliferated as the default setting for web navigation~[koh2024visualwebarena,nakano2022webgpt,press-etal-2023-measuring,sridhar2023hierarchical,thoppilan2022lamda,yao2023webshop,yao2023react,zhou2023webarena], computer control~[packer2024memgpt,wu2024oscopilot,xie2024osworld], and code generation tasks~[holt2024lmac,wang2023executionbased,yin2022natural].
+
+Interaction and code generation are increasingly used together, with code as the modality of choice for actions~[wang2024executable,yang2023intercode], tool construction~[gu2024middleware,wang2024trove,zhang2024training], and reasoning~[shinn2023reflexion,zelikman2022parsel,zelikman2024selftaught].
+Coding agents have also been applied to offensive security~[fang2024llm,shao2024empirical,yang2023language], theorem proving~[thakur2024incontext], and clinical tasks~[shi2024ehragent,tang2024medagents,wornow2024automating].
+To the best of our knowledge, SWE-agent is the first work to explore language agents for end-to-end software engineering (SE).
+
+[[END sections/06_related_work.tex]]
+
+[[INPUT sections/07_conclusion.tex]]
+
+### SECTION: Discussion
+
+We introduce SWE-agent, an agent composed of an LM and ACI capable of autonomously solving software engineering tasks.
+
+Through our design methodology, results, and analysis, we demonstrate the value of ACIs tailored to leverage LMs' strengths and mitigate their weaknesses.
+Beyond empirical applications, we hope the further study of ACIs can also make principled use of and contribute to our understanding of language models and agents, analogous to the synergy between human-computer interaction (HCI) and psychology~[carroll1997human].
+Humans and LMs have different characteristics, training objectives, specialities, and limitations~[griffiths2020understanding,mccoy2023embers], and the interaction design processes can be seen as systematic behavioral experimentation that could reveal more insights into these differences towards establishing a comparative understanding of human and artificial intelligence.
+
+[[END sections/07_conclusion.tex]]
+
+[[INPUT sections/0x_acknowledge.tex]]
+
+### SECTION: Acknowledgements
+
+We thank Austin W. Hanjie, Sam Ainsworth, Xindi Wu, Yuhan Liu, Mengzhou Xia, Dan Friedman, Tianyu Gao, Adithya Bhaskar, Aatmik Gupta, Louisa Nyhus, Alisa Liu, Ori Yoran and Richard Zhu for their valuable feedback and advice.
+We would also like to thank the broader Princeton Language and Intelligence community for supporting our work.
+We acknowledge support from an Oracle Collaborative Research award and the National Science Foundation under Grant No. 2239363.
+Any opinions, findings, conclusions, or recommendations expressed in this material are those of the author(s) and do not necessarily reflect the views of the National Science Foundation
+
+[[END sections/0x_acknowledge.tex]]
+
+ main
+ abbrvnat
+
+[[INPUT appx/00_table_of_contents.tex]]
+
+### SECTION: Appendix
+
+In the appendix, we provide additional analyses and more extensive discussions about SWE-agent, agent-computer interface (ACI) design, and model performance on various evaluation benchmarks.
+We also provide several thorough case studies of SWE-agent behavior on select task instances.
+
+Data, code, and leaderboard at https://swe-agent.com/swe-agent.com.
+
+[[END appx/00_table_of_contents.tex]]
+
+[[INPUT appx/01_interface.tex]]
+
+### SECTION: SWE-agent Design
+
+ [FLOAT] 
+
+In this section, we go into greater discussion about the design methodology, appearance, and implementation of each of the SWE-agent components.
+As described in Section~[sec:sweagent], the SWE-agent interface consists of several components that enable agents to accomplish key sub-tasks that are fundamental to solving software engineering problems.
+These are generally the following:
+
+[noitemsep,leftmargin=*]
+ 
+- Localization: Identify file(s)/line(s) causing the issue.
+ 
+- Editing: Generate fixes addressing the given issue.
+ 
+- Testing: Write new scripts or modify existing test files to reproduce the issue and/or verify if fixes are correct.
+
+To enable LM-based agents to efficiently carry out these individual functions and progress towards the overarching goal of resolving a codebase issue, we provide a file viewer, file editor, search / navigation system, and context management system.
+In Section~[appx:interface:component-design], we provide a thorough breakdown of each of these components.
+In Section~[appx:interface:implementation], we discuss the technical design decisions and challenges of building SWE-agent.
+In Section~[appx:interface:configuration], we discuss how SWE-agent is configured to support the final interface, along with how SWE-agent is built to enable easy extensibility and customization to alter the interface.
+
+### SECTION: ACI Design
+
+In this section, we revisit each component discussed in Section~[sec:sweagent].
+Per section, we first briefly review the component.
+We then discuss the underlying motivation for the component with respect to existing software tools.
+Finally, we note any additional thoughts that influenced the design process of the component with some occasional discussion of what aspects of the component heavily influence language model behavior.
+
+For a quick, text-free overview, comprehensive documentation for all commands, their usage, and docstrings are included in Table~[tab:commands].
+Figure~[fig.trajectory_overview] visualizes the message history for SWE-agent.
+Each prompt template is discussed thoroughly in Section~[appx:prompts].
+
+### PARA: File viewer.
+
+As discussed in Section~[sec:sweagent], the File Viewer is fundamental to a language agent's ability to understand file content and understand how different programmatic entities relate to one another.
+The File Viewer refers to an interface that consists of the four commands, as shown in Table~[tab:commands], and a customized standard output for displaying n lines of a file at a time.
+Using the file viewer, an agent can look at n lines of a file at a time and jump around the file.
+The File Viewer enables agents to perform fine-grained localization steps and also understand relationships between intra-file entities.
+
+First, we discuss why existing software systems and graphical user interfaces are sub-optimal for LM use.
+In a Shell-only setting, there are several commands that can be used to inspect file content. However, out of the box command line tools are sub-optimal or limiting for language agents for several reasons.
+First, commands that print files to standard output (e.g. cat, printf) can easily flood a language agent's context window with too much file content, the majority of which is usually irrelevant to the issue.
+Enabling a language agent to filter out distractions and focus on relevant code snippets is crucial to generating effective edits.
+While commands like head and tail reduce length to the first/last n lines, it is not intuitive to use bash commands to perform in-file navigation.
+It is either impossible or requires a long list of arguments to show specific file lines.
+Furthermore, since such Bash commands are stateless, ``scrolling" up/down relative to the current file position typically requires regenerating the same lengthy command with minor changes.
+Interactive tools like more and less accommodate this, but (1) representing navigation actions (multiple key up/down clicks) is intuitive for humans, but is verbose and costly for language agents, and (2) even if jumping to a specific line number is allowed, it is not possible to quickly identify what classes/methods/symbols are declared in a file and then immediately go to their definitions.
+
+[[INPUT appx_tables/commands.tex]]
+
+ [FLOAT] 
+
+[[END appx_tables/commands.tex]]
+
+There are a couple features of the File Viewer interface that make it friendlier and more operable than the Shell-only setting.
+First, the File Viewer standard output contextualizes code snippets with prepended line numbers and indicators of the number of lines above/below the current region.
+These details give a more focused view of a file without compromising easy viewing of other parts of the codebase.
+This kind of file presentation also makes precise and consistent editing commands possible, as we discuss more thoroughly in the following section.
+
+Another advantage of the File Viewer is that the commands are designed to be complementary and grounded in the File Viewer standard output.
+This saves the model from having to do repetitive or additional actions that unnecessarily increase the potential for error.
+As a concrete example, if an agent used a sed command to view the first 100 lines of a file and wants to look at the next 100 lines, it will have to recalculate parameters such as the start line and end line and reflect these updates correctly in the subsequent generation.
+As a rule of thumb, reducing the need for models to do this arithmetic by constructing actions and standard output that complement one another and build upon the effects of prior actions is highly preferable.
+
+ [FLOAT] 
+
+### PARA: File editor.
+
+The File Editor, working in conjunction with the File Viewer, primarily refers to the edit command and the guardrails it enforces to protect models against self-incurred cascading edit errors.
+Editing and testing are crucial to language agents' success on programming tasks, and a well-designed interface directly influences how well an agent's capabilities can be elicited.
+In other words, a bad interface undermines model performance.
+
+As discussed in Section~[sec:sweagent], editing can be very difficult in a Shell-only setting.
+Built in commands (e.g., sed) often require a lengthy list of arguments, and the mis-specification of an argument can easily throw a model off track as it attempts to correct self-incurred errors.
+We also observe that when agents use such commands directly, they struggle with the arithmetic skills required to generate an edit.
+Details such as including the correct indentation level, inserting delimiters at specific points in a line, and adhering to stylistic preferences of the codebase all require some amount of planning or calculation.
+Similar to the Shell-only file viewing process, file editing may also require repeating many commands.
+For instance, performing a multi-line edit can only be represented as multiple sed calls with requisite, delicate tweaks to the arguments for every turn.
+Furthermore, as referenced in Section~[sec:analysis:interface-design], editing in Shell-only is usually a ``silent" procedure.
+Confirming whether an edit succeeded and viewing its effects requires additional steps that can bloat the editing process with extra, needless commands.
+
+The edit command, documented in Table~[tab:commands], addresses the Shell-only failure modes by being grounded in the File Viewer standard output.
+The line numbers argument eliminates the need for any additional arithmetic, and the find-and-replace edit mechanism is a format that existing models are more used to.
+With this functionality, agents can also perform multi-line edits in a single action.
+
+Finally, as mentioned in Section~[sec:analysis:agent-behavior], an important feature of the edit command is that it does not apply changes which incur a linting error.
+A fair and verified assumption we make when considering this feature is that the original codebase associated with each task instance is well-formed.
+In other words, we assume that codebase maintainers will only push syntactically sound code that can be compiled successfully.
+When an agent issues an edit, it is applied to the codebase.
+Then, we run the following linting command (CURRENT_FILE refers to the file that is currently open):
+
+flake8 ---isolated ---select=F821,F822,F831,E111,E112,E113,E999,E902 "$CURRENT_FILE" 2>&1
+
+The arguments for select are error codes that refer to syntax issues such as indentation.
+F 821 and F 822 indicate undefined names/symbols.
+F 831 indicates a duplicate argument in a function definition.
+E 111, E 112, E 113 are indentation errors.
+E 999 denotes a syntax error and an E 902 occurs if flake 8 cannot read the source file.
+
+If the edit does not introduce any of these errors, this command will produce no output.
+The edit is kept and the updated file content is shown using the File Viewer centered around the lines the edit occurred.
+If however the linting command produces output, which indicates the edit introduces a syntax error, the edit is reverted.
+In place of the file viewer, a message shown in Figure~[fig.prompts.linting] is displayed to the agent which shows the error that was caused, what the edit would have looked like, and the original file content.
+During the development process, we experimented with variations to this message, including the omission of one or more parts.
+Our takeaway was that having all three messages is helpful.
+Without the error type, the agent might misdiagnose what the mistake was.
+Without a snippet of the changed file content, the agent will re-issue the same command more frequently.
+Without a snippet of the original file content, the agent has to attend to the same content from several turns ago; agents also sometimes generate edit's with respect to wrong, errant file content because it is from a more recent turn.
+
+[[INPUT figures/prompts/linting.tex]]
+
+ type=figure
+Linting Error Message
+ [CODEBLOCK] 
+
+ figure
+A linting error message.
+This is emitted if a model generates an edit command that introduces a syntax error into the codebase.
+The error message shows the before and after of the proposed edit along with what error messages were thrown.
+The problem with this edit is that it omits the orientation_strategy field in its edit of the basic_chain method definition.
+
+[[END figures/prompts/linting.tex]]
+
+The editing guardrail has a drawback.
+To a certain degree, it forces some edits to be done in a particular order.
+For instance, in Figure~[fig.prompts.linting], if the model's intention was in fact to remove the orientation_strategy argument, due to the SWE-agent editing guardrails, it would have to remove all references from the function implementation either at the same time in a single action, or before removing it from the method header if split into two separate actions.
+For this particular scenario, the latter is necessary because the file snippet is not large enough to show the entirety of the basic_chain implementation.
+This example highlights the trade-offs between the flexibility and guardrails of a command.
+Deciding whether to introduce a guardrail depends on how well it reduces common model errors compared to whether such restrictions hamper models' preferred workflows.
+
+### PARA: Search & navigation.
+
+The File Viewer and File Editor together allow agents to make edits, write tests, and perform localization at a file level.
+The Search & navigation module complements these capabilities by giving agents the tools to perform keyword-driven localization at both a directory level and file level.
+
+As discussed, the main struggles with using built in Shell-only search commands such as grep and find are (1) given a general enough term, they are prone to producing too many search results that can consume an inordinate amount of space in the context window, and (2) they are highly configurable, making search result outcomes potentially inconsistent in appearance.
+The alternative to these search utilities is to navigate the file system directly with cd and look at what's in each folder with variations of ls and cat; this kind of approach can take a large number of turns without yielding any particularly useful information.
+
+Figure~[fig.appx.swe_agent_components] visualizes the standard output for the three different search commands.
+The search_dir and find_file helps agents perform directory level searches.
+The reason we provide two commands is due to the kinds of keywords that are present in an issue description (e.g., class references, file names).
+The search_file command allows agents to search for terms at a file-level, which is helpful for efficient fine-grained localization.
+Taking a step back, the goal of these search commands is to make it easy for the agent to utilize any signal (e.g., line number, stack trace, natural language) about the root cause of an issue that may be present in the issue description or codebase.
+Once again, simpler command usage patterns with consistent output formats are easier for agents to use and reduces the chance for mistakes or irrelevant outputs.
+
+The main guardrail in place for all three search commands is curbing the number of search results to 50 or fewer.
+The downside is that reporting an error forces the model to generate another search query which can be an expensive operation.
+This reflects a trade-off between keeping observations concise and making additional calls to the base LM.
+
+### SECTION: Implementation
+
+The SWE-agent codebase is generally composed of three modules: the environment, the agent, and the logging mechanism for saving task episodes into trajectories and patch generations.
+
+Environment.
+The SWE-agent environment is heavily influenced by the InterCode library~[yang2023intercode].
+For the general pipeline of agent interactions with the environment, our work directly adopts InterCode's interactive coding task formulation.
+The environment integrates large parts of the interaction handling logic from the InterCode-Bash environment, which is essentially the Shell-only setting referenced in the paper.
+As a part of this adoption, SWE-agent also uses Docker containers to ensure reproducible and safe execution.
+Because of this, SWE-agent's infrastructure makes it easy for a user to swap out the Dockerfile (a domain specific language for defining a container) to support other codebases and programming languages beyond the scope of SWE-bench task instances.
+One difference is that SWE-agent makes minor adjustments to the underlying communication logic that transfers actions and observations between the Docker container and agent entity.
+
+Agent.
+Beyond serving as an agentic wrapper for facilitating multi-turn queries from an LM, the agent module defines the functions that render the ACI (e.g., context management, commands, interface logic, input/output format) and supports inference for closed/open, API-based/local language models.
+The main workflow is to define an interface as a class and/or set of commands, which can then be specified via a configuration file, discussed more thoroughly in Section~[appx:interface:configuration].
+The commands for the top performing SWE-agent with GPT 4 configuration are shown in Table~[tab:commands].
+
+Logging.
+For each task episode, the main artifacts produced are the trajectory, which contains a history of the interactions between the agent and environment, and the final patch generation, which can represents a summary of the changes proposed by the agent during the interaction.
+The patch generation can be used directly for SWE-bench~[jimenez2024swebench] evaluation.
+
+### SECTION: Configuration
+
+The SWE-agent system is instantiated by three components: an LM, a SWE-bench style dataset or GitHub issue, and a configuration file.
+The configuration file serves to specify the design of the ACI.
+Iteratively refining the configuration file is the main way we achieved better agent performance and carried out different analyses for the main paper.
+In this section, we will present a thorough review of what a SWE-agent configuration file looks like.
+
+An agent-computer interface is generally made up of four categories of configurable components:
+
+- Prompt templates: These prompt templates are used to inform the language model of the task setting, show the list of available commands, augment environment responses with the values of state variables, and provide the initial task setting.
+ 
+- Command files: These files contain the source code of bash or Python functions and scripts. Commands are easily modified, added, and removed through manipulating these files' code contents directly. Documentation added in these files can also be injected into prompts to inform the model of the available commands.
+ 
+- Control flow: Methods for parsing model responses and processing history can be specified through these configuration arguments.
+ 
+- Environment variables: Initial values of variables that may interact with commands and the shell can also be specified in the configuration.
+
+In the following Figure~[fig.prompts.example_configuration], we include an annotated example of the contents of a configuration file.
+
+[[INPUT figures/prompts/example_configuration.tex]]
+
+Configuration (.yaml)
+ [CODEBLOCK] 
+
+ type=figure
+ figure
+An example of the configuration file that defines the SWE-agent ACI.
+A configuration is represented as a single .yaml file, allowing you to
+define the commands that agents may use,
+write prompts shown to the agent over the course of a single trajectory,
+and control the input/output interface that sits between the agent and environment.
+
+[[END figures/prompts/example_configuration.tex]]
+
+The prompt templates are explained in detail in Section~[appx:prompts].
+The environment variables and command files work in tandem; environment variables make the interfaces stateful, and when commands are invoked, the corresponding states are updated to reflect the changes to the environment and interface.
+The parse_command, parse_function, and history_processor all reference implementations declared within the agent module.
+The parse_command file describes how command documentation should be presented to the agent.
+The parse_function is what enforces the input/output formats for the agent.
+The history_processor points to the logic for controlling and modifying the message history enforced at each turn throughout a single task episode.
+
+The configuration-based workflow of SWE-agent makes it easy to test new ACIs by incorporating novel commands, input/output formats, context managers, and more into the existing codebase.
+In the following subsections, we showcase existing implementations of several of these components and discuss how they can be extended.
+
+Commands.
+We describe how to implement your own commands for the SWE-agent ACI.
+As shown in the above Figure~[fig.prompts.example_configuration], commands are declared as a list of one or more file paths in the command_files argument.
+Individual commands must be declared as separate functions in .py or .sh files.
+Every command subscribes to the following skeleton code in Figure~[fig.interface.command_skeleton].
+
+[[INPUT figures/interface/command_skeleton.tex]]
+
+Command Skeleton Code
+ [CODEBLOCK] 
+
+ type=figure
+ figure
+The skeleton code for defining a command that can be accessed in the SWE-agent ACI.
+The function definition includes both the underlying implementation along with several arguments that describe how to use the command, which is compiled into the System template's command documentation at run time.
+
+[[END figures/interface/command_skeleton.tex]]
+
+The choice of Python or Bash based implementations of commands means they can be written to do a wide variety of actions, and the use of Docker means that the commands and system can be co-designed.
+Here is a list of guidelines around how to implement commands correctly.
+
+[noitemsep]
+ 
+- Command arguments can be referenced via positional parameters notation (i.e. $1).
+ 
+- If there are no arguments, omit the arguments section.
+ 
+- The implementation for your command is unconstrained. There are no limitations on the form of the underlying command code.
+ 
+- The minimal documentation requirements are signature and docstring.
+ 
+- Global variables can be used to make stateful changes to the environment. For instance, for the commands associated with the File Viewer, you'll see we define the CURRENT_LINE variable for the file viewer. This variable is modified across multiple commands, including open, goto, scroll_up, scroll_down, and edit.
+ 
+- Third party libraries can be freely imported and used by commands (e.g., flake8).
+ 
+- To show effects of a command, print to standard output (e.g., with echo). The command parsing logic is implemented such that it does not look for a return value.
+
+Once the file path containing the command is added to command_docs as an argument, the command is immediately available for use in subsequent task episodes.
+Including a demonstration that uses more complicated commands can be helpful to showcase proper use and may increase the frequency with which the agent uses the command.
+
+Input/output format.
+The input/output format defines what a correctly formatted response for an agent should look like.
+Selecting a suitable format greatly affects how well agents can interact with the environment.
+The methods for communicating and enforcing the input/output format are separated across several arguments.
+In Figure~[fig.prompts.example_configuration], the value of parse_function should point to a class definition that enforces the format and actually parses the agent's responses.
+Informing the agent of the expectations around the input/output format should take place in system_template, and the agent can be reminded of these standards via the format_error_template.
+New input/output formats can be easily devised and enforced by updating these arguments to point to a new class or display different natural language instructions.
+
+Context management.
+Context management is implemented as a class within the agent module.
+The history_processor argument allows one to specify which context manager to use via the configuration file.
+Underneath the hood, the context manager is invoked per turn of the interactive loop.
+From the entire recorded history of the agent's interactions so far, the context manager constructs the literal history to be fed to the agent to invoke the next response.
+The general design of history_processors allows for easy experimentation towards more sophisticated strategies for managing history.
+
+[[END appx/01_interface.tex]]
+
+[[INPUT appx/02_analysis.tex]]
+
+### SECTION: Extended Results
+
+In this section, we provide additional results, including performance marginalized against different dimensions, patch generation statistics, and problem solving patterns reflected by SWE-agent trajectories.
+Per analysis, we provide numerical or qualitative evidence that supports our findings, describe our takeaways from each finding, and discuss both the strengths of SWE-agent relative to prior baselines along with future directions based on improving common failure modes.
+
+[[INPUT appx/analyses/hyperparam_sweep.tex]]
+
+### SECTION: Hyperparameter Sweep
+
+We performed a hyperparameter sweep using a subset of 37 instances sampled randomly from the dev split of SWE-bench.
+We present the results in Table~[tab:appx:hyperparam_sweep], where we perform the sweeps for both the GPT-4 Turbo and Claude 3 Opus models.
+For GPT-4 Turbo the best configuration has a % Resolved rate of 15.1%, with a temperature of 0.0, window length of 100 and history set to last five observations (described in ).
+There is a three way tie for Claude 3 Opus between the aforementioned configuration along with two additional settings (Temperature/Window/History of 0.2/ 100/Last-5 and 0.2/ 200/Full).
+We elect to run inference of both models on the SWE-bench test sets (both full and Lite splits) using the 0.0/ 100/Last-5 configuration.
+
+[[INPUT appx_tables/hyperparam_sweep.tex]]
+
+ [FLOAT] 
+
+[[END appx_tables/hyperparam_sweep.tex]]
+
+[[END appx/analyses/hyperparam_sweep.tex]]
+
+[[INPUT appx/analyses/model_performance.tex]]
+
+### SECTION: Model Performance
+
+We present analyses of model performance marginalized across different dimensions and categories.
+
+[[INPUT appx_tables/performance_by_repo.tex]]
+
+ [FLOAT] 
+
+[[END appx_tables/performance_by_repo.tex]]
+
+### PARA: Performance by Repository.
+
+We include a breakdown of model performance by repository on the SWE-bench Lite dataset in Table~[table.results_by_repo].
+We also include and adjust the performance of Claude 2 on SWE-bench, inherited from the baseline performances established in the original work.
+As presented above, SWE-agent performance is superior to prior approaches, solving not only a higher percentage of problems across repositories, but also resolving problems in repositories that were previously nearly or completely unsolved by prior retrieval augmented generation baselines used in the original SWE-bench work (e.g. matplotlib https://github.com/matplotlib/matplotlib/, sympy/sympy https://github.com/sympy/sympy).
+
+[[INPUT appx_tables/performance_by_temporal.tex]]
+
+ [FLOAT] 
+
+[[END appx_tables/performance_by_temporal.tex]]
+
+### PARA: Temporal Analysis.
+
+In Table~[table.results_by_temporal], we provide a temporal breakdown that shows the % Resolved statistics for task instances from different years.
+There is no clear correlation between a task instance's creation year and its resolution rate across either models or setting.
+For instance, while the SWE-agent w/ GPT-4 approach solves the highest percentage of problems from 2021, while the RAG w/ GPT-4 and SWE-agent w/ Claude 3 Opus approaches perform better on task instances from 2022.
+
+[[END appx/analyses/model_performance.tex]]
+
+[[INPUT appx/analyses/trajectory_analysis.tex]]
+
+### SECTION: Trajectory Analysis
+
+We present additional characterizations of trajectories corresponding to task instances that were successfully resolved by SWE-agent w/ GPT-4 Turbo (unless otherwise specified).
+
+ [FLOAT] 
+
+ [FLOAT] 
+
+### SECTION: Turns to Resolution
+
+Figure~[fig.resolved_by_turn] visualizes the distribution of the number of turns SWE-agent needed to complete task instances that were successfully resolved.
+On the full SWE-bench test set, SWE-agent w/ GPT-4 takes an average of 14.71 turns to finish a trajectory, with a median of 12 turns and 75% of trajectories being completed within 18 turns.
+On the Lite split of the SWE-bench test set, SWE-agent w/ Claude 3 Opus takes an average of 12.71 turns to finish a trajectory, with a median of 13 turns and 75% of trajectories being completed within 15 turns.
+From the distribution, it is evident that across models and SWE-bench splits, the majority of task instances are typically solved and completed comfortably within the allotted budget.
+
+This also points to a general area of improvement for language agent systems --- if a language agent's initial problem solving approach, typically reflected in the first 10 to 20 turns, does not yield a good solution, it struggles to make use of later turns that build upon past mistakes.
+To remedy this issue and induce stronger error recovery capabilities in language agents, future directions could consider improving either the model, the ACI, or both.
+
+[[INPUT appx_tables/most_common_triples_by_index.tex]]
+
+ [FLOAT] 
+
+[[END appx_tables/most_common_triples_by_index.tex]]
+
+### SECTION: Walkthrough of Trajectory Phases
+
+We describe what happens in different phases of an agent's problem solving trajectory.
+To support our observations, we present several tables and distributions that help highlight consistent trends.
+
+[[INPUT appx_tables/pattern_categories_by_turn.tex]]
+
+ [FLOAT] 
+
+[[END appx_tables/pattern_categories_by_turn.tex]]
+
+Initial reproduction, localization steps. First, the initial steps that SWE-agent usually takes is heavily dominated by Localization and Reproduction operations.
+The most commonly occurring pattern in general is the create, edit, python triplet.
+Across these commands, an agent creates an empty python file, adds an executable code snippet via edit, and then attempts to run it.
+As an alternative, the agent also sometimes decides to start off instead with Localization, or identifying the files/lines causing the issue.
+Depending on how informative the issue description and results for initial search queries are, agents will run additional search queries with finer grained search tools to zoom in on the target problematic code area (e.g., search_dir, open, search_file/scroll_down).
+
+These trends are also reflected in Figure~[fig.pattern_categories_per_turns], which shows a distribution of patterns across turns according to the categories defined in Table~[tab:most_common_triples_by_index].
+The three leftmost bars reflect that Reproduction followed by Localization constitutes the lion's share of operations that occur in the early phases of a trajectory.
+For a more thorough breakdown, we also include Figure~[fig.actions_per_turn_density], which shows an estimated distribution of each action with respect to different turns, normalized across the total number of times the command occurs across all turns.
+From these graphs, we can see that create is invoked much more frequently in the very first turn than in any other turn.
+The search_dir and search_file distributions are roughly bi-modal, with a peak of occurrences for both actions showing up in Turn 1 (if the agent decides to do Localization immediately) and the Turn 4 (if the agent decides to do Localization after Reproduction).
+We also present Figure~[fig.actions_per_turn_norm], which communicates similar information as Figure~[fig.actions_per_turn_density], but presented instead as a stacked bar chart with more commands.
+The chart is created directly from Figure~[fig:actions_per_turn], with the frequency of actions at each turn n normalized across the total number of trajectories with a length greater than or equal to n turns.
+
+ [FLOAT] 
+
+Cycle of edit, then evaluate. From the fifth turn onwards, the distribution of actions per turn can be generally described as alternating edit and python/pytest actions.
+After reproducing the issue and localizing the file(s) responsible for the problem, agents will typically make edits to the file, then run the reproduction script or existing tests to check whether the proposed edits resolve the original issue and maintain existing desirable behavior.
+This pair of actions will often repeat for several turns, as an initial edit usually does not successfully resolve the given issue.
+Multiple rounds of editing that are supplemented by execution feedback from prior turns are conducive to more well-formed, successful subsequent edits.
+As reflected in Table~[tab:most_common_triples_by_index], for turn 4 onwards, the most popular pattern that begins at each turn usually falls under the Editing category.
+This is also made obvious by Figure~[fig.actions_per_turn_norm], where the edit command is the most popular command for Turns 5 to 31, with only one exception (Turn 30).
+From Figure~[fig.actions_per_turn_density], it is also notably that the distributions of the edit and python commands are quite similar, as they typically follow one another.
+
+ [FLOAT] 
+
+Interspersed across these later turns are additional Localization operations for inspecting other parts of the current file (e.g., scroll_down, scroll_up) or opening other files (e.g., open, search_dir/file, find_file).
+These minor trend lines reflect the tasks that involve multi-line or multi-file edits.
+Figure~[fig.actions_per_turn_norm] displays a steady presence of such actions from Turn 6 onwards.
+Agents will invoke such actions to read different parts (e.g., documentation, implementation) of a long function, especially when it does not fit entirely within the file viewer's number of lines.
+After editing one function A, running the reproduction script will occasionally propagate an error in a different function B, where function B invokes A.
+This is a common reason for the additional directory and file level navigation that occurs in the later stages of a trajectory.
+
+Concluding submission turns. 
+There is a consistent proportion of submit actions per turn, with a relative peak around Turn 10, as shown in Figure~[fig.actions_per_turn_density].
+As mentioned in Section~[sec:analysis:agent-behavior] and above, the majority of resolved task instances end with an intentional submit command.
+As suggested by both Figure~[fig:appx:steps_vs_cost_resolved] and Figure~[fig.actions_per_turn_norm], submissions are concentrated between Turns 10 and 20, becoming less frequent for each turn beyond this range.
+This trend reflects how agents struggle to use later turns to their advantage, particularly when the original problem solving approach fails, which is fairly evident by Turn~ 20.
+Effectively utilizing later turns to either remedy multiple prior errors or pivot to a different problem solving approach are all viable strategies given the 20+ turns that remain.
+However, due to overwhelming context or greedy tendencies, agents do not reflect such dynamic behavior, instead opting to focus on continued local editing rather than additional exploration.
+
+Finally, there is a sharp cut off of exit_cost actions scattered throughout Turns 30 to 40; this reflects that the $ 4 cost limit we impose on runs roughly corresponds to this number of turns.
+The discrepancies mainly comes from variations in the size of observations, with trajectories containing multiple observations that have a high number of tokens corresponding to ones that terminate relatively earlier.
+Increasing the cost allowance per task episode would directly increase the maximum number of the turns per episode.
+
+### SECTION: Breakdowns of Action Sequences
+
+In this part, we include more granular examinations of patterns of actions that emerge frequently in trajectories.
+We also identify consistent associations between groups of actions and how their effects build off one another across several turns.
+
+Editing Trends.
+Editing is a core facet of agents' ability to reproduce issues and propose fixes effectively. 
+It is also the action that models typically struggle with the most.
+Here, we list several trends we were able to discern about how agents edit.
+
+First, across the full SWE-bench test set, a non-trivial minority of edit actions are unsuccessful, meaning the edit invocation raises a linting error.
+Going forwards, we refer to such an occurrence as a failed edit.
+Out of 2294 task instances, 1185 ( 51.7%) have at least one turn with an failed edit.
+Of these trajectories, there is a median of 3 failed edits per trajectory, with a max of 33.
+The rate of failed edits is smaller for resolved task instances.
+Out of 286 resolved instances, 113 ( 31.5%) have at least one turn with an failed edit, with a median/mean/max of 2 failed edits per trajectory, with a max of 26.
+Figure~[fig.failed_edits_per_traj] shows corresponding distributions.
+
+ [FLOAT] 
+
+Second, with linting enabled editing, agents ``recover" more often than not from failed edits.
+To understand whether and how effectively agents use linting error feedback to construct a subsequent, well-formed edit action, we define two terms.
+Recovery refers to a sequence of failed edits followed immediately by a successful edit, suggesting the agent used linting feedback to make a well-formatted edit.
+An unsuccessful recovery is consecutive failed edits followed immediately by a non-edit action.
+
+ [FLOAT] 
+
+Across trajectories corresponding to resolved task instances, there are 135 occurrences of 1+ failed edit attempts.
+Out of these, the agent recovers successfully 104 times.
+The number of consecutive failed edit attempts before a successful versus failed recovery is also vastly different.
+Successful recoveries are usually preceded by 2.03 edit attempts, less than the average 4.22 failed edit attempts of unsuccessful recoveries.
+Across all task instances, the relative rate of unsuccessful recoveries increases, with 810 successful recoveries versus 555 unsuccessful ones.
+While the number of consecutive failed edit attempts resulting in a recovery remains steady ( 2.2), it increases significantly for unsuccessful recoveries ( 5.59).
+
+Third, the odds of recovery decreases as the agent accumulates more failed edit attempts.
+Figure~[fig.prob_good_edit_given_n_fails] displays a line plot of the probability of a successful edit given n failed edit attempts in a row.
+The leftmost data point of n = 0 means that any attempt at editing has a 90.5% chance of eventually being successful.
+This value drops off once the agent incurs a single failed edit; there is only a 57.2% chance the edit is ultimately successful.
+In other words, there is a 42.8% chance the agent never recovers upon encountering 1 edit error.
+
+Action sequence analysis.
+We calculate the transition probabilities showing the likelihood of the next action given the previous n actions.
+To perform this analysis, we first determine the 15 most commonly occurring sequences of n actions, for n \1, 2, 3, 4\ .
+We then count how frequently each command appears after this sequence and finally normalize the counts across the total number of occurrences of the sequence to get a likelihood of the ``Next Action" with respect to the preceding n sequence of actions.
+
+We show these transition probability heatmaps, with n =1 in Figure~[fig:transition_probs], n =2 in Figure~[fig:transition_probs_2gram], n =3 in Figure~[fig:transition_probs_3gram], and n =4 in Figure~[fig:transition_probs_4gram].
+From these graphs, it is immediately obvious that several action sequences emerge consistently across many task instances.
+The high likelihood cells in these heatmaps suggest that SWE-agent uses common problem solving patterns which correspond to higher order operations such as reproducing an issue, localizing buggy code, and proposing/verifying edits.
+
+In Figure~[fig:transition_probs], we see direct associations between pairs of actions.
+There are several obvious trends.
+All trajectories begin with create, find_file, search_dir, and end on either a submit or exit_cost.
+The most popular next action is edit; it is the most likely action to follow create, edit, goto, pytest, and python.
+Scroll (e.g., scroll_down/up) and search (e.g. find_file, search_dir) actions tend to be repeated.
+
+ [FLOAT] 
+ [FLOAT] 
+
+Other interesting correlations are also present.
+The edit/evaluate pattern is reflected in the correlation between the edit and python pair.
+A variety of localization patterns are also conspicuous.
+Sometimes, searching for a file turns out to be less fruitful than searching for a keyword, and visa versa.
+This is reflected in the find_file and search_dir pair.
+The invocation of open is representative of an agent honing in on a specific file to then continue localizing (search_file 0.35, scroll_down 0.18, goto 0.09) or begin editing (edit 0.25).
+
+As the number of prior actions considered increases, more complex operations carried across multiple commands become apparent, echoing the observations from Table~[tab:most_common_triples_by_index].
+In Figure~[fig:transition_probs_3gram], reproduction (e.g. [create, edit, python]) is typically followed by adjustments to the script (edit 0.39) or localization (find_file 0.31, search_dir 0.22).
+Fruitful localization patterns are once again reflected by [find_file / search_dir, open, search_file] are followed by goto.
+In Figure~[fig:transition_probs_4gram], the most popular 4-grams are related to reproduction or editing.
+The [edit, python, rm, submit] pattern is a popular way for trajectories to finish.
+Common failure modes are also apparent; repeated actions like edit ( 4x) and scroll_down ( 4x) typically continues cascading.
+
+[[END appx/analyses/trajectory_analysis.tex]]
+
+[[INPUT appx/analyses/failure_modes.tex]]
+
+### SECTION: Failure Modes
+
+In this section, we provide insight on categorizing common agent failure modes.
+We perform an automated analysis of the unresolved trajectories ( n=248 ) from the SWE-bench Lite split with our default configuration.
+We first create a list of possible failure categories based on model behavior analyzed in Sections~[appx:analyses:trajectory_analysis:walkthrough], which are described in full detail in Table~[tab:appx:failure_categories].
+A validation set of 15 instances are then sampled from the 248 instances left marked unresolved by SWE-agent and the authors hand-label them according to these categories.
+Finally, we combine the agent's trajectory with the patch generated by its changes and the gold patch for reference and use an LM We use gpt-4o-2024-05-13 from OpenAI. to categorize each trajectory.
+In Figure~[fig:failure_modes_pie], we show the results of this automated categorization.
+Evaluated on our validation set, the LM generated labels agree with the authors' labels on 87% of instances.
+
+We find that about half ( 52.0%) of the unresolved instances fall into the Incorrect Implementation or Overly Specific Implementation categories, suggesting that agents' proposed solutions often simply fail to functionally address the issue or are insufficiently general solutions.
+Another significant category is the Failed Edit Recovery category, making up 23.4% of instances, which happens when models fail to generate well-formed edits to files, which can seriously inhibit their performance.
+The remaining failure modes make up less than 25% of instances, but highlight different aspects of the challenges faced by the agent in the problem-solving process.
+
+[[INPUT appx_tables/failure_mode_categories.tex]]
+
+ [FLOAT] 
+
+[[END appx_tables/failure_mode_categories.tex]]
+
+[[END appx/analyses/failure_modes.tex]]
+
+[[INPUT appx/analyses/pass_at_k.tex]]
+
+### SECTION: Performance Variance and Pass @
+
+kk Rate
+
+Since running SWE-agent on SWE-bench can be rather expensive, we perform, all results, unless otherwise stated, are reported using a pass@ 1 metric (% Resolved).
+However, we also test our main SWE-agent configuration for a higher number of runs to test the variance and pass @k performance for k \3, 6\ .
+These results are shown in Table~[tab:passk], suggesting that average performance variance is relatively low, though per-instance resolution can change considerably.
+
+[[INPUT appx_tables/pass_at_k.tex]]
+
+ [FLOAT] 
+
+[[END appx_tables/pass_at_k.tex]]
+
+[[END appx/analyses/pass_at_k.tex]]
+
+[[INPUT appx/analyses/patch_generations.tex]]
+
+### SECTION: Patch Generations
+
+In this section, we present some statistics and analysis around the edits generated by SWE-agent.
+At the end of a task episode, the edits made by SWE-agent are aggregated and saved as a single .patch file, the canonical representation for code changes of a pull request on GitHub.
+From these patch representations, we can quantitatively characterize an agent's generations and see how they compare to the original solutions written by human codebase maintainers.
+
+Table~[tab.appx_tables.patch_stats_basic] presents a summary of four basic statistics about the model generations.
+Lines added and lines removed refer to the total number of lines that were added or deleted in the patch, an indicator of the size of the modification.
+The number of hunks and files is more indicative of how many ``regions" of the codebase were modified.
+A higher number of hunks and files suggests that there are more distinct, separate places in the codebase where the patch made changes.
+For both ``Resolved" and ``All" categories of task instances, models tend to generate ``larger" edits (e.g., more lines added, hunks, and files) than the corresponding gold solution.
+Prior RAG baselines in ~[jimenez2024swebench] typically produce smaller edits on average.
+The source of this increase for agent-generated solutions can largely be attributed to additional reproduction code.
+
+[[INPUT appx_tables/patch_stats_basic.tex]]
+
+ [FLOAT] 
+
+[[END appx_tables/patch_stats_basic.tex]]
+
+When comparing the ``Resolved" and ``All" categories, we see that successfully resolved edits are relatively smaller than the original distribution.
+This trend is consistent with the RAG based solutions; issues that require multiple edits across a codebase remains challenging for agents.
+
+[[END appx/analyses/patch_generations.tex]]
+
+[[INPUT appx/analyses/additional_benchmarks.tex]]
+
+### SECTION: HumanEvalFix Evaluation
+
+In this section, we include further discussion about our evaluation of SWE-agent on HumanEvalFix.
+We choose to evaluate on the HumanEvalFix task because it focuses on code editing and debugging, which was empirically demonstrated in [muennighoff2023octopack] to be a more difficult task for LMs (as reported in their work, GPT 4 scores 78.3% on HumanEval, compared to 47.8% on HumanEvalFix).
+The code editing task can also be thought of as a ``subtask" in SWE-bench; being able to identify and fix bugs is a major part of software engineering.
+
+We adopt the HumanEvalFix dataset ( 164 problems per language) to be compatible with the SWE-agent setting.
+Following the documentation in [muennighoff2023octopack], SWE-agent is initialized in a directory with a single file containing a buggy code snippet and example test(s) if available.
+It is then asked to edit the code and verify its fixes.
+The configuration file is identical to the one used for SWE-bench, with the exception of a language-specific demonstration.
+For this task, localization and navigating a large codebase are not necessary; the main focus is on generating the correct edit.
+SWE-agent achieves the best performance on the HumanEvalFix benchmark for three of the languages we evaluate on, as shown in Table~[tab.benchmark_humanevalfix].
+Figure~[fig.humanevalfix_dist_of_turns] also suggests that the large majority of task instances are solved within the first 10 turns.
+
+ [FLOAT] 
+
+[[END appx/analyses/additional_benchmarks.tex]]
+
+[[INPUT appx/analyses/datasets_info.tex]]
+
+### SECTION: Dataset Information
+
+In the following Table~[tab:datasets_info], we provide descriptions of the two datasets that we use for evaluation: SWE-bench~[jimenez2024swebench] and HumanEvalFix~[muennighoff2023octopack].
+Both datasets have been released under permissive software licenses that allow for evaluation use, and can be used in proprietary systems.
+
+ [FLOAT] 
+
+[[END appx/analyses/datasets_info.tex]]
+
+[[INPUT appx/analyses/miscellaneous.tex]]
+
+### SECTION: Miscellaneous
+
+In this section, we include additional minor analyses around agent behavior and their generations.
+
+Agents are better at localizing files than BM25.
+The interactive setting also enables agents to identify the correct file(s) to edit more often compared to the RAG baselines in [jimenez2024swebench].
+To measure this, we calculate the F1 score between the set of [edited, removed] files by the agent's prediction versus the gold patch.
+SWE-agent w/ GPT-4 Turbo achieves an F1 score of 59.05%, while BM25 w/ Claude 3 Opus produces an F1 score of just 45.47%.
+
+Most resolved task instances are intentionally submitted. There are four ways a task episode ends. 
+
+- ``Submit" refers to a task episode that ends when the agent generates the submit command.
+ 
+- ``Exit Cost (Submit)" refers to the scenario where the episode ends because the cost limit was hit, and the changes so far are gathered and submitted as an edit.
+ 
+- ``Exit Cost (No Submit)" refers to when the cost limit was hit and no edit's were made, so there was nothing to submit. In this scenario, the instance is guaranteed to be unresolved.
+ 
+- ``Early Exit" refers to when the task episode terminates because an agent issued too many malformed responses in a row. Any changes are submitted as an edit.
+
+Table~[tab:appx:exit_conditions] shows the counts for the number of trajectories that ended on these four different outcomes, categorized across the agent, SWE-bench split, and whether or not that task instance was resolved.
+For SWE-agent with GPT-4 Turbo, the majority of ``All" task instances are submit.
+For the trajectories corresponding to``All" task instances by SWE-agent with Claude 3 Opus, slightly less than 50% of task instances are submitted, while the slight majority are auto-submitted when the cost limit is hit.
+
+[[INPUT appx_tables/exit_conditions.tex]]
+
+ [FLOAT] 
+
+[[END appx_tables/exit_conditions.tex]]
+
+However, these trends do not hold for ``Resolved" task instances.
+For SWE-agent with both models, the large majority of these task instances are submit.
+Reiterating the conclusion in Section~[sec:analysis:agent-behavior] and prior visualizations in Section~[appx:analyses:trajectory_analysis], we see here again that resolved task instances often imply that the agent is able to produce and verify an edit within the allotted number of turns.
+The SWE-agent ACI is also effective at eliciting well-formed thoughts and actions from agents.
+Across all runs, there are only two ``Early Exit" occurrences, where the episode terminated because the agent generated too many malformed responses in a row.
+
+Finally, Table~[tab:appx:exit_conditions] also upholds an expected trend.
+Task instances that finish with a submit action are more likely to be resolved than those that are cutoff by cost.
+For instance, for SWE-agent with GPT-4 Turbo on full SWE-bench, 14.3% of task instances that end with a submit are resolved, which is much higher than 3.1% for those finishing on exit_cost.
+
+[[END appx/analyses/miscellaneous.tex]]
+
+[[END appx/02_analysis.tex]]
+
+[[INPUT appx/03_prompts.tex]]
+
+### SECTION: Prompts
+
+In this section, we go through the prompt templates that make up the agent’s history, discussing them in the order of presentation to SWE-agent.
+Per template, we describe its purpose, walk through its content, and note any additional motivations that influenced how we wrote the template.
+The companion figures of template content are all drawn from our default configuration, using SWE-agent w/ GPT-4.
+
+The template content can and should be adapted slightly to fit the agent's intended use case.
+The purpose of this section is to describe our thought process for how we designed each template for these tasks to serve as reference for future work.
+Across templates, we find that providing tips which tell agents to not make specific mistakes, avoid common pitfalls, and use helpful execution signals are effective for eliciting more successful problem solving.
+
+Prompt Workflow.
+We present Figure~[fig.prompt_flow] which shows the order in which different prompt templates are invoked.
+This flow of prompts reflects the logic that generates trajectories similar to the one that is visualized in Figure~[fig.trajectory_overview].
+
+ [FLOAT] 
+
+System Template.
+The system template describes the interactive task setting, the commands at the agent’s disposal, and the expected response format.
+It is the first message for any episode, does not change in content across task instances, and is not removed or collapsed at any point from the message history.
+The agent is told of the general task setting, which is a command line that comes with a special file viewer interface.
+After this, the agent is presented the command documentation, which shows a usage example and docstring for every custom command, mirroring the content of Figure~[fig.prompts.system].
+As discussed before, from manual observation, we find that agents need a lot of support to make effective use of the edit command.
+
+[[INPUT figures/prompts/system.tex]]
+
+System Prompt
+SETTING: You are an autonomous programmer, and you're working directly in the command line with a special interface.
+
+The special interface consists of a file editor that shows you 100 lines of a file at a time.
+In addition to typical bash commands, you can also use the following commands to help you navigate and edit files.
+
+COMMANDS: \documentation\
+
+Please note that THE EDIT COMMAND REQUIRES PROPER INDENTATION. 
+If you'd like to add the line `\;\;\;\;\;\;\;\;print(x)' you must fully write that out, with all those spaces before the code! Indentation is important and code that is not indented correctly will fail and require fixing before it can be run.
+
+RESPONSE FORMAT: \\
+Your shell prompt is formatted as follows: \\
+(Open file: path ) cwd $ \\
+You need to format your output using two fields; discussion and command.
+Your output should always include one discussion and one command field EXACTLY as in the following example:
+
+DISCUSSION \\
+First I'll start by using ls to see what files are in the current directory. Then maybe we can look at some relevant files to see what they look like. \\
+\`\`\` \\
+ls -a \\
+\`\`\` 
+
+You should only include a SINGLE command in the command section and then wait for a response from the shell before continuing with more discussion and commands. Everything you include in the DISCUSSION section will be saved for future reference. 
+If you'd like to issue two commands at once, PLEASE DO NOT DO THAT! Please instead first submit just the first command, and then after receiving a response you'll be able to issue the second command. 
+You're free to use any other bash commands you want (e.g. find, grep, cat, ls, cd) in addition to the special commands listed above. 
+However, the environment does NOT support interactive session commands (e.g. python, vim), so please do not invoke them.
+
+ type=figure
+ figureThe system prompt for SWE-agent describes the environment. The documentation field is populated with brief description of all enabled commands, similar to Table [tab:commands].
+
+[[END figures/prompts/system.tex]]
+
+An agent will occasionally generate an edit with either the wrong level of indentation or incorrectly specified line numbers.
+Because of this, we include a note telling the agent to pay attention to proper indentation.
+
+Finally, the system prompt describes what the agent’s response should look like, communicated with an example (e.g. JSON format, XML delimiters) followed by a paragraph reinforcing the importance of issuing a single thought/action pair per turn.
+Because of the constraints imposed by Docker containers, we include one last point about the command line environment not supporting any interactive session commands, such as vi or python.
+The system template does not introduce any task instance specific information.
+
+Demonstration Template.
+If provided, the demonstration template immediately follows the system template as the second message showing the agent a trajectory which resulted in the successful resolution of a task instance from the development set.
+As confirmed by the ablation in Table~[tab:combined_ablations_summary], including a demonstration slightly helps agents with understanding proper command usage and reduces the rate of errant responses.
+Rather than being written out entirely like the system template, the demonstration template is put together based on two fields as shown in the configuration file discussed in Section~[appx:interface:configuration].
+First, the demonstrations argument points at 1+ .traj file(s), each containing a multi-turn, SWE-agent style history of interactions.
+
+Second, the demonstration_template and put_demos_in_history arguments control how the demonstration is represented in the message history.
+If the put_demos_in_history argument is set True, every turn of the demonstration trajectory is used as a separate message in the history.
+The alternative is to write out the entire demonstration as a single message, wrapped in a natural language instruction indicating it is a demonstration (this is the method that is displayed in Figure~[fig.prompts.demonstration]).
+The effectiveness of each method varies by model.
+The first method of adding a demonstration as separate messages can be preferable because it gives an agent the impression that it has already solved a task instance and is working on the next one.
+However, for a different model, it can be confusing to have the contexts from two tasks in a single trajectory, which is why the second method of explicitly telling the model that it’s being given a demonstration can be better.
+
+[[INPUT figures/prompts/demonstration.tex]]
+
+Demonstration
+ [CODEBLOCK] 
+
+ type=figure
+ figure
+A simplified demonstration template showing how demonstrations are provided to the model as a single message.
+Here we show only the final 3 turns in the demonstration for brevity.
+
+[[END figures/prompts/demonstration.tex]]
+
+We are unsure if demonstrations actually help agents understand the nuances of domain specific problem solving.
+Because of the diversity of software engineering issues, we think the role the demonstration plays is primarily to help the agent learn to issue properly formatted commands.
+Prior work has demonstrated that fine tuning may have the potential to imbue agents with a certain degree of expertise around how to adaptively solve task instances that may vary in terms of what strategy is most successful.
+
+Instance Template.
+The instance template introduces the agent to the task instance.
+The problem statement is shown, followed by a brief set of instructions that reiterate important points from the system template.
+These points are the one thought/action per-turn requirement, mentioning the lack of support for interactive shell commands, and a reminder of the importance of editing indentation.
+Finally, a notably effective part of the instance template is the inclusion of tips which serve as an additional guidelines for how to operate successfully in the bash environment, shown in Figure~[fig.prompts.instance].
+These tips were developed manually and iteratively; after running SWE-agent with a particular configuration on the development set, we manually looked at the trajectories for failure modes.
+The tips were born out of these failures, and through repeated inspection, we found that such tips did reduce the frequency of errant problem solving strategies that they are meant to address.
+While our manual approach to writing tips certainly does not scale, representing feedback for common mistakes as tips is surprisingly effective.
+Developing better methods for this process of identifying failure modes and writing natural language instructions that describe the correct alternative behavior could be an avenue to better performance for future SWE-agent based systems.
+Finally, at the end of the message, the agent is presented with a command line prompt indicating that the task has begun and that the agent should issue its first command.
+
+[[INPUT figures/prompts/instance.tex]]
+
+Instance Message
+ [CODEBLOCK] 
+
+ type=figure
+ figure
+The instance template. This message shows the task instance's problem statement (referenced by the \issue\ field), shows additional task instance-specific information, and provides a set of tips suggesting recommended problem solving approaches and pitfalls to look out for.
+
+[[END figures/prompts/instance.tex]]
+
+Next Step Template.
+Assuming an agent’s response is well formed and contains an action, there are two simple templates used to present the corresponding output of the agent’s action, as shown in Figure~[fig.prompts.next_step].
+If an agent’s action produces some standard output, the agent is simply shown this output with a command line prompt to indicate that the agent should respond with the next action.
+
+[[INPUT figures/prompts/next_step.tex]]
+
+ type=figure
+Next Step Template
+ [CODEBLOCK] 
+
+ figure
+The environment's ``next step" template.
+This is emitted after each observation to inform the model of the current state of the shell and programs.
+
+[[END figures/prompts/next_step.tex]]
+
+However, if an agent’s action runs silently and produces no output (e.g. rm abc.py, touch abc.py), we found that simple showing no output along with a prompt can be confusing for agents to interpret, and it will often run additional, unnecessary commands to determine the effect of the prior action.
+To guard against this situation, the agent is informed verbosely that the command ran successfully and did not produce output.
+While the System, Demonstration, and Instances template are only used a single time, the next step template is used repeatedly.
+In the SWE-agent configuration described in this work, the next step templates are fairly simple, as they essentially just add the command line prompt to the end of the execution standard output.
+We have not explored other variations to this style.
+
+Collapsed Observation Template.
+As shown in Figure~[fig.trajectory_overview] and discussed in Section~[sec:aci], old observations are collapsed; meaning that the structure and order of the agent's interaction history is preserved, but the content of old observations are replaced with a one-line placeholder.
+This summary simply states that the observation is omitted with the number of lines that were removed, as shown in Figure~[fig.prompts.collapsed_obs].
+
+[[INPUT figures/prompts/collapsed_obs.tex]]
+
+ type=figure
+Environment Response (collapsed) Template
+ [CODEBLOCK] 
+
+ figure
+A collapsed environment response.
+The content of old observations are replaced with this template.
+
+[[END figures/prompts/collapsed_obs.tex]]
+
+The purpose of collapsing old observations is twofold.
+First, it simply reduces the number of tokens needing to be processed at each interaction step.
+Second, by removing old observations' content, it can also reduce the presence of outdated or duplicate information, such as directory and file contents or command output.
+We think that both of these purposes can serve to improve agent performance.
+
+Error Message Template.
+An agent's response is not always well formed.
+As discussed, an agent is generally expected to respond with a single thought and action per turn.
+In our work, we experimented with asking the agent to generate one of three different styles of responses for communicating one thought and one action (same type of response across any single episode).
+
+[noitemsep]
+ 
+- A string where the action is wrapped as a markdown-style code block (\`\`\`).
+ 
+- A JSON style dictionary with ``thought" and ``action" keys.
+ 
+- An XML style generation with `` < thought > " and `` < action > " delimiters.
+
+On occasion, an agent may generate a response that doesn't conform to the requested format.
+If this occurs, we show an error message to the agent indicating that the prior message was malformed and to issue another response that does not make the same mistake, as presented in Figure~[fig.prompts.error].
+If a model generates 3 malformed responses in a row, the episode will terminate early.
+
+[[INPUT figures/prompts/error.tex]]
+
+ type=figure
+Error Message
+ [CODEBLOCK] 
+
+ figure
+The environment's error message.
+This is emitted if a model generation doesn't conform to the thought-action format suggested.
+
+[[END figures/prompts/error.tex]]
+
+Another context management trick is that if models generate a malformed response, but then subsequently respond with a valid one, the message history is modified such that the action and response correspond to the malformed generation is removed.
+This kind of de-noising reduces unnecessary context and helps prevent future malformed generations.
+Each well-formatted response becomes an additional in-context demonstration of how to interact with the environment correctly; this ``momentum'' of correct responses is effective for helping agents continue to issue correct actions at later turns in trajectories when there is a lot of information in the message history.
+
+[[END appx/03_prompts.tex]]
+
+[[INPUT appx/04_qualitative_analysis.tex]]
+
+### SECTION: Qualitative Analysis
+
+We choose 2 successful and unsuccessful task instances from SWE-bench Lite to perform a full qualitative analysis, based on the trajectories generated by the default configuration using GPT-4 Turbo.
+
+### SECTION: Analysis for psf/requests-2317
+
+Issue Summary.
+The agent was tasked with resolving a problem in the requests library where the method variable, a bytes object (e.g., b'GET'), was being incorrectly converted to a literal string ("b'GET'") by the builtin_str function.
+This caused the requests library to raise a 404 Not Found response due to the incorrect method string.
+The issue was observed in Python 3.4 and not in Python 2.6, indicating a version-specific difference in handling bytes.
+
+Interaction Summary
+
+- Locate the Target File: The agent began by finding the sessions.py file in the requests library directory.
+ It correctly identified that the relevant file was in the requests directory rather than the build directory.
+
+- Search for the Issue: It opened sessions.py and used the search_file command to locate the builtin_str function call.
+ It found the relevant line (line 428) where the method variable was being converted.
+
+- Edit the Code: The agent edited the sessions.py file to check if the method was a bytes object and, if so, decoded it to ASCII before applying the builtin_str function.
+
+- Test Changes: To verify the fix, the agent created a new file, reproduce_issue.py, which attempted to send an HTTP request using a binary method string.
+ The script printed the response status code to check if the request was handled correctly.
+ It ran the reproduce_issue.py script, which executed successfully and received a 200 OK response, indicating that the issue was resolved.
+
+- Clean Up and Submit: Finally, the agent deleted the reproduction script and submitted the changes to the code base.
+
+Evaluation.
+Upon evaluation, the agent's proposed changes successfully pass the instance's unit tests.
+When comparing the agent's generation to the `gold patch`, we notice that the gold patch uses the to_native_string function, defined in https://github.com/psf/requests/blob/091991be0da19de9108dbe5e3752917fea3d7fdc/requests/utils.py#L655requests/utils.py#L655, which behaves identically to the agent's proposed changes.
+Ultimately, while the agent successfully resolves the issue, it fails to use existing utility functions, which could lead to less maintainable or portable code in production.
+
+[[INPUT trajectories/psf__requests-2317.tex]]
+
+ type=figure
+ figureTrajectory for instance psf__requests-2317.
+[psf__requests-2317]We're currently solving the following issue within our repository. Here's the issue text:
+
+ISSUE:
+
+method = builtin_str(method) problem
+
+In requests/sessions.py is a command:
+
+method = builtin_str(method)
+
+Converts method from
+
+b’GET’
+
+to
+
+"b'GET’"
+
+Which is the literal string, no longer a binary string. When requests tries to use the method "b'GET’”, it gets a 404 Not Found response.
+
+I am using python3.4 and python-neutronclient (2.3.9) with requests (2.4.3). neutronclient is broken because it uses this "args = utils.safe_encode_list(args)" command which converts all the values to binary string, including method.
+
+I'm not sure if this is a bug with neutronclient or a bug with requests, but I'm starting here. Seems if requests handled the method value being a binary string, we wouldn't have any problem.
+
+Also, I tried in python2.6 and this bug doesn't exist there. Some difference between 2.6 and 3.4 makes this not work right.
+
+INSTRUCTIONS: (31 lines)
+
+ [CODEBLOCK] 
+
+[psf__requests-2317]
+To address the issue, we first need to replicate the behavior described. The issue mentions that the `builtin_str` function in `requests/sessions.py` is converting a binary string method like `b'GET'` into the literal string `''b'GET'''`, which is incorrect. We should start by locating the `sessions.py` file within the `requests` library to examine the code around the `builtin_str` function call.
+
+Let's begin by finding the `sessions.py` file in the current repository.
+
+ [CODEBLOCK] 
+
+[psf__requests-2317] [CODEBLOCK] 
+
+[psf__requests-2317]
+We have found two matches for `sessions.py`. The one in the `build/lib/requests` directory is likely a build artifact, and the one we're interested in is probably `/psf__requests/requests/sessions.py`. Let's open this file to inspect the code around the `builtin_str` function call.
+
+ [CODEBLOCK] 
+
+[psf__requests-2317] [CODEBLOCK] 
+
+[psf__requests-2317]
+The `sessions.py` file is now open, but the `builtin_str` function call is not visible in the first 100 lines of the file. Since we don't have the exact line number where the `builtin_str` function is called, we'll need to search within the file for it.
+
+Let's use the `search_file` command to find the usage of `builtin_str` within `sessions.py`.
+
+ [CODEBLOCK] 
+
+[psf__requests-2317] [CODEBLOCK] 
+
+[psf__requests-2317]
+We have found two occurrences of `builtin_str` in `sessions.py`. The second occurrence on line 428 is where the method is being converted to a string. We should inspect this line to understand the context and see how we can address the issue.
+
+Let's navigate to line 428 in `sessions.py` to see the relevant code.
+
+ [CODEBLOCK] 
+
+[psf__requests-2317] [CODEBLOCK] 
+
+[psf__requests-2317]
+We are now looking at the section of the `sessions.py` file where the `builtin_str` function is used to convert the `method` variable. According to the issue, this conversion is causing a problem when the `method` is a binary string because it's being converted to a literal string that includes the binary prefix `b'...'`.
+
+To address this issue, we need to ensure that the `method` variable is correctly converted to a string without the binary prefix. This might involve checking the type of the `method` variable and handling binary strings differently from regular strings.
+
+Let's edit the line to add a check that ensures binary strings are decoded to regular strings before being passed to `builtin_str`.
+
+ [CODEBLOCK] 
+
+[psf__requests-2317] [CODEBLOCK] 
+
+[psf__requests-2317]
+The edit has been made to decode binary strings before converting them to a string with `builtin_str`. This should prevent the issue where a binary string like `b'GET'` is incorrectly converted to the literal string `''b'GET'''`.
+
+To verify that this change resolves the issue, we should create a script that replicates the problem as described. We'll write a script that uses the `requests` library to make a request with a binary method and check if it now handles the method correctly.
+
+Let's create a new file called `reproduce_issue.py` to test the fix.
+
+ [CODEBLOCK] 
+
+[psf__requests-2317] [CODEBLOCK] 
+
+[psf__requests-2317]
+Now that we have created the `reproduce_issue.py` file, let's write a script that attempts to send a request with a binary method string, which should now be handled correctly due to our fix in `sessions.py`.
+
+We'll write a simple script that imports the `requests` library, sets a binary method, and tries to make a request to a test URL.
+
+ [CODEBLOCK] 
+
+[psf__requests-2317] [CODEBLOCK] 
+
+[psf__requests-2317]
+The script has been written and should now attempt to send a request using a binary method string. This will help us verify if the issue has been resolved by the changes we made to `sessions.py`.
+
+Let's run the script to see if it executes successfully without encountering the issue described.
+
+ [CODEBLOCK] 
+
+[psf__requests-2317] [CODEBLOCK] 
+
+[psf__requests-2317]
+The script ran successfully and received a 200 OK response, which indicates that the issue with handling binary method strings has been resolved. The `requests` library is now correctly processing the binary string `b'GET'` as a valid HTTP method.
+
+Since the fix appears to be working, we can clean up by removing the `reproduce_issue.py` script, as it is no longer needed. After that, we can submit our changes to the code base.
+
+Let's remove the `reproduce_issue.py` file.
+
+ [CODEBLOCK] 
+
+[psf__requests-2317] [CODEBLOCK] 
+
+[psf__requests-2317]
+The `reproduce_issue.py` file has been successfully removed. Now that we have verified the fix and cleaned up the test script, we can proceed to submit our changes to the code base.
+
+Let's submit the changes using the `submit` command.
+
+ [CODEBLOCK] 
+
+[psf__requests-2317]
+ [CODEBLOCK] 
+
+[psf__requests-2317]
+ [CODEBLOCK] 
+
+[[END trajectories/psf__requests-2317.tex]]
+
+### SECTION: Analysis for pylint-dev/pylint-5859
+
+Issue Summary.
+The issue involves the --notes option in pylint, which fails to report fixme warnings (W0511) for note tags that are entirely punctuation.
+Specifically, when running pylint with the --notes="YES,???" option, only the “YES” tag is recognized, and the “???” tag is ignored.
+The expected behavior is to recognize the punctuation-only tag normally.
+
+Interaction Summary
+
+- Reproducing the Issue:
+
+- The agent started by creating a test.py file and added comments to replicate the issue described.
+ This was followed by running pylint to confirm the issue, which only reported the “YES” note and not the “???” note.
+
+- Searching for Relevant Code:
+
+- The agent attempted to search for the handling of the --notes option using the search_dir command. After some initial confusion with the command options, it successfully identified the pylint/checkers/misc.py file as containing the relevant code.
+
+- Editing the Code:
+
+- The agent located the regular expression responsible for matching note tags within the open method of the EncodingChecker class.
+ It modified the regular expression to handle punctuation-only note tags by replacing the word boundary b with a lookahead assertion (?\= W|$).
+
+- Test Changes with Reproduction Code:
+
+- After making the modification, the agent re-ran pylint on the test.py file. 
+ The output confirmed that both note tags (“YES” and “???”) were now correctly identified.
+
+- Clean Up and Submit:
+ 
+- Finally, the agent removed the test.py file and submitted the changes.
+
+Evaluation
+The agent effectively replicated the issue, identified and navigated to the relevant code, made a targeted modification to the regular expression, and verified the fix through testing.
+While the agent's solution successfully passes the necessary tests, there are slight differences in behavior between the agent's solution and the gold patch.
+In particular, the agent replaced the b word boundary in the regular expression to handle note tags with the regex pattern ( W|$) to mark the tag boundary.
+Comparing this to the gold patch solution which uses the pattern (:| s| Z) in the same way, it may be that the agent's solution causes other unintended consequences that aren't captured by the existing tests.
+
+[[INPUT trajectories/pylint-dev__pylint-5859.tex]]
+
+ type=figure
+ figureTrajectory for instance pylint-dev__pylint-5859.
+[pylint-dev__pylint-5859]We're currently solving the following issue within our repository. Here's the issue text:
+
+ISSUE:
+
+"--notes" option ignores note tags that are entirely punctuation
+
+ Bug description
+
+If a note tag specified with the `--notes' option is entirely punctuation, pylint won't report a fixme warning (W0511).
+
+ [CODEBLOCK] 
+
+pylint test.py --notes="YES,???" will return a fixme warning (W0511) for the first line, but not the second.
+
+Configuration
+
+ini [CODEBLOCK] 
+ Command used
+
+ [CODEBLOCK] 
+pylint test.py --notes="YES,???"
+
+ [CODEBLOCK] 
+shell [CODEBLOCK] 
+ Expected behavior
+
+ [CODEBLOCK] 
+ Pylint version
+
+ [CODEBLOCK] 
+pylint 2.12.2
+
+astroid 2.9.0
+
+Python 3.10.2 (main, Feb 2 2022, 05:51:25) [Clang 13.0.0 (clang-1300.0.29.3)]
+
+ [CODEBLOCK] 
+(Open file: n/a)
+
+(Current directory: /pylint)
+
+bash-$
+
+[pylint-dev__pylint-5859]
+To begin addressing the issue, we should first try to replicate the bug as described. We can do this by creating a new Python script that includes the comments with the note tags ''YES'' and ''???'' and then running pylint with the `--notes` option. Let's start by creating a new file called `test.py` and adding the relevant comments to it.
+
+ [CODEBLOCK] 
+
+[pylint-dev__pylint-5859] [CODEBLOCK] 
+
+[pylint-dev__pylint-5859]
+Now let's add the example comments from the issue into `test.py`.
+
+ [CODEBLOCK] 
+
+[pylint-dev__pylint-5859] [CODEBLOCK] 
+
+[pylint-dev__pylint-5859]
+The `test.py` file has been updated with the example comments. Next, we should run pylint with the `--notes` option to see if we can replicate the issue where the second line with punctuation-only tags is ignored.
+
+ [CODEBLOCK] 
+
+[pylint-dev__pylint-5859] [CODEBLOCK] 
+
+[pylint-dev__pylint-5859]
+The output confirms the issue: pylint only reports a fixme warning for the first line with the ''YES'' tag and ignores the second line with the ''???'' tag. This matches the behavior described in the issue.
+
+The next step is to locate the part of the pylint code that handles the `--notes` option and determine why it's ignoring note tags that are entirely punctuation. We should start by finding the file that contains the relevant code. Since we don't know the exact file name, we can search the directory for files that might contain the string `--notes` to find where the option is handled.
+
+ [CODEBLOCK] 
+
+[pylint-dev__pylint-5859] [CODEBLOCK] 
+
+[pylint-dev__pylint-5859]
+It seems that the `search_dir` command did not work as expected because `--notes` was interpreted as an option for `grep` rather than a search term. To avoid this issue, we can enclose the search term in quotes to ensure it's treated as a literal string. Let's try searching again using the correct format for the search term.
+
+ [CODEBLOCK] 
+
+[pylint-dev__pylint-5859] [CODEBLOCK] 
+
+[pylint-dev__pylint-5859]
+It appears that the issue persists because the search term is still being interpreted as an option. To circumvent this, we can use a different search term that is less likely to be confused with a command-line option. Let's try searching for just ''notes'' instead, which should still lead us to the relevant part of the code.
+
+ [CODEBLOCK] 
+
+[pylint-dev__pylint-5859] [CODEBLOCK] 
+
+[pylint-dev__pylint-5859]
+The search results indicate that there are several matches for ''notes'' in the repository, but the most likely candidate for the code we need to examine is in `pylint/checkers/misc.py`, as it contains the most matches. This file is probably where the miscellaneous checkers, including the fixme warning (W0511), are implemented.
+
+Let's open the `misc.py` file to investigate further.
+
+ [CODEBLOCK] 
+
+[pylint-dev__pylint-5859] [CODEBLOCK] 
+
+[pylint-dev__pylint-5859]
+We have opened the `misc.py` file which likely contains the code for the fixme warning (W0511) related to the `--notes` option. Since the file is 203 lines long and we are currently viewing the first 100 lines, we need to scroll down or use the `goto` command to find the relevant section that handles the `--notes` option.
+
+Let's scroll down to see more of the file.
+
+ [CODEBLOCK] 
+
+[pylint-dev__pylint-5859] [CODEBLOCK] 
+
+[pylint-dev__pylint-5859]
+We have found the relevant section of the `misc.py` file that handles the `--notes` option. The regular expression pattern used to match note tags is constructed in lines 122-128. It seems that the issue might be related to how the regular expression is constructed or how it is used to match comments in the source code.
+
+The regular expression is built from the `notes` configuration, which is a list of comma-separated values, and an optional `notes-rgx` regular expression. The pattern is then compiled and used in the `process_tokens` method to search for matching comments.
+
+The issue might be that the regular expression pattern does not account for note tags that consist entirely of punctuation characters. To fix this, we may need to adjust the regular expression pattern to ensure it matches these tags correctly.
+
+Before we make any changes, let's examine the regular expression pattern construction in more detail. We should look at the `open` method where the pattern is compiled, specifically lines 122-128.
+
+ [CODEBLOCK] 
+
+[pylint-dev__pylint-5859] [CODEBLOCK] 
+
+[pylint-dev__pylint-5859]
+We are now looking at the section of the `misc.py` file where the regular expression for the `--notes` option is constructed. The regular expression is built from the `notes` configuration option, which is a list of note tags. These tags are escaped using `re.escape` and joined with a pipe `|` to form an alternation pattern. This pattern is then used to create a regular expression that matches comments starting with one of the note tags followed by a word boundary ` b`.
+
+The issue might be with the word boundary ` b`, which does not match if the tag is followed by punctuation. Since the tag ''???'' is entirely punctuation, the word boundary may not be recognized correctly, causing the tag not to match.
+
+To fix this issue, we can modify the regular expression to ensure that it matches note tags that are entirely punctuation. We can do this by removing the word boundary and allowing the tag to be followed by any non-word character or the end of the string.
+
+Let's edit the regular expression construction to fix the issue.
+
+ [CODEBLOCK] 
+
+[pylint-dev__pylint-5859] [CODEBLOCK] 
+
+[pylint-dev__pylint-5859]
+The edit to the regular expression has been made successfully. We replaced the word boundary ` b` with a lookahead assertion `(?= W|$)` that matches either a non-word character or the end of the string after the note tag. This should allow the regular expression to match note tags that consist entirely of punctuation.
+
+Before submitting the changes, we should test to ensure that the fix works as expected. We can do this by running pylint on the `test.py` file again with the `--notes` option to see if it now correctly identifies the ''???'' note tag.
+
+Let's run pylint on `test.py` with the updated code.
+
+ [CODEBLOCK] 
+
+[pylint-dev__pylint-5859] [CODEBLOCK] 
+
+[pylint-dev__pylint-5859]
+The pylint output now shows that it correctly identifies both the ''YES'' and ''???'' note tags, which means the fix has resolved the issue. With the bug fixed, we can proceed to clean up any test files and then submit our changes to the code base.
+
+First, let's remove the `test.py` file since it was only needed for reproducing the issue.
+
+ [CODEBLOCK] 
+
+[pylint-dev__pylint-5859] [CODEBLOCK] 
+
+[pylint-dev__pylint-5859]
+The `test.py` file has been successfully removed. Now that we have fixed the issue and cleaned up the test files, we can submit our changes to the code base. Let's submit the changes using the `submit` command.
+
+ [CODEBLOCK] 
+
+[pylint-dev__pylint-5859] [CODEBLOCK] 
+
+[pylint-dev__pylint-5859]
+ [CODEBLOCK] 
+
+[[END trajectories/pylint-dev__pylint-5859.tex]]
+
+### SECTION: Analysis for sympy/sympy-21614
+
+Issue Summary.
+The issue is reporting an UnedinedKind type returned when printing a sympy.Derivative's kind attribute.
+They expect something like a DerivativeKind instead of UndefinedKind.
+
+Interaction Summary
+
+- Reproduce the Issue: The agent began by creating a Python script (reproduce_issue.py) to reproduce the issue, using the reproduction code provided in the issue report.
+ It ran the script and successfully reproduced the issue.
+
+- Searching for Derivative Code: The agent begins to search for code where the Derivative class is defined.
+ It makes several attempts with different strategies to find the relevant code.
+ After a few unsuccessful approaches, looking for particular filenames, it searches simply for ``class Derivative``, which provides a single search result.
+ It continues to read the Derivative class definition, which spans many hundreds of lines. 
+
+- Exhausting Budget: It continuously scrolls through the function.py file where Derivative is defined until is exhausts its budget and terminates the episode without submitting.
+
+Evaluation
+The agent makes a few mistakes using the search function effectively.
+The agent should have made more efficient searches by using more commonsensical patterns (e.g. searching for ``class Derivative``) early on, instead of more speculative search attempts.
+In this particular setting, the gold patch shows that the updated code involves overriding an inherited property kind from the sympy.basic object.
+This fix would require a more thorough understanding of the codebase and inheritence structure of Derivative to be effective.
+An agent attempting to resolve this issue would need to have more targeted and efficient search approaches to improve its ability to identify this problem.
+
+[[INPUT trajectories/sympy__sympy-21614.tex]]
+
+ type=figure
+ figureTrajectory for instance sympy__sympy-21614.
+[sympy__sympy-21614]We're currently solving the following issue within our repository. Here's the issue text:
+
+ISSUE:
+
+Wrong Derivative kind attribute
+
+I'm playing around with the `kind' attribute.
+
+The following is correct:
+
+ [CODEBLOCK] 
+This one is wrong:
+
+ [CODEBLOCK] 
+INSTRUCTIONS: (31 lines)
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614]
+First, I'll create a new Python script to reproduce the issue as described. This script will attempt to create a `Derivative` of a `MatrixSymbol` and print out the `kind` attribute to verify if it is indeed `UndefinedKind`.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+Now let's paste in the example code from the issue that demonstrates the incorrect behavior for the `kind` attribute of a `Derivative` of a `MatrixSymbol`.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+The reproduction script has been created and updated with the code that demonstrates the issue. Now, let's run the script to confirm that the `kind` attribute of the `Derivative` is indeed `UndefinedKind`.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+The output confirms that the `kind` attribute of the `Derivative` is `UndefinedKind`, which is not the expected behavior. The next step is to locate the part of the code that handles the `kind` attribute for the `Derivative` class and make the necessary corrections.
+
+Since the `Derivative` class is likely to be defined in a file related to calculus or differentiation, I will search for the file that contains the `Derivative` class definition.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+It seems that the file name I searched for does not match the actual file name where the `Derivative` class is defined. The `Derivative` class might be defined in a file with a different name, possibly something more general related to symbolic calculus in SymPy.
+
+Let's try a broader search for files that might contain the `Derivative` class definition. Since the class name is `Derivative`, it's likely that the file name contains ''calculus'' or a similar keyword. I'll use the `search_dir` command to look for the term ''Derivative'' within the Python files in the current directory.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+The search for ''Derivative'' returned too many results, so I need to narrow it down. Since the `Derivative` class is a core part of SymPy, it's likely to be in a core module. A common convention is to have such core classes in a file named after the module, so I will search for a file that might be named `core.py` or similar.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+The search has returned several `core.py` files, but the most likely candidate for containing the `Derivative` class definition is within the main `sympy/core` directory. Let's open the `core.py` file in the `sympy/core` directory to investigate further.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+The `core.py` file in the `sympy/core` directory does not seem to contain the implementation details of the `Derivative` class. It's more likely that the implementation is in another file within the `sympy/core` directory. Since the `Derivative` class is a fundamental part of symbolic calculus, it might be in a file named something like `function.py` or `operations.py`.
+
+Let's try to find a file that specifically contains the implementation of the `Derivative` class within the `sympy/core` directory.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+Great, we have found the `function.py` file in the `sympy/core` directory, which is likely to contain the implementation of the `Derivative` class. Let's open this file to investigate and make the necessary changes.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+The `function.py` file is now open, and it's quite large with 3389 lines. The `Derivative` class is likely to be defined in this file, but we need to find the exact location. Since the file is too long to scroll through manually, I'll use the `search_file` command to find the `Derivative` class definition within this file.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have found that the `Derivative` class is defined on line 1053 of `function.py`. Let's navigate to that line to inspect the implementation and determine how to correct the `kind` attribute issue.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We are now at the beginning of the `Derivative` class definition. To address the issue with the `kind` attribute, we need to find where the `kind` property is defined or handled within this class. Since the file is large, I will scroll down to find the relevant section where the `kind` property is likely to be implemented.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have scrolled down through the `function.py` file, but we have not yet found the implementation of the `kind` property for the `Derivative` class. We need to continue scrolling to find the relevant section.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have scrolled further down the `function.py` file, but we still haven't found the implementation of the `kind` property for the `Derivative` class. We need to continue scrolling to find the relevant section where the `kind` property is likely to be implemented or overridden.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have scrolled further down the `function.py` file, but we still haven't found the implementation of the `kind` property for the `Derivative` class. We need to continue scrolling to find the relevant section where the `kind` property is likely to be implemented or overridden.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have scrolled further down the `function.py` file, but we still haven't found the implementation of the `kind` property for the `Derivative` class. We need to continue scrolling to find the relevant section where the `kind` property is likely to be implemented or overridden.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have scrolled further down the `function.py` file, but we still haven't found the implementation of the `kind` property for the `Derivative` class. We need to continue scrolling to find the relevant section where the `kind` property is likely to be implemented or overridden.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have scrolled further down the `function.py` file, but we still haven't found the implementation of the `kind` property for the `Derivative` class. We need to continue scrolling to find the relevant section where the `kind` property is likely to be implemented or overridden.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have scrolled further down the `function.py` file, but we still haven't found the implementation of the `kind` property for the `Derivative` class. We need to continue scrolling to find the relevant section where the `kind` property is likely to be implemented or overridden.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have scrolled further down the `function.py` file, but we still haven't found the implementation of the `kind` property for the `Derivative` class. We need to continue scrolling to find the relevant section where the `kind` property is likely to be implemented or overridden.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have scrolled further down the `function.py` file, but we still haven't found the implementation of the `kind` property for the `Derivative` class. We need to continue scrolling to find the relevant section where the `kind` property is likely to be implemented or overridden.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have scrolled further down the `function.py` file, but we still haven't found the implementation of the `kind` property for the `Derivative` class. We need to continue scrolling to find the relevant section where the `kind` property is likely to be implemented or overridden.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have scrolled further down the `function.py` file, but we still haven't found the implementation of the `kind` property for the `Derivative` class. We need to continue scrolling to find the relevant section where the `kind` property is likely to be implemented or overridden.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have scrolled further down the `function.py` file, but we still haven't found the implementation of the `kind` property for the `Derivative` class. We need to continue scrolling to find the relevant section where the `kind` property is likely to be implemented or overridden.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have scrolled further down the `function.py` file, but we still haven't found the implementation of the `kind` property for the `Derivative` class. We need to continue scrolling to find the relevant section where the `kind` property is likely to be implemented or overridden.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have scrolled further down the `function.py` file, and we have now found the `diff` function, which is related to differentiation. However, we still need to find the implementation of the `kind` property for the `Derivative` class. Since we are in the section related to differentiation, we should be close to the relevant code.
+
+Let's continue scrolling to find the `Derivative` class implementation.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have scrolled further down the `function.py` file, and we have now found the `diff` function, which is related to differentiation. However, we still need to find the implementation of the `kind` property for the `Derivative` class. Since we are in the section related to differentiation, we should be close to the relevant code.
+
+Let's continue scrolling to find the `Derivative` class implementation.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have scrolled further down the `function.py` file, and we have now found the `diff` function, which is related to differentiation. However, we still need to find the implementation of the `kind` property for the `Derivative` class. Since we are in the section related to differentiation, we should be close to the relevant code.
+
+Let's continue scrolling to find the `Derivative` class implementation.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have scrolled further down the `function.py` file, and we have now found the `expand` function, which is related to expression expansion. However, we still need to find the implementation of the `kind` property for the `Derivative` class. Since we are in the section related to expression manipulation, we should be close to the relevant code.
+
+Let's continue scrolling to find the `Derivative` class implementation.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have scrolled further down the `function.py` file, and we have now found various expansion functions and wrappers, but we still need to find the implementation of the `kind` property for the `Derivative` class. Since we are in the section related to expression manipulation, we should be close to the relevant code.
+
+Let's continue scrolling to find the `Derivative` class implementation.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have scrolled further down the `function.py` file, and we have now found various expansion functions and wrappers, but we still need to find the implementation of the `kind` property for the `Derivative` class. Since we are in the section related to expression manipulation, we should be close to the relevant code.
+
+Let's continue scrolling to find the `Derivative` class implementation.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+We have scrolled further down the `function.py` file, and we have now found various expansion functions and wrappers, but we still need to find the implementation of the `kind` property for the `Derivative` class. Since we are in the section related to expression manipulation, we should be close to the relevant code.
+
+Let's continue scrolling to find the `Derivative` class implementation.
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+Exit due to cost limit
+
+ [CODEBLOCK] 
+
+[sympy__sympy-21614] [CODEBLOCK] 
+
+[sympy__sympy-21614]
+ [CODEBLOCK] 
+
+[[END trajectories/sympy__sympy-21614.tex]]
+
+### SECTION: Analysis for django/django-14411
+
+Issue Summary.
+The issue involves the ReadOnlyPasswordHashWidget in the Django admin interface.
+The label element for this widget has a 'for' attribute that points to a non-labelable element.
+Since the ReadOnlyPasswordHashWidget renders text rather than an input element, the label should not have a 'for' attribute.
+
+Interaction Summary
+
+- Locate the Relevant File:
+ The agent began by searching for the ReadOnlyPasswordHashWidget definition using the find_file command, but found no results.
+ It then used the search_dir command to find references to the widget within the repository and located relevant matches in several files.
+ The agent chose to first examine the helpers.py file, but found it only contained a reference to the widget and did not include the label rendering code.
+
+- Explore Related Files:
+ Next, the agent opened the forms.py file in the django/contrib/auth directory, which defined the ReadOnlyPasswordHashWidget and its associated ReadOnlyPasswordHashField.
+ It identified that the widget used a template (read_only_password_hash.html) for rendering, but the template did not include relevant information relating to the Widget's for attribute.
+
+- Edit the Class Definition:
+ Returning to forms.py, the agent found the UserChangeForm which used the ReadOnlyPasswordHashField.
+ It reasoned that Django's form rendering system likely added the 'for' attribute automatically.
+ To address the issue, the agent attempted to write a label_tag method for the ReadOnlyPasswordHashField to exclude the 'for' attribute.
+ The agent made several edits to this effect, importing the necessary utilities from django.utils.html and adding a custom label_tag method.
+
+- Submit Without Testing:
+ After the desired changes were made, the agent proceeds to submit without testing as it assumes that a Django server cannot be run and tested in this environment.
+
+Evaluation
+The agent correctly identified the need to customize the label rendering for the ReadOnlyPasswordHashField class.
+However, its solution failed to solve the issue since it did not understand how labels were defined for a Widget object.
+In actuality, the model needed to override the id_for_label property defined in the Widget class to change this behavior properly.
+Similar functionality can be seen in other parts of the codebase.
+
+[[INPUT trajectories/django__django-14411.tex]]
+
+ type=figure
+ figureTrajectory for instance django__django-14411.
+[django__django-14411]
+We're currently solving the following issue within our repository. Here's the issue text:
+
+ISSUE:
+
+Label for ReadOnlyPasswordHashWidget points to non-labelable element.
+
+Description
+
+ (last modified by David Sanders)
+
+In the admin, the label element for the ReadOnlyPasswordHashWidget widget has a 'for' attribute which points to a non-labelable element, since the widget just renders text, not an input. There's no labelable element for the widget, so the label shouldn't have a 'for' attribute.
+
+INSTRUCTIONS: (31 lines)
+
+ [CODEBLOCK] 
+
+[django__django-14411]
+To address the issue, we need to locate the file that contains the `ReadOnlyPasswordHashWidget` widget's rendering code. Since this is likely part of the Django admin, we should start by searching for the file that defines `ReadOnlyPasswordHashWidget`. Let's use the `find_file` command to locate this file within the repository.
+
+ [CODEBLOCK] 
+
+[django__django-14411] [CODEBLOCK] 
+
+[django__django-14411]
+It seems that the `find_file` command did not yield any results for ''ReadOnlyPasswordHashWidget''. This could be because the file name does not exactly match the widget name. Since the widget is likely to be part of the Django admin, it might be located in a file related to forms or widgets in the admin app.
+
+Let's try a broader search using the `search_dir` command to look for the term ''ReadOnlyPasswordHashWidget'' within the files of the repository. This should help us find the file where the widget is defined or used.
+
+ [CODEBLOCK] 
+
+[django__django-14411] [CODEBLOCK] 
+
+[django__django-14411]
+The search results indicate that there are matches for ''ReadOnlyPasswordHashWidget'' in several files, but the most likely places where the rendering code would be defined are in `helpers.py` and `forms.py` within the `django/contrib/admin` and `django/contrib/auth` directories, respectively.
+
+Since the issue is related to the admin interface, let's first check the `helpers.py` file in the `django/contrib/admin` directory. We'll open this file and look for the relevant code.
+
+ [CODEBLOCK] 
+
+[django__django-14411] [CODEBLOCK] 
+
+[django__django-14411]
+The `helpers.py` file is now open, but we need to find the specific part of the code that deals with the `ReadOnlyPasswordHashWidget`. Since the file is quite long, we should use the `search_file` command to locate the term within this file.
+
+ [CODEBLOCK] 
+
+[django__django-14411] [CODEBLOCK] 
+
+[django__django-14411]
+We have found a reference to `ReadOnlyPasswordHashWidget` on line 215 of the `helpers.py` file. Let's navigate to that line to examine the context and see how the label is being rendered.
+
+ [CODEBLOCK] 
+
+[django__django-14411] [CODEBLOCK] 
+
+[django__django-14411]
+We have navigated to the relevant section of the `helpers.py` file where the `ReadOnlyPasswordHashWidget` is mentioned. The comment on line 215 suggests that there is a special case handling for the `ReadOnlyPasswordHashWidget`. The code on line 216 checks if the widget has a `read_only` attribute and, if so, renders the widget directly.
+
+To address the issue, we need to ensure that the label for the `ReadOnlyPasswordHashWidget` does not have a 'for' attribute, as it points to a non-labelable element. We should look for the part of the code where the label is being rendered with the 'for' attribute and make the necessary changes.
+
+Since the code snippet we are looking at does not show the rendering of the label, we need to find where the label is being rendered. It might be in the template files or somewhere else in the code. Let's search for the term ''label'' in the current file to find where labels are being rendered.
+
+ [CODEBLOCK] 
+
+[django__django-14411] [CODEBLOCK] 
+
+[django__django-14411]
+The search results show several instances where labels are being handled in the `helpers.py` file. The most promising lines for our issue seem to be around line 191, where a label tag is being formatted with a `for` attribute. Let's navigate to that line to examine the context and see if this is where we need to make our changes.
+
+ [CODEBLOCK] 
+
+[django__django-14411] [CODEBLOCK] 
+
+[django__django-14411]
+We are now looking at the section of the `helpers.py` file where a label tag is being generated. However, this label tag does not include a 'for' attribute, which means this is not the part of the code responsible for the issue described.
+
+The issue states that the label for the `ReadOnlyPasswordHashWidget` has a 'for' attribute pointing to a non-labelable element. Since the `ReadOnlyPasswordHashWidget` is likely a custom widget used in the Django admin, the rendering of its label might be handled in a template or in the widget's own Python code.
+
+Given that the `ReadOnlyPasswordHashWidget` is part of the `django.contrib.auth` app, we should look into the `forms.py` file in the `django/contrib/auth` directory, as it might contain the definition of the widget and the rendering of its label.
+
+Let's open the `forms.py` file in the `django/contrib/auth` directory to investigate further.
+
+ [CODEBLOCK] 
+
+[django__django-14411] [CODEBLOCK] 
+
+[django__django-14411]
+We have opened the `forms.py` file in the `django/contrib/auth` directory and found the definition of the `ReadOnlyPasswordHashWidget` starting at line 33. The widget uses a template named `read_only_password_hash.html` for rendering, as specified on line 34.
+
+Since the issue is related to the label's 'for' attribute in the rendered HTML, we should look at the template file `read_only_password_hash.html` to see how the label is being rendered. Let's use the `find_file` command to locate this template file within the repository.
+
+ [CODEBLOCK] 
+
+[django__django-14411] [CODEBLOCK] 
+
+[django__django-14411]
+We have located the template file `read_only_password_hash.html` in the `django/contrib/auth/templates/auth/widgets` directory. Let's open this file to inspect the HTML and see how the label is being rendered.
+
+ [CODEBLOCK] 
+
+[django__django-14411] [CODEBLOCK] 
+
+[django__django-14411]
+The template file `read_only_password_hash.html` does not show a `label` element with a 'for' attribute, which means the issue might be elsewhere. The issue description mentions that the label element for the `ReadOnlyPasswordHashWidget` has a 'for' attribute pointing to a non-labelable element. Since we don't see a `label` element here, the 'for' attribute is likely added in the Python code that generates the HTML for the widget or in a different part of the template.
+
+Given that the `ReadOnlyPasswordHashWidget` is a custom widget, the rendering of the label with the 'for' attribute might be handled in the Python code where the widget is used in a form, rather than in the widget's template itself.
+
+Let's go back to the `forms.py` file and look for the usage of `ReadOnlyPasswordHashWidget` in a form where a label might be rendered with a 'for' attribute. We should look for a form that includes `ReadOnlyPasswordHashWidget` and inspect how the label is being generated.
+
+ [CODEBLOCK] 
+
+[django__django-14411] [CODEBLOCK] 
+
+[django__django-14411]
+We are back in the `forms.py` file where the `ReadOnlyPasswordHashWidget` is defined. Since the issue is with the label's 'for' attribute, we need to find where the `ReadOnlyPasswordHashField` is used in a form and how the label is being rendered there.
+
+The `ReadOnlyPasswordHashField` is a custom field that uses the `ReadOnlyPasswordHashWidget`, and it's likely used in the admin forms for the User model. We should search for the usage of `ReadOnlyPasswordHashField` within this file to find where it's included in a form.
+
+Let's use the `search_file` command to search for ''ReadOnlyPasswordHashField'' in the current file.
+
+ [CODEBLOCK] 
+
+[django__django-14411] [CODEBLOCK] 
+
+[django__django-14411]
+We have found two references to `ReadOnlyPasswordHashField` in the `forms.py` file. The first reference on line 54 is the class definition itself, and the second reference on line 136 is likely where the field is used in a form.
+
+Let's navigate to line 136 to see the context in which `ReadOnlyPasswordHashField` is used and how the label is being rendered.
+
+ [CODEBLOCK] 
+
+[django__django-14411] [CODEBLOCK] 
+
+[django__django-14411]
+We are now looking at the `UserChangeForm` class where the `ReadOnlyPasswordHashField` is used. The field is instantiated with a label on line 136, and the help text includes an HTML anchor tag for changing the password.
+
+The issue reported is that the label element for the `ReadOnlyPasswordHashWidget` has a 'for' attribute which points to a non-labelable element. However, in the `UserChangeForm`, the label is defined in the Python code and not in the HTML template. This suggests that the 'for' attribute is likely added automatically by Django's form rendering.
+
+To resolve the issue, we need to ensure that when the form is rendered, the label for the `ReadOnlyPasswordHashField` does not include a 'for' attribute. Since the rendering of form fields to HTML is handled by Django's form rendering system, we may need to customize the rendering for this specific field to exclude the 'for' attribute.
+
+One way to do this is to override the `label_tag` method for the `ReadOnlyPasswordHashField` to ensure it does not render a 'for' attribute. Let's edit the `ReadOnlyPasswordHashField` class to include this customization.
+
+We will add a custom `label_tag` method to the `ReadOnlyPasswordHashField` class that returns a label without the 'for' attribute.
+
+ [CODEBLOCK] 
+
+[django__django-14411] [CODEBLOCK] 
+
+[django__django-14411]
+The error message indicates that the names `format_html` and `format_html_join` are undefined. These functions are utility functions provided by Django for safely creating HTML output. To use them, we need to import them from `django.utils.html`.
+
+Let's correct the edit by adding the necessary imports and retrying the edit command.
+
+ [CODEBLOCK] 
+
+[django__django-14411] [CODEBLOCK] 
+
+[django__django-14411]
+The changes to the `ReadOnlyPasswordHashField` class have been successfully applied, including the import of `format_html` and `format_html_join`, and the addition of a custom `label_tag` method that returns a label without the 'for' attribute.
+
+Before submitting the changes, it would be prudent to test that the changes have the desired effect. However, since we cannot run a Django server or render forms in this environment, we will proceed with submitting the changes.
+
+Let's submit the changes to the code base using the `submit` command.
+
+ [CODEBLOCK] 
+
+[django__django-14411] [CODEBLOCK] 
+
+[django__django-14411]
+ [CODEBLOCK] 
+
+[[END trajectories/django__django-14411.tex]]
+
+[[END appx/04_qualitative_analysis.tex]]
+
+[[INPUT appx/0x_statements.tex]]
+
+### SECTION: Statements
+
+### SECTION: Ethics & Broader Impacts
+
+Prior works have established how the growing usage of LMs that can code also carries a certain amount of risk.
+We identify three main risks that could arise when building and using a system like SWE-agent, then discuss how we incorporates measures that mitigate such problems.
+
+First is the security risks that come with executing LM-generated code on device.
+When evaluating on software engineering tasks that feature an incredibly diverse number of issue descriptions, running code generations on a personal computing device can have negative side effects, such as the unintentional removal of digital assets (e.g., rm -rf asset/).
+To defend against this, we design SWE-agent to use ephemeral containers for both inference and evaluation.
+SWE-agent's execution environment and the SWE-bench evaluation framework are both carried out in sand-boxed code environments, which is made possible with Docker.
+Executing code in a Docker container ensures that its effects are mostly isolated from the rest of the system.
+While not considered as secure as virtualized hardware isolation, the namespace isolation provided by Docker containers is deemed sufficient for code that is not deliberately engineered to exploit recent container escape vulnerabilities.
+More details are discussion is in .
+
+Second, if the wider community develops interest for SWE-agent and builds upon it, it is also possible that illegitimate evaluation datasets or infrastructure can be used to inject testing devices with malicious code or instructions to generate malicious code.
+For instance, an unofficial repository claiming to host an inference/evaluation harness for SWE-agent/bench could include a task instance with an issue description that tells the LM agent to build key logging functionality and store it in a hidden folder.
+To eliminate confusion and reduce the possibility of such an event, we provide clear guidelines listed on our GitHub repositories, data stores, and websites indicating the official repositories and channels that we actively maintain.
+We also encourage third parties to incorporate any improvements into our codebase and help with integrating such contributions.
+
+Lastly are the consequences of software engineering agents being deployed in the real world.
+Prior works have conceptualized and put forth prototypes of agents that can carry out offensive security measures.
+It is also not difficult to imagine that a system like SWE-agent can be incorporated into pipelines resulting in the production of malicious code.
+SWE-agent’s strong performance on SWE-bench implies that future AI systems will likely be increasingly adept in the aforementioned use cases.
+Releasing SWE-agent as an open source tool can support research towards designing sound, effective constraints for what software engineering agents are permitted to do.
+It can also serve as a system that legal experts and policy-making entities can experiment with to shape the future of what AI-driven end to end software engineering could look like.
+
+### SECTION: Reproducibility
+
+To help the greater community reproduce the results presented in this paper and build on the SWE-agent platform, we open source all of our resources that were created for this project.
+The source code for the interactive pipeline, context management logic, command implementations, interface design, and everything else is entirely available in a GitHub repository.
+We provide extensive text and video documentation describing how to run and modify different parts of the codebase.
+Practitioners should be able to easily recover our findings by running the agent with simple scripts.
+We also open source all inference and evaluation artifacts (e.g., trajectories, code generations, evaluation execution traces, analysis notebooks).
+The results presented in the main and supplementary parts of this paper can be fully rendered from the data.
+Finally, we also maintain an active online help forum to assist with any reproduction problems or questions about how to build on ACI design and SWE-agent.
+
+### SECTION: Limitations & Future Work
+
+The final SWE-agent configuration has a small toolkit, albeit highly effective.
+With SWE-agent's highly extensible design, we're excited by the prospect of adding more tools, such as web browsing or static analysis, that can leverage more signals from an issue description and codebase to improve the % Resolved performance.
+Many tools trialed by prior works from software engineering and language model agents, such as static/dynamic analysis, spectrum based fault localization, or test generation via fuzzing could prove useful.
+
+Second, in this work, the ACI development process and case studies are done manually.
+Many components of SWE-agent were crafted from observations of recurring behavior within a single trajectory or across multiple trajectories.
+Automating part or all of this process could not only accelerate work built on top of SWE-agent, but also provide greater insights into developing ACI principles for agentic software engineering.
+Contemporary works have explored automated prompting to improve performance on traditional sequence to sequence tasks, supplanting the need for manual prompt design.
+Thinking about automating ACI design raises immediately interesting questions around how such systems can scrutinize and iterate upon their own designs. Ensuring such horizon leads to incremental performance improvements across a longer horizon is also a challenging question.
+
+Finally, the scope of SWE-agent is exclusively focused on programmatic tasks like software engineering and code generation.
+We're curious to see whether the same principles of ACI and our observations of agent behavior are transferable to different domains.
+Recent work around applying LM agents to a variety of digital work applications have proliferated, such as use cases in education technology, data analysis, and enterprise workflows.
+We hope that thinking about improving performance of agentic workflows on these domains through the lens of ACI design can be a symbiotic process.
+For instance, for a task such a shopping on the web, in place of a typical Google-style search tool, could agents benefit from additional information beyond a list of each page’s title and snippet?
+Would the design vary if the nature of the downstream task were to change slightly?
+For a completely different task, such as navigating an internal company knowledge base to help a recently on-boarded employee, how might the search interface be best adjusted to the agent?
+
+Similar to the progression of the field of User Experience (UX) and Human Computer Interaction (HCI) research, applying ACI to other domains could not only yield improvements in downstream task performance, but also further expand the list of ACI principles.
+We believe that the fundamental motivations for ACI, the foundational principles we put forth, and our case study of SWE-agent as an instantiation of implementing and improving an ACI can motivate such work.
+
+[[END appx/0x_statements.tex]]
