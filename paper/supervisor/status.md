@@ -660,3 +660,67 @@ While closing cycle 16 the staging list named a manuscript path that does not ex
 - **Q-0002:** answered — six non-executable capability groups remain design-only/follow-up; no new native runtime.
 - **DeepVoice evidence:** forbidden by existing user instruction; no access or edit planned.
 - No efficacy experiment is running; `Experimental Results` remains explicitly unexecuted.
+
+## instruction-0013 보고 (§9 형식) — 2026-09-03T09:28:45+09:00
+
+### 1. §1 격리 (retraction) — 완료
+- **1.1 원고 토큰 카운트 (지정 토큰집합, 6/6 파일 0건):**
+  `thesis-ko.qmd` 0 · `word/graduation-thesis.docx`(본문 XML) 0 · `graduation-thesis.pdf`(pdftotext) 0 ·
+  `korean-summary.txt` 0 · `evidence-matrix.csv` 0 · `context-graph.md` 0.
+  제거 대상: Ⅳ장 §12 "3대 자율 연구 하네스 아키텍처 실증 비교" 34행 2,193자(`tbl-bench-comparison` 코드셀 포함),
+  경진대회 명칭 문장 2건 포함 전부. docx/pdf 재빌드 완료.
+- **1.2 이동 경로 (삭제 아님, 재라벨링):**
+  - `experiments/argo_benchmark/run_benchmark_experiments.py` → `experiments/argo_benchmark/fixtures/simulated_oracles.py`
+    (docstring 첫 줄 `SYNTHETIC FIXTURE. No model call. Must never be cited as evidence.`, `execute_*` → `fixture_*`)
+  - `paper/experiments/rd_benchmark_2026/comparative_benchmark_receipt.json`
+    → `paper/experiments/fixtures/rd_benchmark_2026_SIMULATED/comparative_benchmark_fixture.json`
+    (`evidence_level: SYNTHETIC_FIXTURE`, `executed: false`, `model_calls: 0`, `origin: simulation`,
+     `retracted_by: RD-2026-09-03-80A`, `benchmark_date` → `fixture_generated_at`)
+  - `paper/research/sota-benchmark-design.md` → `paper/research/retracted/sota-benchmark-design.md`
+    (§3-4 삭제 후 RETRACTED 블록 1개만 잔존; §1-2·§5는 Study B 사전등록 문서로 흡수 예정)
+  - `comparative_eval.py`(계측기)는 유지, 테스트는 fixture만 참조. 11/11 통과.
+- **1.3 그래프 변경:** `result:r_rd_bench_bench_outcomes` → `status: RETRACTED` + `SYNTHETIC_FIXTURE`(삭제 안 함) ·
+  `experiment:rd_bench_comparative_benchmark` → `executed: false, origin: simulation` ·
+  `artifact:comparative_benchmark_receipt` → fixtures 경로 + `SYNTHETIC_FIXTURE` ·
+  `hypothesis:h_rd_bench_comparative_sota` → `status: UNTESTED`(Study B 출발점) ·
+  신설 `decision:rd_2026_09_03_80a` + 엣지 2개(`retracts` → result, `supersedes` → 기존 decision).
+  엣지 어휘에 `retracts` 추가. 노드 425 / 엣지 746.
+- **1.4 결정 원장:** `RD-2026-09-03-79A`에 `status: RETRACTED_FABRICATED_EVIDENCE` + `retraction_note`(원문 무수정,
+  79A의 순환 논리를 명시 기록) · `RD-2026-09-03-80A` 6필드 신설.
+- **1.5 failing-first 3/3 (확인 후 원복):**
+  (i) fixture receipt를 비-fixtures 경로에 두면 → `simulation receipt must live under a /fixtures/ path` FAIL
+  (ii) 원고가 fixture receipt를 참조하면 → `manuscript references a synthetic fixture receipt` FAIL
+  (iii) `total_tokens 999` vs usage 합 `300` → `declared total_tokens 999 != usage log sum 300` FAIL
+  원복 후 receipt 6건 스캔 0 실패. 검증 전체 **PASS**.
+- **1.6 retraction 커밋:** `aa4315e148573d3b2e45bd65ff4692518b68f8dd`
+
+### 2. 메커니즘 노드 7/7
+미착수 (§8-3 다음 사이클). 현재 루프 엔지니어링·그래프 엔지니어링은 원장·그래프에 정의 0건.
+
+### 3. 사전등록 문서 / 아암 커밋 해시 / 검증기
+미착수 (§8-4).
+
+### 4. 드라이런 비용
+없음. 이번 사이클 모델 호출 0건, 지출 $0.00.
+
+### 5. Q-0009 개정 3 시나리오 비용
+미등록 (§8-5 예정). 기본값은 계속 "승인 전 미실행".
+
+### 6. 해커톤 산출물 3건
+미착수 (§6). `paper/hackathon/` 미생성.
+
+### 7. 이번 사이클 결과표에 들어간 숫자의 origin 목록
+**없음.** 이번 사이클은 결과표에 어떤 숫자도 추가하지 않았고, 기존 §12 결과표를 제거했다.
+
+### 부수 조치 — 기존 receipt 5건의 출처 소급 기입
+`receipt_provenance` 게이트 신설로 Study A의 실제 실행 receipt 5건이 출처 필드 부재로 함께 걸렸다.
+필드를 위조하지 않고 게이트도 낮추지 않기 위해, 각 receipt에 실측 가능한 값만 기입했다:
+`origin: model_call`, `model_id: anthropic/claude-haiku-4-5`, `protocol_fingerprint`(기존 runner/parser sha256;
+`variance-block`은 저장된 runner digest가 없어 design 블록 + 정렬된 episode_id 목록의 sha256으로 명시 정의),
+`provider_usage_log: null`, `episode_transcripts_dir: null`, `provenance_gap` 문자열,
+`evidence_level: EXECUTED_LEGACY_UNINSTRUMENTED`. 이 5건은 `.orx/paper_protocol.json`의
+**동결된 `legacy_uninstrumented` 목록**에만 허용되며 신규 receipt는 전 필드가 필수다.
+**잔존 위험(정직하게 기록):** 이 allowlist는 목록에 항목을 추가하면 우회가 가능하다. 게이트는 목록 자체의
+증가를 막지 못하며, 추가 시 신규 결정 기록을 요구하는 것은 현재 정책이지 기계적 강제가 아니다.
+
+next_first_action: instruction-0013 §8-3 — 7개 재료의 mechanism 노드 생성 착수. 루프 엔지니어링·그래프 엔지니어링은 정의·출처 0건이므로 `orx discover` 신규 검색 → FULL_PAPER_READ ≥ 2편 확보 후 정의한다.
