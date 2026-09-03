@@ -103,10 +103,35 @@ MDE는 두 아암의 **절대 통과율 차이**다.
 봉인 시 이 문서의 sha256과 아암 7개의 커밋 해시, 고정 run command 문자열을 기록하고
 `.orx/paper_protocol.json`에 다이제스트를 등록한다. 봉인 이후 §2-§6은 수정하지 않는다.
 
-## 9. 미완 항목 (봉인 전 반드시 닫는다)
+## 9. 봉인 전 항목 진행 상황
 
-1. ResearchClawBench 라이선스·다운로드 경로 검증
-2. 아암 7개 구현 및 커밋 해시 확정
-3. T3 검증기 스크립트와 oracle 격리 증명
-4. 고정 run command 문자열 확정
-5. 비교 실험 표 `comparable-experiments-study-b.md` 5편 이상
+| # | 항목 | 상태 |
+|---|---|---|
+| 1 | ResearchClawBench 라이선스·다운로드 | **완료** — MIT, HF 데이터셋 `InternScience/ResearchClawBench`, 40개 과제, clone 경로 확인 |
+| 2 | 아암 7개 구현 | **완료** — `experiments/study_b/harness/`; 절제 4개가 B2와 정확히 한 성분만 다름을 테스트로 강제 |
+| 3 | T3 검증기·oracle 격리 | **완료** — `tasks/oracle_t3.py`(순수 표준 라이브러리, 실제 계산), `tasks/run_t3.py`(격리 강제), 테스트 15/15 |
+| 4 | 고정 run command | **완료** — 아래 §10 |
+| 5 | 비교 실험 표 | **완료** — `comparable-experiments-study-b.md`, 8편 |
+| 6 | 아암별 커밋 해시 봉인 | 미완 — 봉인 시점에 기입 |
+| 7 | 원논문 부록에서 n·검정·비용 재확인 | 미완 |
+
+## 10. 고정 run command (봉인 대상)
+
+```
+/usr/bin/python3 experiments/study_b/run_block.py --arm <ARM> --task <TASK> --seeds <N> --out <RECEIPT>
+```
+
+`<ARM> ∈ {B0, B1, B2, B2-G, B2-P, B2-R, B2-L}`, `<TASK> ∈ {T1, T2, T3}`.
+명령 문자열은 노드 간 바이트 동일하며 아암·과제·시드만 인자로 바뀐다.
+
+러너는 다음 세 가지를 **스스로 거부**한다(호출자를 신뢰하지 않는다):
+1. 개정 Q-0009 승인 기록이 없는데 실제 실행을 시도하는 경우
+2. `ORX_RUN_ID`가 없는 환경, 즉 실험 기판 밖에서 실행하는 경우
+3. 드라이런이 아암당 1 에피소드 상한을 넘는 경우
+
+## 11. T3 정답의 비자명성 (설계 점검 결과)
+
+초기 T3 데이터 생성(n=1200, d=10)에서는 정답이 시드 간 거의 불변이어서 **추측만으로 맞출 수 있었다**.
+이 상태로는 아암을 변별하지 못하므로 지출 전에 생성 규칙을 바꿨다(n=140, d=40, 시드 의존 상호작용 항).
+현재 8개 시드에서 `best_lambda`는 3종, `interaction_helps`는 True/False가 모두 나오며,
+테스트가 "정답이 상수가 아님"을 강제한다.
