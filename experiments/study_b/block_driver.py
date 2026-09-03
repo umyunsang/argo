@@ -5,7 +5,7 @@ Order: for each seed in [start_seed..end_seed]:
          for each arm in [B0, B1, B2]:
            create node if absent, run, wait, harvest, redact, update ledger, check cap.
 """
-import os, sys, json, time, shlex, subprocess, re, sqlite3
+import os, sys, json, shutil, time, shlex, subprocess, re, sqlite3
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -38,14 +38,27 @@ def launch_episode(arm, task, seed):
     )
     desc = f"Study B screening block: arm {arm}, task {task}, seed {seed}."
     
-    # Create experiment node
-    cmd = (f"orx create-experiment {PROJ} --parent {PARENT} --title {shlex.quote(title)} "
-           f"--description {shlex.quote(desc)} --run-command {shlex.quote(run_cmd_str)}")
-    rc, out, err = run_cmd(cmd)
-    m = [x for x in re.findall(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", out) if x != PARENT]
-    if not m:
-        raise RuntimeError(f"Failed to create node for {arm} s{seed}: {out} {err}")
-    node_id = m[0]
+    # Check if node already exists via title in git branch or orx exp list
+    branch_name = f"orx/study-b-block-{arm.lower()}-{task.lower()}-s{seed}"
+    rc, out, _ = run_cmd(f"git rev-parse --verify {branch_name}")
+    node_id = None
+    if rc == 0:
+        # Query db for experiment id of this title
+        db_path = Path.home() / ".local/share/openresearch/orx.db"
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        row = con.execute("select id from local_experiments where title = ?", (title,)).fetchone()
+        con.close()
+        if row and row[0]:
+            node_id = row[0]
+            
+    if not node_id:
+        cmd = (f"orx create-experiment {PROJ} --parent {PARENT} --title {shlex.quote(title)} "
+               f"--description {shlex.quote(desc)} --run-command {shlex.quote(run_cmd_str)}")
+        rc, out, err = run_cmd(cmd)
+        m = [x for x in re.findall(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", out) if x != PARENT]
+        if not m:
+            raise RuntimeError(f"Failed to create node for {arm} s{seed}: {out} {err}")
+        node_id = m[0]
     
     # Run node
     rc, out, err = run_cmd(f"orx exp run {node_id} --backend local")
@@ -117,6 +130,12 @@ def harvest_episode(arm, task, seed, node_id, run_id, out_rel):
     dest_path = ROOT / out_rel
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     dest_path.write_text(json.dumps(rcp, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # Cleanup ephemeral repo directory in local-runs to maintain disk head-room
+    try:
+        shutil.rmtree(src_repo)
+    except Exception:
+        pass
+        
     return rcp
 
 def run_next_seed(seed, task="T3"):
@@ -128,6 +147,20 @@ def run_next_seed(seed, task="T3"):
         
     results = {}
     for arm in ("B0", "B1", "B2"):
+        stage_dir = f"paper/experiments/screening/block/{arm}_{task}"
+        out_path = f"{stage_dir}/seed{seed}-receipt.json"
+        dest_p = ROOT / out_path
+        
+        # If already harvested, load existing receipt
+        if dest_p.is_file():
+            rcp = json.loads(dest_p.read_text(encoding="utf-8"))
+            ep = rcp["episodes"][0]
+            cost = ep.get("cost_usd", 0.0)
+            n_pass = ep.get("score", {}).get("n_pass", 0)
+            results[arm] = {"cost": cost, "n_pass": n_pass, "run_id": rcp.get("orx_run_id", "")}
+            print(f"Already harvested {arm} seed {seed}: cost=${cost:.6f}, pass={n_pass}/5", flush=True)
+            continue
+
         node_id, run_id, out_rel = launch_episode(arm, task, seed)
         print(f"Launched {arm} seed {seed}: node {node_id}, run {run_id}. Waiting...", flush=True)
         ec = wait_for_run(run_id)
