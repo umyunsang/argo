@@ -63,15 +63,18 @@
   ]
 )
 
-// Table styling: caption left-aligned above table, table centered matching template Page 3
+// Table styling: caption left-aligned above table, compact 8.5pt text, centered matching template Page 3
 #show figure.where(kind: table): it => block(
   width: 100%,
   [
-    #v(0.8em)
-    #text(size: 10pt, weight: "bold")[표 #it.counter.display(it.numbering)  #it.caption.body]
-    #v(0.3em)
-    #align(center)[#it.body]
-    #v(0.8em)
+    #v(0.6em)
+    #text(size: 9.5pt, weight: "bold")[표 #it.counter.display(it.numbering)  #it.caption.body]
+    #v(0.25em)
+    #align(center)[
+      #set text(size: 8.5pt)
+      #it.body
+    ]
+    #v(0.6em)
   ]
 )
 
@@ -79,7 +82,7 @@
 #set table(
   stroke: (x, y) => if y == 0 { (bottom: 1.2pt, top: 1.2pt) } else if y == 1 { (bottom: 0.8pt) } else { none },
   fill: none,
-  inset: (x: 8pt, y: 6pt),
+  inset: (x: 5pt, y: 3.5pt),
 )
 
 // Keyword block un-indented
