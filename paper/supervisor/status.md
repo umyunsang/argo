@@ -1,3 +1,11 @@
+# status (argo-paper-root)
+
+goal: `b2f7431e-942d-4fc5-b68d-cf0c316e5ffc` status=**active** tokens_used=0 budget=none — 실측 `goal.get()`. 이전 goal `abf5e851…`은 status=**error**였으므로 0013a §A.2에 따라 재생성했다.
+orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71` @ `816559320` (직전 검증 run `583923a1` = done @ `aa4315e14`)
+orx_runs_this_cycle: 3 (`583923a1` done, 재실행 1건 진행 중, 인자 오류 1건 `--node` → `--backend`)
+exa_calls_this_cycle: 0 — exa MCP가 **HTTP 401 Invalid API key**를 반환해 사용 불가. 0013a §C가 허용한 parallel MCP로 5개 의무 항목 전부 검색(호출 5건).
+results_origin_list: **없음.** 이번 사이클은 결과표에 어떤 숫자도 추가하지 않았다.
+
 # ARGO paper autonomous-research status
 
 - **next_first_action:** supervisor instruction-0010 §2 보충 양식(label-form-supplement-001.json 8건)의 기입 완료를 확인하고, 25건 완비 시 선택적 평가기 UCB 교정을 실행한다.
@@ -724,3 +732,56 @@ While closing cycle 16 the staging list named a manuscript path that does not ex
 증가를 막지 못하며, 추가 시 신규 결정 기록을 요구하는 것은 현재 정책이지 기계적 강제가 아니다.
 
 next_first_action: instruction-0013 §8-3 — 7개 재료의 mechanism 노드 생성 착수. 루프 엔지니어링·그래프 엔지니어링은 정의·출처 0건이므로 `orx discover` 신규 검색 → FULL_PAPER_READ ≥ 2편 확보 후 정의한다.
+
+## instruction-0013a 보고 — 2026-09-03T10:13:05
+
+### A. goal
+`goal.get()` 실측 결과 이전 goal `abf5e851…`이 `status: error`(tokens_used 1,602,465)였다. 0013a §A.2대로
+지정 문안으로 재생성 → 신규 id `b2f7431e-942d-4fc5-b68d-cf0c316e5ffc`, status active, 토큰 예산 없음.
+사유: active가 아니었음(세션 기억이 아니라 호출 결과).
+
+### B. orx 실행 기판
+- 클린 클론 run `583923a1-8680-4b7e-b729-de22b8c6f626` = **done** @ `aa4315e14`(retraction 커밋) — 게이트 통과 확인.
+- `orx runs <project>`는 "Project 0dd58a66… is not registered locally. Run `orx up` first" 를 반환한다.
+  현재 노드 조회는 로컬 `orx.db`로 수행했다. run 통계: done 137 · failed 18 · cancelled 5.
+- **최근 실패 run 9건 원인(각 1줄):**
+  1. `6fa0faee` @`ed2199922` exit1 — submission artifact is not reproducible from its committed builder
+  2. `ffe9499d` @`d6a8c3679` exit1 — receipt references a path that does not exist
+  3. `301aee55` @`aa7c807b2` exit1 — external source artifact recorded without a fetch url and digest (+ 경로 부재)
+  4. `22a3c1e3` @`29db7d3fe` exit1 — evidence receipt or locator identity mismatch
+  5. `3fe2958b` @`b2070ed09` exit1 — receipt/locator mismatch + round-4 full-read receipt·URL 불일치
+  6. `531eed22` @`34bb4910f` exit1 — FileNotFoundError: 클린 클론 작업 디렉터리 경로 부재
+  7. `d9d1045f` @`c2c7edbd5` exit1 — ModuleNotFoundError: No module named 'numpy'(격리 환경에 미설치)
+  8. `83699d34` @`77897e238` exit1 — colab 업로드 400 Bad Request(외부 백엔드 오류)
+  9. `24abc3b6` @`e14bb9570` exit1 — compiled document has overfull boxes(조판 게이트)
+- receipt 필수 필드에 `orx_project_id`/`orx_experiment_id`/`orx_run_id`/`node_commit` 추가 및 run 존재·done·커밋 일치 검사와
+  failing-first 1건은 **다음 사이클**에서 Study B 하네스 구축과 함께 구현한다(현재 게이트는 origin/usage/transcript 축까지 완료).
+
+### C. exa MCP 의무 사용
+- **exa 사용 불가:** `web_search_exa` → `401 Invalid API key`. 건너뛴 것이 아니라 도구가 인증 실패했다.
+- 0013a §C가 허용한 **parallel MCP로 5개 항목 전부 검색**(호출 5건), 기록은 `paper/research/retrieval-record-0013.json`의 `web_queries`.
+  1. 루프 엔지니어링 → `2607.01641`(When Agents Do Not Stop), `2606.27009`(Semantic Early-Stopping)
+  2. 그래프 엔지니어링 → `2602.05665`(Graph-based Agent Memory taxonomy)
+  3. ResearchClawBench 저장소 → `github.com/InternScience/ResearchClawBench`(라이선스·다운로드 경로는 사용 전 확인 예정)
+  4. 비교 연구 공개 코드 → `2608.07545`(DarwinX, 4개 벤치마크 + ablation) 등 후보 확보
+  5. 해커톤 페이지 → 본선 09-30~10-01, 총상금 1,000만원, 4개 팀 시상. **공개 심사 기준 변화 없음.**
+- 채택 논문은 0006 §3대로 `orx paper`로 재획득해 provenance 확보(6편 FULL_PAPER_READ).
+
+### §8-3. 메커니즘 노드 7/7 완료
+| 재료 | 노드 | 출처 수 | 구현 아암 | 절제 아암 |
+|---|---|---:|---|---|
+| 최소 도구 하네스 | `mechanism:minimal_tool_coding_harness` | 3 | B0 | — |
+| 영속 REPL·재귀 하네스 | `mechanism:persistent_repl_recursive_harness` | 3 | B1 | — |
+| 페일클로즈드 수명주기 | `mechanism:failclosed_research_lifecycle` | 3 | B2 | B2-P |
+| 결과 주도 검색 | `mechanism:result_driven_semantic_search` | 4 | B2 | B2-R |
+| 타입 컨텍스트 그래프 | `mechanism:typed_research_context_graph` | 3 | B2 | B2-G |
+| 루프 엔지니어링 | `mechanism:loop_engineering` | 8 | B2 | B2-L |
+| 그래프 엔지니어링 | `mechanism:graph_engineering` | 4 | B2 | B2-G |
+
+각 노드는 `definition`·`sources`·`implemented_in_arm`·`removed_in_arm`·`falsifier`를 갖는다. 전부 출처 ≥ 2편.
+**키스톤 출처:** `2608.21156`이 Harness Engineering·**Loop Engineering**·**Graph Engineering**을 명시 정의하고
+개별 에이전트를 `Loop(LLM + Harness)`로 형식화한다 — 사용자가 지목한 두 재료의 학술 정의가 확보됐다.
+그래프 정리: 중복 스킴(`source:NNNN`) 25건 제거 후 정규 `source:arxiv:NNNN`으로 재연결, 신규 출처는 정확히 6편,
+dangling 엣지 0. 노드 438 / 엣지 774. 검증 PASS. 커밋 `816559320`.
+
+next_first_action: instruction-0013 §8-4 — `paper/research/study-b-preregistration.md` 작성 착수. 7아암(B0/B1/B2/B2-G/B2-P/B2-R/B2-L) 정의, 결정론적 검증기 과제, McNemar 1차 endpoint, Cycle 48 계산기로 과제당 40·60 에피소드 MDE를 계산해 문서에 기입하고 봉인 다이제스트를 만든다. 실행은 Q-0009 개정 승인 전까지 하지 않는다.
