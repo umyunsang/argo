@@ -1,11 +1,11 @@
 # status (argo-paper-root)
 
-goal: `b2f7431e-942d-4fc5-b68d-cf0c316e5ffc` status=**active** (실측 `goal.get()`) budget=none
-orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71` — 클린 클론 4연속 done
-orx_runs_this_cycle: 0 (커밋 후 실행 예정)
-exa_calls_this_cycle: 0 — exa `401` 지속. parallel MCP 대체 호출 6건(전문 HTML 3건 포함).
+goal: `b2f7431e-942d-4fc5-b68d-cf0c316e5ffc` status=**active** (실측) budget=none
+orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71` — 클린 클론 5연속 done (최근 `22a61c87` @ `d6a8d2391`)
+orx_runs_this_cycle: 1 (done)
+exa_calls_this_cycle: 0 — exa `401` 지속(0014 §5: 키 갱신은 사용자 조치). 이번 사이클 웹 호출 0건.
 study_b_spend_to_date: **$0.00** (상한 미정 — 0014a 대기)
-prereg_sealed: **no** — 0014a 수신 후 봉인. 초안 sha256 `490d9f0b0a30`
+prereg_sealed: **no** — 0014a 수신 후 봉인. 초안 sha256 `5fc09fbb29f5`
 results_origin_list: **없음.**
 
 ## Completed in current phase
@@ -837,3 +837,31 @@ T3 채점기에도 같은 규칙을 적용했다. 재발 방지 테스트 3건 �
 **없음.** 데모 출력은 `origin: verifier`이며 결과표에 넣지 않았다.
 
 next_first_action: 0014a 수신 시 즉시 (1) 승인된 과제당 n으로 §6 MDE 표 재계산 → (2) 사전등록 봉인·다이제스트를 `.orx/paper_protocol.json`에 등록 → (3) 아암 커밋 해시 확정 → (4) orx 실험 노드 생성 후 드라이런(아암당 n=1, 총 $2 상한, `PIPELINE_DRY_RUN`). 0014a 이전에는 T1/T2 어댑터와 receipt의 `orx_run_id` 검사(0013a §B-3 failing-first 1건)를 구축한다.
+
+## 대기 사이클 보고 — 2026-09-03T10:39:05
+
+0014a 미도착(확인함). 봉인하지 않고 0013a §B-3을 구현했다.
+
+### 실행 기판 바인딩 게이트 — RD-2026-09-03-84A
+RD-80A의 출처 게이트는 `origin`·usage·transcript 축을 검사했지만 **"그 실행이 실제로 불변 노드 안에서
+일어났는가"는 묻지 못했다.** run id를 필드로 요구만 하고 조회하지 않으면 아무 문자열이나 통과한다 —
+자기 신고 필드를 검사하는 게이트는 검사가 아니라 주석이다.
+
+이제 게이트가 로컬 run 저장소에서 run을 **직접 조회**해 존재·`status = done`·`node_commit` 일치를 재도출한다.
+저장소를 읽을 수 없으면 검증 불가로 **실패**시킨다(통과로 바꾸지 않는다).
+
+**실패 우선 4건 + 정상 1건 실증:**
+| 사례 | 결과 | 게이트 사유 |
+|---|---|---|
+| 없는 run id | FAIL | `does not exist in the run store` |
+| done 아닌 run | FAIL | `has status 'failed', not 'done'` |
+| 커밋 불일치 | FAIL | `node_commit ... does not match the run commit` |
+| orx 필드 누락 | FAIL | `missing experiment-substrate field: orx_project_id` |
+| 실제 run(`22a61c87`) 바인딩 | PASS | 통과 |
+
+사전등록 §3에 이 계약을 반영했다.
+
+### 이번 사이클 결과표 숫자의 origin
+**없음.**
+
+next_first_action: 0014a 수신 시 즉시 (1) 승인된 과제당 n으로 §6 MDE 표 재계산 → (2) 봉인·다이제스트 등록 → (3) 아암 커밋 해시 확정 → (4) orx 실험 노드 생성 후 드라이런(아암당 n=1, $2 상한, `PIPELINE_DRY_RUN`). 0014a 이전에는 T2(Q-0007 완주 과제) 어댑터를 구축한다 — T2는 과제 수 결정과 무관하게 승인 범위에 포함돼 있다.

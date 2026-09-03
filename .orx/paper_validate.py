@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -187,6 +188,7 @@ def check_receipt_provenance(cfg):
             for field in PROVENANCE_FIELDS:
                 if not obj.get(field):
                     bad.append("missing provenance field: %s" % field)
+            bad.extend(check_orx_binding(obj, rel))
             usage_rel = obj.get("provider_usage_log")
             if usage_rel and not (ROOT / usage_rel).is_file():
                 bad.append("provider_usage_log path does not exist: %s" % usage_rel)
@@ -225,6 +227,50 @@ def check_receipt_provenance(cfg):
         if hits:
             manuscript_failures[rel] = sorted(set(hits))[:5]
     return {"scanned": scanned, "receipt_failures": failures, "manuscript_fixture_references": manuscript_failures}
+
+
+ORX_FIELDS = ("orx_project_id", "orx_experiment_id", "orx_run_id", "node_commit")
+
+
+def orx_run_facts(run_id):
+    """Look the run up in the local experiment store. Returns (found, status, commit)."""
+    db = Path(os.path.expanduser("~/.local/share/openresearch/orx.db"))
+    if not db.is_file():
+        return None, None, None
+    try:
+        con = sqlite3.connect("file:%s?mode=ro" % db, uri=True)
+        row = con.execute(
+            "select status, commit_sha from runs where id = ?", (run_id,)).fetchone()
+        con.close()
+    except Exception:
+        return None, None, None
+    if row is None:
+        return False, None, None
+    return True, row[0], row[1]
+
+
+def check_orx_binding(obj, rel):
+    """A receipt claiming execution must name the immutable run that produced it."""
+    bad = []
+    for field in ORX_FIELDS:
+        if not obj.get(field):
+            bad.append("missing experiment-substrate field: %s" % field)
+    run_id = obj.get("orx_run_id")
+    if not run_id:
+        return bad
+    found, status, commit = orx_run_facts(run_id)
+    if found is None:
+        bad.append("cannot verify orx_run_id %s: local run store unavailable" % run_id)
+        return bad
+    if found is False:
+        bad.append("orx_run_id %s does not exist in the run store" % run_id)
+        return bad
+    if status != "done":
+        bad.append("orx_run_id %s has status %r, not 'done'" % (run_id, status))
+    declared = obj.get("node_commit")
+    if declared and commit and declared != commit:
+        bad.append("node_commit %s does not match the run commit %s" % (declared[:12], commit[:12]))
+    return bad
 
 
 def scan_pdf_text(cfg, pdf_path):

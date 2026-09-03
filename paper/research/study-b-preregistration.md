@@ -45,7 +45,12 @@ Study B가 결정론적 검증기와 receipt 대조로 가야 하는 **이유**�
 
 receipt 필수 필드: `origin`, `model_id`, `provider_usage_log`, `protocol_fingerprint`,
 `harness_commit`, `episode_transcripts_dir`, **`orx_project_id`, `orx_experiment_id`,
-`orx_run_id`, `node_commit`**. 게이트가 run 존재·상태 `done`·커밋 일치를 검사한다.
+`orx_run_id`, `node_commit`**.
+
+**게이트는 자기 신고를 믿지 않는다.** run 저장소에서 run을 직접 조회해 (1) 존재, (2) `status = done`,
+(3) `node_commit`과 run 커밋 일치를 재도출한다. 저장소를 읽을 수 없으면 검증 불가로 **실패**시킨다.
+실패 우선 4건으로 실증했다(RD-2026-09-03-84A): 없는 run id · done 아닌 run · 커밋 불일치 · 필드 누락 전부 차단,
+실제 run에 바인딩된 receipt만 통과.
 
 ## 4. 과제 (결정론적 검증기, CPU 우선)
 
