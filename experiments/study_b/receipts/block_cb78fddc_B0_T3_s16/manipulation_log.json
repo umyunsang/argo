@@ -1,0 +1,59 @@
+[
+  {
+    "timestamp": "2026-09-03T11:28:05.682Z",
+    "tool": "read",
+    "input": {
+      "path": "<RUNS_ROOT>/cb78fddc-8117-4985-972d-248fde85b954/repo/paper/experiments/screening/block/B0_T3/B0_T3/seed0"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T11:28:07.548Z",
+    "tool": "bash",
+    "input": {
+      "command": "find <RUNS_ROOT>/cb78fddc-8117-4985-972d-248fde85b954/repo/paper/experiments/screening/block/B0_T3/B0_T3/seed0 -name \"data.json\" -type f"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T11:28:09.216Z",
+    "tool": "read",
+    "input": {
+      "path": "<RUNS_ROOT>/cb78fddc-8117-4985-972d-248fde85b954/repo/paper/experiments/screening/block/B0_T3/B0_T3/seed0/data.json"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T11:28:36.366Z",
+    "tool": "write",
+    "input": {
+      "path": "<RUNS_ROOT>/cb78fddc-8117-4985-972d-248fde85b954/repo/paper/experiments/screening/block/B0_T3/B0_T3/seed0/solve.py",
+      "content": "import json\nimport numpy as np\nfrom scipy import stats\n\n# Load data\nwith open('data.json', 'r') as f:\n    data = json.load(f)\n\nX = np.array(data['X'], dtype=np.float64)\ny = np.array(data['y'], dtype=np.float64)\n\nn_samples = X.shape[0]\nn_features = X.shape[1]\n\nprint(f\"Data shape: {X.shape}, Labels: {y.shape}\")\n\n# Helper functions for logistic regression\ndef sigmoid(z):\n    return 1 / (1 + np.exp(-np.clip(z, -30, 30)))\n\ndef fit_logistic(X_train, y_train, lambda_reg=0.0, lr=0.1, iterations=200):\n    \"\"\"Fit logistic regression with full-batch gradient descent\"\"\"\n    n, d = X_train.shape\n    w = np.zeros(d)\n    b = 0.0\n    \n    for _ in range(iterations):\n        # Forward pass\n        logits = X_train @ w + b\n        logits = np.clip(logits, -30, 30)\n        probs = sigmoid(logits)\n        \n        # Gradients\n        error = probs - y_train\n        grad_w = X_train.T @ error / n\n        grad_b = np.sum(error) / n\n        \n        # Update with L2 regularization\n        w = w - lr * (grad_w + lambda_reg * w)\n        b = b - lr * grad_b\n    \n    return w, b\n\ndef predict_proba(X_test, w, b):\n    \"\"\"Get predicted probabilities\"\"\"\n    logits = X_test @ w + b\n    logits = np.clip(logits, -30, 30)\n    return sigmoid(logits)\n\ndef brier_score(y_true, y_pred_proba):\n    \"\"\"Compute Brier score\"\"\"\n    return np.mean((y_pred_proba - y_true) ** 2)\n\n# =============================================================================\n# PART 1: Find best lambda\n# =============================================================================\nprint(\"\\n=== PART 1: Finding best lambda ===\")\n\nlambdas = [0.0, 0.01, 0.1, 1.0, 10.0]\nn_folds = 5\nfold_size = n_samples // n_folds\n\n# Store CV scores\ncv_scores = {lam: [] for lam in lambdas}\n\n# 5-fold CV with contiguous blocks\nfor fold_idx in range(n_folds):\n    # Create fold split: fold k is the k-th consecutive slice\n    test_indices = np.arange(fold_idx, n_samples, n_folds)\n    train_indices = np.setdiff1d(np.arange(n_samples), test_indices)\n    \n    X_train, X_test = X[train_indices], X[test_indices]\n    y_train, y_test = y[train_indices], y[test_indices]\n    \n    for lam in lambdas:\n        w, b = fit_logistic(X_train, y_train, lambda_reg=lam)\n        y_pred = predict_proba(X_test, w, b)\n        brier = brier_score(y_test, y_pred)\n        cv_scores[lam].append(brier)\n\n# Calculate mean CV scores\nmean_cv_scores = {lam: np.mean(cv_scores[lam]) for lam in lambdas}\nprint(\"Mean CV Brier scores:\")\nfor lam, score in mean_cv_scores.items():\n    print(f\"  lambda={lam}: {score:.6f}\")\n\n# Find best lambda\nbest_lambda = min(mean_cv_scores, key=mean_cv_scores.get)\nbest_cv_score = mean_cv_scores[best_lambda]\nbaseline_score = mean_cv_scores[0.0]\nimprovement = baseline_score - best_cv_score\n\nprint(f\"\\nBest lambda: {best_lambda}\")\nprint(f\"Best CV Brier: {best_cv_score:.6f}\")\nprint(f\"Baseline (lambda=0): {baseline_score:.6f}\")\nprint(f\"Improvement: {improvement:.6f}\")\n\n# =============================================================================\n# PART 2: Interaction features and paired t-test\n# =============================================================================\nprint(\"\\n=== PART 2: Interaction features and paired t-test ===\")\n\n# Create interaction features\nX_interaction = X.copy()\n# Add products: x0*x1, x1*x2, x2*x3, x0*x3\nX_interaction = np.hstack([X_interaction, \n                           (X[:, 0] * X[:, 1]).reshape(-1, 1),\n                           (X[:, 1] * X[:, 2]).reshape(-1, 1),\n                           (X[:, 2] * X[:, 3]).reshape(-1, 1),\n                           (X[:, 0] * X[:, 3]).reshape(-1, 1)])\n\nprint(f\"X_interaction shape: {X_interaction.shape}\")\n\n# Run paired t-test across 5 folds\nbrier_raw = []\nbrier_interaction = []\n\nfor fold_idx in range(n_folds):\n    test_indices = np.arange(fold_idx, n_samples, n_folds)\n    train_indices = np.setdiff1d(np.arange(n_samples), test_indices)\n    \n    # Raw features\n    X_train_raw, X_test_raw = X[train_indices], X[test_indices]\n    y_train, y_test = y[train_indices], y[test_indices]\n    \n    w_raw, b_raw = fit_logistic(X_train_raw, y_train, lambda_reg=0.1)\n    y_pred_raw = predict_proba(X_test_raw, w_raw, b_raw)\n    brier_raw.append(brier_score(y_test, y_pred_raw))\n    \n    # Interaction features\n    X_train_inter, X_test_inter = X_interaction[train_indices], X_interaction[test_indices]\n    w_inter, b_inter = fit_logistic(X_train_inter, y_train, lambda_reg=0.1)\n    y_pred_inter = predict_proba(X_test_inter, w_inter, b_inter)\n    brier_interaction.append(brier_score(y_test, y_pred_inter))\n\nbrier_raw = np.array(brier_raw)\nbrier_interaction = np.array(brier_interaction)\n\nprint(f\"Brier scores (raw): {brier_raw}\")\nprint(f\"Brier scores (interaction): {brier_interaction}\")\n\n# Paired t-test: raw minus interaction\ndifferences = brier_raw - brier_interaction\nprint(f\"Differences (raw - interaction): {differences}\")\n\n# One-sample t-test\nt_stat, p_value = stats.ttest_1samp(differences, 0)\nprint(f\"Paired t-statistic: {t_stat:.6f}\")\nprint(f\"P-value: {p_value:.6f}\")\n\ninteraction_helps = t_stat > 2.0\nprint(f\"Interaction helps (t > 2.0): {interaction_helps}\")\n\n# =============================================================================\n# PART 3: Compression configurations\n# =============================================================================\nprint(\"\\n=== PART 3: Compression configurations ===\")\n\n# Fit dense model on all data with lambda=0.1\nw_dense, b_dense = fit_logistic(X, y, lambda_reg=0.1)\ny_pred_dense = predict_proba(X, w_dense, b_dense)\ndense_brier = brier_score(y, y_pred_dense)\nprint(f\"Dense model in-sample Brier: {dense_brier:.6f}\")\n\n# Test compression configs\nsparsity_levels = [20, 40, 60]  # percentages\nbit_levels = [8, 4]\n\nbest_retention = -1\nbest_config = None\nconfigs_results = []\n\nfor sparsity in sparsity_levels:\n    for bits in bit_levels:\n        # Apply sparsity: zero smallest magnitude weights\n        w_sparse = w_dense.copy()\n        k = max(1, round(sparsity / 100.0 * len(w_sparse)))\n        threshold_idx = np.argsort(np.abs(w_sparse))[:(len(w_sparse) - k)]\n        w_sparse[threshold_idx] = 0\n        \n        # Apply quantization to non-zero weights\n        non_zero_mask = w_sparse != 0\n        if np.any(non_zero_mask):\n            w_min = np.min(w_sparse[non_zero_mask])\n            w_max = np.max(w_sparse[non_zero_mask])\n            \n            if w_max > w_min:\n                # Quantize to 2^bits levels\n                levels = 2 ** bits\n                w_quantized = w_sparse.copy()\n                w_quantized[non_zero_mask] = np.round(\n                    (w_sparse[non_zero_mask] - w_min) / (w_max - w_min) * (levels - 1)\n                ) / (levels - 1) * (w_max - w_min) + w_min\n            else:\n                w_quantized = w_sparse\n        else:\n            w_quantized = w_sparse\n        \n        # Evaluate compressed model\n        y_pred_compressed = predict_proba(X, w_quantized, b_dense)\n        compressed_brier = brier_score(y, y_pred_compressed)\n        \n        # Retention = dense / compressed\n        retention = dense_brier / (compressed_brier + 1e-10)\n        \n        config_name = f\"sparsity{sparsity}_bits{bits}\"\n        configs_results.append((config_name, retention, compressed_brier))\n        print(f\"{config_name}: retention={retention:.6f}, compressed_brier={compressed_brier:.6f}\")\n        \n        if retention > best_retention:\n            best_retention = retention\n            best_config = config_name\n\nprint(f\"\\nBest compression config: {best_config}\")\nprint(f\"Best retention: {best_retention:.6f}\")\n\n# =============================================================================\n# Write answers\n# =============================================================================\nanswers = {\n    \"best_lambda\": best_lambda,\n    \"improvement_over_baseline\": float(improvement),\n    \"paired_t_stat\": float(t_stat),\n    \"interaction_helps\": bool(interaction_helps),\n    \"best_config\": best_config\n}\n\nprint(\"\\n=== FINAL ANSWERS ===\")\nprint(json.dumps(answers, indent=2))\n\nwith open('answers.json', 'w') as f:\n    json.dump(answers, f, indent=2)\n\nprint(\"\\nAnswers saved to answers.json\")\n"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T11:28:38.222Z",
+    "tool": "bash",
+    "input": {
+      "command": "cd <RUNS_ROOT>/cb78fddc-8117-4985-972d-248fde85b954/repo/paper/experiments/screening/block/B0_T3/B0_T3/seed0 && python solve.py"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T11:28:40.131Z",
+    "tool": "bash",
+    "input": {
+      "command": "cd <RUNS_ROOT>/cb78fddc-8117-4985-972d-248fde85b954/repo/paper/experiments/screening/block/B0_T3/B0_T3/seed0 && python3 solve.py"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T11:28:42.933Z",
+    "tool": "read",
+    "input": {
+      "path": "<RUNS_ROOT>/cb78fddc-8117-4985-972d-248fde85b954/repo/paper/experiments/screening/block/B0_T3/B0_T3/seed0/answers.json"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T11:28:47.375Z",
+    "tool": "bash",
+    "input": {
+      "command": "cd <RUNS_ROOT>/cb78fddc-8117-4985-972d-248fde85b954/repo/paper/experiments/screening/block/B0_T3/B0_T3/seed0 && cat answers.json"
+    }
+  }
+]
