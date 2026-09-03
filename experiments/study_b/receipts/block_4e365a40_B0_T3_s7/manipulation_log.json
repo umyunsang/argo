@@ -1,0 +1,45 @@
+[
+  {
+    "timestamp": "2026-09-03T10:24:00.684Z",
+    "tool": "read",
+    "input": {
+      "path": "data.json"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T10:24:24.754Z",
+    "tool": "write",
+    "input": {
+      "path": "fit_logistic.py",
+      "content": "import json\nimport numpy as np\nfrom scipy import stats\n\n# Load data\nwith open('data.json') as f:\n    data = json.load(f)\n\nX = np.array(data['X'], dtype=np.float64)\ny = np.array(data['y'], dtype=np.float64)\n\nn_samples, n_features = X.shape\nprint(f\"Data shape: {n_samples} x {n_features}\")\n\n# Create 5 contiguous folds (no shuffle)\nn_folds = 5\nfold_size = n_samples // n_folds\nfolds = []\nfor k in range(n_folds):\n    test_indices = list(range(k, n_samples, n_folds))\n    train_indices = [i for i in range(n_samples) if i not in test_indices]\n    folds.append((train_indices, test_indices))\n\nprint(f\"Fold sizes: {[len(f[1]) for f in folds]}\")\n\ndef sigmoid(z):\n    \"\"\"Sigmoid with clipping to prevent overflow\"\"\"\n    z = np.clip(z, -30, 30)\n    return 1 / (1 + np.exp(-z))\n\ndef brier_score(y_true, y_pred):\n    \"\"\"Brier score: mean squared error of probabilities\"\"\"\n    return np.mean((y_pred - y_true) ** 2)\n\ndef fit_logistic(X_train, y_train, lambda_reg=0.0, n_iter=200, lr=0.1):\n    \"\"\"\n    Fit logistic regression with full-batch gradient descent\n    \"\"\"\n    n_samples, n_features = X_train.shape\n    \n    # Initialize weights and bias\n    w = np.zeros(n_features)\n    b = 0.0\n    \n    for iteration in range(n_iter):\n        # Forward pass\n        z = X_train @ w + b\n        z = np.clip(z, -30, 30)\n        y_pred = sigmoid(z)\n        \n        # Backward pass\n        error = y_pred - y_train\n        grad_w = (X_train.T @ error) / n_samples\n        grad_b = np.mean(error)\n        \n        # Update\n        w -= lr * (grad_w + lambda_reg * w)\n        b -= lr * grad_b\n    \n    return w, b\n\ndef predict_proba(X_test, w, b):\n    \"\"\"Predict probabilities\"\"\"\n    z = X_test @ w + b\n    z = np.clip(z, -30, 30)\n    return sigmoid(z)\n\n# Task 1: Find best lambda via cross-validation\nlambdas = [0.0, 0.01, 0.1, 1.0, 10.0]\ncv_scores = {lam: [] for lam in lambdas}\n\nfor lam in lambdas:\n    for train_idx, test_idx in folds:\n        X_train = X[train_idx]\n        y_train = y[train_idx]\n        X_test = X[test_idx]\n        y_test = y[test_idx]\n        \n        w, b = fit_logistic(X_train, y_train, lambda_reg=lam)\n        y_pred = predict_proba(X_test, w, b)\n        score = brier_score(y_test, y_pred)\n        cv_scores[lam].append(score)\n\n# Average CV scores\nmean_cv_scores = {lam: np.mean(cv_scores[lam]) for lam in lambdas}\nprint(\"\\nCV Scores by lambda:\")\nfor lam, score in mean_cv_scores.items():\n    print(f\"  lambda={lam}: {score:.6f}\")\n\nbest_lambda = min(lambdas, key=lambda l: mean_cv_scores[l])\nbaseline_score = mean_cv_scores[0.0]\nbest_score = mean_cv_scores[best_lambda]\nimprovement = baseline_score - best_score\n\nprint(f\"\\nBest lambda: {best_lambda}\")\nprint(f\"Baseline (lambda=0): {baseline_score:.6f}\")\nprint(f\"Best score: {best_score:.6f}\")\nprint(f\"Improvement: {improvement:.6f}\")\n\n# Task 2: Test interaction features\nprint(\"\\n--- Task 2: Interaction Features ---\")\n\n# Create interaction features: x0*x1, x1*x2, x2*x3, x0*x3\nX_interactions = np.column_stack([\n    X[:, 0] * X[:, 1],  # x0*x1\n    X[:, 1] * X[:, 2],  # x1*x2\n    X[:, 2] * X[:, 3],  # x2*x3\n    X[:, 0] * X[:, 3]   # x0*x3\n])\n\nX_with_interactions = np.hstack([X, X_interactions])\nn_features_with_interactions = X_with_interactions.shape[1]\n\n# Fit both models with lambda=0.1 and collect Brier scores per fold\nbrier_raw = []\nbrier_interaction = []\n\nfor train_idx, test_idx in folds:\n    # Raw model\n    X_train = X[train_idx]\n    y_train = y[train_idx]\n    X_test = X[test_idx]\n    y_test = y[test_idx]\n    \n    w, b = fit_logistic(X_train, y_train, lambda_reg=0.1)\n    y_pred = predict_proba(X_test, w, b)\n    score_raw = brier_score(y_test, y_pred)\n    brier_raw.append(score_raw)\n    \n    # Interaction model\n    X_train_int = X_with_interactions[train_idx]\n    X_test_int = X_with_interactions[test_idx]\n    \n    w_int, b_int = fit_logistic(X_train_int, y_train, lambda_reg=0.1)\n    y_pred_int = predict_proba(X_test_int, w_int, b_int)\n    score_int = brier_score(y_test, y_pred_int)\n    brier_interaction.append(score_int)\n\nbrier_raw = np.array(brier_raw)\nbrier_interaction = np.array(brier_interaction)\n\n# Paired t-test: raw minus interaction\ndiff = brier_raw - brier_interaction\nt_stat, p_value = stats.ttest_rel(brier_raw, brier_interaction)\n\nprint(f\"Brier scores (raw): {brier_raw}\")\nprint(f\"Brier scores (interaction): {brier_interaction}\")\nprint(f\"Difference (raw - interaction): {diff}\")\nprint(f\"Paired t-statistic: {t_stat:.6f}\")\nprint(f\"P-value: {p_value:.6f}\")\n\ninteraction_helps = t_stat > 2.0\nprint(f\"Interaction helps (t > 2.0): {interaction_helps}\")\n\n# Task 3: Compression\nprint(\"\\n--- Task 3: Compression ---\")\n\n# Fit dense model on all data with lambda=0.1\nw_dense, b_dense = fit_logistic(X, y, lambda_reg=0.1)\ny_pred_dense = predict_proba(X, w_dense, b_dense)\nbrier_dense = brier_score(y, y_pred_dense)\n\nprint(f\"Dense model in-sample Brier: {brier_dense:.6f}\")\n\nsparsity_levels = [20, 40, 60]\nbit_levels = [8, 4]\nresults = {}\n\nfor sparsity in sparsity_levels:\n    for bits in bit_levels:\n        # Apply sparsity: zero out smallest magnitude weights\n        w_sparse = w_dense.copy()\n        k = round(sparsity / 100.0 * len(w_dense))\n        if k > 0:\n            indices_to_zero = np.argsort(np.abs(w_sparse))[:k]\n            w_sparse[indices_to_zero] = 0\n        \n        # Apply quantization\n        w_quant = w_sparse.copy()\n        nonzero_mask = w_quant != 0\n        if np.any(nonzero_mask):\n            min_val = np.min(w_quant[nonzero_mask])\n            max_val = np.max(w_quant[nonzero_mask])\n            \n            if min_val < max_val:\n                # Map to 2^bits levels\n                levels = np.linspace(min_val, max_val, 2**bits)\n                for i in np.where(nonzero_mask)[0]:\n                    closest_idx = np.argmin(np.abs(levels - w_quant[i]))\n                    w_quant[i] = levels[closest_idx]\n        \n        # Evaluate compressed model\n        y_pred_comp = predict_proba(X, w_quant, b_dense)\n        brier_comp = brier_score(y, y_pred_comp)\n        \n        retention = brier_dense / brier_comp if brier_comp > 0 else 0\n        config_name = f\"sparsity{sparsity}_bits{bits}\"\n        results[config_name] = retention\n        \n        print(f\"{config_name}: Brier={brier_comp:.6f}, Retention={retention:.6f}\")\n\nbest_config = max(results, key=results.get)\nprint(f\"\\nBest config: {best_config} (retention: {results[best_config]:.6f})\")\n\n# Output answers\nanswers = {\n    \"best_lambda\": float(best_lambda),\n    \"improvement_over_baseline\": float(improvement),\n    \"paired_t_stat\": float(t_stat),\n    \"interaction_helps\": bool(interaction_helps),\n    \"best_config\": best_config\n}\n\nprint(\"\\n=== ANSWERS ===\")\nprint(json.dumps(answers, indent=2))\n\nwith open('answers.json', 'w') as f:\n    json.dump(answers, f, indent=2)\n"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T10:24:27.680Z",
+    "tool": "bash",
+    "input": {
+      "command": "cd <RUNS_ROOT>/4e365a40-90b4-4c05-966d-d69177594983/repo/paper/experiments/screening/block/B0_T3/B0_T3/seed0 && python fit_logistic.py"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T10:24:29.449Z",
+    "tool": "bash",
+    "input": {
+      "command": "cd <RUNS_ROOT>/4e365a40-90b4-4c05-966d-d69177594983/repo/paper/experiments/screening/block/B0_T3/B0_T3/seed0 && python3 fit_logistic.py"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T10:24:34.904Z",
+    "tool": "read",
+    "input": {
+      "path": "answers.json"
+    }
+  },
+  {
+    "timestamp": "2026-09-03T10:24:42.361Z",
+    "tool": "read",
+    "input": {
+      "path": "answers.json"
+    }
+  }
+]
