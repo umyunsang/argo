@@ -163,5 +163,8 @@ change the pending completion-arm question. GPU credit units remain 0.
 | 2026-09-03T15:08:45+09:00 | 드라이런 | B0 | T3 | 42 | anthropic/claude-haiku-4-5 | 405,799 | 0.134 | PIPELINE_DRY_RUN (answers.json 제출 완료, 검증기 1/5) |
 | 2026-09-03T15:08:45+09:00 | 드라이런 | B1 | T3 | 42 | anthropic/claude-haiku-4-5 | 391,973 | 0.138 | PIPELINE_DRY_RUN (answers.json 제출 완료, 검증기 2/5) |
 | 2026-09-03T15:08:45+09:00 | 드라이런 | B2 | T3 | 42 | anthropic/claude-haiku-4-5 | 547,290 | 0.118 | PIPELINE_DRY_RUN (answers.json 제출 완료, 검증기 1/5) |
-| **드라이런 합계** | — | **3개** | **T3** | — | — | **1,345,062** | **0.390** | **드라이런 상한 $2.00 이내 (잔여 $1.610)** |
+| 2026-09-03T15:33:26+09:00 | 2차 드라이런 | B0 | T3 | 42 | anthropic/claude-haiku-4-5 | 636,485 | 0.170 | PIPELINE_DRY_RUN (b0_tools.js, ipython 0회, 조작 PASS) |
+| 2026-09-03T15:33:26+09:00 | 2차 드라이런 | B1 | T3 | 42 | anthropic/claude-haiku-4-5 | 505,061 | 0.156 | PIPELINE_DRY_RUN (b0_tools.js + ipython 5회, 조작 PASS) |
+| 2026-09-03T15:33:26+09:00 | 2차 드라이런 | B2 | T3 | 42 | anthropic/claude-haiku-4-5 | 213,698 | 0.110 | PIPELINE_DRY_RUN (b2_harness.js, 게이트차단 1회 후 결정 3/임계 4, 조작 PASS) |
+| **드라이런 합계** | — | **3개 (2회)** | **T3** | — | — | **2,700,306** | **0.826** | **드라이런 상한 $2.00 이내 (잔여 $1.174)** |
 | **스크리닝 누적** | — | — | — | — | — | **0** | **0.000** | **스크리닝 상한 $48.47 미사용 (0014a)** |

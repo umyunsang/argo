@@ -4,14 +4,38 @@ goal: `661de7ea-39d8-4d81-8284-d41edff45288` status=**active** budget=none
 orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71` — 클린 클론 done (`c0777239` @ `930f0db06`)
 orx_runs_this_cycle: 2
 exa_calls_this_cycle: 2 — **exa 복구됨**(401 해소, web_search_exa 2회 성공). 결과 가치는 낮아 인용하지 않음.
-study_b_spend_to_date: **$0.39** (드라이런 $0.39 / 상한 $2.00, 스크리닝 $0.00 / 상한 $48.47, 0014a)
-prereg_sealed: **yes** — 봉인 sha256 `f8671c44f076`
+study_b_spend_to_date: **$0.83** (드라이런 1·2차 $0.826 / 상한 $2.00, 스크리닝 $0.00 / 상한 $48.47, 0014a)
+prereg_sealed: **yes** — v1 `f8671c44f076` (superseded), v2 `52939b05b166` (14개 인프라 파일 봉인 완료)
 results_origin_list: **없음.** 원고 신규 표 `tbl-studyb-status`의 결과 열은 전부 "미실행"이다.
 
 ## Completed in current phase
 
 
 
+
+
+### 사이클 (Study B 하네스 구현·2차 드라이런·v2 재봉인) — manipulation-check 3/3 PASS 및 투명 재봉인
+
+- **배경:** instruction-0015 지적에 따라, 1차 드라이런에서 B0에 ipython이 누출(328회 언급)되고 B2 메커니즘이 프롬프트 텍스트로만 존재했던 manipulation check 실패를 인정하고 전면 재구현.
+- **§1 실제 하네스 구현:**
+  - **프롬프트 분리:** `--system-prompt`를 파일(`prompts/b{0,1,2}_system_prompt.txt`)에서 분리 주입. 과제 텍스트(`TASK.md`)는 사용자 턴 메시지로 전달(sha256 `d2e232f8...` 세 아암 간 100% 바이트 동일).
+  - **B0 (최소 도구):** `--no-builtin-tools`로 `ipython` 원천 박탈. `b0_tools.js` extension으로 최소 도구(`read`, `write`, `edit`, `bash`)만 제공.
+  - **B1 (표현력 REPL):** B0 도구 + `ipython` 활성화.
+  - **B2 (책임 복합):** B1 도구 + `b2_harness.js` extension 탑재. `graph_add`/`graph_query` 도구, `decision_record`/`threshold_register` 도구, `loop_evaluate` 도구. 6필드 결정과 임계 등록 전 `bash`/`ipython` 실행 시 tool_call 인터셉트하여 즉시 차단(fail-closed).
+  - **오염 격리:** 워크디렉토리를 `/tmp/study_b_dryrun2/...`로 격리, `PRIME_AGENT_CODING_AGENT_DIR=/tmp/clean_agent_dir`로 글로벌 continual harness 주입 100% 차단.
+  - **테스트:** `test_extensions.py` 17/17 PASS, `test_episode_runner.py` 9/9 PASS.
+- **§1.5 manipulation-check 3/3 통과 실측 (2차 드라이런):**
+  - **B0:** ipython 호출 **0회**, 원시 도구 12회(`read` 3, `bash` 8, `write` 1) -> **PASS**. 비용 $0.170 (636,485 토큰).
+  - **B1:** ipython 호출 **5회**, 파일/쉘 5회 -> **PASS**. 비용 $0.156 (505,061 토큰).
+  - **B2:** 게이트 차단 **1회** (사전 등록 전 실행 시도 차단 실증), 이후 결정 3건(`decision_record`)·임계 4건(`threshold_register`) 등록, 그래프 노드 6건 추가(`graph_add`), 평가 4회(`loop_evaluate`), ipython 7회 정상 허용 -> **PASS**. 비용 $0.110 (213,698 토큰).
+  - **2차 드라이런 지출:** $0.436. 누적 드라이런 지출 **$0.826** (드라이런 상한 $2.00 이내, $1.174 잔여). 스크리닝 지출 $0.00.
+- **§2 사전등록 v2 투명 재봉인 (`study-b-preregistration-v2.md`):**
+  - 스크리닝 지출 $0.00 상태의 투명 pre-data amendment. v1(f8671c44f076) 보존 및 대체 사유 명시.
+  - 바닥효과 해소: 1차 지표를 검증기 항목 단위 통과 비율(`score.n_pass / score.n_total`)로 개정, 동일 (task, seed) 쌍대 Wilcoxon 부호순위 검정 채택.
+  - 재산정 단가($0.1454/ep) 반영: $48.47 상한 내 과제당 n=37쌍 확정.
+  - 14개 인프라 및 아암 파일 git blob sha1 봉인 완료 (다이제스트: `52939b05b166`).
+  - 봉인 게이트 훼손 탐침 3건(b0_tools 변조, v2 문서 변조, 프롬프트 파일 삭제) 전부 즉시 발화 확인.
+- **결정 기록:** `RD-2026-09-03-89A`.
 
 ### §1.6 하네스 오염 점검 보고 (instruction-0015 §1.6 이행)
 
