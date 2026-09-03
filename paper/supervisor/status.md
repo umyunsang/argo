@@ -3,12 +3,22 @@
 goal: `b2f7431e-942d-4fc5-b68d-cf0c316e5ffc` status=**active** budget=none
 orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71` — 클린 클론 8연속 done (최근 `71c57c6b` @ `81d6d8f77`)
 orx_runs_this_cycle: 1
-exa_calls_this_cycle: 0 — exa `401` 지속. parallel MCP 호출 8건(저자 확인용 초록 페이지).
+exa_calls_this_cycle: 2 — **exa 복구됨**(401 해소, web_search_exa 2회 성공). 결과 가치는 낮아 인용하지 않음.
 study_b_spend_to_date: **$0.00** (상한 미정 — 0014a 대기)
 prereg_sealed: **no** — 초안 sha256 `c69ddbe7002c`
 results_origin_list: **없음.** 원고 신규 표 `tbl-studyb-status`의 결과 열은 전부 "미실행"이다.
 
 ## Completed in current phase
+
+
+### 사이클 (감독자 재기동 후) — 세션 상태 오염을 되돌리고 게이트 공백을 닫았다
+
+- **먼저 저장소 상태를 확인했다.** 세션 문맥이 압축된 뒤 내 작업 변수가 오래된 상태를 가리키고 있었고, 그 상태로 쓴 편집이 `context-graph.json`과 결정 원장의 **round77 레코드를 덮어썼다**. `git diff`로 확인한 뒤 두 파일만 `git checkout`으로 되돌렸다. 실제 RD-77A(정본 전환·인용 95건 달성)는 그대로 보존됐다.
+- **교훈:** 재기동 뒤에는 기억이 아니라 `git log`·`git status`·`status.md`를 먼저 읽어야 한다. 나는 이미 끝난 작업(인용 이관)을 다시 하려 했다.
+- **exa 복구:** `web_search_exa` 2회 성공. 401이 해소됐다. 다만 결과가 일반 블로그 수준이라 인용하지 않았다.
+- **실제로 닫은 공백:** `public_output_gate`의 `instance_identity` 패턴이 **이전 인스턴스 이름만** 담고 있었다. Study B는 호스팅 런타임을 쓰고 환경 프로브가 그 호스트명과 계정명을 출력한다. 이 식별자를 막는 패턴이 **하나도 없었다**.
+- **현재 유출은 0건**이다(원고·산출물 0, supervisor 전용 노트 2건뿐). 즉 결함은 출력이 아니라 **가드**에 있었다.
+- `runtime_host_identity` 패턴을 추가하고, 원고에 호스트명을 넣어 **게이트가 실제로 실패하는지 확인한 뒤 되돌렸다**.
 
 ### Cycle 59 — the manipulation is not inert; the endpoint is blind
 
