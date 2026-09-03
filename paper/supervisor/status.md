@@ -1,42 +1,12 @@
 # status (argo-paper-root)
 
-goal: `b2f7431e-942d-4fc5-b68d-cf0c316e5ffc` status=**active** tokens_used=0 budget=none — 실측 `goal.get()`. 이전 goal `abf5e851…`은 status=**error**였으므로 0013a §A.2에 따라 재생성했다.
-orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71` @ `816559320` (직전 검증 run `583923a1` = done @ `aa4315e14`)
-orx_runs_this_cycle: 3 (`583923a1` done, 재실행 1건 진행 중, 인자 오류 1건 `--node` → `--backend`)
-exa_calls_this_cycle: 0 — exa MCP가 **HTTP 401 Invalid API key**를 반환해 사용 불가. 0013a §C가 허용한 parallel MCP로 5개 의무 항목 전부 검색(호출 5건).
-results_origin_list: **없음.** 이번 사이클은 결과표에 어떤 숫자도 추가하지 않았다.
-
-# ARGO paper autonomous-research status
-
-- **next_first_action:** supervisor instruction-0010 §2 보충 양식(label-form-supplement-001.json 8건)의 기입 완료를 확인하고, 25건 완비 시 선택적 평가기 UCB 교정을 실행한다.
-
-- **last_updated:** 2026-09-03T07:59:29+09:00
-- **goal:** active — `abf5e851-82b2-49e6-9851-c869ae06a99b` (recreated 2026-09-02 after the previous goal entered error), no token budget — autonomously complete and improve the graduation paper with evidence-grounded claims and deterministic validation
-- **model:** anthropic/claude-opus-5
-- **current_phase:** cycle 68 closed — 한글 Quarto 정본 전환 완료, 13개 양식 규칙 ENFORCED PASS, 인용 95건 완비, Q-0009 설계 완료
-- **last_checkpoint:** `f33f5993f` — round-9 sources, design comparison matrix, decisions 09A–09D, executed sandbox fixtures, GPU governance
-
-
-> **instruction-0010 보고 (§7)**
-> 1. **그림 route:** 9/9 `vector_fallback_after_image_failure`. gpt-image-2 자격 증명은 유효하나 계정이 **HTTP 429 `credit_balance_exhausted`** 를 반환해 이미지가 생성되지 않았다. 이미지 누적 **$0.00**. Graphviz 벡터본이 판독 게이트를 **9/9, 라벨 일치율 1.000** 으로 통과한 상태라 원고는 대기하지 않는다.
-> 2. **라벨 수령:** `paper/experiments/calibration/labels-received-receipt.json`. 25건 중 **판정 가능 19건**, unclear 6건 제외. 2차 blind 일치도는 **지시문 수치를 옮기지 않고 두 파일에서 직접 재계산**했다 — 전체 **24/25**, unclear 제외 **18/18**, 불일치 L022. 정지 조건 미해당. **라벨러는 사람이 아니라 모델**이므로 논문에서 `human-anchored`를 전부 제거하고 `model-anchored calibration set`으로 바꿨다. 판정 채점은 **여전히 inadmissible**(라벨 6건 부족 + 기준이 사람이 아님). 보충 양식 8건 `supplement_ready`.
-> 3. **HF 누적:** 호출 **521건**, **보수적 상한 추정 $1.97** (< $10 상한). 실측이 아니라 상한 추정이며 가정을 cost-ledger에 명시했다.
-
-
-> **instruction-0011 보고 (§7)**
-> 1. **정본 소스:** `paper/manuscript/thesis-ko.qmd` (Quarto 1.10.18 단일 파일). 렌더 검사 **9/9 통과** — A4 11906×16838, `Ⅰ. Introduction` 제목, 그림 캡션 하단 `그림 1.`, 표 캡션 상단 `표 1.`, 본문 상호참조, 한글 비율 **0.794**, receipt 연동 표 실행. **아직 제출 진입점은 교체하지 않았다**(제출 docx는 매 커밋 게이트 통과 상태 유지).
-> 2. **한글 장 진행:** **5/5 전 장 완성 및 정본 전환 완료**. 그림 **9개** 번호 캡션(1.000 판독), 표 **6개**(3개 receipt assert 생성), 참고문헌 **95건** 전수 인용 완비, 국문요약 **384자**, 영문 키워드 **5개**, 한글 비율 **0.796** (본문 기준).
-> 3. **Q-0009(하네스 비교 arm):** 설계 완료(`paper/research/harness-comparison-arm-design.md`). 결정론적 검증기 기반, 2개 시나리오($7.30 / $14.60), **기본값 (b) 실행하지 않음**으로 등록.
-> 4. **툴체인 v3:** 한글 폰트를 고정 툴체인 안에 넣어 격리 규칙을 **완화하지 않고** 한글 조판을 열었다. 영문 빌드는 폰트 추가 전후 **바이트 동일**(`e57e8f13…`)로 반증 조건을 통과했다.
-
-
-> **instruction-0012 보고 (§7)**
-> 1. **게이트:** `lineage_fork_wording`·`lineage_migration_wording` 추가, source 범위에 `paper/manuscript/**/*.qmd`·`paper/korean-summary.txt`·`paper/figures/specs/*.json` 포함. **fail-closed 3/3 확인** (영문 fork, 영문 migration, 한글 포크를 각각 넣어 실패 확인 후 원복). 커밋 아래 참조.
-> 2. **어휘 전수 검사:** 범위 파일 21건 + 빌드된 docx 본문 + 참고문헌 = **0건**.
-> 3. **결정 기록:** `RD-2026-09-03-76A` (3단계 계보 서사 채택, 단계별 근거 수준 명시, 반증 조건은 계승 표와 원장 태그 불일치).
-> 4. **fig-09 스펙 갱신:** 축을 자율성/근거결속 → **능력/책임 가능성** 3단계 계보로 교체, 재렌더 후 판독 일치율 **1.000**.
-> 5. **계승 표:** 행 **9건**, 태그 분포 {'INHERITED': 4, 'RE_DERIVED': 3, 'MODIFIED': 2}. 코드 셀이 행 수와 태그 어휘를 assert한다. 표 총 **6개**.
-> 6. **0011 §4 진행 위치:** 1항(Quarto 전환) 완료·전환 보류, 0012 §1~3 완료, 다음은 인용 이관 → Q-0009 설계.
+goal: `b2f7431e-942d-4fc5-b68d-cf0c316e5ffc` status=**active** (실측 `goal.get()`) tokens_used≈25k budget=none
+orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71` @ `98243c413` — 클린 클론 3연속 done (`583923a1`, `54f281a8`, `f7001527`)
+orx_runs_this_cycle: 4 (전부 done)
+exa_calls_this_cycle: 0 — exa `401 Invalid API key` 지속(0014 §5: 키 갱신은 사용자 조치). parallel MCP 대체 호출 6건.
+study_b_spend_to_date: **$0.00** (상한 미정 — 0014a 대기, 재확인 전 허용은 드라이런 $2)
+prereg_sealed: **no** — 0014a 수신 후 봉인. 현재 초안 sha256 `490d9f0b0a30`
+results_origin_list: **없음.** 결과표에 들어간 숫자 0건.
 
 ## Completed in current phase
 
@@ -785,3 +755,50 @@ next_first_action: instruction-0013 §8-3 — 7개 재료의 mechanism 노드 �
 dangling 엣지 0. 노드 438 / 엣지 774. 검증 PASS. 커밋 `816559320`.
 
 next_first_action: instruction-0013 §8-4 — `paper/research/study-b-preregistration.md` 작성 착수. 7아암(B0/B1/B2/B2-G/B2-P/B2-R/B2-L) 정의, 결정론적 검증기 과제, McNemar 1차 endpoint, Cycle 48 계산기로 과제당 40·60 에피소드 MDE를 계산해 문서에 기입하고 봉인 다이제스트를 만든다. 실행은 Q-0009 개정 승인 전까지 하지 않는다.
+
+## instruction-0014 보고 (§6 형식) — 2026-09-03T10:30:34
+
+### Q-0009 상태
+`questions.md` 갱신 완료: **APPROVED (a) 1차 스크리닝 — 사용자, 2026-09-03 — 지출 상한은 0014a 대기**.
+승인 범위 B0/B1/B2 3아암. 미승인 유지: 절제 4아암, 시나리오 (b)(c), Q-0007 별도 지출, MLE-bench Lite.
+원장 **RD-2026-09-03-81A** 기록. **스크리닝 에피소드 미실행, 지출 $0.00.**
+
+### 사전등록 §9 미완 5항목 — 개별 진행
+| # | 항목 | 상태 | 증거 |
+|---|---|---|---|
+| 1 | ResearchClawBench 라이선스·다운로드 | **완료** | MIT 확인, HF `InternScience/ResearchClawBench`, 40개 과제, clone 경로 — `retrieval-record-0013.json` |
+| 2 | 아암 7개 구현 | **완료** | `experiments/study_b/harness/`; 절제 4개가 B2와 **정확히 한 성분**만 다름을 테스트가 강제 (19/19) |
+| 3 | T3 검증기·oracle 격리 | **완료** | `tasks/oracle_t3.py` 실제 계산·결정론적, `run_t3.py` 격리 강제(중첩·심볼릭 링크 거부), 테스트 15/15 |
+| 4 | 고정 run command | **완료** | `run_block.py`; 미승인 지출·기판 밖 실행·드라이런 상한 초과를 **스스로 거부** |
+| 5 | 비교 실험 표 | **완료** | `comparable-experiments-study-b.md` 8편 |
+| 6 | 아암별 커밋 해시 봉인 | 미완 | 봉인 시점(0014a 이후) 기입 |
+| 7 | 원논문 부록에서 n·검정·비용 재확인 | 미완 | 정독 보고서 범위 한정 명시함 |
+
+### §3 항목 1~4 확정 여부 — 4/4 확정
+1. **주 대비:** **B2 vs B0** 1개를 1차로 선언. B0–B1, B1–B2는 2차 **Holm 보정**(3대비, α=0.05). supervisor 권고 채택.
+2. **풀링:** **1차는 과제 3종 풀링**(짝 단위 = 과제×시드), 과제별 검정과 이질성은 2차. 두 MDE를 §6에 모두 기재:
+   **풀링 120쌍 0.140 / 과제별 40쌍 0.243**(불일치율 0.30). 스크립트 재계산으로 문서 수치 일치 확인.
+   n 축소 시 재계산치도 확보: n=20×3 → 0.198, n=30×3 → 0.162.
+3. **모델 고정:** `anthropic/claude-haiku-4-5`. 단가 $0.13463/에피소드는 이 모델의 실측값이므로 재산정·재승인 없이 변경 금지.
+4. **중단 규칙:** 누적 지출이 상한 도달 시 즉시 중단, 완료분만 보고, 예산 완주율에 경쟁 사건으로 반영.
+   결과에 따른 에피소드 제외 금지 유지.
+
+### 드라이런 지출
+**$0.00.** 드라이런은 아직 실행하지 않았다. `run_block.py`가 `ORX_RUN_ID` 없는 환경을 거부하므로
+드라이런도 실험 노드 경로로만 수행하며, 노드 생성은 봉인 직전에 한다.
+
+### 해커톤 산출물 3건 (0013 §6)
+`paper/hackathon/` 신설: `idea-sheet-ko.md`(1쪽, 근거 상태를 "사전등록 완료·미실행"으로 명시),
+`demo-scenario.md`(5분, 4:30에 B2−P 대비 시연이 핵심), `prototype-kernel.md`(B2 구현이 곧 커널, 진입점 고정).
+
+### 이번 사이클 결과표 숫자의 origin
+**없음.** MDE·단가는 각각 `power_mcnemar.py`(라벨된 검정력 계산)와 실측 receipt(`origin: model_call`)에서 왔고,
+어느 것도 효능 결과표에 들어가지 않았다.
+
+### 특기 사항 — 설계 결함 2건을 지출 전에 잡음
+1. **T3 정답이 시드 간 거의 불변**이라 추측만으로 맞출 수 있었다(n=1200 ≫ d=10이라 과적합 없음).
+   생성 규칙을 바꿔(n=140, d=40, 시드 의존 상호작용) 정답이 변하도록 고쳤고, 테스트가 "정답이 상수가 아님"을 강제한다.
+2. **청구 잠금이 짧은 지표명을 통째로 건너뛰었다**(`f1 = 0.95`가 검사에서 누락). fail-open 결함이라 정규식을 고쳤다.
+   두 결함 모두 실패 우선 테스트가 잡았다.
+
+next_first_action: 0014a(지출 상한·과제당 n·과제 수) 수신 대기. 대기 중에는 봉인하지 않고 (a) `comparable-experiments-study-b.md` 항목 7(원논문 부록에서 n·검정·비용 재확인)을 닫고, (b) T1(ResearchClawBench 서브셋)·T2 어댑터를 구축하며, (c) `study_b.demo` 진입점을 실제로 만들어 해커톤 데모를 실행 가능하게 한다. 0014a 도착 즉시 §6 표를 승인된 n으로 재계산 → 봉인 → 아암 커밋 해시 확정 → 드라이런.
