@@ -603,14 +603,17 @@ def check_study_b_seal(cfg):
         failures.append("approval record missing: spend is not authorized")
     arm_hashes = sb.get("arm_blob_hashes", {})
     if arm_hashes:
-        try:
-            out = subprocess.run(["git", "ls-tree", "-r", "HEAD", "--format=%(objectname) %(path)"],
-                                 cwd=ROOT, capture_output=True, text=True, check=True).stdout
-        except Exception:
-            out = ""
-        blobs = {l.split()[1]: l.split()[0] for l in out.splitlines() if l.strip()}
+        # The blob id is derived from the file bytes rather than read out of a
+        # repository. A validation copy carries the files without version-control
+        # metadata, so asking the tool for the id reported a mismatch for every arm
+        # whenever the metadata was absent, which looks identical to tampering.
         for rel_, want in arm_hashes.items():
-            got = blobs.get("experiments/study_b/" + rel_)
+            p_ = ROOT / "experiments" / "study_b" / rel_
+            if not p_.is_file():
+                failures.append("arm code file missing: %s" % rel_)
+                continue
+            body = p_.read_bytes()
+            got = hashlib.sha1(b"blob " + str(len(body)).encode() + b"\x00" + body).hexdigest()
             if got != want:
                 failures.append("arm code blob mismatch: %s" % rel_)
     return {"sealed": True, "digest": sb["preregistration_sha256"][:12], "failures": failures}
