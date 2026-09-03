@@ -1,11 +1,11 @@
 # status (argo-paper-root)
 
-goal: `b2f7431e-942d-4fc5-b68d-cf0c316e5ffc` status=**active** (실측) budget=none
-orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71` — 클린 클론 5연속 done (최근 `22a61c87` @ `d6a8d2391`)
-orx_runs_this_cycle: 1 (done)
-exa_calls_this_cycle: 0 — exa `401` 지속(0014 §5: 키 갱신은 사용자 조치). 이번 사이클 웹 호출 0건.
+goal: `b2f7431e-942d-4fc5-b68d-cf0c316e5ffc` status=**active** budget=none
+orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71` — 클린 클론 6연속 done
+orx_runs_this_cycle: 1
+exa_calls_this_cycle: 0 — exa `401` 지속. 이번 사이클 웹 호출 0건.
 study_b_spend_to_date: **$0.00** (상한 미정 — 0014a 대기)
-prereg_sealed: **no** — 0014a 수신 후 봉인. 초안 sha256 `5fc09fbb29f5`
+prereg_sealed: **no** — 초안 sha256 `9247b64a66ce`
 results_origin_list: **없음.**
 
 ## Completed in current phase
@@ -865,3 +865,19 @@ RD-80A의 출처 게이트는 `origin`·usage·transcript 축을 검사했지만
 **없음.**
 
 next_first_action: 0014a 수신 시 즉시 (1) 승인된 과제당 n으로 §6 MDE 표 재계산 → (2) 봉인·다이제스트 등록 → (3) 아암 커밋 해시 확정 → (4) orx 실험 노드 생성 후 드라이런(아암당 n=1, $2 상한, `PIPELINE_DRY_RUN`). 0014a 이전에는 T2(Q-0007 완주 과제) 어댑터를 구축한다 — T2는 과제 수 결정과 무관하게 승인 범위에 포함돼 있다.
+
+## 대기 사이클 보고 (T2 어댑터) — 2026-09-03T10:41:24
+
+### T2 예산 완주 어댑터 — 구축 완료, 실행 전제 미충족
+`tasks/run_t2.py` + 테스트 9/9. 예산 소진을 **경쟁 사건**으로 다뤄 에피소드를 버리지 않는다:
+`completed` / `budget_exhausted` / `failed_within_budget`를 구분하며, 상한을 넘겨도 답을 냈으면 완주로 센다.
+
+**정직한 차단:** released/withheld 과제 번들 바이트가 이 저장소에 없다(receipt에는 digest만 있다).
+어댑터는 번들을 **지어내지 않고** 전제 미충족을 보고하며 호출자를 멈춘다. 실측 출력:
+`bundle directory absent: paper/experiments/task-bundles`, 필요한 4개 과제명을 함께 반환한다.
+T2 실행 전에 평가자 소유 번들 확보가 필요하며 사전등록 §4에 기록했다.
+
+### 이번 사이클 결과표 숫자의 origin
+**없음.**
+
+next_first_action: 0014a 수신 시 (1) 승인 n으로 §6 MDE 재계산 → (2) 봉인 → (3) 아암 커밋 해시 확정 → (4) orx 노드 생성·드라이런($2 상한). 0014a 이전에는 T1(ResearchClawBench) 어댑터를 구축하되 데이터는 내려받지 않고 전제 검사까지만 만든다.

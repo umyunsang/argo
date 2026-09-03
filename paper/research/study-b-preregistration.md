@@ -58,6 +58,11 @@ receipt 필수 필드: `origin`, `model_id`, `provider_usage_log`, `protocol_fin
    확인됨. **라이선스·다운로드 경로를 사용 전에 검증하고 retrieval record로 남긴다(미완).**
 2. **T2 Q-0007 완주 과제** — 기존 receipt 보유. Q-0007은 Study B의 예산 완주율 endpoint에
    흡수되며 별도 $18.28 지출은 요청하지 않는다.
+   어댑터 `tasks/run_t2.py` 구축 완료(테스트 9/9). 예산 소진은 **경쟁 사건**으로 기록하며
+   에피소드를 버리지 않는다: `completed` / `budget_exhausted` / `failed_within_budget` 세 결과를 구분한다.
+   **미해결 의존성:** released/withheld 과제 번들 바이트가 이 저장소에 없다(digest만 receipt에 있다).
+   어댑터는 번들을 **지어내지 않고** 전제 미충족으로 보고하며 호출자를 멈춘다.
+   T2 실행 전에 평가자 소유 번들을 확보해야 한다.
 3. **T3 정칙화·상호작용·압축 3종** — 격리된 시뮬레이션(`fixtures/simulated_oracles.py`)이 아니라
    **같은 샌드박스에서 고정 시드로 실행되는 검증기 스크립트**가 ground truth를 생성할 때만 허용한다.
    oracle receipt는 §3의 출처 필드를 갖고, 피시험 하네스는 oracle을 읽을 수 없으며, 반증 임계값은
