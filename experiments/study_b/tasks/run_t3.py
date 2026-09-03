@@ -61,12 +61,12 @@ def build_workspace(seed: int, workspace: Path, oracle_dir: Path) -> dict:
     return truth
 
 
-def score(answers: dict, truth: dict, tol: float = 0.02) -> dict:
+def score(answers: dict, truth: dict, rel_tol: float = 0.05) -> dict:
     s1, s2, s3 = truth["sub1_regularization"], truth["sub2_interactions"], truth["sub3_compression"]
     checks = {
         "best_lambda": answers.get("best_lambda") == s1["best_lambda"],
-        "improvement_over_baseline": _close(answers.get("improvement_over_baseline"), s1["improvement_over_baseline"], tol),
-        "paired_t_stat": _close(answers.get("paired_t_stat"), s2["paired_t_stat"], 0.5),
+        "improvement_over_baseline": _close(answers.get("improvement_over_baseline"), s1["improvement_over_baseline"], rel_tol),
+        "paired_t_stat": _close(answers.get("paired_t_stat"), s2["paired_t_stat"], rel_tol),
         "interaction_helps": answers.get("interaction_helps") == s2["interaction_helps"],
         "best_config": answers.get("best_config") == s3["best_config"],
     }
@@ -74,8 +74,11 @@ def score(answers: dict, truth: dict, tol: float = 0.02) -> dict:
             "pass": all(checks.values())}
 
 
-def _close(a, b, tol):
-    return isinstance(a, (int, float)) and not isinstance(a, bool) and abs(float(a) - float(b)) <= tol
+def _close(a, b, rel_tol, abs_floor=1e-6):
+    """Relative comparison. An absolute tolerance is fail-open when the quantity is small."""
+    if not isinstance(a, (int, float)) or isinstance(a, bool):
+        return False
+    return abs(float(a) - float(b)) <= max(abs_floor, rel_tol * abs(float(b)))
 
 
 if __name__ == "__main__":

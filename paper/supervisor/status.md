@@ -1,12 +1,12 @@
 # status (argo-paper-root)
 
-goal: `b2f7431e-942d-4fc5-b68d-cf0c316e5ffc` status=**active** (실측 `goal.get()`) tokens_used≈25k budget=none
-orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71` @ `98243c413` — 클린 클론 3연속 done (`583923a1`, `54f281a8`, `f7001527`)
-orx_runs_this_cycle: 4 (전부 done)
-exa_calls_this_cycle: 0 — exa `401 Invalid API key` 지속(0014 §5: 키 갱신은 사용자 조치). parallel MCP 대체 호출 6건.
-study_b_spend_to_date: **$0.00** (상한 미정 — 0014a 대기, 재확인 전 허용은 드라이런 $2)
-prereg_sealed: **no** — 0014a 수신 후 봉인. 현재 초안 sha256 `490d9f0b0a30`
-results_origin_list: **없음.** 결과표에 들어간 숫자 0건.
+goal: `b2f7431e-942d-4fc5-b68d-cf0c316e5ffc` status=**active** (실측 `goal.get()`) budget=none
+orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71` — 클린 클론 4연속 done
+orx_runs_this_cycle: 0 (커밋 후 실행 예정)
+exa_calls_this_cycle: 0 — exa `401` 지속. parallel MCP 대체 호출 6건(전문 HTML 3건 포함).
+study_b_spend_to_date: **$0.00** (상한 미정 — 0014a 대기)
+prereg_sealed: **no** — 0014a 수신 후 봉인. 초안 sha256 `490d9f0b0a30`
+results_origin_list: **없음.**
 
 ## Completed in current phase
 
@@ -802,3 +802,38 @@ next_first_action: instruction-0013 §8-4 — `paper/research/study-b-preregistr
    두 결함 모두 실패 우선 테스트가 잡았다.
 
 next_first_action: 0014a(지출 상한·과제당 n·과제 수) 수신 대기. 대기 중에는 봉인하지 않고 (a) `comparable-experiments-study-b.md` 항목 7(원논문 부록에서 n·검정·비용 재확인)을 닫고, (b) T1(ResearchClawBench 서브셋)·T2 어댑터를 구축하며, (c) `study_b.demo` 진입점을 실제로 만들어 해커톤 데모를 실행 가능하게 한다. 0014a 도착 즉시 §6 표를 승인된 n으로 재계산 → 봉인 → 아암 커밋 해시 확정 → 드라이런.
+
+## 대기 사이클 보고 — 2026-09-03T10:36:04
+
+0014a 미도착. 봉인하지 않고 next_first_action의 (a)(b)(c)를 진행했다.
+
+### (c) `study_b.demo` 실행 가능화 — 완료
+`/usr/bin/python3 -m study_b.demo T3 --seed 42 --arm B2`가 9단계를 실제로 수행한다.
+모델 호출 0건이며, 출력되는 모든 수치는 결정론적 검증기에서 나온다(데모 스스로 그 사실을 밝힌다).
+오라클을 한 번도 보지 않은 채 5/5 채점 통과. **핵심 대비 실증:**
+`--arm B2` → 부풀린 초안에서 미근거 주장 2건 지목 / `--arm B2-P` → 같은 초안이 "검사 안 함"으로 **그대로 통과**.
+
+### 지출 전에 잡은 계측기 결함 — RD-2026-09-03-82A
+청구 잠금의 **절대 허용오차가 fail-open**이었다. 참값 `improvement_over_baseline = 0.02183`인데
+`0.02650`(21.4% 오차)을 주장해도 통과했다 — 절대 오차 0.00467이 허용오차 0.02보다 작기 때문이다.
+측정량 자체가 허용오차 크기와 비슷하면 절대 기준은 무의미하다. `max(1e-6, 0.05×|참값|)`의 상대 방식으로 바꾸고
+T3 채점기에도 같은 규칙을 적용했다. 재발 방지 테스트 3건 추가(하네스 22/22, T3 15/15 통과).
+
+### (a) 비교 실험 표 항목 7 — 완료, 그리고 **초판 진술 정정** RD-2026-09-03-83A
+초판은 8편 전부 "짝지은 검정 미기재"로 적었다. **그 진술은 틀렸다.** arXiv 전문 HTML을 직접 받아 확인한 결과:
+- **DarwinX [2608.07545]: paired exact McNemar 실제 사용** — TerminalWorld 41개 held-out 과제에서
+  25/41 대 28/41, **p=0.45**, 저자 스스로 "decisive가 아니라 suggestive"라고 적는다.
+- **HarnessOpt-Bench [2608.06301]: K=3 라운드 평균의 표준오차** 보고, "두 라운드는 산포를 추정하지 못한다"고 명시.
+- 나머지 6편은 전문에서도 짝지은 추론 미확인.
+
+정독 요약본은 방법 세부를 누락하므로 **방법 주장의 근거로 쓸 수 없다.** 표와 §3을 정정했고 초판 오류는 문서에 남겼다.
+이 정정은 Study B를 약화시키지 않는다. 이탈점을 "검정의 존재"가 아니라 **"검정의 위치(사전등록 대 사후 보고)"**로
+좁혔고, DarwinX의 p=0.45는 **검출력 부족의 직접 선례**가 되어 §6의 MDE 사전 공개를 뒷받침한다.
+
+### (b) T1/T2 어댑터 — 미착수
+0014a에서 과제 수(2 또는 3)가 정해지면 T1 채택 여부가 갈리므로 상한 확정 후 구축한다.
+
+### 이번 사이클 결과표 숫자의 origin
+**없음.** 데모 출력은 `origin: verifier`이며 결과표에 넣지 않았다.
+
+next_first_action: 0014a 수신 시 즉시 (1) 승인된 과제당 n으로 §6 MDE 표 재계산 → (2) 사전등록 봉인·다이제스트를 `.orx/paper_protocol.json`에 등록 → (3) 아암 커밋 해시 확정 → (4) orx 실험 노드 생성 후 드라이런(아암당 n=1, 총 $2 상한, `PIPELINE_DRY_RUN`). 0014a 이전에는 T1/T2 어댑터와 receipt의 `orx_run_id` 검사(0013a §B-3 failing-first 1건)를 구축한다.

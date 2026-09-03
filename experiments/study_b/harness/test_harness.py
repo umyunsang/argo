@@ -53,6 +53,19 @@ def main():
     check("an unsupported claim is flagged", len(r["unsupported"]) == 1, str(r))
     r = p.lock_claims("we measured f1 = 0.95", receipt)
     check("a fabricated metric name is flagged", len(r["unsupported"]) == 1, str(r))
+    # an absolute tolerance is fail-open when the quantity is about the tolerance size
+    small = {"m": {"improvement_over_baseline": 0.02183}}
+    r = p.lock_claims("improvement_over_baseline = 0.02650", small)
+    check("a 21% overclaim on a small quantity is flagged (relative tolerance)",
+          len(r["unsupported"]) == 1, str(r))
+    r = p.lock_claims("improvement_over_baseline = 0.02190", small)
+    check("a 0.3% difference on the same quantity is accepted",
+          r["unsupported"] == [], str(r))
+    big = {"m": {"tokens": 18000.0}}
+    check("relative tolerance scales with magnitude",
+          p.lock_claims("tokens = 18500", big)["unsupported"] == [] and
+          len(p.lock_claims("tokens = 25000", big)["unsupported"]) == 1)
+
     off = DecisionProtocol(enabled=False)
     check("an ablated protocol reports that it did not check",
           off.lock_claims("brier = 0.91", receipt)["checked"] is False)

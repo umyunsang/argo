@@ -74,8 +74,14 @@ class DecisionProtocol:
         self.records.append(fields)
         return len(self.records) - 1
 
-    def lock_claims(self, report: str, receipt: dict, tol: float = 0.02):
-        """Return claims whose numbers are not backed by the receipt."""
+    def lock_claims(self, report: str, receipt: dict, rel_tol: float = 0.05,
+                    abs_floor: float = 1e-6):
+        """Return claims whose numbers are not backed by the receipt.
+
+        Tolerance is RELATIVE with a small absolute floor. An absolute tolerance is
+        fail-open: when the quantity itself is about the size of the tolerance, a
+        claim can be off by twenty per cent and still pass.
+        """
         if not self.enabled:
             return {"checked": False, "unsupported": []}
         flat = _flatten(receipt)
@@ -83,7 +89,8 @@ class DecisionProtocol:
         for m in re.finditer(r"([A-Za-z_][A-Za-z0-9_]{1,40})\s*[=:]\s*(-?\d+\.?\d*)", report):
             key, val = m.group(1).strip().lower(), float(m.group(2))
             hit = [v for k, v in flat.items() if k.lower().endswith(key)]
-            if not hit or all(abs(float(h) - val) > tol for h in hit if _num(h)):
+            cands = [float(h) for h in hit if _num(h)]
+            if not cands or all(abs(h - val) > max(abs_floor, rel_tol * abs(h)) for h in cands):
                 unsupported.append({"claim": m.group(0).strip(), "key": key})
         return {"checked": True, "unsupported": unsupported}
 
