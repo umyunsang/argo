@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "experiments"))
 from study_b.harness.arms import ARMS  # noqa: E402
 sys.path.insert(0, str(ROOT / "experiments/study_b/tasks"))
 import run_t1, run_t2, run_t3  # noqa: E402
+from study_b import episode_runner  # noqa: E402
 
 APPROVAL_FLAG = ROOT / "paper/research/q0009-approval.json"
 DRY_RUN_EPISODE_CAP = 1
@@ -50,6 +51,29 @@ def git_commit() -> str:
     except Exception:
         return ""
 
+
+
+LOCAL_RUNS = Path(os.environ.get("ORX_LOCAL_RUNS",
+                                 Path.home() / ".local/share/openresearch/local-runs"))
+
+
+def substrate_run_dir(run_id) -> Path:
+    """Resolve the run id to the substrate's own run directory.
+
+    A bare string is not evidence of a run: on 2026-09-03 a test fixture set
+    ORX_RUN_ID=probe and a real model episode executed outside any run. The id
+    must name a directory the substrate created, or the block does not start.
+    """
+    if not run_id:
+        raise SpendRefused(
+            "refusing to run outside the experiment substrate: ORX_RUN_ID is unset. "
+            "Episodes executed outside a run are not admissible as results.")
+    run_dir = LOCAL_RUNS / run_id
+    if not run_dir.is_dir():
+        raise SpendRefused(
+            "refusing to run: ORX_RUN_ID=%s does not resolve to a run directory under %s. "
+            "Episodes executed outside a run are not admissible as results." % (run_id, LOCAL_RUNS))
+    return run_dir
 
 def build_receipt(arm, task, seeds, dry_run, episodes, usage_log, transcripts) -> dict:
     return {
@@ -88,6 +112,49 @@ def task_preconditions(task: str) -> dict:
     return {"ready": False, "reason": f"unknown task {task}"}
 
 
+def resolve_executor():
+    """The model executor is chosen by name so tests can substitute a recorder.
+
+    STUDY_B_EXECUTOR=episode selects the real runner (the default). Any other
+    value must name a module:function importable from the repository root, and
+    the receipt records which one ran so a recorded episode can never pass as a
+    model call.
+    """
+    name = os.environ.get("STUDY_B_EXECUTOR", "episode")
+    if name == "episode":
+        return episode_runner.run_episode, "study_b.episode_runner:run_episode"
+    mod_name, fn_name = name.split(":")
+    import importlib
+    return getattr(importlib.import_module(mod_name), fn_name), name
+
+
+
+def write_receipt(a, state, episodes, executor_name, out_path, work_root, interrupted, rel) -> dict:
+    total_cost = round(sum(float(e.get("cost_usd") or 0.0) for e in episodes), 6)
+    total_tokens = sum(int(e.get("total_tokens") or 0) for e in episodes)
+    usage_path = out_path.parent / f"usage_{a.arm}_{a.task}.json"
+    usage_path.write_text(json.dumps({"records": [
+        {"episode": i, "arm": e["arm"], "task": e["task"], "seed": e["seed"],
+         "total_tokens": e.get("total_tokens", 0), "cost_usd": e.get("cost_usd", 0.0)}
+        for i, e in enumerate(episodes)],
+        "total_tokens": total_tokens, "total_cost_usd": total_cost}, indent=2) + "\n",
+        encoding="utf-8")
+    receipt = build_receipt(a.arm, a.task, a.seeds, a.dry_run, episodes,
+                            rel(usage_path), rel(work_root))
+    receipt["executor"] = executor_name
+    if executor_name != "study_b.episode_runner:run_episode":
+        receipt["origin"] = "recorded_executor"
+        receipt["evidence_level"] = "FIXTURE_NOT_A_MODEL_CALL"
+    receipt["episodes_completed"] = len(episodes)
+    receipt["total_tokens"] = total_tokens
+    receipt["total_cost_usd"] = total_cost
+    receipt["interrupted"] = interrupted
+    receipt["manipulation_check_passed"] = bool(episodes) and all(
+        e.get("manipulation_check", {}).get("manipulation_check_passed") for e in episodes)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return receipt
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--arm", required=True, choices=sorted(ARMS))
@@ -107,11 +174,10 @@ def main() -> int:
             "dry run is capped at %d episode per arm; asked for %d"
             % (DRY_RUN_EPISODE_CAP, a.seeds))
 
-    if not os.environ.get("ORX_RUN_ID"):
-        raise SpendRefused(
-            "refusing to run outside the experiment substrate: ORX_RUN_ID is unset. "
-            "Episodes executed outside a run are not admissible as results.")
+    substrate_run_dir(os.environ.get("ORX_RUN_ID"))
 
+    global EXECUTOR
+    EXECUTOR, executor_name = resolve_executor()
     task_state = task_preconditions(a.task)
     if not task_state.get("ready"):
         print(json.dumps({"status": "TASK_NOT_READY", "arm": a.arm, "task": a.task,
@@ -120,7 +186,55 @@ def main() -> int:
 
     print(json.dumps({"status": "PRECONDITIONS_OK", "arm": a.arm, "task": a.task,
                       "dry_run": a.dry_run, "approval": state,
-                      "task_preconditions": task_state}, indent=2))
+                      "task_preconditions": task_state}))
+
+    # Execution. Until this block existed the sealed command stopped above and
+    # returned 0 without ever calling a model, so a screening run would have
+    # reported success while producing nothing. The receipt is written only from
+    # episodes that actually ran, and a refusal is recorded rather than swallowed.
+    out_path = Path(a.out)
+    if not out_path.is_absolute():
+        out_path = ROOT / out_path
+    work_root = out_path.parent / f"{a.arm}_{a.task}"
+    oracle_root = out_path.parent / f"oracle_{a.task}"
+    work_root.mkdir(parents=True, exist_ok=True)
+    oracle_root.mkdir(parents=True, exist_ok=True)
+
+    def rel(p: Path) -> str:
+        try:
+            return str(p.relative_to(ROOT))
+        except ValueError:
+            return str(p)
+
+    episodes = []
+    interrupted = None
+    for seed in range(a.seeds):
+        try:
+            ep = EXECUTOR(a.arm, a.task, seed, work_root / f"seed{seed}", oracle_root, a.dry_run)
+        except BaseException as exc:  # a spent episode must never vanish with the crash
+            interrupted = {"seed": seed, "error": repr(exc)}
+            break
+        episodes.append(ep)
+        print(json.dumps({"episode": seed, "answered": ep.get("answered"),
+                          "cost_usd": ep.get("cost_usd")}))
+        write_receipt(a, state, episodes, executor_name, out_path, work_root, None, rel)
+    if interrupted is not None:
+        write_receipt(a, state, episodes, executor_name, out_path, work_root, interrupted, rel)
+        print(json.dumps({"status": "BLOCK_INTERRUPTED", "arm": a.arm, "task": a.task,
+                          "completed_episodes": len(episodes), "interrupted": interrupted,
+                          "receipt": rel(out_path)}))
+        return 4
+
+    receipt = write_receipt(a, state, episodes, executor_name, out_path, work_root, None, rel)
+    cap = DRY_RUN_USD_CAP if a.dry_run else (state.get("usd_cap") or 0.0)
+    if receipt["total_cost_usd"] > cap:
+        print(json.dumps({"status": "REFUSED", "reason": "cumulative cost %.6f exceeds cap %.2f"
+                          % (receipt["total_cost_usd"], cap), "receipt": rel(out_path)}))
+        return 2
+    print(json.dumps({"status": "BLOCK_COMPLETE", "arm": a.arm, "task": a.task,
+                      "episodes": len(episodes), "total_cost_usd": receipt["total_cost_usd"],
+                      "manipulation_check_passed": receipt["manipulation_check_passed"],
+                      "receipt": rel(out_path)}))
     return 0
 
 
