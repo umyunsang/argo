@@ -2,7 +2,7 @@
 
 goal: `661de7ea-39d8-4d81-8284-d41edff45288` status=**active** budget=none
 orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71` — 클린 클론 done (`c0777239` @ `930f0db06`)
-orx_runs_this_cycle: 1
+orx_runs_this_cycle: 2
 exa_calls_this_cycle: 2 — **exa 복구됨**(401 해소, web_search_exa 2회 성공). 결과 가치는 낮아 인용하지 않음.
 study_b_spend_to_date: **$0.39** (드라이런 $0.39 / 상한 $2.00, 스크리닝 $0.00 / 상한 $48.47, 0014a)
 prereg_sealed: **yes** — 봉인 sha256 `f8671c44f076`
@@ -11,6 +11,35 @@ results_origin_list: **없음.** 원고 신규 표 `tbl-studyb-status`의 결과
 ## Completed in current phase
 
 
+
+
+### §1.6 하네스 오염 점검 보고 (instruction-0015 §1.6 이행)
+
+- **점검 시각:** 2026-09-03T15:33:26+09:00
+- **점검 대상:** 1차 드라이런 전사 3종(`B0_T3`, `B1_T3`, `B2_T3`), `prime-agent` 기본 런타임 환경, 격리 차단 플래그.
+
+#### 1. 발견된 오염 실태 (실측 증거)
+1. **글로벌 Continual Harness 및 프롬프트 주입 확인 (심각):**
+   - 워크디렉토리가 레포 내부(`paper/experiments/...`)이고 별도 격리 플래그가 없을 때, `prime-agent`가 `~/.prime/agent/harness/harness_state.json`을 기본 로드하여 **프롬프트 노트 2건(ARGO pause 규칙 등), 글로벌 메모리 41건(ARGO 마이그레이션 정체성 등), 서브에이전트 1건, MCP 서버 2개(exa, parallel)**를 에이전트 시스템 프롬프트에 자동 주입함.
+   - 격리 프로브 에이전트 질의 결과: 에이전트가 "AGENTS.md 위치, ARGO가 Prime Agent 포크 마이그레이션이라는 점, pause 상태"를 그대로 인지하고 답변함.
+2. **B0 아암의 ipython 누출 및 조작 실패 확인 (심각):**
+   - B0 전사에서 `ipython`이 328회 언급되었으며, Line 29에서 모델이 실제로 `ipython` 툴콜을 실행함.
+   - 원인: `prime-agent`의 유일한 내장 툴이 `ipython`(`BUILTIN_TOOL_NAMES = ["ipython"]`)이며, 프롬프트로만 "네 가지 원시 도구만 쓰라"고 지시했으나 API 레벨에서 `ipython` 툴 정의가 전달되어 모델이 이를 호출함. 즉 조작이 프롬프트 수준에 그쳤고 툴 수준에서 분리되지 않음.
+3. **B2 메커니즘 부재:**
+   - B2 전사에서 `graph_add`/`graph_query` 툴콜 0회, 6필드 결정 게이트 인터셉트 0회. 텍스트로만 존재함.
+
+#### 2. 격리 차단 검증 완료 (해결책 실측)
+1. **컨텍스트 파일 및 레포 격리:**
+   - `--cwd /tmp/study_b_workdir/...` (레포 외부 임시 경로로 완전 격리)
+   - `-nc` (`--no-context-files`): 레포 상위 `AGENTS.md`, `CLAUDE.md` 탐색 원천 차단.
+   - `-ne -ns -np`: 확장, 스킬, 프롬프트 템플릿 탐색 차단.
+2. **글로벌 Continual Harness 차단:**
+   - `PRIME_AGENT_CODING_AGENT_DIR=/tmp/clean_agent_dir` (auth.json만 존재) 설정 시 실측:
+     `prompt: 0, memory: 0, skill: 0, subagent: 0, recent refinements: 0`으로 글로벌 주입 100% 차단 확인.
+3. **아암별 툴/게이트 실측 분리 설계 확정:**
+   - **B0:** `--no-builtin-tools` (`ipython` 원천 제거) + 최소 원시 도구(`read`, `write`, `edit`, `bash`) extension 탑재.
+   - **B1:** B0 + `ipython` 활성화.
+   - **B2:** B1 + TypeScript extension으로 도구 수준 `graph_add`/`graph_query` + 6필드 decision 미등록 시 실행 차단 fail-closed 게이트 인터셉트.
 
 ### 사이클 (Study B 파이프라인 드라이런) — B0·B1·B2 3아암 모델 엔드투엔드 실행 및 검증 완료
 
