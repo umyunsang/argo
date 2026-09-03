@@ -5,6 +5,11 @@ Invocation strictly separates harness configuration (system prompt + extensions 
 from task content (user turn).
 Costs are parsed from the stream and summed; manipulation logs are verified per arm.
 
+Counting basis: the extension's tool_call interceptor writes exactly one record per tool
+invocation, so a receipt's tool_call_counts equals distinct toolCallIds. Raw transcript
+tool_execution_* events over-count because each call streams many update records; dedupe
+them by toolCallId to reproduce the receipt numbers exactly.
+
 origin: model_call
 """
 from __future__ import annotations

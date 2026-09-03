@@ -2,10 +2,11 @@
 
 goal: `661de7ea-39d8-4d81-8284-d41edff45288` status=**active** budget=none
 orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71` — 클린 클론 done (`c0777239` @ `930f0db06`)
-orx_runs_this_cycle: 2
+orx_runs_this_cycle: 3
+session_model: `opencode-go/qwen3.8-flash` (측정값 — 세션 로그 `model_change` 레코드, 2026-09-03T06:57:45Z부터). instruction-0012 §9가 고정하라고 지정한 `anthropic/claude-opus-5`가 **아니다**. 오늘 두 번 전환됨(05:16 gemini-3.8-flash-high → 06:57 qwen3.8-flash). 본 세션이 전환한 것이 아니며, 전환 권한도 청구하지 않는다. **Q-0010**으로 상정. Study B 처치 모델은 `episode_runner.py`의 상수 `anthropic/claude-haiku-4-5`로 고정되어 있어 이 차이가 실험 비용·단가에 영향을 주지 않는다.
 exa_calls_this_cycle: 2 — **exa 복구됨**(401 해소, web_search_exa 2회 성공). 결과 가치는 낮아 인용하지 않음.
 study_b_spend_to_date: **$0.83** (드라이런 1·2차 $0.826 / 상한 $2.00, 스크리닝 $0.00 / 상한 $48.47, 0014a)
-prereg_sealed: **yes** — v1 `f8671c44f076` (superseded), v2 `52939b05b166` (14개 인프라 파일 봉인 완료)
+prereg_sealed: **yes** — v1 `f8671c44f076` (superseded), v2 `9a39ef7519df` (14개 파일, instruction-0015a 보정 반영)
 results_origin_list: **없음.** 원고 신규 표 `tbl-studyb-status`의 결과 열은 전부 "미실행"이다.
 
 ## Completed in current phase
@@ -13,6 +14,15 @@ results_origin_list: **없음.** 원고 신규 표 `tbl-studyb-status`의 결과
 
 
 
+
+
+### 사이클 (instruction-0015a 검수 보정) — 봉인 정합성 1–5 닫음
+
+- **§1 시각 오기 (실제 결함, 수정):** `sealed_at`·v2 작성 일시·cost-ledger 2차 드라이런 3행이 전부 `15:33:26`이었다. 원인은 **하나의 `nowr` 변수를 사이클 초반에 계산해 20분 뒤 사건들에 재사용**한 것. 각 항목을 실측 mtime으로 교체했다 — B0 15:42:12, B1 15:43:33, B2 15:46:00, v2 문서 15:52:57, 프로토콜 등록 15:54:17. `15:33:26`은 §1.6 점검 시각으로만 남겼다.
+- **§2 B0 봉인 blob ≠ 실행 blob (판정: 무변경):** mtime이 실행보다 나중인 이유는 내용 수정이 아니라 **내 봉인 변조 탐침이 원본 바이트를 되썼기** 때문(되쓰기는 내용을 안 바꾸나 mtime은 바꾼다). 증거는 파일시스템이 아니라 실행 잔존물에 있다: `b0_tools.js`의 초판은 `execute()` 안에서 `{tool, path}`를, 채택판은 `tool_call` 인터셉터에서 `{tool, input}`을 기록한다. **B0 로그 12건이 전부 `input` 형식** → B0는 채택판(=현재 커밋본)으로 실행됨. 기능 변경이 아니므로 재실행하지 않는다. 교훈을 v2에 남겼다: 봉인 파일 탐침은 사본에서 하거나 다이제스트 동일성을 함께 기록해야 한다.
+- **§3 seal_commit:** v1의 `9eeabc9e2`에서 봉인 커밋으로 갱신(아래 커밋 후 기록).
+- **§4 집계 기준 (재현 가능하게 확정):** receipt 수치는 `tool_call` 인터셉터가 호출당 1건 기록. 원시 transcript는 `tool_execution_update` 스트림 때문에 과다 계상된다. **toolCallId 중복 제거 = manipulation_log = receipt**가 세 아암에서 정확히 일치했다(B0 read3/bash8/write1, B1 ipython5/read3/bash1/write1, B2 ipython7/graph_add6/threshold4/loop4/decision3/bash3/read2/write1). 결정적 성질: **B0의 ipython은 어떤 기준에도 키 자체가 없다** → 판정은 집계 기준에 의존하지 않는다.
+- **§5 status 꼬리·모델 줄:** stale한 `next_first_action`(0014a 대기)을 현재 단계로 교체. 세션 모델 실측: `opencode-go/qwen3.8-flash` (06:57:45Z부터). **instruction-0012 §9가 고정을 지정한 `anthropic/claude-opus-5`가 아니다.** 오늘 두 번 전환됐고 본 세션이 전환하지 않았다. 지시된 값을 쓰는 것은 검증 없는 진술이 되므로 **측정값을 기록하고 Q-0010으로 상정**한다. 처치 모델은 러너 상수로 고정되어 있어 실험 비용·단가에는 영향이 없다.
 
 ### 사이클 (Study B 하네스 구현·2차 드라이런·v2 재봉인) — manipulation-check 3/3 PASS 및 투명 재봉인
 
@@ -1031,4 +1041,4 @@ PDF 26쪽, 형식 규칙 13/13 ENFORCED PASS, 금지어 0건, 철회 토큰 0건
 ### 이번 사이클 결과표 숫자의 origin
 **없음.** `tbl-studyb-status`의 결과 열은 전부 "미실행"이며, MDE·단가는 설계 값으로 분리 표기했다.
 
-next_first_action: 0014a 수신 시 (1) 승인 n으로 §6·Ⅳ장 12절 MDE 재계산 → (2) 봉인 → (3) 아암 커밋 해시 확정 → (4) orx 노드 생성·드라이런($2 상한). 0014a 이전에는 Ⅴ장 결론을 Study A 측정 장 + Study B 주 장 구조에 맞게 다시 쓰고, 국문요약이 두 연구를 모두 반영하는지 점검한다.
+next_first_action: instruction-0015a 1–5 보정 완료. 이제 §3(검증 문헌 비교표)·§4(prototype/hackathon/material/결정 사슬 노드)를 닫고, 완료 보고 후 스크리닝을 시작한다(상한 $48.47, (task,seed) 쌍 완결 순서, B0→B1→B2 연속).

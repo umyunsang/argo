@@ -2,7 +2,8 @@
 
 - **선행 문서:** `paper/research/study-b-preregistration.md` (v1, sha256 `f8671c44f076039dbb7e9038f0f659cfd13d687ba0b7092c70328c18ad0cfa4d`, 2026-09-03T10:53:45)
 - **개정 사유:** v1의 아암 조작이 프롬프트 수준에 그쳐 manipulation check에 실패(B0에서 ipython 328회 언급 및 호출 발생, B2 메커니즘 툴 부재)함에 따라, 도구 및 게이트 수준의 실제 하네스로 전면 재구현하고 봉인 범위를 모델 호출 경로 전체로 확장한다. 스크리닝 지출 $0.00, 확증 데이터 0건 상태에서 수행된 투명 pre-data amendment이다.
-- **작성 일시:** 2026-09-03T15:33:26+09:00
+- **작성 일시:** 2026-09-03T15:52:57+09:00
+- **§1.6 오염 점검 시각:** 2026-09-03T15:33:26+09:00
 - **승인 근거:** 사용자 지시 2026-09-03 10:47 KST (Q-0009 시나리오 a, 지출 상한 $48.47) 및 instruction-0015 §2.
 
 ---
@@ -34,10 +35,10 @@
 
 ## 2. 2차 드라이런 실측 기반 비용 및 표본 크기 재산정
 
-2026-09-03 2026-09-03T15:33:26+09:00 격리 환경에서 실행된 2차 드라이런(T3, seed 42, claude-haiku-4-5) 실측값:
-- **B0:** $0.170364 (636,485 토큰, 0/5 통과, manipulation: PASS, ipython: 0)
-- **B1:** $0.155862 (505,061 토큰, 0/5 통과, manipulation: PASS, ipython: 5)
-- **B2:** $0.109955 (213,698 토큰, 1/5 통과, manipulation: PASS, gate_block: 1, decision: 3, thresh: 4)
+격리 환경에서 실행된 2차 드라이런(T3, seed 42, claude-haiku-4-5) 실측값:
+- **B0:** $0.170364 (실행 시각 2026-09-03T15:42:12+09:00) (636,485 토큰, 0/5 통과, manipulation: PASS, ipython: 0)
+- **B1:** $0.155862 (실행 시각 2026-09-03T15:43:33+09:00) (505,061 토큰, 0/5 통과, manipulation: PASS, ipython: 5)
+- **B2:** $0.109955 (실행 시각 2026-09-03T15:46:00+09:00) (213,698 토큰, 1/5 통과, manipulation: PASS, gate_block: 1, decision: 3, thresh: 4)
 - **에피소드당 평균 실측 비용:** **$0.14539**
 
 사용자 승인 지출 상한은 **$48.47**이다.
@@ -57,7 +58,7 @@
 | `experiments/study_b/harness/components.py` | `301fc1e7418764a08db770f323296671c84672b0` |
 | `experiments/study_b/harness/test_harness.py` | `68d6bc4a1a2c4b7e78294c60f368defcf511b70e` |
 | `experiments/study_b/run_block.py` | `01aa0a3601fc470e1d999ec495d4eb2cd16be6df` |
-| `experiments/study_b/episode_runner.py` | `63dbf02f3be339320a91f64b6561b8d7e94e4249` |
+| `experiments/study_b/episode_runner.py` | `ffedccc90712a67a62248c0b5b714cf0141d000a` |
 | `experiments/study_b/test_episode_runner.py` | `5d07a82dc28e7c44886bba95413c5390baef443c` |
 | `experiments/study_b/harness/test_extensions.py` | `97028838eac786c3d2cd58eb12763aef8e0469fc` |
 | `experiments/study_b/harness/extensions/b0_tools.js` | `1085847e30d0bc99e307d59fbc1c670419601f66` |
@@ -70,3 +71,54 @@
 
 - 고정 run command:
   `/usr/bin/python3 experiments/study_b/run_block.py --arm <ARM> --task <TASK> --seeds <N> --out <RECEIPT>`
+
+### 3.1 실행 이후 변경된 파일과 그 증명
+
+봉인 해시는 2차 드라이런 **뒤에** 계산되었다. 따라서 실행본과 봉인본이 다른 파일이 존재하며,
+각각에 대해 기능 변경 여부를 검증 가능한 방식으로 판정했다.
+
+| 파일 | 관찰 | 판정 | 증거 |
+|---|---|---|---|
+| `harness/extensions/b0_tools.js`<br>`harness/prompts/b0_system_prompt.txt` | mtime이 B0 실행(15:42:12) 이후(15:52:51, 15:53:03) | **내용 무변경** | 봉인 변조 탐침이 원본 바이트를 되썼다(되쓰기는 mtime만 갱신). 실행본 판별은 로그 형식으로 한다: 초판은 `execute()` 안에서 `{tool, path}`를, 채택판은 `tool_call` 인터셉터에서 `{tool, input}`을 기록한다. B0 로그 12건은 전부 `input` 형식이며, 이는 채택판=현재 커밋본이 실행되었음을 뜻한다. |
+| `episode_runner.py` | 봉인 해시 계산(15:52:5x) 이후에 편집됨 | **비기능 변경 (docstring 전용)** | 커밋본과 작업본의 AST를 **docstring 제거 후 비교하여 동일**함을 확인(`ast.dump` 일치). 추가된 것은 모듈 docstring의 집계 기준 4줄뿐이며 실행 경로에 영향을 주지 않는다. |
+
+**재실행하지 않는 사유:** 두 경우 모두 기능 변경이 아니므로 B0를 다시 돌리지 않는다. 다만 봉인 시점의
+정직성을 위해, 봉인 해시가 실행 이후에 계산되었다는 사실과 위 판정 근거를 이 문서에 남긴다.
+탐침으로 인한 mtime 오염을 피하려면 봉인 파일 변조 탐침은 사본에서 수행해야 하며, 그것은 다음
+봉인부터 적용한다.
+
+## 4. 조작 검사 집계 기준 (reproducible counting basis)
+
+수신 receipt의 도구 호출 수는 `manipulation_log.json` 항목 수이며, 이 로그는 extension의
+`tool_call` 인터셉터가 **호출 1회당 정확히 1건**을 기록한다. 원시 transcript는 같은 호출을
+여러 번 센다: 각 도구 실행이 `tool_execution_start`와 다수의 `tool_execution_update` 이벤트를
+내기 때문이다. 두 기준의 관계는 재현 가능하게 확정되어 있다.
+
+| 아암 | 원시 이벤트 합계 | toolCallId 중복 제거 | manipulation_log | receipt |
+|---|---:|---:|---:|---:|
+| B0 | read 6 / bash 16 / write 2 | read 3 / bash 8 / write 1 | read 3 / bash 8 / write 1 | 동일 |
+| B1 | ipython 76 / read 6 / bash 2 / write 2 | ipython 5 / read 3 / bash 1 / write 1 | ipython 5 / read 3 / bash 1 / write 1 | 동일 |
+| B2 | ipython 166 / graph_add 12 / threshold 8 / loop 8 / decision 6 / bash 6 / read 4 / write 2 | ipython 7 / graph_add 6 / threshold_register 4 / loop_evaluate 4 / decision_record 3 / bash 3 / read 2 / write 1 | 동일 | 동일 |
+
+**집계 기준 한 줄:** `transcript의 tool_execution_* 이벤트를 toolCallId로 중복 제거한 집합 = manipulation_log 항목 = receipt 수치`.
+
+중요한 성질: **B0의 `ipython`은 어떤 집계 기준에서도 0이다.** 원시 이벤트에도, 중복 제거 후에도,
+로그에도 `ipython` 키 자체가 존재하지 않는다. 즉 조작 검사 판정은 집계 기준에 의존하지 않는다.
+
+## 5. 봉인 blob과 실행 blob의 관계 (instruction-0015a §2 대응)
+
+`harness/extensions/b0_tools.js`와 `harness/prompts/b0_system_prompt.txt`의 mtime이
+B0 실행(15:42:12)보다 나중(15:52:51, 15:53:03)인 것으로 관찰되었다. 원인은 내용 수정이 아니라
+**본 세션의 봉인 변조 탐침 자체**다. 탐침은 파일을 읽어 원본 바이트를 보존하고, 변조 본을 쓴 뒤
+원본 바이트를 그대로 되썼다. 되쓰기는 내용을 바꾸지 않지만 mtime은 갱신한다.
+
+내용이 실행본과 동일하다는 증거는 파일 시스템이 아니라 **실행 잔존물**에서 나온다.
+`b0_tools.js`에는 로깅 방식이 다른 두 판본이 있었다: 초판은 각 도구 `execute()` 안에서
+`{tool, path}`/`{tool, command}`를 기록했고, 채택판은 `tool_call` 인터셉터에서
+`{tool, input}`을 기록한다. B0 로그 12건은 **전부 `input` 필드 형식**이다. 따라서 B0는
+채택판(현재 커밋본)으로 실행되었고, 커밋본과 작업본은 `git status`상 동일하다.
+
+판정: **비기능 변경이 아니라 무변경(no change)**. 기능 변경이 아니므로 B0 재실행은 불필요하며,
+재실행하지 않는다. 대신 교훈을 남긴다 — 봉인 대상 파일에 대한 변조 탐침은 mtime 증거를 오염시키므로,
+사본에서 수행하거나 수행 직후 다이제스트 동일성을 함께 기록해야 한다.
+
