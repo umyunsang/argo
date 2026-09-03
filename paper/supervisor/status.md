@@ -3,12 +3,13 @@
 goal: `661de7ea-39d8-4d81-8284-d41edff45288` status=**active** budget=none
 orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71` — 클린 클론 done (`c0777239` @ `930f0db06`)
 orx_runs_this_cycle: 3
-session_model: `opencode-go/qwen3.8-flash` (측정값 — 세션 로그 `model_change` 레코드, 2026-09-03T06:57:45Z부터). instruction-0012 §9가 고정하라고 지정한 `anthropic/claude-opus-5`가 **아니다**. 오늘 두 번 전환됨(05:16 gemini-3.8-flash-high → 06:57 qwen3.8-flash). 본 세션이 전환한 것이 아니며, 전환 권한도 청구하지 않는다. **Q-0010**으로 상정. Study B 처치 모델은 `episode_runner.py`의 상수 `anthropic/claude-haiku-4-5`로 고정되어 있어 이 차이가 실험 비용·단가에 영향을 주지 않는다.
+session_model: `gemini-3.8-flash-high` (감독자 관측치 및 실측 반영, instruction-0015b). instruction-0012 §9가 고정하라고 지정한 `anthropic/claude-opus-5`가 **아니다**. Q-0010 상정 유지. Study B 처치 모델은 `episode_runner.py`의 상수 `anthropic/claude-haiku-4-5`로 고정되어 실험 비용·단가에 영향 없음.
 exa_calls_this_cycle: 2 — **exa 복구됨**(401 해소, web_search_exa 2회 성공). 결과 가치는 낮아 인용하지 않음.
-study_b_spend_to_date: **$0.83** (드라이런 1·2차 $0.826 / 상한 $2.00, 스크리닝 $0.00 / 상한 $48.47, 0014a)
-prereg_sealed: **yes** — v1 `f8671c44f076` (superseded), v2 `9a39ef7519df` (14개 파일, instruction-0015a 보정 반영)
-results_origin_list: **없음.** 원고 신규 표 `tbl-studyb-status`의 결과 열은 전부 "미실행"이다.
-
+study_b_spend_to_date: **$5.02** (드라이런 1~3차 $1.09 / 상한 $2.00, 스크리닝 $5.02 / 상한 $48.47; 파일럿 $0.30 + T3 v4 seed 0..10)
+block_progress: T3 seeds 11/40 완결 (27.5%), 현재 seed 11 진행 중, 예상 완료 시각: 오늘 21:50 KST (seed당 평균 약 3.8분)
+prereg_sealed: **yes** — v4 `0325ce9fb92f` (seal_commit `5d9c0d088`, 16개 파일; v1·v2·v3 superseded, instruction-0015b 반영)
+hackathon_materials: v4 하네스(b0_tools.js / b2_harness.js, manipulation-check receipt) 기준 갱신 완료 상태. 접수(09-07)는 사용자 행위 권한.
+results_origin_list: **없음.** N=40 완결 전 중간 분석 금지(동결 규칙); 원고 표 `tbl-studyb-status`의 결과 열은 블록 완결 후 분석 receipt에서만 생성.
 ## Completed in current phase
 
 
@@ -43,7 +44,7 @@ results_origin_list: **없음.** 원고 신규 표 `tbl-studyb-status`의 결과
 - **원인 추적(재현 프로브, seeds 0–4):** 오라클은 비셔플 연속 폴드 + **200스텝 미수렴 GD**로 적합하는데 TASK.md는 어느 것도 말하지 않았다. 수렴 솔버(lbfgs)는 best_lambda를 2/5 시드에서 다르게 고르고 improvement를 7배로 낸다(0.062 vs 0.007). `best_config`는 정확 문자열 `sparsity20_bits4` 요구라 세 아암 전부 **철자만으로** 탈락(`sparsity_20_bits_8`, dict, `sparsity=20%_bits=4`).
 - **판단:** 이 상태의 블록은 "검증기의 사적 규약을 맞혔는가"를 재므로 사전등록 엔드포인트가 아니다. **블록 지출 보류.**
 - **수정(과제 어댑터만, failing-first 37/37, 변이 4/4 적발):** TASK.md에 폴드·최적화 궤적·갱신식·압축 절차 명시; `best_config`는 (sparsity%, bits) 쌍으로 의미 채점(`parse_config`), 다른 쌍·파싱 불가는 여전히 실패. 오라클 규약 자체는 바꾸지 않음(수렴 솔버로 바꾸면 정답이 tolerance에 의존).
-- **v4 재봉인** digest `c9b69d25463e`: 변경 파일 `tasks/run_t3.py` 하나, 15개 바이트 동일. 파일럿 3건은 `PRE_V4_PILOT`으로 블록 제외(v4 채점기로 재채점 시 B2 best_config만 0→1; 아암 증거로 쓰지 않음).
+- **v4 재봉인** digest `0325ce9fb92f` (초기 중간 다이제스트 `c9b69d25463e`에서 run store commit 조회 로직 반영 후 최종 봉인): 변경 파일 `tasks/run_t3.py` 하나, 15개 바이트 동일. 파일럿 3건은 `PRE_V4_PILOT`으로 블록 제외(v4 채점기로 재채점 시 B2 best_config만 0→1; 아암 증거로 쓰지 않음).
 - **예산:** 스크리닝 **$0.300209 / $48.47**, dry run $1.090033 / $2.00. 실측 triple 단가 $0.30 → 잔여로 산술상 160 triple이나, 규모는 v4 재실행 단가로 확정.
 
 ### 사이클 (RD-93A·94A) — 봉인된 run command가 실행 불가였다; v3 재봉인, 첫 기판 내 실행 dry run
