@@ -17,6 +17,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "experiments"))
 from study_b.harness.arms import ARMS  # noqa: E402
+sys.path.insert(0, str(ROOT / "experiments/study_b/tasks"))
+import run_t1, run_t2, run_t3  # noqa: E402
 
 APPROVAL_FLAG = ROOT / "paper/research/q0009-approval.json"
 DRY_RUN_EPISODE_CAP = 1
@@ -71,6 +73,21 @@ def build_receipt(arm, task, seeds, dry_run, episodes, usage_log, transcripts) -
     }
 
 
+def task_preconditions(task: str) -> dict:
+    """Ask the task adapter itself whether it can run. No adapter is assumed ready."""
+    if task == "T1":
+        env = os.environ.get("RESEARCHCLAWBENCH_CHECKOUT")
+        return run_t1.check_preconditions(Path(env) if env else None)
+    if task == "T2":
+        return run_t2.check_preconditions(run_t2.bundle_root(os.environ.get("STUDY_B_BUNDLES")))
+    if task == "T3":
+        # T3 is self-contained: its verifier generates its own ground truth.
+        probe = run_t3.oracle_t3.build(0)
+        return {"ready": bool(probe.get("oracle_digest")), "task": "T3",
+                "verifier": "tasks/oracle_t3.py", "self_contained": True}
+    return {"ready": False, "reason": f"unknown task {task}"}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--arm", required=True, choices=sorted(ARMS))
@@ -95,8 +112,15 @@ def main() -> int:
             "refusing to run outside the experiment substrate: ORX_RUN_ID is unset. "
             "Episodes executed outside a run are not admissible as results.")
 
+    task_state = task_preconditions(a.task)
+    if not task_state.get("ready"):
+        print(json.dumps({"status": "TASK_NOT_READY", "arm": a.arm, "task": a.task,
+                          "detail": task_state}, indent=2))
+        return 3
+
     print(json.dumps({"status": "PRECONDITIONS_OK", "arm": a.arm, "task": a.task,
-                      "dry_run": a.dry_run, "approval": state}, indent=2))
+                      "dry_run": a.dry_run, "approval": state,
+                      "task_preconditions": task_state}, indent=2))
     return 0
 
 
