@@ -134,6 +134,99 @@ def scan_public_sources(cfg):
     return unique_paths, failures
 
 
+EXECUTION_MARKERS = ("arms", "aggregate_metrics", "episodes", "tokens", "cost_usd")
+PROVENANCE_FIELDS = ("origin", "model_id", "provider_usage_log", "protocol_fingerprint",
+                     "harness_commit", "episode_transcripts_dir")
+VALID_ORIGINS = ("model_call", "verifier", "human", "simulation")
+
+
+def claims_execution(obj):
+    if not isinstance(obj, dict):
+        return False
+    if obj.get("executed") is True:
+        return True
+    return any(k in obj for k in EXECUTION_MARKERS)
+
+
+def check_receipt_provenance(cfg):
+    """Fail-closed: any receipt asserting execution must declare where its numbers came from."""
+    rule = cfg.get("receipt_provenance") or {}
+    legacy_set = set(rule.get("legacy_uninstrumented", []))
+    failures = {}
+    scanned = []
+    for path in sorted((ROOT / "paper/experiments").rglob("*.json")):
+        rel = str(path.relative_to(ROOT))
+        try:
+            obj = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            failures[rel] = ["unparseable receipt: %s" % exc]
+            continue
+        if not claims_execution(obj):
+            continue
+        scanned.append(rel)
+        bad = []
+        origin = obj.get("origin")
+        if origin not in VALID_ORIGINS:
+            bad.append("origin missing or not one of %s" % (VALID_ORIGINS,))
+        if origin == "simulation":
+            if "/fixtures/" not in "/" + rel:
+                bad.append("simulation receipt must live under a /fixtures/ path")
+            if obj.get("evidence_level") != "SYNTHETIC_FIXTURE":
+                bad.append("simulation receipt must carry evidence_level SYNTHETIC_FIXTURE")
+            if obj.get("model_calls") not in (0, None) and obj.get("executed") is not False:
+                bad.append("simulation receipt must not assert execution")
+        elif rel in legacy_set:
+            for field in ("origin", "model_id", "protocol_fingerprint"):
+                if not obj.get(field):
+                    bad.append("legacy receipt missing %s" % field)
+            if obj.get("evidence_level") != "EXECUTED_LEGACY_UNINSTRUMENTED":
+                bad.append("legacy receipt must declare evidence_level EXECUTED_LEGACY_UNINSTRUMENTED")
+            if not obj.get("provenance_gap"):
+                bad.append("legacy receipt must state its provenance_gap")
+        else:
+            for field in PROVENANCE_FIELDS:
+                if not obj.get(field):
+                    bad.append("missing provenance field: %s" % field)
+            usage_rel = obj.get("provider_usage_log")
+            if usage_rel and not (ROOT / usage_rel).is_file():
+                bad.append("provider_usage_log path does not exist: %s" % usage_rel)
+            tdir = obj.get("episode_transcripts_dir")
+            if tdir:
+                tpath = ROOT / tdir
+                if not tpath.is_dir():
+                    bad.append("episode_transcripts_dir does not exist: %s" % tdir)
+                else:
+                    n_tr = len([p for p in tpath.iterdir() if p.is_file()])
+                    n_ep = obj.get("episodes")
+                    if isinstance(n_ep, list):
+                        n_ep = len(n_ep)
+                    if isinstance(n_ep, int) and n_tr < n_ep:
+                        bad.append("transcript count %d < episode count %d" % (n_tr, n_ep))
+            if usage_rel and (ROOT / usage_rel).is_file():
+                try:
+                    usage = json.loads((ROOT / usage_rel).read_text(encoding="utf-8"))
+                    recs = usage.get("records", usage if isinstance(usage, list) else [])
+                    total = sum(int(r.get("total_tokens", 0)) for r in recs)
+                    declared = obj.get("total_tokens")
+                    if isinstance(declared, int) and declared != total:
+                        bad.append("declared total_tokens %d != usage log sum %d" % (declared, total))
+                except Exception as exc:
+                    bad.append("usage log unreadable: %s" % exc)
+        if bad:
+            failures[rel] = bad
+
+    manuscript_failures = {}
+    for rel in rule.get("manuscript_paths", []):
+        p = ROOT / rel
+        if not p.is_file():
+            continue
+        body = p.read_text(encoding="utf-8", errors="replace")
+        hits = re.findall(r"[^\s\"']*/fixtures/[^\s\"']*", body)
+        if hits:
+            manuscript_failures[rel] = sorted(set(hits))[:5]
+    return {"scanned": scanned, "receipt_failures": failures, "manuscript_fixture_references": manuscript_failures}
+
+
 def scan_pdf_text(cfg, pdf_path):
     gate = cfg["public_output_gate"]
     extractor = Path(gate["pdf_text_extractor_path"])
@@ -488,6 +581,12 @@ def main():
             }
         if not all(x["verified"] for x in evidence_receipts.values()):
             errors.append("evidence receipt or locator identity mismatch")
+
+    provenance = check_receipt_provenance(cfg)
+    if provenance["receipt_failures"]:
+        errors.append("receipt claims execution without valid provenance fields")
+    if provenance["manuscript_fixture_references"]:
+        errors.append("manuscript references a synthetic fixture receipt")
 
     structured_evidence = {}
     expectations = cfg.get("structured_expectations")
@@ -2558,6 +2657,7 @@ def main():
             "official_format_failures": official_format_failures,
         },
         "thesis_form": form_gate,
+        "receipt_provenance": provenance,
         "toolchain": tc_summary,
         "builds": builds,
         "deterministic_pdf": deterministic,
