@@ -4,8 +4,8 @@ goal: `661de7ea-39d8-4d81-8284-d41edff45288` status=**active** budget=none
 orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71` — 클린 클론 done (`c0777239` @ `930f0db06`)
 orx_runs_this_cycle: 3
 exa_calls_this_cycle: 2 — **exa 복구됨**(401 해소, web_search_exa 2회 성공). 결과 가치는 낮아 인용하지 않음.
-study_b_spend_to_date: **$18.26** (드라이런 1~3차 $1.09 / 상한 $2.00, 스크리닝 $5.02 / 상한 $48.47; 파일럿 $0.30 + T3 v4 seed 0..10)
-block_progress: T3 seeds 40/40 완결 (100.0%), 예상 완료 시각: 오늘 21:50 KST (seed당 평균 약 3.8분)
+study_b_spend_to_date: **$18.56** (드라이런 1~3차 $1.09 / 상한 $2.00; 스크리닝+블록 **$18.559314** / 상한 $48.47 = stage1v4 파일럿 seed 0 $0.300209 [protocol screening_spend_usd] + 120-receipt 합 $18.259105 [B0 $5.913849 + B1 $7.038239 + B2 $5.307017]; 잔여 $29.910686)
+block_progress: T3 seeds 40/40 완결 (100.0%), 실제 완료: 2026-09-03 23:56 KST (seed 39 커밋 `e3dafff75`)
 prereg_sealed: **yes** — v4 `0325ce9fb92f` (seal_commit `5d9c0d088`, 16개 파일; v1·v2·v3 superseded, instruction-0015b 반영)
 hackathon_materials: v4 하네스(b0_tools.js / b2_harness.js, manipulation-check receipt) 기준 갱신 완료 상태. 접수(09-07)는 사용자 행위 권한.
 results_origin_list: **없음.** N=40 완결 전 중간 분석 금지(동결 규칙); 원고 표 `tbl-studyb-status`의 결과 열은 블록 완결 후 분석 receipt에서만 생성.
@@ -1099,4 +1099,38 @@ PDF 26쪽, 형식 규칙 13/13 ENFORCED PASS, 금지어 0건, 철회 토큰 0건
 ### 이번 사이클 결과표 숫자의 origin
 **없음.** `tbl-studyb-status`의 결과 열은 전부 "미실행"이며, MDE·단가는 설계 값으로 분리 표기했다.
 
-next_first_action: v4 1단계 완결 상태를 커밋/푸시하고, 스크리닝 본 블록(T3 seeds 1..39)을 (seed, arm) 순차 완결 루프로 구동한다.
+next_first_action: instruction-0016 §2 — METADATA_LOCATED_NOT_READ 13편 전문 정독 + 검증 주장 노드(VERIFIED_READ) 생성, GraphRAG·Graph of Thoughts·CORE-Bench 원저작 재검증, 기제별 증거 표(`paper/research/mechanism-evidence-table.md`) 작성.
+
+## instruction-0016 §1 — T3 블록 결과 보고 (2026-09-04)
+
+**출처 선언:** 아래 모든 숫자는 `paper/experiments/screening/block/analysis-receipt.json` (sha `ab4d72783627b9f0af6727f76e72e51bc503540da388a8622fb46b042adeeefa`) 에서만 가져왔다. 각 항목 뒤의 `→` 는 receipt 키다.
+
+### 천장 효과 (먼저)
+- B2 만점(5/5): **35/40 (87.5%)** → `analysis.descriptive.B2.n_perfect_5_of_5`
+- B1 만점: **28/40 (70.0%)** → `analysis.descriptive.B1.n_perfect_5_of_5`
+- B0 만점: **21/40 (52.5%)** → `analysis.descriptive.B0.n_perfect_5_of_5`
+- 세 아암 모두 5/5: **13/40 (32.5%)** → `analysis.descriptive.all_arms_perfect_seeds`
+- 통과 분포(0..5 개수): B0 `[0,2,2,13,2,21]`, B1 `[0,0,0,12,0,28]`, B2 `[0,0,0,3,2,35]` → `supplement.pass_count_histogram_0_to_5`
+- 판정: B0 평균 0.79·min 0.2 (`analysis.descriptive.B0`)로 상한(1.0)에 붙는 천장 구간이고, B2는 40시드 중 35개가 만점이라 남은 판별 여지가 상위 꼬리에만 있다. 5/5 이상은 측정 불가 — 천장 위 효과크기는 이 설계로 읽히지 않는다.
+- 감독자 원장 집계(B2 34/B1 27/B0 20/전부 12, 39시드)는 receipt 40시드 값(35/28/21/13)으로 대체됐다.
+
+### 쌍별 결과 (paired Pratt, n=40)
+- **1차 B2−B0:** mean diff **+0.17**, 95% CI [0.10, 0.245], Wilcoxon p=**0.000297**, 유의 → `analysis.primary_hypothesis`
+- 2차 B2−B1: +0.08, CI [0.005, 0.15], raw p=0.0611 > Holm α=0.025, **비유의** → `analysis.secondary_hypotheses[0]`
+- 2차 B1−B0: +0.09, CI [0.000, 0.185], raw p=0.0803 > Holm α=0.05, **비유의** → `analysis.secondary_hypotheses[1]`
+- 동점 쌍 수: B2−B0 **21**, B2−B1 23, B1−B0 17 → `supplement.tie_pair_counts` (1차 `n_zero_diff_pairs`와 일치)
+- 민감도(B2−B0): wilcox p=0.000210, 부호검정 p=0.000729, 순열 p=0.0001 → `analysis.sensitivity.B2_vs_B0`
+- 아암 표준편차: B0 0.2479 / B1 0.1856 / B2 0.1128 → `analysis.descriptive.*.std`
+
+### §1.2 — v4 MDE와 관측 효과 나란히 (MDE 0.140/0.243은 **설계 값**)
+| 대조 | 관측 \|Δ\| | 설계 MDE | 검출 한계 판정 |
+|---|---|---|---|
+| B2−B0 (1차) | 0.17 | 0.140 | **한계 안(검출됨)** — 단, CI 하한 0.10은 MDE 미만이므로 효과 크기의 상한은 미결정 |
+| B2−B1 (2차) | 0.08 | 0.243 | **한계 미만** — 비유의는 "효과 없음"이 아니라 미검출 |
+| B1−B0 (2차) | 0.09 | 0.243 | **한계 미만** — 동일 |
+
+### 해석 경계 (0016 §1.1 준수)
+- 허용된 해석은 "고정 모델(haiku-4-5) 하에서의 신뢰성(분산 감소)"뿐이다: B2는 B0 대비 표준편차 0.248→0.113, 만점 빈도 21→35. "능력 향상"·"SOTA" 표현은 사용하지 않는다.
+
+### 회계 question (§3.2 예산 근거에 영향)
+원장 블록 누적 행은 stage1v4 파일럿 seed 0 $0.300209을 누적에서 빠뜨린다(스크리닝 누적행은 $0.840625로 포함; s1 블록 누적 $1.083182 = 0.540416+0.542766). 실제 상한 대비 지출은 **$18.559314, 잔여 $29.910686**이며, 감독자 표기 잔여 $30.21과의 차이는 정확히 이 파일럿이다. 상한·승인 변경 없이 T1/T2 예산 산정을 잔여 $29.91 기준으로 한다.
