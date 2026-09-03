@@ -7,8 +7,9 @@ exa_calls_this_cycle: 2 — **exa 복구됨**(401 해소, web_search_exa 2회 �
 study_b_spend_to_date: **$18.56** (드라이런 1~3차 $1.09 / 상한 $2.00; 스크리닝+블록 **$18.559314** / 상한 $48.47 = stage1v4 파일럿 seed 0 $0.300209 [protocol screening_spend_usd] + 120-receipt 합 $18.259105 [B0 $5.913849 + B1 $7.038239 + B2 $5.307017]; 잔여 $29.910686)
 block_progress: T3 seeds 40/40 완결 (100.0%), 실제 완료: 2026-09-03 23:56 KST (seed 39 커밋 `e3dafff75`)
 prereg_sealed: **yes** — v4 `0325ce9fb92f` (seal_commit `5d9c0d088`, 16개 파일; v1·v2·v3 superseded, instruction-0015b 반영)
+analysis_receipt: **yes** — `paper/experiments/screening/block/analysis-receipt.json` sha `ab4d72783627b9f0af6727f76e72e51bc503540da388a8622fb46b042adeeefa` (2026-09-04T00:40:31+09:00 생성, 봉인 analyze_block.py `143c6b89` 실행, protocol evidence_receipts 등록 확인; 조작 검사 요약 `manipulation-check-summary.json` 120/120·제외 0)
 hackathon_materials: v4 하네스(b0_tools.js / b2_harness.js, manipulation-check receipt) 기준 갱신 완료 상태. 접수(09-07)는 사용자 행위 권한.
-results_origin_list: **없음.** N=40 완결 전 중간 분석 금지(동결 규칙); 원고 표 `tbl-studyb-status`의 결과 열은 블록 완결 후 분석 receipt에서만 생성.
+results_origin_list: `analysis.descriptive.{B0,B1,B2}.{mean,std,min,max,n_perfect_5_of_5}`, `analysis.descriptive.all_arms_perfect_seeds`, `analysis.primary_hypothesis`, `analysis.secondary_hypotheses[0..1]`, `analysis.sensitivity.B2_vs_B0`, `supplement.pass_count_histogram_0_to_5`, `supplement.tie_pair_counts` — 전부 `paper/experiments/screening/block/analysis-receipt.json` (sha `ab4d7278…`) 파생. 조작 검사·제외 회계: `manipulation-check-summary.json` (`episodes_total`, `manipulation_check_passed_total`, `excluded_episode_count`).
 ## Completed in current phase
 
 - **instruction-0015c 이행 완료:** §1 세션 모델 표기 일체 삭제(헤더 및 Q-0010 철회 반영). §2 블록 범위 부록 검정 방향을 v4 봉인 사양대로 '양측'으로 정정. §3 동점(쌍 차이 0) 처리 사양 v4a(pratt 채택, scipy 1.17.1) 및 analyze_block.py 스크립트·단위테스트 작성 및 protocol 봉인 sha 추가. §4 block_driver.py(래퍼) 커밋 반영.
@@ -1134,3 +1135,5 @@ next_first_action: instruction-0016 §2 — METADATA_LOCATED_NOT_READ 13편 전�
 
 ### 회계 question (§3.2 예산 근거에 영향)
 원장 블록 누적 행은 stage1v4 파일럿 seed 0 $0.300209을 누적에서 빠뜨린다(스크리닝 누적행은 $0.840625로 포함; s1 블록 누적 $1.083182 = 0.540416+0.542766). 실제 상한 대비 지출은 **$18.559314, 잔여 $29.910686**이며, 감독자 표기 잔여 $30.21과의 차이는 정확히 이 파일럿이다. 상한·승인 변경 없이 T1/T2 예산 산정을 잔여 $29.91 기준으로 한다.
+- **0016a #3 회계 판정:** 계획 밖 $0.085264는 dry-run 상한 $2.00 누적 **$1.090033 안에 이미 계상**돼 있다($0.826→$0.911264 구간, cost-ledger 172–181행). $48.47 스크리닝 한도 회계와는 별도 라인이라 이중 계상이 없고, 잔여는 **$29.910686**로 확정된다(별도였다면 $29.825422였을 것). cost-ledger에 동일 판정 기록.
+- **0016a #2 원고 반영:** thesis-ko.qmd §12를 "사전등록 완료, 미실행"에서 receipt 기반 완결 보고로 교체했다. 렌더 시 receipt SHA-256을 protocol `evidence_receipts` 등록값과 대조하는 게이트로 바꾸고(구 "미실행" assert 대체), 천장 효과 문단을 결과 표 직전에 둔다(0016 §1.1). 표 셀·만점 열·1차/2차 검정 문장 각주에 receipt 경로·키를 명시했다.
