@@ -5,8 +5,8 @@ orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71` — 클린 클론 done (`c07772
 orx_runs_this_cycle: 3
 session_model: `gemini-3.8-flash-high` (감독자 관측치 및 실측 반영, instruction-0015b). instruction-0012 §9가 고정하라고 지정한 `anthropic/claude-opus-5`가 **아니다**. Q-0010 상정 유지. Study B 처치 모델은 `episode_runner.py`의 상수 `anthropic/claude-haiku-4-5`로 고정되어 실험 비용·단가에 영향 없음.
 exa_calls_this_cycle: 2 — **exa 복구됨**(401 해소, web_search_exa 2회 성공). 결과 가치는 낮아 인용하지 않음.
-study_b_spend_to_date: **$5.02** (드라이런 1~3차 $1.09 / 상한 $2.00, 스크리닝 $5.02 / 상한 $48.47; 파일럿 $0.30 + T3 v4 seed 0..10)
-block_progress: T3 seeds 11/40 완결 (27.5%), 현재 seed 11 진행 중, 예상 완료 시각: 오늘 21:50 KST (seed당 평균 약 3.8분)
+study_b_spend_to_date: **$5.59** (드라이런 1~3차 $1.09 / 상한 $2.00, 스크리닝 $5.02 / 상한 $48.47; 파일럿 $0.30 + T3 v4 seed 0..10)
+block_progress: T3 seeds 12/40 완결 (30.0%), 현재 seed 12 진행 중, 예상 완료 시각: 오늘 21:50 KST (seed당 평균 약 3.8분)
 prereg_sealed: **yes** — v4 `0325ce9fb92f` (seal_commit `5d9c0d088`, 16개 파일; v1·v2·v3 superseded, instruction-0015b 반영)
 hackathon_materials: v4 하네스(b0_tools.js / b2_harness.js, manipulation-check receipt) 기준 갱신 완료 상태. 접수(09-07)는 사용자 행위 권한.
 results_origin_list: **없음.** N=40 완결 전 중간 분석 금지(동결 규칙); 원고 표 `tbl-studyb-status`의 결과 열은 블록 완결 후 분석 receipt에서만 생성.
