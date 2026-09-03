@@ -184,6 +184,33 @@ def check_receipt_provenance(cfg):
                 bad.append("legacy receipt must declare evidence_level EXECUTED_LEGACY_UNINSTRUMENTED")
             if not obj.get("provenance_gap"):
                 bad.append("legacy receipt must state its provenance_gap")
+        elif obj.get("schema_version") == "study-b-analysis/v1":
+            # Verifier-computed analysis receipt: identity is the sealed analysis script
+            # and spec, not model calls. Fail-closed: every field is re-derived live from
+            # .orx/paper_protocol.json, so a protocol change invalidates old receipts.
+            if origin != "verifier":
+                bad.append("analysis receipt origin must be 'verifier'")
+            if obj.get("evidence_level") != "REPRODUCED_EXPERIMENT":
+                bad.append("analysis receipt evidence_level must be REPRODUCED_EXPERIMENT")
+            pr = json.loads((ROOT / ".orx/paper_protocol.json").read_text(encoding="utf-8"))
+            sbcfg = pr.get("study_b") or {}
+            prov = obj.get("provenance") or {}
+            if not prov:
+                bad.append("analysis receipt missing provenance block")
+            else:
+                if prov.get("analysis_script_sha256") != sbcfg.get("analysis_script_sha256"):
+                    bad.append("analysis script sha does not match protocol study_b.analysis_script_sha256")
+                if prov.get("analysis_spec_sha256") != sbcfg.get("analysis_spec_sha256"):
+                    bad.append("analysis spec sha does not match protocol study_b.analysis_spec_sha256")
+                if prov.get("seal_commit") != sbcfg.get("seal_commit"):
+                    bad.append("analysis seal_commit does not match protocol study_b.seal_commit")
+                if not prov.get("input_receipts"):
+                    bad.append("analysis provenance missing input_receipts")
+            if obj.get("task") != "T3" or obj.get("n_seeds") != 40:
+                bad.append("analysis receipt must cover task T3 with n_seeds=40")
+            sup = obj.get("supplement") or {}
+            if not sup.get("pass_count_histogram_0_to_5") or sup.get("total_cost_usd") is None or not sup.get("tie_pair_counts"):
+                bad.append("analysis receipt missing descriptive supplement (histogram/costs/ties)")
         else:
             for field in PROVENANCE_FIELDS:
                 if not obj.get(field):
