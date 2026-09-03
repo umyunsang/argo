@@ -619,6 +619,26 @@ def check_study_b_seal(cfg):
     return {"sealed": True, "digest": sb["preregistration_sha256"][:12], "failures": failures}
 
 
+
+def check_graph_schema(cfg):
+    """Enforce the context graph's structural invariants through the same gate.
+
+    The schema module is the single definition of what is enforced versus merely
+    measured, so the validator asks it instead of restating the rules and letting
+    the two drift apart.
+    """
+    import importlib.util
+    mod_path = ROOT / "experiments" / "study_a" / "graph_schema.py"
+    graph_path = ROOT / "paper" / "context-graph.json"
+    if not mod_path.is_file():
+        return {"passed": False, "enforced_failures": ["graph schema module missing"]}
+    if not graph_path.is_file():
+        return {"passed": False, "enforced_failures": ["context graph missing"]}
+    spec = importlib.util.spec_from_file_location("argo_graph_schema", mod_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.validate(json.loads(graph_path.read_text(encoding="utf-8")))
+
 def main():
     cfg = json.loads(PROTOCOL_PATH.read_text(encoding="utf-8"))
     paper = ROOT / cfg["paper_path"]
@@ -2678,6 +2698,9 @@ def main():
             if not errors and first["pdf_path"].is_file():
                 shutil.copy2(str(first["pdf_path"]), str(ROOT / cfg["output_pdf"]))
 
+    graph_schema_report = check_graph_schema(cfg)
+    for f in graph_schema_report["enforced_failures"]:
+        errors.append("context graph schema violated: " + f)
     form_gate = thesis_form_gate(ROOT, cfg, ROOT / "paper" / "word" / "graduation-thesis.docx")
     for fid in form_gate["failures"]:
         errors.append(f"thesis form rule {fid} failed")
@@ -2737,6 +2760,7 @@ def main():
             "official_format_failures": official_format_failures,
         },
         "thesis_form": form_gate,
+        "graph_schema": graph_schema_report,
         "receipt_provenance": provenance,
         "study_b_seal": study_b_seal,
         "toolchain": tc_summary,

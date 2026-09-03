@@ -16,6 +16,23 @@ results_origin_list: **없음.** 원고 신규 표 `tbl-studyb-status`의 결과
 
 
 
+
+### 사이클 (instruction-0015 §3·§4) — 설계공간 문헌 검증과 그래프 확장, 그리고 스키마 게이트 신설
+
+- **§3 문헌 검증 (16종):** `orx discover openalex/keyword`로 위치. **처음엔 16/16 "검증"으로 나왔지만 그건 내 오류였다.**
+  - 부분 문자열 충돌 2건: `CodeAct`가 무관한 "Code Adaptive Compute-efficient Tuning"과, `GraphOfThoughts`/`GraphRAG`가 원 논문이 아닌 별개 연구와 매칭됐다. 재검색으로 CodeAct는 정정(`arxiv.2402.01030`), GraphRAG·GoT는 **별개 연구로 분류**하고 계열 존재 근거로만 쓰도록 제한했다.
+  - `CORE-Bench`는 두 원시 검색에서 **위치하지 못했다** → 인용하지 않고 `source_id='NOT_LOCATED'` 노드로 검색 시도 사실만 기록.
+  - 최종: **VERIFIED 13 / VERIFIED_DIFFERENT_WORK 2 / UNVERIFIED 1**.
+- **§3.6 결정 (`RD-90A`):** 왜 자동 설계 탐색(ADAS·AFlow·AgentSquare·DSPy)이 아니라 고정·사전등록인가 — 탐색을 함께 열면 최적화 책임과 하네스 책임이 분리되지 않고, 결과를 본 뒤 설계가 바뀌어 사전등록이 무너지며, 시드마다 구성이 달라져 귀속·회계·재현이 붕괴한다. 절제 아암이 탐색 대신 귀속을 제공한다.
+- **§4 그래프 확장:** `material:*` 7개(각각 메커니즘·아암·근거 결속), `prototype:argo`, `event:prototype_competition`, 검증 문헌 16개 소스 노드, 결정 사슬. 노드 473·엣지 850.
+- **§4 필드 보장:** component 5종에 `description/implementation_path/tested_by/usage_metric` 채움. 7개 재료 메커니즘은 definition·falsifier·implemented_in_arm·removed_in_arm·**sources 3~8편(요건 ≥2)** 모두 충족 확인.
+- **§4 스키마 게이트 신설:** `experiments/study_a/graph_schema.py` + 테스트 11건, **변이 7건 중 7건 적발**( dangling edge·중복 id·요구 필드 누락·고아 허용·stale 허용·tier 승격·tier 개명). 검증기 `paper_validate.py`가 이 모듈을 호출해 **하나의 정의**만 쓰도록 했다.
+- **강제와 측정의 분리:** 중복 id·끊긴 엣지·`summary/status/next_action` 누락·정당화되지 않은 고아는 **차단**. `evidence` 누락 112건은 **측정 보고**만 한다 — 빈 증거 자리에 값을 넣는 것은 발명이며, 이 논문이 제거 대상으로 지목한 결함 그 자체이기 때문이다.
+- **지시 충돌 2건을 발견해 기록했다:**
+  1. `RD-91A`: §4가 요구한 노드 id `hackathon:nais_2026`은 공개 게이트가 금지한 어휘를 담고 있다(경로 안의 `hackathon`까지 검출). 게이트를 완화하는 대신 노드를 일반 정체성으로 바꿨다.
+  2. §4의 요구 필드 보장을 위해 소스 노드를 추가하자 `source_metadata` 검증이 `None` 키(JSON 라운드트립 실패)로 깨졌다. 미위치 노드에 `NOT_LOCATED` 센티넬을 부여해 해결했다.
+- **인용 수준 정직성 (`RD-92A`):** 신규 문헌은 전부 `METADATA_LOCATED_NOT_READ`. 제목·식별자만 확인했고 전문을 읽지 않았으므로 **본문 주장의 근거로 쓸 수 없다**는 제약을 노드와 표 헤더에 명시했다.
+
 ### 사이클 (instruction-0015a 검수 보정) — 봉인 정합성 1–5 닫음
 
 - **§1 시각 오기 (실제 결함, 수정):** `sealed_at`·v2 작성 일시·cost-ledger 2차 드라이런 3행이 전부 `15:33:26`이었다. 원인은 **하나의 `nowr` 변수를 사이클 초반에 계산해 20분 뒤 사건들에 재사용**한 것. 각 항목을 실측 mtime으로 교체했다 — B0 15:42:12, B1 15:43:33, B2 15:46:00, v2 문서 15:52:57, 프로토콜 등록 15:54:17. `15:33:26`은 §1.6 점검 시각으로만 남겼다.
@@ -1041,4 +1058,4 @@ PDF 26쪽, 형식 규칙 13/13 ENFORCED PASS, 금지어 0건, 철회 토큰 0건
 ### 이번 사이클 결과표 숫자의 origin
 **없음.** `tbl-studyb-status`의 결과 열은 전부 "미실행"이며, MDE·단가는 설계 값으로 분리 표기했다.
 
-next_first_action: instruction-0015a 1–5 보정 완료. 이제 §3(검증 문헌 비교표)·§4(prototype/hackathon/material/결정 사슬 노드)를 닫고, 완료 보고 후 스크리닝을 시작한다(상한 $48.47, (task,seed) 쌍 완결 순서, B0→B1→B2 연속).
+next_first_action: §3·§4 완료. 이제 스크리닝 착수 — (task,seed) 쌍 완결 순서로 1단계(시드 1 triple: B0→B1→B2)만 먼저 실행해 실측 단가와 기판 결속을 확인한 뒤 상한 $48.47 안에서 확장 여부를 결정한다. 바로 333개를 돌리지 않는다.

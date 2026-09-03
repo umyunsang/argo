@@ -61,3 +61,64 @@
 ## 5. 한계
 
 이 표는 정독 보고서 기반이다. 각 원논문의 부록·저장소를 직접 열어 n·검정·비용을 재확인하는 작업은 봉인 전 잔여 과제다.
+
+---
+
+## 4. 설계공간 문헌 검증 (instruction-0015 §3)
+
+작성 2026-09-03T16:27:40+09:00 · 검증 원시: `orx discover openalex/keyword` · 보조: exa MCP 2회(채택 0건)
+**검증 규칙:** 반환된 제목이 의도한 연구 그 자체일 때만 VERIFIED. 부분 문자열 충돌은 실패로 본다.
+실제로 `CodeAct`는 무관한 "Code Adaptive Compute-efficient Tuning"과 충돌해 기각 후 재검색으로 정정했고,
+`CORE-Bench`는 벤치마크 포화 연구와 충돌해 **위치하지 못하면 기각** 원칙에 따라 UNVERIFIED로 남겼다.
+
+### 4.1 최소 도구 하네스 계열 (B0의 비교군)
+
+| 연구 | 식별자 | 검증 | Study B와의 관계 |
+|---|---|---|---|
+| SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering | `10.48550/arxiv.2405.15793` | VERIFIED | 하네스 인터페이스 자체가 성능을 좌우한다는 주장의 직접 근거. Study B는 이 주장을 **같은 모델·결정론적 검증기**로 분리해 재검증한다 |
+| Executable Code Actions Elicit Better LLM Agents (CodeAct) | `10.48550/arxiv.2402.01030` | VERIFIED | 코드를 행동 매체로 쓰는 선택의 근거. B1의 REPL과 같은 계열이되, CodeAct는 태스크 성능 비교에 머문다 |
+| OpenHands: An Open Platform for AI Software Developer Agents | `10.48550/arxiv.2407.16741` | VERIFIED | 플랫폼 규모 비교군. 아암 대조가 아니라 시스템 대조이므로 Study B는 구성요소 단위로 이탈한다 |
+
+### 4.2 기억·그래프 계열 (B2−G의 비교군)
+
+| 연구 | 식별자 | 검증 | Study B와의 관계 |
+|---|---|---|---|
+| A-Mem: Agentic Memory for LLM Agents | `10.52202/085713-0593` | VERIFIED | 동적 기억 구성. Study B의 그래프는 **타입과 불변성**이 규율이며 기억 효율이 아니다 |
+| Is GraphRAG Needed? From Basic RAG to Graph-/Agentic RAG | `2606.25656` | VERIFIED(별개 연구) | **원 GraphRAG 논문이 아니다.** 그래프 구조화 검색의 이득이 조건부라는 명제만 사용한다. 원 논문을 인용한 것처럼 쓰지 않는다 |
+| Reinforced Graph of Thoughts: RL-Driven Adaptive Reasoning | `2605.22195` | VERIFIED(별개 연구) | **원 Graph of Thoughts 논문이 아니다.** 추론을 그래프로 표현하는 계열의 존재 근거로만 쓴다 |
+
+### 4.3 루프·자기수정 계열 (B2−L, B2−P의 비교군)
+
+| 연구 | 식별자 | 검증 | Study B와의 관계 |
+|---|---|---|---|
+| Self-Refine: Iterative Refinement with Self-Feedback | `10.52202/075280-2019` | VERIFIED | 자기 피드백 반복의 대표 근거. Study B는 여기에 **사전등록 임계와 반증**을 더해 반복을 규율로 바꾼다 |
+
+### 4.4 자동 설계 탐색 (대안 패러다임 — 미승인 미래 작업)
+
+| 연구 | 식별자 | 검증 | 관계 |
+|---|---|---|---|
+| Automated Design of Agentic Systems (ADAS) | `10.48550/arxiv.2408.08435` | VERIFIED | 설계를 자동으로 탐색한다. Study B는 **고정·사전등록**을 택했으므로 이 계열은 대조 패러다임 |
+| AFlow: Automating Agentic Workflow Generation | `10.48550/arxiv.2410.10762` | VERIFIED |위와 같은 관계(구성 자동화) |
+| AgentSquare: Automatic LLM Agent Search in Modular Design Space | `10.48550/arxiv.2410.06153` | VERIFIED |위와 같은 관계(구성 자동화). 모듈 공간 탐색은 본 논문의 절제 아암과 같은 분해를 쓰되 탐색으로 채운다 |
+| DSPy: Compiling Declarative LM Calls into Self-Improving Pipelines | `10.48550/arxiv.2310.03714` | VERIFIED | 프로그램 가능한 최적화. 평가가 아니라 구성을 자동화한다 |
+
+### 4.5 벤치마크 선택 근거 (T1/T2/T3의 비교군)
+
+| 벤치마크 | 식별자 | 검증 | Study B 사용 |
+|---|---|---|---|
+| ScienceAgentBench | `2410.05080` | VERIFIED | 연구 과제 선정 근거. T1 계열과 겹친다 |
+| PaperBench | `2504.01848` | VERIFIED | 재현성 평가. 판정 기반 채점의 대표 사례이므로 본 논문의 계측 비판 대상 |
+| MLE-bench | `2410.07095` | VERIFIED | 실행 채점 가능. 다만 미승인(MLE-bench Lite 제외 명시)이라 **선정 근거로만** 인용한다 |
+| DiscoveryBench | `2407.01725` | VERIFIED | 데이터 주도 발견. T3의 자율연구 성격과 정렬 |
+| CORE-Bench | 없음 | **UNVERIFIED** | 이번 주기에 위치하지 못했다. **인용하지 않고** 그래프에 unverified 노드로만 남긴다 |
+
+### 4.6 왜 자동 탐색이 아니라 고정·사전등록인가 (결정)
+
+자동 설계 탐색 계열(ADAS·AFlow·AgentSquare·DSPy)은 **더 나은 구성을 찾는 문제**를 푼다. 본 논문이 묻는
+문장은 다르다: **자율 연구 하네스가 만든 결과를 무엇이 근거로 만드느냐.** 탐색을 함께 열면 (i) 탐색이
+성능을 개선한 것이 하네스 책임인지 최적화 책임인지 분리되지 않고, (ii) 탐색 자체가 결과를 본 뒤에
+설계를 바꿀 수 있어 사전등록이 무너지며, (iii) 시드마다 구성이 달라져 재현·회계·귀속이 붕괴한다.
+따라서 구성을 고정하고 **절제 아암으로 사후에** 귀속시키는 쪽을 택한다. 근거는 해석 가능성,
+provenance, 예산 세 축이며, 결정·반증자는 컨텍스트 그래프 `decision:rd_2026_09_03_90a`에 있다.
+자동 탐색 아암은 미승인 미래 작업으로 명시한다.
+
