@@ -8,6 +8,17 @@ def check(n, ok, d=""):
     print(("PASS " if ok else "FAIL ") + n + (f" :: {d}" if not ok else ""))
     if not ok: F.append(n)
 
+APPROVAL = ROOT / "paper/research/q0009-approval.json"
+HIDDEN = ROOT / "paper/research/q0009-approval.json.hidden_by_test"
+
+def with_no_approval():
+    if APPROVAL.exists():
+        APPROVAL.rename(HIDDEN)
+
+def restore_approval():
+    if HIDDEN.exists():
+        HIDDEN.rename(APPROVAL)
+
 def run(args, env=None):
     e = dict(os.environ); e.pop("ORX_RUN_ID", None)
     if env: e.update(env)
@@ -17,13 +28,20 @@ def run(args, env=None):
     except Exception: return p.returncode, {"raw": p.stdout + p.stderr}
 
 def main():
-    rc, o = run(["--arm", "B2", "--task", "T3", "--seeds", "40"])
-    check("real spend without approval is refused", rc == 2 and o.get("status") == "REFUSED", str(o)[:120])
-    check("the refusal names the missing approval", "not approved" in o.get("reason", ""), str(o)[:160])
+    # Refusal tests run WITHOUT an approval record. The substrate check runs first,
+    # so each refusal scenario sets the field that must already be satisfied.
+    with_no_approval()
+    try:
+        rc, o = run(["--arm", "B2", "--task", "T3", "--seeds", "40"], {"ORX_RUN_ID": "probe"})
+        check("real spend without approval is refused even inside the substrate",
+              rc == 2 and o.get("status") == "REFUSED", str(o)[:140])
+        check("the refusal names the missing approval", "not approved" in o.get("reason", ""), str(o)[:180])
 
-    rc, o = run(["--arm", "B2", "--task", "T3", "--seeds", "1", "--dry-run"])
-    check("a dry run outside the substrate is refused", rc == 2 and o.get("status") == "REFUSED")
-    check("the refusal names the missing run id", "ORX_RUN_ID" in o.get("reason", ""), str(o)[:160])
+        rc, o = run(["--arm", "B2", "--task", "T3", "--seeds", "1", "--dry-run"])
+        check("a dry run outside the substrate is refused", rc == 2 and o.get("status") == "REFUSED")
+        check("the refusal names the missing run id", "ORX_RUN_ID" in o.get("reason", ""), str(o)[:180])
+    finally:
+        restore_approval()
 
     rc, o = run(["--arm", "B2", "--task", "T3", "--seeds", "5", "--dry-run"], {"ORX_RUN_ID": "probe"})
     check("a dry run over the episode cap is refused", rc == 2 and "capped" in o.get("reason", ""), str(o)[:160])

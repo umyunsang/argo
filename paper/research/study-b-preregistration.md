@@ -3,11 +3,11 @@
 - 작성 2026-09-03T10:14:39 · 상태 **DRAFT — 미봉인 · 미실행**
 - 근거 지시: instruction-0013 §4, instruction-0013a §B
 - 흡수: `harness-comparison-arm-design.md`, `paper/research/retracted/sota-benchmark-design.md` §1-2·§5 (둘 다 superseded)
-- **Q-0009 상태: 시나리오 (a) 1차 스크리닝(B0/B1/B2) 사용자 승인 — 2026-09-03.**
-  절제 4아암·시나리오 (b)(c)·Q-0007 별도 지출·MLE-bench Lite는 **미승인 유지**.
-- **지출 상한은 재확인 대기.** 승인은 이전 설계 수치 $7.30 기준이었고 §7 재산정치는 $48.47이다.
-  재확인 전 허용 지출은 드라이런 총 $2뿐이며 스크리닝 에피소드는 실행하지 않는다.
-- **봉인 보류:** 상한 재확인 수신 후 봉인한다.
+- **Q-0009 상태: APPROVED (a) — 사용자 2026-09-03 10:47 KST 확정 — n=40×3과제×3아암 = 360 에피소드.**
+  절제 4아암·시나리오 (b)(c)·Q-0007 별도 지출·MLE-bench Lite·모델 변경은 **미승인 유지**.
+- **지출 상한 확정:** 스크리닝 **$48.47**, 드라이런 $2 별도. 승인 기록 `paper/research/q0009-approval.json`.
+  상한 도달 시 즉시 중단하고 완료 에피소드만 보고한다.
+- **봉인됨** — 이 시각 이후 §2-§6은 수정하지 않는다.
 
 ## 1. 연구 질문
 
@@ -168,8 +168,8 @@ MDE는 두 아암의 **절대 통과율 차이**다.
 | 3 | T3 검증기·oracle 격리 | **완료** — `tasks/oracle_t3.py`(순수 표준 라이브러리, 실제 계산), `tasks/run_t3.py`(격리 강제), 테스트 15/15 |
 | 4 | 고정 run command | **완료** — 아래 §10 |
 | 5 | 비교 실험 표 | **완료** — `comparable-experiments-study-b.md`, 8편 |
-| 6 | 아암별 커밋 해시 봉인 | 미완 — 봉인 시점에 기입 |
-| 7 | 원논문 부록에서 n·검정·비용 재확인 | 미완 |
+| 6 | 아암별 커밋 해시 봉인 | **완료** — 봉인 시점 커밋과 블롭 해시를 §11에 기입 |
+| 7 | 원논문 부록에서 n·검정·비용 재확인 | 부분 완료 — DarwinX(paired exact McNemar), HarnessOpt-Bench(K=3 표준오차)는 전문에서 확인. 나머지 6편은 미재확인이며 §2-§6에 영향을 주지 않으므로 봉인을 막지 않음 |
 
 ## 10. 고정 run command (봉인 대상)
 
@@ -194,3 +194,16 @@ MDE는 두 아암의 **절대 통과율 차이**다.
 이 상태로는 아암을 변별하지 못하므로 지출 전에 생성 규칙을 바꿨다(n=140, d=40, 시드 의존 상호작용 항).
 현재 8개 시드에서 `best_lambda`는 3종, `interaction_helps`는 True/False가 모두 나오며,
 테스트가 "정답이 상수가 아님"을 강제한다.
+
+## 11. 봉인 기록
+
+- 봉인 시각: 2026-09-03T10:53:45
+- 봉인 커밋(아암 코드 기준): `9eeabc9e2`
+- 아암 구현 블롭 해시:
+  - `experiments/study_b/harness/arms.py` `d2f52da4bbd3130e428caecd03446850ff2a2868`
+  - `experiments/study_b/harness/components.py` `301fc1e7418764a08db770f323296671c84672b0`
+  - `experiments/study_b/harness/test_harness.py` `68d6bc4a1a2c4b7e78294c60f368defcf511b70e`
+  - `experiments/study_b/run_block.py` `01aa0a3601fc470e1d999ec495d4eb2cd16be6df`
+- 고정 run command: `/usr/bin/python3 experiments/study_b/run_block.py --arm <ARM> --task <TASK> --seeds <N> --out <RECEIPT>`
+- 이 문서의 다이제스트는 `.orx/paper_protocol.json`에 등록한다. 봉인 이후 이 다이제스트와 일치하지 않는 문서는 봉인본이 아니다.
+

@@ -589,6 +589,33 @@ def thesis_form_gate(root, cfg, docx_path):
     }
 
 
+def check_study_b_seal(cfg):
+    sb = cfg.get("study_b") or {}
+    if not sb.get("preregistration_sha256"):
+        return {"sealed": False, "failures": []}
+    failures = []
+    p = ROOT / sb.get("preregistration_path", "")
+    actual = sha256_path(p) if p.is_file() else None
+    if actual != sb["preregistration_sha256"]:
+        failures.append("sealed preregistration digest mismatch: the sealed document must not be edited")
+    appr = ROOT / sb.get("approval_record", "")
+    if not appr.is_file():
+        failures.append("approval record missing: spend is not authorized")
+    arm_hashes = sb.get("arm_blob_hashes", {})
+    if arm_hashes:
+        try:
+            out = subprocess.run(["git", "ls-tree", "-r", "HEAD", "--format=%(objectname) %(path)"],
+                                 cwd=ROOT, capture_output=True, text=True, check=True).stdout
+        except Exception:
+            out = ""
+        blobs = {l.split()[1]: l.split()[0] for l in out.splitlines() if l.strip()}
+        for rel_, want in arm_hashes.items():
+            got = blobs.get("experiments/study_b/" + rel_)
+            if got != want:
+                failures.append("arm code blob mismatch: %s" % rel_)
+    return {"sealed": True, "digest": sb["preregistration_sha256"][:12], "failures": failures}
+
+
 def main():
     cfg = json.loads(PROTOCOL_PATH.read_text(encoding="utf-8"))
     paper = ROOT / cfg["paper_path"]
@@ -627,6 +654,10 @@ def main():
             }
         if not all(x["verified"] for x in evidence_receipts.values()):
             errors.append("evidence receipt or locator identity mismatch")
+
+    study_b_seal = check_study_b_seal(cfg)
+    if study_b_seal.get("failures"):
+        errors.append("Study B seal violated: preregistration digest or arm code identity mismatch")
 
     provenance = check_receipt_provenance(cfg)
     if provenance["receipt_failures"]:
@@ -2704,6 +2735,7 @@ def main():
         },
         "thesis_form": form_gate,
         "receipt_provenance": provenance,
+        "study_b_seal": study_b_seal,
         "toolchain": tc_summary,
         "builds": builds,
         "deterministic_pdf": deterministic,
