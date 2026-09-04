@@ -1,33 +1,60 @@
-# 7개 재료 · 기제 · 계획서 5축 · 아암 · 증거 대응표 (Material-Mechanism-Evidence Map)
+# 기제–native 계약표 — active successor
 
-작성 시각: 2026-09-04T12:35:00+09:00
-권한: supervisor instruction-0020 §4 & instruction-0022 §2 (졸업논문 계획서 5축 프레임 반영)
+상태: **ACTIVE DESIGN MAP · EFFICACY NOT EVALUATED**
+갱신: 2026-09-05T06:52:41+09:00
+상위 설계: `paper/research/integrated-research-design-active.md`
 
-본 문서는 최종 제출된 졸업논문 계획서(`졸업논문_계획서_엄윤상.pdf`, 방법 1항)의 5대 도출 축(행동·기억·구조·설계·검증)과
-논문의 7대 핵심 하네스 재료, 선행 참고문헌, 실험 아암 배치, 관측 증거 및 최종 프로토타입 설계를 1:1로 대응시킨다.
-선행 문헌이나 실험 영수증 어느 것으로도 정당화되지 않는 항목은 **"근거 없는 기본값(unjustified default)"**으로 표기한다.
+이 문서는 2026-09-04 판의 T3/B0/B1/B2 기반 `Adopted/Conditional` 결론을 삭제하지 않고 git 이력에 보존하면서
+active 판정에서 대체한다. T3는 한 task dry run, T1′은 48회 중 evaluator crash 42회, B2는 persistent typed ARGO의
+단독 조작이 아니므로 효능 채택 근거가 아니다. `pivots=0`도 과제 난이도나 구현 정상의 증거가 아니다.
 
----
+## 판정 어휘
 
-## 5대 축 · 재료 · 기제 · 아암 · 관측 증거 · 프로토타입 설계 결정 매트릭스
+- `FIXED_SUBSTRATE`: 기존 native 실행 소유권으로 고정하되 이 연구의 효능 기여로 세지 않음
+- `CANDIDATE`: 논문 실험으로 비교할 설계안
+- `INSTRUMENT_VALIDATED`: 계측·무결성 위험을 실제로 잡았으나 시스템 효능은 미평가
+- `DEFERRED`: 첫 contrast가 필요성을 만들 때만 후속 평가
+- `OUT_OF_MVP`: 연구 계보에는 있으나 NAIS 현장 최소 구현 밖
 
-| 계획서 도출 축 | 재료 (Material) | 기제 노드 (Mechanism ID) | 핵심 참고문헌 및 선행 근거 (정독 출처 및 Locator) | 본 실험 아암 배치 및 분리 한계 | 본 실험 관측 증거 (Receipts) | 최종 프로토타입 설계 결정 (Design Decision) |
+## 일곱 재료의 근거·대안·owner/interface·측정 계약
+
+| 재료 | 원문 기제와 적용 범위 | 대안·반례 | native owner와 입출력 계약 | 측정 signature / 비교 | 현재 판정 | NAIS MVP |
 |---|---|---|---|---|---|---|
-| **행동 (Action)** | **1. 최소 도구 쉘·파일 하네스** | `mechanism:minimal_tool_coding_harness` | **[1] SWE-agent** [@yang2024sweagent], **[2] CodeAct** [@wang2024executable], [@primeagent2026] (loc: `primeagent_harness_architecture`) | **B0 아암에 단독 분리** (clean single difference) | T3: 0.79±0.2036, 만점 21/40; T1' 파일럿: B0 실측 $0.0450 | **채택 (Adopted)**: 모든 에이전트의 불변 기초 실행 환경으로 배치 |
-| **행동 (Action)** | **2. 영속 REPL 및 실행 상태** | `mechanism:persistent_repl_recursive_harness` | **[2] CodeAct** [@wang2024executable], [@autoresearchfail2026] (loc: `autoresearch_run_limits`) | **B1 아암에 단독 분리** (B0 대비 REPL 추가) | T3: 0.88±0.1788, 만점 28/40, B1-B0 p=0.0803 (비유의) | **조건부 채택 (Conditional)**: 긴 호흡의 상태 추적에 유익하나 단독 분산 축소는 통계적 미검출 |
-| **기억 (Memory)** | **3. 타입드 연구 문맥 그래프** | `mechanism:typed_research_context_graph` | **[3] A-Mem** [@xu2025amem], [@evidenceledger2026] (loc: `evidenceledger_provenance_audit`) | **B2 아암에 복합 묶임** (독립 절제 미승인 한계) | B2 내 `graph_nodes_added` 평균 4.55회 (1~7 범위 변동) | **조건부 채택 (Conditional)**: 감사 가능성 담보의 척추이나 인과적 단독 기여는 관찰적 상관에 한정 |
-| **구조 (Structure)** | **4. 그래프 엔지니어링** | `mechanism:graph_engineering` | **[4] Graph of Thoughts** [@besta2024graph], [@graphengineering2026] (loc: `graphengineering_context_nodes`) | **B2 아암에 복합 묶임** (독립 절제 미승인 한계) | B2 내 `graph_nodes_added` 및 엔티티 타입 강제 | **조건부 채택 (Conditional)**: 정적 무결성 검증에는 필수이나 동적 성능 기여는 미분리 |
-| **검증 (Verification)** | **5. 결정 프로토콜 및 청구 잠금** | `mechanism:failclosed_research_lifecycle` | **[6] Self-Authored Verification** [@guo2026selfauthored], [@verificationcost2026] (loc: `verificationcost_gate_ratio`) | **B2 아암에 복합 묶임** (독립 절제 미승인 한계) | B2 내 `decisions_recorded` 평균 1.68회, `gate_blocks` 평균 0.23회 | **채택 (Adopted)**: 시스템의 자가 오류 4건을 실제로 적발한 감사 가능성 1차 기여의 핵심 |
-| **설계 (Design)** | **6. 반증 루프 및 피벗** | `mechanism:loop_engineering` | **[5] ADAS** [@hu2025automated], [@baitbench2026] (loc: `baitbench_adversarial_detection`) | **B2 아암에 복합 묶임** (독립 절제 미승인 한계) | **B2 40편 실측 pivots = 0 (미발화 결함)** | **보류 (Deferred)**: 구현은 정상이나 과제 난이도 미달로 실측 검증 부재, T1' 확증 블록 결과까지 판정 유예 |
-| **(계획서 5축 밖 추가 구성요소)** | **7. 결과 주도 동적 검색** | `mechanism:result_driven_semantic_search` | **계획서 5축 밖 추가 구성요소**; 선행 채택 근거: Adaptive-RAG [@adaptive2024] & Self-RAG [@selfrag2023] | **B2 아암에 복합 묶임** (독립 절제 미승인 한계) | B2 내 동적 도구 세트 호출 관측 | **근거 없는 기본값 (Unjustified Default)**: 실험 데이터상 단독 효과가 분리되지 않았으며 선행 문헌 규격으로만 탑재 |
+| **1. Pi/Prime 실행 기질** | Prime Agent·RLM·Continual Harness의 worker, AgentSession, persistent REPL, recovery 기제를 계승한다. 문헌은 prior mechanism이며 ARGO 효능이 아니다. locators: `primeagent_harness_architecture`, `primeagent_runtime_repl`, RLM/Continual Harness 보존 receipt. | 별도 orchestrator가 session/worker lifecycle을 다시 소유하면 복구·상태 authority가 분열된다. 단순 shell baseline은 해석용일 수 있으나 native owner 대체가 아니다. | owner: 기존 daemon/AgentSession/worker/REPL/RLM. 입력: goal, messages, tool calls. 출력: transcript, tool result, worker state. Research plane은 이 lifecycle을 호출할 뿐 재구현하지 않는다. | 고정 substrate hash·capability·receipt; 조건 간 동일성. substrate 자체를 주 treatment로 부르지 않음. | `FIXED_SUBSTRATE` | 공개 기반 사용 가능성은 규칙 확인 전 미정. 현장 custom 구현과 구분. |
+| **2. Discovery adapter** | Exa 등 검색은 URL·후보 source를 찾는 discovery 역할이다. snippet은 claim evidence가 아니다. PaperQA2/OpenScholar는 retrieval stage별 오류와 precision/recall 분리를 동기화한다. | keyword/OpenAlex/직접 URL, 또는 retrieval 없음. OpenScholar 전체 시스템 효과를 semantic retrieval 단독 효과로 전이할 수 없다. | owner: PaperService의 discovery port. 입력: query, corpus/provider/budget. 출력: URL, metadata, discovery timestamp. claim 승인 출력은 금지. | query/provider/corpus/budget hash, candidate recall·unsupported source; retrieval이 병목일 때만 별도 screen. | `DEFERRED` | 최소 source discovery는 필요할 수 있으나 provider 선택은 고정되지 않음. |
+| **3. 원문·evidence plane** | 발견 URL을 저장 bytes/hash와 실제 읽은 span으로 승격하고 적용 범위·반례를 기록한다. PROV/RO-Crate는 교환·패키징 기제이지 과학적 타당성 보장이 아니다. | snippet 승인, 경로만 기록, self-attested digest는 기각. 출처 하나 철회가 독립 출처까지 자동 무효화하지 않는다. | owner: PaperService/source store + append-only evidence journal. 입력: source bytes, version, locator. 출력: immutable source ID, hash, span, scope, review status. | byte/hash/span 재도출, source→claim reachability, unsupported claim 수. | `INSTRUMENT_VALIDATED`; scientific benefit는 미평가 | **필수 후보**. 출처와 적용 범위를 시연해야 함. |
+| **4. Versioned research/context graph** | source→claim→alternative→decision→action→run/result→successor와 revision/retraction dependency를 표현한다. A-MEM은 기억 QA 근거일 뿐 과학 graph 필수성 증명이 아니다. | flat ledger, result-driven tree, proximity graph. graph node 수나 query 도구 존재만으로 control 효과를 주장할 수 없다. | candidate owner: native ResearchState projection. AgentSession 소유 금지. 입력: evidence/decision/run events. 출력: revisioned snapshot, dependency query, affected-set/reopen action. APP의 LangGraph StateGraph/SqliteSaver는 구현 후보 중 하나이며 native append-only event+projection 또는 SQLite event store와 비교한다. | 주 contrast `TYPED_POLICY − RESULT_TREE_POLICY`; relevant invalidation과 unrelated perturbation, fresh-context handoff. | `CANDIDATE`; efficacy 0 | 첫 contrast가 채택하면 MVP research-state plane. 아니면 audit/export로 축소. |
+| **5. OpenResearch scientific-run authority** | 고정 protocol/code/environment에서 scientific run과 stdout evidence를 식별한다. repository의 별도 ad-hoc process 또는 두 번째 run registry를 만들지 않는다. | 직접 subprocess, 중복 run DB, 요약문만 남기는 실행은 provenance와 lifecycle authority를 분열한다. | owner: 지정 ORX CLI/project. 입력: protocol hash, experiment commit, command/env. 출력: run ID, immutable receipt, artifacts. ARGO는 receipt importer/link만 소유한다. | command/cwd/input/env/output hash와 terminal state; result→decision edge. | `FIXED_SUBSTRATE` for authorized scientific runs; 현재 primary runner는 `NOT_IMPLEMENTED` | 공개 도구 재사용 범위 확인 전 미정. 시연에는 한 scientific run receipt 연결 필요. |
+| **6. Research refine** | 관측에 따라 가설·조건·방법·다음 실험을 successor로 갱신한다. POPPER의 순차 Type-I 보장은 conditional e-value와 stopping 조건에 한하며 “세 번 critique”에 전이되지 않는다. | one-shot, generic iteration, result-tree repair. 무조건 pivot을 보상하면 유효 설계 유지도 실패로 오판한다. | owner: ResearchState/decision lineage. 입력: non-oracle validity signal과 공개 관측. 출력: 유지·보류·수정·기각 successor 및 이유. 과거 결과를 덮어쓰지 않는다. | bounded opportunity-matched revise, invalid reuse, unnecessary pivot, next-decision contract. | `CANDIDATE`; bounded critique의 효능 미평가 | 관측 기반 next decision 1회는 MVP 후보. 통계적 순차 반증 구현 주장은 금지. |
+| **7. Engine refine** | harness 자체 변경은 research refine과 다른 계보다. held-out promotion 전에는 기존 scientific result의 의미를 바꾸지 않는다. | scientific result와 engine patch를 같은 lineage에 쓰면 원인 귀속과 재현이 깨진다. | owner: 기존 Continual Harness/engine promotion path. 입력: engine failure evidence, held-out eval. 출력: versioned engine change와 promotion/rollback. scientific decision graph에는 link만 남긴다. | old/new engine hash, held-out regression, source result immutability. | `OUT_OF_MVP`; native construction pause | 현장 MVP 밖. self-modification을 시연 범위로 주장하지 않음. |
 
----
+## 기존 2026-09-04 판정의 active 재분류
 
-## 계획서 5축 및 추가 구성요소 명세
+| 구 판정 | active 재분류 | 이유 |
+|---|---|---|
+| 최소 shell `Adopted` | `FIXED_SUBSTRATE` | T3/T1′ 비용·점수는 효능 근거가 아니며 실행 기질 선택과 causal treatment를 분리한다. |
+| persistent REPL `Conditional` | `FIXED_SUBSTRATE` | B1-B0 한 task 반복을 통계적 채택 근거로 쓰지 않는다. |
+| typed graph·graph engineering `Conditional` | `CANDIDATE` | B2 graph count는 persistent relationship-aware control의 manipulation evidence가 아니다. |
+| fail-closed lifecycle `Adopted` | `INSTRUMENT_VALIDATED` | 실제 계측 결함 탐지는 보존하되 task/system efficacy로 승격하지 않는다. |
+| loop engineering `Deferred: 구현 정상` | `CANDIDATE, IMPLEMENTATION UNVERIFIED` | pivots=0은 미발화이며 난이도나 구현 정상의 원인을 식별하지 못한다. |
+| semantic search `Unjustified Default` | `DEFERRED` | retrieval 병목과 fixed corpus/provider/query budget이 생긴 뒤에만 비교한다. |
 
-1. **행동 (Action) 축:** SWE-agent[1]와 CodeAct[2]의 연구는 에이전트 인터페이스가 LLM 성능을 크게 좌우함을 보였다. 본 연구는 쉘 기반 최소 도구(`minimal_tool_coding_harness`, B0)와 영속 REPL(`persistent_repl_recursive_harness`, B1)로 구현하여 통제된 단일 차이로 분리 검증하였다.
-2. **기억 (Memory) 축:** A-Mem[3]은 에이전트 기억의 구조화 필요성을 입증했다. 본 연구는 연구 전주기의 아티팩트와 주장을 방향성 그래프로 엮는 타입드 문맥 그래프(`typed_research_context_graph`)로 구체화하였다.
-3. **구조 (Structure) 축:** Graph of Thoughts[4]는 선형 체인을 넘어선 비순환 그래프 기반 조율을 제안했다. 본 연구는 노드 타입과 스키마 유효성을 강제하는 그래프 엔지니어링(`graph_engineering`)으로 승계하였다.
-4. **검증 (Verification) 축:** Self-Authored Verification(Guo et al., 2026)[6]은 에이전트가 스스로 검증기를 작성할 때 자기기만과 휴리스틱 편향이 발생함을 밝혔다. 본 연구는 이에 대응하여 외부에서 주입되는 페일클로즈드 수명주기 게이트(`failclosed_research_lifecycle`)를 설계하였다.
-5. **설계 (Design) 축:** ADAS[5]는 에이전트 아키텍처의 자동 탐색을 제안했다. 본 연구는 반증 피벗 기제(`loop_engineering`)를 B2에 탑재함과 동시에, 자동 탐색(AutoML)과 대비되는 사전등록 절제 연구의 비교 우위를 Ⅴ장에서 논증한다.
-6. **계획서 5축 밖 추가 구성요소 (결과 주도 동적 검색):** 계획서의 5축 도출 프레임에 직접 포함되지 않는 추가 기능으로, 과제 복잡도에 따라 검색을 적응적으로 호출하는 선행 연구(Adaptive-RAG, Self-RAG)에 근거하여 탑재되었다. 그러나 본 실험에서 단독 기여가 분리 검증되지 않았으므로 **"근거 없는 기본값"**으로 투명하게 표기한다.
+## 설계 선택이 구현으로 이동하는 조건
+
+1. 논문 experiment의 source/task/protocol/run/result/decision이 같은 active graph revision에 연결된다.
+2. 선택된 기제의 native owner가 기존 AgentSession/worker/ORX authority를 중복 소유하지 않는다.
+3. implementation evidence는 code hash, 실행 receipt, verifier result로 확인된다. 문서 제안은 `NOT_IMPLEMENTED`다.
+4. NAIS 시연 claim은 실제 둘 이상의 실행 후보, 같은 기준 경쟁, 이유 있는 접기, 관측 기반 successor, fresh-context 인계를 요구한다.
+5. NOTICE p.3의 적합성 10·활용성 20·혁신성 25·실현가능성 25·확장성 20을 각각 구현 증거에 연결하되 논문 primary outcome으로 사용하지 않는다.
+6. NOTICE p.5의 현장 개발 전 과정 조건과 APP p.7의 AI·OSS·외부 데이터 공개 의무를 보존한다. 재사용 허용 범위는 확인 전 `UNKNOWN`이다.
+
+## 근거 상태
+
+- THESIS p.1 SHA-256 `d2ab302410321cb43c499a681d289df72d86f889eaf4ca0b58b8e8ad804ea8f5`
+- APP pp.2–4,7 SHA-256 `a829572375ddca11ec94cbbd48827419564f655fa36aab25e3a9d3fdca8a47e6`
+- NOTICE pp.3,5 SHA-256 `b46c64b79eec2c317017977c6821115f49d02cd16bf481949e91bcd38c92610a`
+- `paper/research/integrated-research-design-active.md`
+- `.planning/2026-09-05-argo-direction-review/literature-challenge.md`
+- `.planning/2026-09-04-argo-paper-research-audit/review-packet/oracle-isolation-v4/stage0-observer-closure.json`
+
+현재 인정된 효능 결과는 0이며 native implementation은 재개되지 않았다.

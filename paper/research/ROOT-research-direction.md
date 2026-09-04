@@ -1,99 +1,120 @@
-# 연구 방향과 목적 — ROOT
+# 연구 방향과 목적 — ROOT active entrypoint
 
-> 이 문서가 **루트**다. 이후의 모든 가설·조건·방법·지표·판정은 여기서 파생되며,
-> 여기와 충돌하는 하위 결정은 자동으로 무효다.
-> 권위 출처는 서명된 두 문서다.
-> - 졸업논문계획서 `졸업논문_계획서_엄윤상.pdf` sha256 `d2ab302410321cb43c499a681d289df72d86f889eaf4ca0b58b8e8ad804ea8f5`
-> - NAIS 참가신청서(최종 서명용) sha256 `ca35aa6e3e6af9dac1e3b6cdcdcd13df91841ed70277c5b1ad9dece8ed1f458e`
-> 판독 2026-09-04 · `pdftotext -layout`
+상태: **AUTHORITATIVE RESEARCH ENTRYPOINT · NATIVE CONSTRUCTION PAUSED**
+갱신: 2026-09-05T06:52:41+09:00
 
-## 1. 제목과 주제
+이 문서가 현재 연구의 루트다. 하위 가설·방법·지표·판정은 이 문서와 active revision을 따라야 한다.
+원본 PDF는 수정하지 않으며 개인 식별값을 graph나 공개 산출물에 복사하지 않는다.
 
-- **논문 제목**: 장기 자율 연구개발을 위한 LLM 에이전트 하네스의 설계 및 평가
-- **프로토타입 주제명**: ARGO — 근거·맥락 그래프로 실험을 설계하고 정련하는 자율 R&D 하네스
+## 1. 단일 연구 연쇄
 
-## 2. 목적 (계획서 원문 기준)
+> **졸업논문 연구 → 문헌·실험으로 검증한 ARGO 통합 설계 → 허용된 native 구현 → NAIS 프로토타입·시연 → 구현 관측의 연구 계보 환류**
 
-1. AI 에이전트가 연구를 **스스로 설계·수행**하는 하네스 개발
-2. **자율 설계** — 연구 문제·가설·조건·방법·지표·중단 규칙을 에이전트가 직접 설정
-3. **근거 기반 선택** — 유사 실험·방법론·참고문헌을 탐색해 선택마다 근거를 부여
-4. **비교 추론** — 선행 연구의 실험 설계와 대조해 인사이트 확보
-5. **문맥 그래프** — 문헌·가설·결정·실험·결과를 연결해 다른 에이전트가 이어받게 함
-6. **결과 반영** — 완결된 설계안으로 실행하고 결과에 따라 방향 갱신
+논문과 NAIS를 독립 트랙으로 나누지 않는다. 졸업논문은 ARGO의 구성·연결·제어 정책을 선택하는 선행 연구다.
+NAIS 프로토타입은 그 선택을 계승해야 한다. 연구 지표, 구현 acceptance, 현장 규칙은 같은 연쇄의 서로 다른 증거층이다.
 
-## 3. 연구 질문 (신청서가 고정한 형태)
+## 2. 권위 원본
 
-> 개별 기법의 신규 제안이 아니라 **결합 방식의 설계**가 연구 대상이다.
+| ID | 역할 | 경로/범위 | SHA-256 |
+|---|---|---|---|
+| THESIS | 연구 목적·scientific choice | Desktop 졸업논문계획서 p.1 | `d2ab302410321cb43c499a681d289df72d86f889eaf4ca0b58b8e8ad804ea8f5` |
+| APP | 목표 제품 동작·구현 제안·공개 의무 | 현재 사용자 제공 NAIS 신청서 pp.2–4,7 | `a829572375ddca11ec94cbbd48827419564f655fa36aab25e3a9d3fdca8a47e6` |
+| NOTICE | 대회 일정·배점·현장 개발·제출 | 현재 사용자 제공 모집 공고 pp.2,3,5 | `b46c64b79eec2c317017977c6821115f49d02cd16bf481949e91bcd38c92610a` |
 
-네 갈래를 하나의 연구 루프로 잇는 **최적 구성을 실험으로 찾는 것**이 목표다.
+현재 APP는 이전 Downloads 사본 및 구 `ca35…` 참조와 다른 파일이다. 현재 APP에는 36시간 계획이 없다.
+실제 제출 성공 여부는 이 경로만으로 추정하지 않는다.
 
-| # | 갈래 |
-|---|---|
-| 1 | 지속형 REPL 기반 재귀 실행 |
-| 2 | 궤적 근거에 따른 하네스 상태 갱신 |
-| 3 | 격리 작업트리와 불변 커밋 기반 재현 실행 |
-| 4 | 의미 기반 문헌 검색 |
+## 3. 연구 목적
 
-## 4. 차별성 — 이중 refine의 계보 분리
+1. agent가 연구 문제·가설·대안·구분 예측·조건·방법·지표·중단 규칙을 직접 선택한다.
+2. 모든 선택은 실제 읽은 source bytes/span, 반례, 적용 범위와 연결된다.
+3. 둘 이상의 설계/실험 후보를 같은 비교 조건에서 경쟁시키고 이유 있게 유지·보류·수정·기각한다.
+4. 실행은 사전 고정 protocol/code/environment와 receipt로 재현 가능해야 한다.
+5. 결과가 다음 연구 결정을 바꾸며 실패·무효·기각 방향도 재개 조건과 함께 보존된다.
+6. 다른 agent가 사적 대화 없이 active graph와 receipt로 허용 next action과 금지 이유를 복구한다.
+7. 검증된 최소 구성이 후행 ARGO 계약과 NAIS prototype acceptance를 실제로 바꾼다.
 
-연구 refine은 가설·조건·방법을 갱신하고, 엔진 refine은 하네스를 갱신한다.
-두 이력을 **덮어쓰지 않고 따로 보존**해, 어느 쪽 변경이 결과를 바꿨는지 사후 귀속한다.
+## 4. 현재 연구 질문과 active 설계
 
-## 5. 검증 설계 — 동일 모델·동일 예산의 제거 실험 4종
+전체 질문은 다음과 같다.
 
-| 비교군 | 제거 대상 |
-|---|---|
-| A | 그래프 제거 |
-| B | 설계 경쟁 제거 |
-| C | refine 제거 |
-| D | 단일 에이전트 베이스라인 |
+> 장기 자율 R&D에서 근거 기반 scientific choice, 경쟁 실행, 결과 기반 successor, 재현·인계를 제공하는 유용한 최소 ARGO 구성과 native ownership 경계는 무엇인가?
 
-## 6. 평가 지표 4종
+가장 먼저 검사할 불확실성은 typed evidence dependency/version 정책이 동일 기회의 강한 result-driven experiment-tree
+comparator보다 다음 실험 선택·선택적 재개방·fresh-context 인계를 개선하는지다.
 
-| 지표 | 정의 |
-|---|---|
-| 증거 연결 완전성 | 결정 노드 중 **출처와 실행 커밋이 모두** 연결된 비율 |
-| 중복 제안률 | 이미 기각·완료된 설계를 다시 제안하는 비율 |
-| 재개 일치도 | 중단 후 이어받았을 때 같은 상태로 복원되는 정도 |
-| 사람 개입 횟수 | 목표·경계 승인 외에 사람이 끼어든 횟수 |
+Active 설계: `paper/research/integrated-research-design-active.md`
+기제–native 계약: `paper/research/material-mechanism-evidence-map.md`
+Active graph 인계: `paper/research/active-graph-handoff-manifest.json`
+다음 실험 명세: `paper/research/next-experiment-manifest.json`
 
-## 7. 채점 규율 — 판정 모델이 아니다
+기존 `.planning/.../11-integrated-experiment-design.md`의 G×C×F/L×P/Stage R 설계는 보존된 대안이다. 8-cell factorial,
+16과제, 13개 검정은 더 이상 루트의 불변 조건이 아니다. 첫 주 contrast가 설명을 구분하지 못할 때만 후속으로 연다.
 
-계획서 원문: **"채점: 판정 모델이 아닌 규칙 기반 검증기, 정답 격리와 절차의 사전 등록"**
+## 5. 비교·채점·분석 규율
 
-> **귀결.** 대형언어모델 심사자를 1차 채점기로 쓰는 경로는 **루트에서 허가된 적이 없다.**
-> 본 연구가 심사 모델 기반 지표에서 조건 성분을 거의 얻지 못한 것은 이 규율과 모순되지 않으며,
-> 오히려 루트가 처음부터 배제한 계측기를 사용한 결과로 해석된다.
-> 1차 채점은 **규칙 기반 검증기**로 되돌린다.
+- 고정 비처리 조건: task/data/split/source/scorer/opportunity/model/tool/budget.
+- 사전 등록된 treatment policy와 condition별 code hash 차이는 허용한다. 미등록 차이만 비교 불가다.
+- primary는 condition-blind rule verifier의 independently checkable decision-contract success다.
+- 규칙 점수는 과학적 진실·보편적 참신성·SOTA를 자동 인증하지 않는다.
+- task/episode가 추론 단위이며 rollout/seed는 nested다.
+- confirmatory 주 가설은 `H0: Δ≤0`; `Δ=+0.10`은 power 설계 시나리오다. CI lower `>+0.10` 구 성공 조건은 폐기한다.
+- best-of-k/seed/checkpoint 선택은 confirmatory estimand가 아니다.
+- fatal protocol/evaluator/agent failure는 intention-to-run 0점이다. infrastructure failure만 blinded 1회 retry한다.
+- hidden scorer/gold 접근은 run 무효다.
 
-## 8. 승인 판정과 사전 고정
+## 6. 재료와 ownership
 
-- Spec 계층: **GoalSpec**(목표·권한), **HypothesisSpec**(주장·영가설·메커니즘·반증 조건),
-  **ProtocolSpec**(표본·조건·변수·대조군·지표·반복 횟수·중단 규칙)
-- 검사 축: 추적성·반증성·비교성·적법성·예산·실행성 → **ADMIT · REVISE · BLOCK**
-- ADMIT된 ProtocolSpec은 **실행 전에 엔진 버전과 함께 해시로 고정**해 그래프에 커밋한다.
-  결과를 본 뒤 지표나 반증 기준을 바꾸는 사후 조정을 막는다.
-- 실행 실패(비정상 종료·자원 부족·의존성 오류)는 **반증 근거에서 제외**한다.
-- 설계 경쟁의 우승안은 **별도 보류 데이터**에서 한 번 더 확인한다.
+- Pi/Prime: daemon, AgentSession, worker, persistent REPL/RLM과 복구의 고정 실행 기질
+- Exa 등: discovery adapter; snippet은 증거가 아님
+- 원문/evidence plane: bytes/hash/span/scope의 append-only 근거
+- research/context graph: versioned dependency projection과 selective recheck 후보
+- ORX: 지정 scientific run authority; ARGO는 receipt link/import만 소유
+- research refine: 가설·방법·다음 결정 successor
+- engine refine: 별도 held-out promotion/rollback 계보
 
-## 9. 본선 구현 제약 (서약 사항)
+APP의 LangGraph StateGraph/SqliteSaver는 구체적인 graph-plane 구현 **후보**다. native ownership 중복, 정합성·복구 비용과
+대안을 비교하기 전 최선으로 고정하지 않는다. Python validator/fixture는 제품 runtime이 아니다.
 
-> "**사전 개발물은 반입하지 않고, 공개된 오픈소스 하네스를 기반으로 대회 기간 내에 구현합니다.**"
+## 7. 현재 증거 상태
 
-무박 2일 시연 범위: 컨텍스트 그래프 스키마 → 설계안 2건 경쟁과 admission → 1회 실행·판정 → refine 1회.
-공개 과학 데이터만 사용한다.
+- Stage 0 scorer: 16개 task, valid/corrupt 각 3회, 총 96 evaluator 실행, 16/16 deterministic PASS
+- 공통 image: Linux arm64 `sha256:026ce848fa7de5d15510192aaeaadfe05cc252364df51ddc292d3655f0cc2060`
+- environment parity: Python distribution 91개, Debian package 95개, PASS
+- actual syscall isolation: runtime policy PASS
+- 한계: `integrated_task_runner_certified=false`, fully certified task 0, 인정된 효능 결과 0
 
-## 10. 루트가 인정한 참고문헌
+이는 계측기·runtime boundary 결과이며 ARGO 효능이 아니다. Study A, T3, T1′, B2와 구 synthetic 결과는 active efficacy
+근거에서 격리·철회한다.
 
-**계획서 6건** — SWE-agent(행동), CodeAct(행동), A-Mem `2502.12110`(기억),
-Graph of Thoughts(구조), ADAS `ICLR'25`(설계), Self-Authored Verification `2607.24300`(검증)
+## 8. Graph authority와 revision
 
-**신청서 8건** — Prime Agent `2608.23552`, RLM `2512.24601`, Continual Harness `2605.09998`,
-OpenResearch CLI(MIT), The AI Scientist `2408.06292`/`2504.08066`, AI Co-Scientist `2502.18864`,
-SciAgents `2409.05556`, 그래프 기반 연구 맥락 `2608.14881`
+`paper/context-graph.json`은 현재 구 root/status와 역사 edge를 포함하므로 active projection으로 그대로 사용하지 않는다.
+`07-context-graph-repair-overlay.json`은 `DRAFT_NOT_APPLIED`이며 canonical 수리로 보고하지 않는다. 원고의
+`current-evidence-20260905/context-graph.json`은 46-node local editing map이며 제품/canonical graph가 아니다.
 
-## 11. 이 루트가 무효화하는 하위 방향
+모든 새 agent는 `active-graph-handoff-manifest.json`을 통해 실제 consumer, precedence, 미적용 상태를 먼저 확인한다.
+RETRACTED result의 역사 `supports` edge는 보존할 수 있으나 active support로 소비하지 않는다. source 무효화는 영향받는
+결정만 `requires_recheck`로 열고 독립 근거와 무관한 결과를 보존한다.
 
-- 심사 모델을 **1차 채점기**로 삼는 지표 설계
-- 사전 개발물을 본선에 반입하는 전제
-- 결합 설계가 아니라 개별 기법의 신규성을 주장하는 서술
+## 9. NAIS 조건과 clean-room
+
+NOTICE p.3 본선 배점: 적합성 10, 활용성 20, 혁신성 25, 실현가능성 25, 확장성 20. 논문 primary metric과 다르다.
+NOTICE p.5는 실제 개발 전 과정이 본선 기간에 수행되어야 함을 명시한다. 사전 세로 JPG/PNG 포스터와 현장 개발을 구분하고,
+본선 결과물은 prototype, PPT/PDF, GitHub source이며 발표 약 5분·질의응답 약 3분이다.
+
+웹페이지의 17:00–다음 날 12:00은 전체 행사 관측치이며 순수 개발시간으로 확정하지 않는다. 공개 OSS/API, 사전 설계자료,
+custom 코드의 정확한 재사용 범위는 `UNKNOWN`이다. 현재 연구 worktree 반입을 허용 또는 금지로 가정하지 않는다.
+Push·공개·제출 권한도 없다.
+
+NAIS 최소 동작 후보는 source→둘 이상의 실제 실행 설계→동일 기준 비교→이유 있는 접기→관측 기반 successor 1회→graph와
+fresh-context 인계다. 한 번의 실행만으로 병렬 경쟁을 구현했다고 주장하지 않는다. engine self-modification은 MVP 밖이다.
+
+## 10. 현재 중단선과 다음 행동
+
+Native construction은 계속 중단한다. paid episode는 Stage별 exact upper cost와 20% contingency를 숫자로 계산하고 사용자가
+그 금액을 승인하기 전 실행하지 않는다. LG Aimers와 private instance는 접근하지 않는다.
+
+Active 설계와 기제–native 계약은 canonical graph에 연결됐다. 현재 다음 행동은 고정된 zero-cost deterministic
+manipulation command를 한 번 실행하고 receipt를 검증하는 것이다. 이 fixture는 population efficacy가 아니며 paid task pack·
+sample size·confirmatory cost는 계속 미정이다.
