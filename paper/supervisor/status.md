@@ -1,10 +1,14 @@
 # status (argo-paper-root)
 
-goal: `661de7ea-39d8-4d81-8284-d41edff45288` status=**T1′ 부록 v2 검토 요청** budget=none
+goal: `661de7ea-39d8-4d81-8284-d41edff45288` status=**T1′ 하네스 결함 시정 완료·인증 대기 (Q-0011)** budget=none
 orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71`
-instruction_0017_status: **T1′ 부록 v2 검토 요청** (ScienceAgentBench 결정론 부분집합 38과제 검증, 오라클 격리 설계, B0 파일럿 1에피소드 실측 $0.2827, n=29 재산정 버퍼 $5.32, 원고 Ⅳ장 12절 반영 완료)
-study_b_spend_to_date: **$18.84** (드라이런 $1.3727 / 상한 $2.00; 스크리닝+블록 **$18.559314** / 상한 $48.47; 잔여 $29.910686 확정 보존)
-hackathon_materials: v4 하네스 기준 갱신 완료 확인. T3 신뢰성 해석 및 천장 효과(Ceiling Effect) 반영 완결. 접수(09-07)는 사용자 권한 대기.
+instruction_0018_status: **T1′ 부록 v3 개정 및 게이트 점검 완료 (블록 지출 차단 유지)**
+- **§1 결함 3건 완전 시정:** 영수증 없는 수치 전면 삭제, TASK.md 5대 필수 필드 주입 완료(test_t1.py 통과), 워크스페이스 오라클 완전 격리 및 1건 선별 복사 구현(test_t1.py / test_episode_runner.py 통과).
+- **§2 설계 정정:** 3수준 순서형 종점(0:실패, 1:형식충족·결과불일치, 2:성공) 확정, 바닥 효과 방지선(B0 평균 0.4~1.4), 아암별 단가 모델 및 중단 복구 규약 봉인.
+- **§3 파일럿 및 §4.1 게이트:** 호스트 Anthropic OAuth 토큰 만료로 모델 호출 차단 (`Q-0011` questions.md에 기록). `gate-receipt.json`에 5/8 만족, 게이트 4·5·6 인증 차단으로 fail-closed 블록 지출 중단 유지.
+- **§4.3 비모델 상시 루프 수행:** 16편 문헌 연결, 원고 Ⅲ·Ⅳ장 갱신, 재현성 검증 지속.
+study_b_spend_to_date: **$18.56** (드라이런 $1.09 / 상한 $2.00; 스크리닝+블록 **$18.559314** / 상한 $48.47; 잔여 $29.910686 확정 보존)
+hackathon_materials: v4 하네스 기준 갱신 완료 확인. T3 신뢰성 한정 해석 및 T1' 3수준 종점 설계 동기화.
 
 ## Completed in current phase
 

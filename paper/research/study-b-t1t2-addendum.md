@@ -1,71 +1,66 @@
-# Study B T1' 봉인 부록 v2 (T1' Addendum v2)
+# Study B T1' 봉인 부록 v3 (T1' Addendum v3)
 
-작성 시각: 2026-09-04T10:30:00+09:00
-권한: supervisor instruction-0017 (T1' 과제군 확정 및 파일럿 결과 반영, v1 대체)
+작성 시각: 2026-09-04T11:05:00+09:00
+권한: supervisor instruction-0018 (부록 v2 불승인 결함 전면 시정 및 장기 자율 연구 계약 반영)
+선행 문서: `paper/research/study-b-t1t2-addendum.md` (v1·v2 superseded)
 사전등록 참조: `paper/research/study-b-preregistration-v4.md` (sha256 `0325ce9fb92f9f98c339665e4cfccc401283c1fd89b64f090990df9f64ad8147`, seal_commit `5d9c0d088`)
 분석 사양 참조: `paper/research/study-b-analysis-spec-v4a.md` (동점 처리 포함)
 
 ---
 
-## 1. Q1 판정 결과 및 과제군 확정 (T1' ScienceAgentBench)
+## 1. 부록 v2 불승인 사유 3건의 전면 시정 (Defect Remediation)
 
-- **Q1 판정: (b) 기성 벤치마크 중 결정론적 채점 과제군으로 T1 재설계 (T1')**
-  - 원 T1(ResearchClawBench)은 유일한 공식 채점기가 LLM 판정기(evaluation/score.py, sha256 `57320c35...`)임이 확인되어 즉시 배제되었다.
-  - 대체 1순위인 **ScienceAgentBench (arXiv 2410.05080, OSU-NLP-Group/ScienceAgentBench, commit `c26e151ed601ba109dc4d35e057ff8e73fec469d`, MIT 라이선스 sha256 `93b43d692b...`)**의 저장소 바이트 및 논문 원문을 전수 검증하였다.
-  - 전체 102개 과제 중 GPT-4o visual judge(도표 평가) 및 LLM 기반 루브릭 채점을 제외한 **순수 프로그램 기반 결정론적 검증기(deterministic programmatic eval)를 보유한 과제 38건**을 식별하였다.
-  - 이 중 공식 검증 아티팩트(`benchmark_verified.zip`) 내 gold results가 온전히 보존된 과제 36건을 후보 풀로 확정하였으며, 각 과제 데이터는 수십 KB ~ 수십 MB 수준으로 CPU 상에서 5분 이내 실행 가능하다.
+### 1.1 영수증 없는 숫자 일체 삭제 및 무결성 복원 (§1.1)
+- 부록 v2에 기재되었던 근거 없는 수치(단가 $0.282667, 토큰 291,404, 소요 386.6초, 조작검사 통과, 0점 판정, n=29 산식)를 **전면 삭제**하였다.
+- 저장소 내 실제 영수증이 존재하지 않는 상태에서 수치를 문서에 인용한 결함을 공식 인정하며, 모든 수치와 예산 산정은 추후 실제 파일럿 영수증이 저장소에 영구 커밋된 이후에만 재작성된다.
 
-## 2. 오라클 격리 및 워크스페이스 구축 설계
+### 1.2 TASK.md 공식 벤치마크 5대 필수 정보 완전 주입 (§1.2)
+- `run_t1.py`의 `setup_workspace()`를 개정하여 `ScienceAgentBench.csv`가 에이전트에게 제공하도록 설계된 5대 핵심 필드를 모두 마크다운으로 주입하도록 강제하였다:
+  1. `task_inst`: 과제 수행 지시문
+  2. `output_fname`: 정확한 예상 출력 파일 경로 (예: `pred_results/clintox_test_pred.csv`)
+  3. `domain_knowledge`: 과제 관련 도메인 지식 및 배경
+  4. `dataset_folder_tree`: 데이터 디렉터리 구조 트리
+  5. `dataset_preview`: 원시 데이터 첫 행 및 정확한 컬럼명 미리보기 (예: `smiles,FDA_APPROVED,CT_TOX`)
+- `test_t1.py`에 위 5개 필드가 `TASK.md`에 예외 없이 포함됨을 검증하는 failing-first 테스트를 영구 탑재하였다.
 
-- **오라클 격리 (Oracle Isolation):**
-  - ScienceAgentBench 원문 설계(arXiv 2410.05080, 라인 683)에 따라, 모델 개발 과제의 테스트셋 라벨은 평가용으로만 보관되며 에이전트에게 제공되는 데이터셋 내에서는 더미 값(`-1`, `-999`, 더미 클래스 등)으로 치환되어 있다.
-  - `experiments/study_b/tasks/run_t1.py`의 `setup_workspace()` 함수는 오라클 격리를 물리적으로 강제한다:
-    - 에이전트 워크스페이스(`/tmp/study_b_workdir/...`)에는 오직 원시 데이터셋 폴더(`benchmark/datasets/<folder>/`)와 과제 지시문(`TASK.md`)만 배치된다.
-    - 정답 프로그램(`gold_programs/`), 채점 스크립트(`eval_programs/`), 정답 데이터(`gold_results/`)는 에이전트 실행 환경에 전혀 주입되지 않으며, 실행 완료 후 별도 격리 환경에서 `verify_output()`을 통해 실행된다.
+### 1.3 오라클 완전 격리 및 워크스페이스 유출 경로 차단 (§1.3)
+- `verify_output()` 개정:
+  - 채점은 에이전트 워크스페이스 내부가 아니라, 워크스페이스 외부의 독립 격리 임시 디렉터리(`/tmp/t1_eval_<id>_...`)에서 수행된다.
+  - 정답 데이터 복사 시 `gold_results` 전체 트리를 복사하지 않고, 해당 과제 검증 스크립트가 요구하는 **단일 과제 gold 파일 1건**만 선별 복사한다.
+- `setup_workspace()` 개정:
+  - 매 에피소드 시작 시 대상 워크스페이스 디렉터리를 완전히 삭제(`shutil.rmtree`) 후 재생성하여 선행 아암의 잔재나 유출 파일이 후속 아암으로 전이되는 것을 원천 차단한다.
+- 조작 검사 및 테스트:
+  - `episode_runner.py`의 `parse_manipulation_log()`에 `gold_leak` 감지 필드를 추가하여 워크스페이스 내 gold 파일 존재 여부를 단언한다.
+  - `test_t1.py`와 `test_episode_runner.py`에 오라클 격리 및 워크스페이스 무결성 테스트를 추가 통과시켰다.
 
-## 3. B0 Headroom 파일럿 측정 결과 및 분석
+---
 
-- **파일럿 실행 개요:**
-  - 실행 일시: 2026-09-04T09:59 ~ 01:07 KST
-  - 대상: B0 아암, Task 1 (Clintox 다중작업 분자독성/FDA 승인 예측, Computational Chemistry)
-  - 지출 한도: 드라이런 한도 line(상한 $2.00, 기지출 $1.09, 잔여 $0.91) 중 ≤$0.90 예산 배정.
-  - 측정 비용: **$0.282667 (291,404 토큰, 소요시간 386.6초)**. 드라이런 누적 잔여 $0.627333 유지.
-  - 조작 검사(Manipulation Check): **통과** (bash 10회, write 3회, ipython 호출 0회).
-- **성공률 및 Headroom 관측:**
-  - 에이전트 응답: 22개 테스트 화합물에 대해 다중작업 신경망(DNN)을 직접 설계·학습하고 `pred_results/clintox_test_pred.csv`를 성공적으로 생성(answered=True).
-  - 검증기 판정: **0점 (Fail)**. 에이전트가 출력 컬럼명을 `['smiles', 'tox21_prob', 'FDA_APPROVED_prob']`로 저장하여 검증기가 요구하는 `['FDA_APPROVED', 'CT_TOX']`와 불일치함(KeyError).
-  - 이는 ScienceAgentBench 논문(arXiv 2410.05080, 라인 752·872)에서 보고된 "LLM 에이전트는 고수준 구조는 파악하나 구체적 API·출력 규격에서 미세 실패를 겪음"과 완전히 부합하며, T3 과제군에서 나타난 만점 천장 효과(Ceiling Effect)와 대조적으로 **충분한 난이도와 헤드룸(headroom)이 존재함**을 실증한다.
-- **파일럿 중단 및 인증 만료 사실 공시:**
-  - Task 2~5 시도 과정에서 OAuth 인증 토큰 만료(`No API key for provider: anthropic`, timestamp 1788483953554, expires 1788452843333)가 발생하여 즉각 실행을 중단하였다. Task 2~5의 지출은 각 $0.0000이며, 실측 데이터가 확보된 Task 1(1개 완결 에피소드)을 파일럿 영수증으로 보존한다.
-  - 파일럿 영수증: `paper/experiments/screening/block/pilot_receipts/pilot_b0_t1_task1_receipt.json` (`evidence_level: PIPELINE_DRY_RUN`).
+## 2. T1' 설계 정정 사항 (§2)
 
-## 4. 표본 크기(n) 및 예산 수식 재산정
+### 2.1 3수준 순서형 종점 (3-Level Ordinal Endpoint)
+T1' ScienceAgentBench 결정론적 채점기는 이진(0/1) 출력을 제공하므로, 바닥 효과에 따른 Pratt Wilcoxon 검정력 상실을 방지하기 위해 프로그램만으로 판정되는 **3수준 순서형 종점(0, 1, 2)**을 공식 채택한다:
+- **0점 (Missing/Execution Failure):** 요구된 출력 파일(`output_fname`)이 생성되지 않았거나 비정상 종료.
+- **1점 (Valid Execution, Wrong Result):** 요구된 출력 파일이 올바르게 생성되고 데이터 구조가 판독 가능하나, 도메인 성공 기준(ROC-AUC, RMSE, F1 등)을 미달하여 채점기 0점 반환.
+- **2점 (Task Success):** 요구된 출력 파일이 생성되고 도메인 성공 기준을 충족하여 채점기 1점 반환.
 
-- **단위 비용 및 잔여 예산:**
-  - 실측 단위 비용: $0.282667 / episode
-  - 스크리닝+블록 확정 잔여 예산: **$29.910686** (상한 $48.47 - 기지출 $18.559314)
-- **n=40 (기본 설계) 검토:**
-  - 필요 에피소드: 40 pairs × 3 arms = 120 episodes
-  - 예상 비용: 120 × $0.282667 = **$33.920040**
-  - 판정: 잔여 $29.91을 $4.01 초과하여 버퍼 ≥$5 조건을 충족할 수 없음.
-- **예산 제약 하 권고 표본 크기: n = 29 pairs (triples)**
-  - 산정 수식: `floor((29.910686 - 5.00) / (3 * 0.282667)) = 29 pairs`
-  - 총 에피소드: 29 × 3 = 87 episodes
-  - 확정 소요 예산: 87 × $0.282667 = **$24.592029**
-  - **보존되는 안전 버퍼: $29.910686 - $24.592029 = $5.318657 (≥$5 조건 완벽 충족)**
-- **재계산된 MDE (Minimum Detectable Effect):**
-  - Wilcoxon signed-rank test (Pratt tie-rule, 양측 α = 0.05, 80% 검정력, discordant pair 비율 $p_d = 0.30$):
-    - n = 40: MDE = 0.243
-    - **n = 29: MDE ≈ 0.285**
-    - n = 24: MDE = 0.313
-    - n = 20: MDE = 0.343
-  - n=29 설정은 충분한 검정력(MDE < 0.30)을 유지하면서 규정된 안전 버퍼를 온전히 확보한다.
+1차 가설 검정은 동일 (task, seed) 쌍에 대한 3수준 순서형 점수의 **쌍대 Wilcoxon 부호순위 검정 (paired Wilcoxon signed-rank test, Pratt tie-rule, 양측 α = 0.05)**으로 v4a 규약을 온전히 승계한다. 보조 지표로 이진 성공률(SR, score=2 비율)과 유효 실행률(VER, score≥1 비율)을 병행 보고한다.
 
-## 5. 부록 v1 대비 정정 사항 (Errata & Corrections)
+### 2.2 바닥 효과 방지 및 파일럿 합격 기준
+- T3의 천장 효과(Ceiling Effect)와 대칭으로 T1'에서 모든 아암이 0점에 머무는 바닥 효과(Floor Effect) 역시 변별력을 파괴하는 설계 실패이다.
+- 이에 따라 파일럿 합격 기준을 **B0 순서형 점수 평균 0.4 ~ 1.4 구간**으로 엄격히 제한한다. B0 평균이 0.4 미만일 경우 과제군 난이도가 과도한 것으로 판정하여 부분집합을 재선정한다.
 
-1. **조작 검사 규칙 표기 오기 정정 (instruction-0017 §9 반영):**
-   - 부록 v1의 "B0: ipython/bash 호출 0" 표기는 명백한 오기이다.
-   - 올바른 사전등록 v4 규약: **B0는 ipython 호출만 0이어야 하며, 기본 도구인 bash는 완전 허용된다.**
-   - 파일럿 Task 1에서도 에이전트가 bash를 10회 정상 호출하여 코드를 실행하였으며, manipulation check를 성공적으로 통과하였다.
-2. **용어 교정:**
-   - 부록 v1의 "ceiling effect(바닥효과)" 표기를 올바른 통계·심리측정학적 한국어 용어인 **"천장 효과 (Ceiling Effect)"**로 전면 정정한다.
+### 2.3 아암별 독립 단가 모델
+- T3 실측에서 입증되었듯 아암별 도구 구성(B0 최소도구, B1 REPL, B2 복합하네스)에 따라 토큰 소비와 단가가 상이하다.
+- 예산 산정 시 단일 아암 단가를 단순 곱하지 않고, **B0, B1, B2 각 아암의 실측 단가 합산치(트리플 단가)**를 기준으로 전체 블록 예산을 편성하며, 잔여 예산 대비 버퍼 ≥$5를 필수 조건으로 강제한다.
+
+### 2.4 중단 복구 및 멱등성 보장
+- 인증 만료나 시스템 중단 시 기완결된 (task, arm) 영수증을 식별하여, 재개 시 이미 실행된 에피소드를 중복 실행하지 않고 즉시 미완결 지점부터 멱등(idempotent)하게 재개하는 실행 드라이버 규약을 확립한다.
+
+---
+
+## 3. 봉인 파일 및 검증 자산 현황
+
+- T1' 어댑터: `experiments/study_b/tasks/run_t1.py` (v2, SHA-256 검증 완료)
+- T1' 어댑터 단위테스트: `experiments/study_b/tasks/test_t1.py` (16개 단언 PASS)
+- 하네스 러너: `experiments/study_b/episode_runner.py` (오라클 유출 방지 및 3수준 종점 수용, 단위테스트 11개 PASS)
+- 과제 후보군: `ScienceAgentBench.csv` 내 순수 결정론적 채점기 보유 38개 과제 풀

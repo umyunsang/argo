@@ -8,7 +8,7 @@ Licence: MIT (sha256 93b43d692b033b76129504448695bfe76ef22d18b11e51352bfab4b5622
 Source: repo github.com/OSU-NLP-Group/ScienceAgentBench, paper arXiv 2410.05080.
 """
 from __future__ import annotations
-import argparse, hashlib, json, os, shutil, subprocess, sys
+import argparse, csv, hashlib, json, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 BENCH = {
@@ -47,14 +47,16 @@ def check_preconditions(checkout: Path | None) -> dict:
     return state
 
 def setup_workspace(task_id: int, benchmark_dir: Path, target_dir: Path) -> dict:
-    """Prepares an isolated workspace for a task, ensuring oracle isolation."""
+    """Prepares an isolated workspace for a task, wiping target_dir and ensuring oracle isolation."""
+    # §1.3 (c): completely wipe and recreate target_dir to prevent cross-arm state leakage
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
+    
     csv_file = benchmark_dir / "ScienceAgentBench.csv"
     if not csv_file.exists():
         raise PreconditionUnmet("ScienceAgentBench.csv missing from benchmark directory")
     
-    # Read metadata using standard csv module to avoid heavy dependencies
-    import csv
     with open(csv_file, mode="r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         task_row = next((r for r in reader if int(r["instance_id"]) == task_id), None)
@@ -62,7 +64,7 @@ def setup_workspace(task_id: int, benchmark_dir: Path, target_dir: Path) -> dict
     if not task_row:
         raise PreconditionUnmet(f"Task {task_id} not found in ScienceAgentBench.csv")
     
-    # Copy dataset files
+    # Copy dataset files only
     tree_header = task_row["dataset_folder_tree"].splitlines()[0]
     folder_name = tree_header.replace("|-- ", "").replace("/", "").strip()
     src_dataset_dir = benchmark_dir / "benchmark" / "datasets" / folder_name
@@ -71,12 +73,30 @@ def setup_workspace(task_id: int, benchmark_dir: Path, target_dir: Path) -> dict
     
     dst_dataset_dir = target_dir / "benchmark" / "datasets" / folder_name
     dst_dataset_dir.parent.mkdir(parents=True, exist_ok=True)
-    if dst_dataset_dir.exists():
-        shutil.rmtree(dst_dataset_dir)
     shutil.copytree(src_dataset_dir, dst_dataset_dir)
     
-    # Write TASK.md
-    task_md = f"# Task {task_id}: {task_row['domain']}\n\n{task_row['task_inst']}\n"
+    # §1.2: TASK.md MUST include all 5 essential fields from ScienceAgentBench.csv
+    task_md = f"""# Task {task_id}: {task_row['domain']}
+
+## Task Instruction
+{task_row['task_inst']}
+
+## Expected Output File
+Save your output to: `{task_row['output_fname']}`
+
+## Domain Knowledge
+{task_row['domain_knowledge']}
+
+## Dataset Folder Structure
+```
+{task_row['dataset_folder_tree']}
+```
+
+## Dataset Preview
+```
+{task_row['dataset_preview']}
+```
+"""
     (target_dir / "TASK.md").write_text(task_md, encoding="utf-8")
     
     return {
@@ -88,9 +108,17 @@ def setup_workspace(task_id: int, benchmark_dir: Path, target_dir: Path) -> dict
     }
 
 def verify_output(task_id: int, benchmark_dir: Path, workspace_dir: Path) -> tuple[int, str]:
-    """Runs the deterministic evaluation script in isolation."""
-    import csv
-    with open(benchmark_dir / "ScienceAgentBench.csv", mode="r", encoding="utf-8") as f:
+    """Runs evaluation OUTSIDE the workspace, copying only the single task's gold file.
+    
+    Returns:
+      (ordinal_score, detail)
+      where ordinal_score is in {0, 1, 2}:
+        0: missing output or invalid execution
+        1: valid output generated, but failed task criteria (score 0)
+        2: task criteria passed (score 1)
+    """
+    csv_file = benchmark_dir / "ScienceAgentBench.csv"
+    with open(csv_file, mode="r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         task_row = next((r for r in reader if int(r["instance_id"]) == task_id), None)
         
@@ -98,31 +126,54 @@ def verify_output(task_id: int, benchmark_dir: Path, workspace_dir: Path) -> tup
     eval_script = benchmark_dir / "benchmark" / "eval_programs" / eval_script_name
     gold_dir = benchmark_dir / "benchmark" / "eval_programs" / "gold_results"
     
-    # Ensure pred_results directory exists and output is in place
     expected_out = workspace_dir / task_row["output_fname"]
-    if not expected_out.exists():
-        return 0, json.dumps({"error": f"Output file missing: {task_row['output_fname']}"})
+    if not expected_out.is_file():
+        return 0, json.dumps({"ordinal_score": 0, "status": "missing_output", "expected": task_row["output_fname"]})
         
-    # Copy evaluation script and gold results to temporary verification root inside workspace
-    verif_eval_dir = workspace_dir / "benchmark" / "eval_programs"
-    verif_eval_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy(eval_script, verif_eval_dir / eval_script_name)
+    # Read script to find the specific gold file needed
+    script_text = eval_script.read_text(encoding="utf-8", errors="ignore")
+    gold_matches = re.findall(r"gold_results/([a-zA-Z0-9_\-\.]+)", script_text)
     
-    dst_gold = verif_eval_dir / "gold_results"
-    if not dst_gold.exists():
-        shutil.copytree(gold_dir, dst_gold)
+    # Execute verification in an isolated temporary directory OUTSIDE the workspace
+    with tempfile.TemporaryDirectory(prefix=f"t1_eval_{task_id}_") as eval_tmp:
+        tmp_dir = Path(eval_tmp)
         
-    # Execute eval script using python in workspace cwd
-    res = subprocess.run([sys.executable, str(verif_eval_dir / eval_script_name)],
-                         cwd=workspace_dir, capture_output=True, text=True, timeout=120)
-    
-    out = res.stdout.strip()
-    # Most eval scripts return (int, str) tuple via print((score, detail))
-    # Parse the score
-    try:
-        score_part = out.split(",")[0].replace("(", "").strip()
-        score = int(score_part)
-    except Exception:
-        score = 1 if "1," in out or out.startswith("1") else 0
+        # Copy agent's pred_results directory into temporary eval dir
+        tmp_pred = tmp_dir / "pred_results"
+        tmp_pred.mkdir(parents=True, exist_ok=True)
+        shutil.copy(expected_out, tmp_dir / task_row["output_fname"])
         
-    return score, out
+        # Setup eval_programs with ONLY the required gold file(s)
+        tmp_eval_dir = tmp_dir / "benchmark" / "eval_programs"
+        tmp_eval_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy(eval_script, tmp_eval_dir / eval_script_name)
+        
+        tmp_gold_dir = tmp_eval_dir / "gold_results"
+        tmp_gold_dir.mkdir(parents=True, exist_ok=True)
+        for gm in gold_matches:
+            src_gold = gold_dir / gm
+            if src_gold.is_file():
+                shutil.copy(src_gold, tmp_gold_dir / gm)
+                
+        # Run eval script in tmp_dir cwd
+        try:
+            res = subprocess.run([sys.executable, str(tmp_eval_dir / eval_script_name)],
+                                 cwd=tmp_dir, capture_output=True, text=True, timeout=120)
+            out = res.stdout.strip()
+            err = res.stderr.strip()
+            
+            if res.returncode != 0:
+                # Output file existed, but evaluation script crashed -> level 1
+                return 1, json.dumps({"ordinal_score": 1, "status": "eval_crash", "error": err[:200]})
+                
+            # Parse raw 0/1 score
+            try:
+                score_part = out.split(",")[0].replace("(", "").strip()
+                raw_score = int(score_part)
+            except Exception:
+                raw_score = 1 if "1," in out or out.startswith("1") else 0
+                
+            ordinal_score = 2 if raw_score == 1 else 1
+            return ordinal_score, json.dumps({"ordinal_score": ordinal_score, "raw_score": raw_score, "stdout": out[:300]})
+        except subprocess.TimeoutExpired:
+            return 1, json.dumps({"ordinal_score": 1, "status": "eval_timeout"})
