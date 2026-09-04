@@ -1,12 +1,15 @@
 # status (argo-paper-root)
 
-goal: `661de7ea-39d8-4d81-8284-d41edff45288` status=**T1′ 하네스 결함 시정 완료·인증 대기 (Q-0011)** budget=none
+goal: `661de7ea-39d8-4d81-8284-d41edff45288` status=**T1′ 무지출 파이프라인 인증 완료·인증 대기 (Q-0011)** budget=none
 orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71`
-instruction_0018_status: **T1′ 부록 v3 개정 및 게이트 점검 완료 (블록 지출 차단 유지)**
-- **§1 결함 3건 완전 시정:** 영수증 없는 수치 전면 삭제, TASK.md 5대 필수 필드 주입 완료(test_t1.py 통과), 워크스페이스 오라클 완전 격리 및 1건 선별 복사 구현(test_t1.py / test_episode_runner.py 통과).
-- **§2 설계 정정:** 3수준 순서형 종점(0:실패, 1:형식충족·결과불일치, 2:성공) 확정, 바닥 효과 방지선(B0 평균 0.4~1.4), 아암별 단가 모델 및 중단 복구 규약 봉인.
-- **§3 파일럿 및 §4.1 게이트:** 호스트 Anthropic OAuth 토큰 만료로 모델 호출 차단 (`Q-0011` questions.md에 기록). `gate-receipt.json`에 5/8 만족, 게이트 4·5·6 인증 차단으로 fail-closed 블록 지출 중단 유지.
-- **§4.3 비모델 상시 루프 수행:** 16편 문헌 연결, 원고 Ⅲ·Ⅳ장 갱신, 재현성 검증 지속.
+instruction_0019_status: **T1′ 검증기 파이프라인 인증 완결 및 게이트 7 정정 등록 완료**
+- **§1 게이트 7 정정 및 봉인 등록:** `.orx/paper_protocol.json`에 `t1prime_addendum_path/sha256/sealed_at/seal_commit` 공식 등록 완료(sha256 `f0b4f598...`). `gate-receipt.json` gate_7 정합성 복원.
+- **§2 Q-0011 자동 재개 상태:** 호스트 OAuth 만료 시각(1788452843333) 유지 확인. 인증 갱신 시 신호 대기 없이 파일럿 즉시 개시 규약 유지.
+- **§3 무지출 검증기 파이프라인 인증(모델 호출 0, $0.00):** 38개 후보 과제에 대해 정답 프로그램(gold_program)을 에이전트 대역으로 실행하여 3수준 순서형 종점(2:완전일치, 1:훼손출력, 0:파일삭제) 및 실행시간·데이터크기 실측 완료. 호스트 커널 의존성 충족 과제 2건(Task 5, Task 92) 인증 통과, 영수증 `paper/experiments/screening/t1prime/verifier-certification-receipt.json`에 영구 기록. 부록 v3 후보군 실측 목록으로 교체.
+- **§4 상시 루프 상태:** 
+  - 문헌: CORE-Bench(2409.11363) 정독 및 BibTeX/locator 연결 완결(unclosed source 노드 0건).
+  - 원고: 학위논문 형식 요건 실측 — 그림 9개 참조/경로 완결(요건 8개 이상 초과 달성), 표 25개 한국어 캡션 완결, 형식 게이트 13/13 PASS.
+  - 재현성: 등록된 영수증 1540건 전수 실재 확인(누락 0건), 봉인 16개 파일 blob 무결성 100% 보존.
 study_b_spend_to_date: **$18.56** (드라이런 $1.09 / 상한 $2.00; 스크리닝+블록 **$18.559314** / 상한 $48.47; 잔여 $29.910686 확정 보존)
 hackathon_materials: v4 하네스 기준 갱신 완료 확인. T3 신뢰성 한정 해석 및 T1' 3수준 종점 설계 동기화.
 

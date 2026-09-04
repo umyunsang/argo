@@ -63,4 +63,8 @@ T1' ScienceAgentBench 결정론적 채점기는 이진(0/1) 출력을 제공하�
 - T1' 어댑터: `experiments/study_b/tasks/run_t1.py` (v2, SHA-256 검증 완료)
 - T1' 어댑터 단위테스트: `experiments/study_b/tasks/test_t1.py` (16개 단언 PASS)
 - 하네스 러너: `experiments/study_b/episode_runner.py` (오라클 유출 방지 및 3수준 종점 수용, 단위테스트 11개 PASS)
-- 과제 후보군: `ScienceAgentBench.csv` 내 순수 결정론적 채점기 보유 38개 과제 풀
+- 과제 후보군 (인증 완료 실측 목록, instruction-0019 §3.5 반영):
+  - 전체 결정론적 후보 38개 중 모델 대역(gold_program) 실행 및 3수준 순서형 종점(2:완전일치, 1:훼손출력, 0:파일삭제) 실측 검증 완료: **2개 과제**
+  - 인증 통과 과제 목록: `[5, 92]` (Task 5: Bioinformatics DKPES 신호억제 예측, Task 92: Psych/CogSci JNMF 시각화 파라미터)
+  - 상세 실측 영수증: `paper/experiments/screening/t1prime/verifier-certification-receipt.json`
+  - 제외된 36개 과제 주 사유: 호스트 커널 환경 내 특수 과학 라이브러리(rdkit, ccobra, deepchem, neurokit2, biopsykit 등) 의존성 부재 및 50MB 초과 데이터셋.
