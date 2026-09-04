@@ -1,15 +1,11 @@
 # status (argo-paper-root)
 
-goal: `661de7ea-39d8-4d81-8284-d41edff45288` status=**active** budget=none
-orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71` — 클린 클론 done (`c0777239` @ `930f0db06`)
-orx_runs_this_cycle: 3
-exa_calls_this_cycle: 2 — **exa 복구됨**(401 해소, web_search_exa 2회 성공). 결과 가치는 낮아 인용하지 않음.
-study_b_spend_to_date: **$18.56** (드라이런 1~3차 $1.09 / 상한 $2.00; 스크리닝+블록 **$18.559314** / 상한 $48.47 = stage1v4 파일럿 seed 0 $0.300209 [protocol screening_spend_usd] + 120-receipt 합 $18.259105 [B0 $5.913849 + B1 $7.038239 + B2 $5.307017]; 잔여 $29.910686)
-block_progress: T3 seeds 40/40 완결 (100.0%), 실제 완료: 2026-09-03 23:56 KST (seed 39 커밋 `e3dafff75`)
-prereg_sealed: **yes** — v4 `0325ce9fb92f` (seal_commit `5d9c0d088`, 16개 파일; v1·v2·v3 superseded, instruction-0015b 반영)
-analysis_receipt: **yes** — `paper/experiments/screening/block/analysis-receipt.json` sha `ab4d72783627b9f0af6727f76e72e51bc503540da388a8622fb46b042adeeefa` (2026-09-04T00:40:31+09:00 생성, 봉인 analyze_block.py `143c6b89` 실행, protocol evidence_receipts 등록 확인; 조작 검사 요약 `manipulation-check-summary.json` 120/120·제외 0)
-hackathon_materials: v4 하네스(b0_tools.js / b2_harness.js, manipulation-check receipt) 기준 갱신 완료 상태. 접수(09-07)는 사용자 행위 권한.
-results_origin_list: `analysis.descriptive.{B0,B1,B2}.{mean,std,min,max,n_perfect_5_of_5}`, `analysis.descriptive.all_arms_perfect_seeds`, `analysis.primary_hypothesis`, `analysis.secondary_hypotheses[0..1]`, `analysis.sensitivity.B2_vs_B0`, `supplement.pass_count_histogram_0_to_5`, `supplement.tie_pair_counts` — 전부 `paper/experiments/screening/block/analysis-receipt.json` (sha `ab4d7278…`) 파생. 조작 검사·제외 회계: `manipulation-check-summary.json` (`episodes_total`, `manipulation_check_passed_total`, `excluded_episode_count`).
+goal: `661de7ea-39d8-4d81-8284-d41edff45288` status=**T1′ 부록 v2 검토 요청** budget=none
+orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71`
+instruction_0017_status: **T1′ 부록 v2 검토 요청** (ScienceAgentBench 결정론 부분집합 38과제 검증, 오라클 격리 설계, B0 파일럿 1에피소드 실측 $0.2827, n=29 재산정 버퍼 $5.32, 원고 Ⅳ장 12절 반영 완료)
+study_b_spend_to_date: **$18.84** (드라이런 $1.3727 / 상한 $2.00; 스크리닝+블록 **$18.559314** / 상한 $48.47; 잔여 $29.910686 확정 보존)
+hackathon_materials: v4 하네스 기준 갱신 완료 확인. T3 신뢰성 해석 및 천장 효과(Ceiling Effect) 반영 완결. 접수(09-07)는 사용자 권한 대기.
+
 ## Completed in current phase
 
 - **instruction-0015c 이행 완료:** §1 세션 모델 표기 일체 삭제(헤더 및 Q-0010 철회 반영). §2 블록 범위 부록 검정 방향을 v4 봉인 사양대로 '양측'으로 정정. §3 동점(쌍 차이 0) 처리 사양 v4a(pratt 채택, scipy 1.17.1) 및 analyze_block.py 스크립트·단위테스트 작성 및 protocol 봉인 sha 추가. §4 block_driver.py(래퍼) 커밋 반영.

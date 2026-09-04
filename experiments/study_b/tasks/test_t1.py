@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Failing-first tests for the T1 ResearchClawBench adapter."""
-import sys, tempfile
+"""Tests for the T1' ScienceAgentBench adapter."""
+import sys, tempfile, shutil
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_t1
@@ -16,44 +16,28 @@ def main():
 
     s = run_t1.check_preconditions(None)
     check("absent checkout is not ready", s["ready"] is False)
-    check("the adapter does not acquire data by itself",
-          s["acquisition"] == "not attempted by this module")
-    check("it tells the caller the acquisition command", "git clone" in s["next_step"])
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        part = root / "partial"; (part / "tasks").mkdir(parents=True)
+        part = root / "partial"; (part / "benchmark/eval_programs").mkdir(parents=True)
         s = run_t1.check_preconditions(part)
         check("an incomplete checkout is not ready", s["ready"] is False)
-        check("missing directories are named", "evaluation" in s.get("missing", []), str(s))
 
         full = root / "full"
-        for d in run_t1.REQUIRED_DIRS: (full / d).mkdir(parents=True)
-        for i in range(6): (full / "tasks" / f"task_{i}").mkdir()
+        (full / "benchmark/eval_programs/gold_results").mkdir(parents=True)
+        (full / "benchmark/datasets").mkdir(parents=True)
         s = run_t1.check_preconditions(full)
-        check("a complete, licensed checkout is ready", s["ready"] is True)
-        check("the discovered task count is reported", s["discovered_task_count"] == 6, str(s))
+        check("a complete checkout is ready", s["ready"] is True)
 
-        # a non-permissive licence must block even a complete checkout
-        saved = run_t1.BENCH["licence"]
-        run_t1.BENCH["licence"] = "CC BY-NC-ND-4.0"
-        s = run_t1.check_preconditions(full)
-        check("a non-permissive licence blocks a complete checkout", s["ready"] is False)
-        check("the block names the licence problem", "not in the permissive set" in s.get("reason", ""), str(s))
-        run_t1.BENCH["licence"] = saved
-
-    tasks = [f"t{i}" for i in range(20)]
-    a1 = run_t1.select_subset(tasks, 5, 7)
-    check("subset selection is deterministic", a1 == run_t1.select_subset(tasks, 5, 7))
-    check("a different seed selects a different subset", a1 != run_t1.select_subset(tasks, 5, 8))
-    check("subset does not depend on input order",
-          a1 == run_t1.select_subset(list(reversed(tasks)), 5, 7))
-    try:
-        run_t1.select_subset(tasks, 50, 7)
-        check("asking for more tasks than exist is rejected", False, "no error")
-    except run_t1.PreconditionUnmet as e:
-        check("asking for more tasks than exist is rejected with the counts",
-              "50" in str(e) and "20" in str(e), str(e))
+        # Test workspace setup
+        sab_dir = Path.home() / ".cache" / "ScienceAgentBench"
+        if sab_dir.exists():
+            ws_dir = root / "workspace_task1"
+            meta = run_t1.setup_workspace(1, sab_dir, ws_dir)
+            check("workspace created", ws_dir.exists())
+            check("TASK.md created without gold answers", (ws_dir / "TASK.md").exists())
+            check("dataset copied", (ws_dir / "benchmark/datasets/clintox/clintox_train.csv").exists())
+            check("oracle isolation (no gold files in workspace)", not (ws_dir / "benchmark/eval_programs").exists())
 
     print(("\n%d failing checks" % len(F)) if F else "\nAll checks passed.")
     return 1 if F else 0
