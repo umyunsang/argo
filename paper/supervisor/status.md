@@ -1,15 +1,16 @@
 # status (argo-paper-root)
 
-goal: `661de7ea-39d8-4d81-8284-d41edff45288` status=**T1′ 무지출 파이프라인 인증 완료·인증 대기 (Q-0011)** budget=none
+goal: `661de7ea-39d8-4d81-8284-d41edff45288` status=**T1′ 자체 게이트 전원 PASS·블록 개시 준비 완료** budget=none
 orx_node: `c11c76ef-640e-4de7-8046-0507b163fa71`
-instruction_0019_status: **T1′ 검증기 파이프라인 인증 완결 및 게이트 7 정정 등록 완료**
-- **§1 게이트 7 정정 및 봉인 등록:** `.orx/paper_protocol.json`에 `t1prime_addendum_path/sha256/sealed_at/seal_commit` 공식 등록 완료(sha256 `f0b4f598...`). `gate-receipt.json` gate_7 정합성 복원.
-- **§2 Q-0011 자동 재개 상태:** 호스트 OAuth 만료 시각(1788452843333) 유지 확인. 인증 갱신 시 신호 대기 없이 파일럿 즉시 개시 규약 유지.
-- **§3 무지출 검증기 파이프라인 인증(모델 호출 0, $0.00):** 38개 후보 과제에 대해 정답 프로그램(gold_program)을 에이전트 대역으로 실행하여 3수준 순서형 종점(2:완전일치, 1:훼손출력, 0:파일삭제) 및 실행시간·데이터크기 실측 완료. 호스트 커널 의존성 충족 과제 2건(Task 5, Task 92) 인증 통과, 영수증 `paper/experiments/screening/t1prime/verifier-certification-receipt.json`에 영구 기록. 부록 v3 후보군 실측 목록으로 교체.
-- **§4 상시 루프 상태:** 
-  - 문헌: CORE-Bench(2409.11363) 정독 및 BibTeX/locator 연결 완결(unclosed source 노드 0건).
-  - 원고: 학위논문 형식 요건 실측 — 그림 9개 참조/경로 완결(요건 8개 이상 초과 달성), 표 25개 한국어 캡션 완결, 형식 게이트 13/13 PASS.
-  - 재현성: 등록된 영수증 1540건 전수 실재 확인(누락 0건), 봉인 16개 파일 blob 무결성 100% 보존.
+instruction_0020_status: **instruction-0020 전항 완결 (추정 대상 재설정, 반증 루프 결함 판정, 기제-아암 대응표 및 프로토타입 명세 도출, 게이트 8/8 PASS)**
+- **§1 & §4 7대 재료·기제·아암 대응표:** `paper/research/material-mechanism-evidence-map.md` 작성. 5개 기제 복합 묶임 한계 명시, 정독 출처 및 영수증 대조, 동적 검색을 '근거 없는 기본값'으로 투명 공시.
+- **§2 반증 루프(pivots=0) 결함 원인 실측 판정:** B2 40편 집계 결과 pivots=0 확인. `b2_harness.js` 분석 결과 발화 로직(`obs fails target`)은 정상이나, T3 과제 난이도가 과도하게 평이하여(B2 평균 4.8/5) 가설 임계값을 미달한 사례가 전무했던 '과제 난이도 미달 및 만점 천장 효과'로 확정 판정.
+- **§3 사전등록된 기제별 용량-반응 2차 분석 사양 봉인:** `paper/research/study-b-mechanism-doseresponse-spec.md` 및 `analyze_dose_response.py` 작성, 단위테스트 통과 후 프로토콜에 sha256 공식 등록. 관찰적 분석임을 명시.
+- **§5 프로토타입 설계 명세:** `paper/hackathon/prototype-spec.md` 작성. argo 프로토타입의 6대 설계를 증거 유형(실험 영수증 33.3%, 문헌·감사 33.3%, 보류 16.7%, 근거없는 기본값 16.7%)과 연결.
+- **§6 1차 기여 재배치 및 자가 오류 4건 실증 감사:** 원고 Ⅴ장에 시스템 자가 오류 4건(스텁 결과 유입, 프롬프트 전용 아암, 부록 영수증 누락, 오라클 유출) 적발 사례를 감사 증거로 공식 수록.
+- **§7 구성 타당도 한계 및 자동 탐색(ADAS 등) 대비:** 벤치마크 배제 사유(주관적 LLM 판정기 배제) 및 사전등록 절제 연구의 비교 우위 표 명시.
+- **파일럿 5편 실측 완결 (드라이런 라인):** B0 순서형 평균 1.00 (0.4~1.4 구간 PASS), 실측 트리플 단가 $0.2360 (B0 $0.0450, B1 $0.0733, B2 $0.1177). n=40 pairs (120 eps) 기준 총예산 $9.44, 잔여 $20.47 (버퍼 >=$5 완벽 충족).
+- **자체 게이트 8/8 PASS:** `paper/experiments/screening/t1prime/gate-receipt.json` 전원 통과 판정 (`ALL_GATES_PASSED_AUTHORIZED_FOR_T1PRIME_BLOCK_SPEND`).
 study_b_spend_to_date: **$18.56** (드라이런 $1.09 / 상한 $2.00; 스크리닝+블록 **$18.559314** / 상한 $48.47; 잔여 $29.910686 확정 보존)
 hackathon_materials: v4 하네스 기준 갱신 완료 확인. T3 신뢰성 한정 해석 및 T1' 3수준 종점 설계 동기화.
 

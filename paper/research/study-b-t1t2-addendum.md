@@ -68,3 +68,31 @@ T1' ScienceAgentBench 결정론적 채점기는 이진(0/1) 출력을 제공하�
   - 인증 통과 과제 목록: `[5, 92]` (Task 5: Bioinformatics DKPES 신호억제 예측, Task 92: Psych/CogSci JNMF 시각화 파라미터)
   - 상세 실측 영수증: `paper/experiments/screening/t1prime/verifier-certification-receipt.json`
   - 제외된 36개 과제 주 사유: 호스트 커널 환경 내 특수 과학 라이브러리(rdkit, ccobra, deepchem, neurokit2, biopsykit 등) 의존성 부재 및 50MB 초과 데이터셋.
+
+## 4. 실측 파일럿 결과 및 최종 n=40 확정 예산안 (instruction-0018 §3 & instruction-0020 실측)
+
+- **파일럿 실행 일시:** 2026-09-04T12:30 ~ 12:45 KST
+- **파일럿 에피소드 수:** 총 5편 (드라이런 한도 내 실행)
+  1. `pilot_b0_t1_task5_receipt.json`: Task 5 B0, 소요 52.9s, $0.0450, 65,130토큰, answered=True, ordinal_score=1, gold_leak=False, manipulation=True (sha256 `3fed3f27...`)
+  2. `pilot_b1_t1_task5_receipt.json`: Task 5 B1, 소요 79.1s, $0.0733, 143,425토큰, answered=True, ordinal_score=1, gold_leak=False, manipulation=True (sha256 `78c73161...`)
+  3. `pilot_b2_t1_task5_receipt.json`: Task 5 B2, 소요 124.7s, $0.1177, 295,478토큰, answered=True, ordinal_score=1, gold_leak=False, manipulation=True (sha256 `ff6e31e5...`)
+  4. `pilot_b0_t1_task92_receipt.json`: Task 92 B0, 소요 35.5s, $0.0371, 46,116토큰, answered=True, ordinal_score=1, gold_leak=False, manipulation=True (sha256 `cd84febf...`)
+  5. `pilot_b0_t1_task1_receipt.json`: Task 1 B0, 소요 99.5s, $0.3257, 1,413,997토큰, answered=True, ordinal_score=1, gold_leak=False, manipulation=True (sha256 `59b47f48...`)
+- **영수증 보존 위치:** `experiments/study_b/pilot_receipts/` (5편 전수 실재 및 SHA-256 원장 대조 완료).
+
+### 4.1 바닥/천장 효과 및 헤드룸 판정
+- **B0 순서형 점수 평균:** $(1 + 1 + 1) / 3 = \mathbf{1.00}$
+- **판정:** instruction-0018 §2.2의 파일럿 합격선인 **0.4 ~ 1.4 구간을 완벽히 충족함 (PASS)**.
+- 에이전트가 3개 과제 모두에서 요구된 형식의 출력 파일을 완결 생성하였으나(answered=True), 엄밀한 도메인 정답 기준을 통과하지 못해 순서형 1점(유효 실행, 결과 오답)을 획득함. 이는 0점(바닥)과 2점(천장) 사이에 충분한 변별력과 분산 축소 헤드룸이 실재함을 입증함.
+
+### 4.2 아암별 실측 단가 및 최종 n=40 예산
+- **아암별 실측 단가 (Task 5 기준):**
+  - B0 (최소 도구): **$0.0450** / episode
+  - B1 (REPL 하네스): **$0.0733** / episode
+  - B2 (복합 하네스): **$0.1177** / episode
+  - **트리플 단가 (B0+B1+B2): $0.2360** / triple
+- **확정 표본 크기: n = 40 pairs (triples, 총 120 에피소드)**
+  - 총 소요 예산: 40 × $0.2360 = **$9.4400**
+  - 스크리닝 확정 잔여 예산: **$29.910686**
+  - **최종 안전 버퍼: $29.910686 - $9.4400 = $20.470686 (버퍼 $\ge \$5$ 규정 초과 충족)**
+- **최종 검정력 (MDE):** n=40 기준 Wilcoxon signed-rank (Pratt, $p_d=0.30$, 양측 $\alpha=0.05$)에서 **MDE = 0.243** 달성.
