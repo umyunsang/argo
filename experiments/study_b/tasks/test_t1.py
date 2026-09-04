@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Tests for the T1' ScienceAgentBench adapter (v2)."""
-import sys, tempfile, shutil
+import json
+import sys
+import tempfile
+import shutil
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_t1
@@ -51,12 +54,21 @@ def main():
             # Workspace remains clean after verify_output
             check("verify_output does not write into workspace", not (ws_dir / "benchmark/eval_programs").exists())
             
-            # Level 1 (file exists, but incorrect)
+            # A malformed present output must never be mistaken for task success. Its
+            # exact 0/1 classification depends on whether the optional task evaluator
+            # environment is installed; deterministic failure semantics are pinned by
+            # test_t1_failure_semantics.py instead.
             pred_dir = ws_dir / "pred_results"
             pred_dir.mkdir(parents=True)
             (pred_dir / "clintox_test_pred.csv").write_text("dummy,columns\n1,2")
-            score1, det1 = run_t1.verify_output(1, sab_dir, ws_dir)
-            check("invalid/wrong output gives score 1", score1 == 1)
+            observed_score, observed_detail = run_t1.verify_output(1, sab_dir, ws_dir)
+            detail_obj = json.loads(observed_detail)
+            check("malformed present output is not task success", observed_score in (0, 1), observed_detail)
+            classification_consistent = (
+                (observed_score == 0 and detail_obj.get("inadmissible_execution") is True)
+                or (observed_score == 1 and detail_obj.get("inadmissible_execution") is False)
+            )
+            check("present-output classification states admissibility", classification_consistent, observed_detail)
             check("verify_output did not leak gold into workspace", not (ws_dir / "benchmark/eval_programs").exists())
 
     print(("\n%d failing checks" % len(F)) if F else "\nAll checks passed.")

@@ -22,6 +22,7 @@ BENCH = {
 }
 
 PERMISSIVE_LICENCES = ("MIT", "Apache-2.0", "BSD-3-Clause")
+EVALUATOR_TIMEOUT_SECONDS = 120.0
 
 class PreconditionUnmet(RuntimeError):
     pass
@@ -128,7 +129,12 @@ def verify_output(task_id: int, benchmark_dir: Path, workspace_dir: Path) -> tup
     
     expected_out = workspace_dir / task_row["output_fname"]
     if not expected_out.is_file():
-        return 0, json.dumps({"ordinal_score": 0, "status": "missing_output", "expected": task_row["output_fname"]})
+        return 0, json.dumps({
+            "ordinal_score": 0,
+            "status": "missing_output",
+            "inadmissible_execution": True,
+            "expected": task_row["output_fname"],
+        })
         
     # Read script to find the specific gold file needed
     script_text = eval_script.read_text(encoding="utf-8", errors="ignore")
@@ -157,23 +163,55 @@ def verify_output(task_id: int, benchmark_dir: Path, workspace_dir: Path) -> tup
                 
         # Run eval script in tmp_dir cwd
         try:
-            res = subprocess.run([sys.executable, str(tmp_eval_dir / eval_script_name)],
-                                 cwd=tmp_dir, capture_output=True, text=True, timeout=120)
+            res = subprocess.run(
+                [sys.executable, str(tmp_eval_dir / eval_script_name)],
+                cwd=tmp_dir,
+                capture_output=True,
+                text=True,
+                timeout=EVALUATOR_TIMEOUT_SECONDS,
+            )
             out = res.stdout.strip()
             err = res.stderr.strip()
-            
+
             if res.returncode != 0:
-                # Output file existed, but evaluation script crashed -> level 1
-                return 1, json.dumps({"ordinal_score": 1, "status": "eval_crash", "error": err[:200]})
-                
-            # Parse raw 0/1 score
-            try:
-                score_part = out.split(",")[0].replace("(", "").strip()
-                raw_score = int(score_part)
-            except Exception:
-                raw_score = 1 if "1," in out or out.startswith("1") else 0
-                
+                status = "evaluator_crash" if "Traceback" in err else "evaluator_nonzero_exit"
+                return 0, json.dumps({
+                    "ordinal_score": 0,
+                    "status": status,
+                    "inadmissible_execution": True,
+                    "exit_code": res.returncode,
+                    "stdout": out[:300],
+                    "stderr": err[:300],
+                })
+
+            match = re.match(r"^\s*(?:\(\s*)?([01])\s*,", out)
+            if match is None:
+                return 0, json.dumps({
+                    "ordinal_score": 0,
+                    "status": "output_parse_failure",
+                    "inadmissible_execution": True,
+                    "exit_code": res.returncode,
+                    "stdout": out[:300],
+                    "stderr": err[:300],
+                })
+
+            raw_score = int(match.group(1))
             ordinal_score = 2 if raw_score == 1 else 1
-            return ordinal_score, json.dumps({"ordinal_score": ordinal_score, "raw_score": raw_score, "stdout": out[:300]})
-        except subprocess.TimeoutExpired:
-            return 1, json.dumps({"ordinal_score": 1, "status": "eval_timeout"})
+            return ordinal_score, json.dumps({
+                "ordinal_score": ordinal_score,
+                "raw_score": raw_score,
+                "status": "valid_result",
+                "inadmissible_execution": False,
+                "exit_code": res.returncode,
+                "stdout": out[:300],
+                "stderr": err[:300],
+            })
+        except subprocess.TimeoutExpired as exc:
+            return 0, json.dumps({
+                "ordinal_score": 0,
+                "status": "evaluator_timeout",
+                "inadmissible_execution": True,
+                "timeout_seconds": EVALUATOR_TIMEOUT_SECONDS,
+                "stdout": (exc.stdout or "")[:300] if isinstance(exc.stdout, str) else "",
+                "stderr": (exc.stderr or "")[:300] if isinstance(exc.stderr, str) else "",
+            })
