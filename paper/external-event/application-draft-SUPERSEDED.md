@@ -1,5 +1,5 @@
 > **SUPERSEDED 2026-09-04.** 서명된 참가신청서 원본이 존재하므로 이 추정 초안은 권위가 없다.
-> 권위 있는 내용은 `paper/hackathon/application-of-record.md` 를 보라.
+> 권위 있는 내용은 `paper/external-event/application-of-record.md` 를 보라.
 > 이 파일은 에이전트가 원본을 보기 전에 무엇을 잘못 가정했는지 남기기 위해 보존한다.
 
 # 2026 NAIS AI 해커톤 참가 신청 초안 — ARGO
