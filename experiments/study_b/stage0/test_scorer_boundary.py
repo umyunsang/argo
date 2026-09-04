@@ -19,6 +19,8 @@ def main():
  absolute=copy.deepcopy(p);absolute["output_files"][0]["path"]="/tmp/answer.json";expect("absolute host path fails",lambda:sb.validate_scorer_payload(absolute),"SCORER_OUTPUT_PATH_NOT_NEUTRAL")
  check("blind payload hash is deterministic",sb.scorer_payload_hash(p)==sb.scorer_payload_hash(copy.deepcopy(p)))
  ns=namespace();check("separate namespace manifest passes",sb.validate_namespace(ns)["passed"])
+ arm=copy.deepcopy(ns);arm["target_platform"]="linux-arm64";check("approved Linux arm64 fallback passes",sb.validate_namespace(arm)["passed"])
+ mac=copy.deepcopy(ns);mac["target_platform"]="macos-arm64";expect("non-Linux target fails",lambda:sb.validate_namespace(mac),"ISOLATION_TARGET_PLATFORM_INVALID")
  mounted=copy.deepcopy(ns);mounted["agent_mounts"].append({"source_id":"oracle:task-1","target":"/hidden","mode":"ro","role":"task_input"});expect("oracle mount in agent fails",lambda:sb.validate_namespace(mounted),"ORACLE_MOUNT_EXPOSED")
  writable=copy.deepcopy(ns);writable["scorer_mounts"][1]["mode"]="rw";expect("writable gold fails",lambda:sb.validate_namespace(writable),"SCORER_GOLD_NOT_READ_ONLY")
  no_net=copy.deepcopy(ns);no_net["agent_network"]=True;expect("agent network fails",lambda:sb.validate_namespace(no_net),"AGENT_NETWORK_NOT_ISOLATED")

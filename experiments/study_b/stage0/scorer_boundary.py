@@ -5,6 +5,7 @@ import hashlib,json,re
 from pathlib import PurePosixPath
 class BoundaryViolation(ValueError):pass
 HEX64=re.compile(r"^[0-9a-f]{64}$");ATTEMPT=re.compile(r"^attempt-[0-9a-f]{16}$");CONDITION=re.compile(r"(?:^|[/_.-])(?:g[01]c[01]f[01]|b[012])(?:$|[/_.-])",re.I)
+SUPPORTED_TARGET_PLATFORMS={"linux-x86_64","linux-arm64"}
 def require(ok:bool,msg:str)->None:
  if not ok:raise BoundaryViolation(msg)
 def validate_scorer_payload(p:dict)->dict:
@@ -23,7 +24,7 @@ def validate_scorer_payload(p:dict)->dict:
  return {"passed":True,"payload_sha256":scorer_payload_hash(p),"output_count":len(files)}
 def scorer_payload_hash(p:dict)->str:return hashlib.sha256(json.dumps(p,sort_keys=True,separators=(",", ":")).encode()).hexdigest()
 def validate_namespace(m:dict)->dict:
- require(m.get("target_platform")=="linux-x86_64","ISOLATION_TARGET_PLATFORM_INVALID")
+ require(m.get("target_platform") in SUPPORTED_TARGET_PLATFORMS,"ISOLATION_TARGET_PLATFORM_INVALID")
  require(isinstance(m.get("isolation_engine"),str) and bool(m["isolation_engine"]),"ISOLATION_ENGINE_MISSING")
  require(m.get("agent_network") is False,"AGENT_NETWORK_NOT_ISOLATED");require(m.get("scorer_network") is False,"SCORER_NETWORK_NOT_ISOLATED")
  oracle=set(m.get("oracle_source_ids",[]));agent=m.get("agent_mounts",[]);scorer=m.get("scorer_mounts",[]);require(bool(oracle),"ORACLE_SOURCE_IDS_MISSING")
