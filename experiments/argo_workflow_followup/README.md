@@ -65,3 +65,9 @@ The snapshot omits training code, tracking-service exports, failed-run configura
 The official Zenodo record `10.5281/zenodo.21126996` is checksum-complete and aggregate-replayable. Its 1.33-MB CC-BY-4.0 ZIP passes CRC and 125/125 internal SHA-256 records. The supplied in-package script reproduces seven anchors (`4 PASS / 3 caveat`), 15 catch episodes, 14 literature channels, 2,162 consultation events, and 47 sessions byte-for-byte.
 
 This does not make the archive a raw decision graph. The README explicitly withholds raw session transcripts, and none of the 15 episode-ledger rows has its named direct `pilot/...` source path in the public ZIP. The strict result is `0/15` direct source-path closure, not a claim that the curated summaries are false. It shows that aggregate integrity and correct event routing do not alone make a decision basis independently reconstructable.
+
+## Isolation canary v2 approval gate
+
+A new runner prepares exactly one zero-model isolation canary. It resolves macOS bind paths before Docker, pins the local Python 3.11 image digest, disables image pulls and networking, uses a read-only root with all capabilities dropped, limits the container to 1 CPU / 256 MB / 64 PIDs, and enforces a 30-second run timeout. The approval template is intentionally `AWAITING_USER_APPROVAL`; invoking the runner with that file exits before Docker with `docker_calls=0`.
+
+This is not approval. Do not run it until the user explicitly authorizes the exact envelope in `paper/research/isolation-canary-v2-proposal.json`. If approved, exactly one container attempt is permitted and there is no retry.
