@@ -59,3 +59,9 @@ The supplementary repository for `2608.01995v1` contributes an external real res
 A retrospective replay gives scoped revalidation `3/3` exact while preserving all original-scope results. Unscoped reuse selects the wrong Phase-2 setting `3/3`; global invalidation destroys all three still-valid original-scope records. These three pairs are nested observations in one programme, not `n=3`. Dataset, parameter scale, augmentation, and evaluation protocol changed together, so this is a regime-applicability result, not a scale-only effect or prospective predictor.
 
 The snapshot omits training code, tracking-service exports, failed-run configurations, and per-hypothesis Git commits. It supports trace semantics, not score/code reproduction or ARGO efficacy.
+
+## Grounded-physics archive: aggregate versus decision evidence
+
+The official Zenodo record `10.5281/zenodo.21126996` is checksum-complete and aggregate-replayable. Its 1.33-MB CC-BY-4.0 ZIP passes CRC and 125/125 internal SHA-256 records. The supplied in-package script reproduces seven anchors (`4 PASS / 3 caveat`), 15 catch episodes, 14 literature channels, 2,162 consultation events, and 47 sessions byte-for-byte.
+
+This does not make the archive a raw decision graph. The README explicitly withholds raw session transcripts, and none of the 15 episode-ledger rows has its named direct `pilot/...` source path in the public ZIP. The strict result is `0/15` direct source-path closure, not a claim that the curated summaries are false. It shows that aggregate integrity and correct event routing do not alone make a decision basis independently reconstructable.
