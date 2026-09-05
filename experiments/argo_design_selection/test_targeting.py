@@ -51,7 +51,11 @@ def main():
           score(unrelated, "P1_COARSE")["over_revocation"] == 0)
     check("no-op policy under-revokes on chain", score(chain, "P0_NONE")["under_revocation"] > 0)
 
-    rows = [score(i, p) for i in build_all(range(5)) for p in ("P0_NONE", "P1_COARSE", "P2_CASCADE", "P3_DOMINANCE")]
+    check("global reset discards valid work on independent support",
+          score(dia, "P1G_GLOBAL_RESET")["over_revocation"] > 0)
+    check("global reset never under-revokes",
+          all(score(i, "P1G_GLOBAL_RESET")["under_revocation"] == 0 for i in build_all(range(3))))
+    rows = [score(i, p) for i in build_all(range(5)) for p in ("P0_NONE", "P1_COARSE", "P1G_GLOBAL_RESET", "P2_CASCADE", "P3_DOMINANCE")]
     dom = [r for r in rows if r["policy"] == "P3_DOMINANCE"]
     check("dominance matches the oracle on every generated instance",
           all(r["exact_target_match"] for r in dom),

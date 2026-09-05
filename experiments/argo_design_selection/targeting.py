@@ -12,7 +12,7 @@ the pre-reload edge walk of arXiv 2609.00243 v1.
 from __future__ import annotations
 from collections import defaultdict, deque
 
-POLICIES = ("P0_NONE", "P1_COARSE", "P2_CASCADE", "P3_DOMINANCE")
+POLICIES = ("P0_NONE", "P1_COARSE", "P1G_GLOBAL_RESET", "P2_CASCADE", "P3_DOMINANCE")
 DERIVED_KINDS = ("claim", "decision", "action", "result")
 
 
@@ -80,6 +80,18 @@ def policy_coarse(inst: dict) -> dict:
     removed = set(inst["event"]["removed_edge_ids"])
     scopes = {e["scope"] for e in inst["edges"] if e["id"] in removed}
     marked = {n["id"] for n in inst["nodes"] if n["kind"] in DERIVED_KINDS and n.get("scope") in scopes}
+    return {"marked": marked, "inspected": len(inst["nodes"])}
+
+
+def policy_global_reset(inst: dict) -> dict:
+    """Invalidate every derived node in the whole state.
+
+    This is the explicit whole-domain reset baseline. `policy_coarse` degenerates
+    to a no-op whenever the projected scope label does not partition derived
+    nodes, so the two are kept separate rather than merged.
+    """
+    validate_instance(inst)
+    marked = {n["id"] for n in inst["nodes"] if n["kind"] in DERIVED_KINDS}
     return {"marked": marked, "inspected": len(inst["nodes"])}
 
 
@@ -171,6 +183,7 @@ def policy_dominance(inst: dict) -> dict:
 POLICY_FNS = {
     "P0_NONE": policy_none,
     "P1_COARSE": policy_coarse,
+    "P1G_GLOBAL_RESET": policy_global_reset,
     "P2_CASCADE": policy_cascade,
     "P3_DOMINANCE": policy_dominance,
 }
