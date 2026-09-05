@@ -121,5 +121,5 @@ Stage A와 Opus 4.6 개발 파일럿은 완료됐다. 네 비동형 causal famil
 교정 B2 8개는 실행됐으나 scorer의 stale 정의, action 의미, record 접근 enum 결함 때문에 인과 판정에 사용할 수 없다.
 원 결과는 보존하고 status-only 감도분석만 보고한다. B3 8개는 frozen stratified rule을 통과했다. B3와 비동형인 16개 confirmation task, scorer, 순서, runner도 무과금
 검증을 마쳤다. C64 64개는 완료됐으나 task text–oracle 의미 충돌 1건과 outcome 범위 모호성 때문에 confirmatory 인과 주장을 확립하지
-못했다. 추가 유료 실행은 승인되지 않았다. 답이 나온 C 바이트는 비순환 capsule에 보존됐다. 현재 다음 행동은 강한 result-aware tree와 typed policy를 실제 workflow에서
-비교하는 단일 후속 제안만 유지하고, runner·task·고정 OpenResearch command·비용·승인이 없으면 실행하지 않는 것이다.
+못했다. 추가 유료 실행은 승인되지 않았다. 현재 다음 행동은 답이 나온 C 바이트를 보존하고 zero-cost successor semantics와
+원고 evidence handoff를 작성하는 것이다.
