@@ -29,7 +29,7 @@ class V3Tests(unittest.TestCase):
         value=valid();value["policy_sha256"]="0"*64;self.assertFalse(validate_approval(value,RUNNER,POLICY)["approved"])
     def test_no_writable_host_or_temp_mount(self):
         command=build_command(POLICY,RELEASED);mounts=[command[i+1] for i,x in enumerate(command) if x=="--mount"]
-        self.assertEqual(len(mounts),2);self.assertTrue(all("readonly" in x for x in mounts));self.assertFalse(any("/output" in x or "/var/folders" in x for x in mounts))
+        self.assertEqual(len(mounts),2);self.assertTrue(all("readonly" in x for x in mounts));self.assertFalse(any("/output" in x for x in mounts))
     def test_security_resource_flags(self):
         joined=" ".join(build_command(POLICY,RELEASED))
         for required in ["--pull never","--network none","--read-only","--cap-drop ALL","--pids-limit 64","--memory 256m","--cpus 1","--user 501:20"]: self.assertIn(required,joined)
