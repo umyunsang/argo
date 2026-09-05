@@ -173,3 +173,9 @@ Stage 0에서 scorer 16/16, evaluator 96회, environment parity, 실제 OS runti
 - TARGET/BASE tokens: 59,214/53,796 = 1.1007×
 
 The primary null is compatible with a frontier ceiling: the base model already avoided stale action by abstaining. The secondary suggests targeting can convert conservative abstention into a resolved decision, but it is not a causal efficacy result because the six topics share one causal template, realized order was TARGET→BASE in every pair, and treatment content increased tokens. Therefore confirmation C is **HOLD**, not promoted.
+
+## 13. Corrected-B2 protocol-defect outcome
+
+The four-family B2 run completed eight OAuth episodes, but its original causal endpoint is invalid. The scorer labelled any `valid/proceed` output stale even when valid was ground truth; `proceed/recheck` did not specify whether it referred to applying the constraint or advancing the workflow; and the record tool omitted identifiers used by the multi-hop family. The frozen 3-of-4 rule also incorrectly treated unaffected-family ties as failures for a targeted mechanism.
+
+A post-hoc status-only sensitivity found TARGET improved both affected families and harmed neither unaffected family (TARGET status correct 4/4, BASE 2/4). This is diagnostic, not efficacy. Confirmation remains held. A separate B3 proposal keeps model, tasks, budgets and allocation fixed while replacing the outcome with `apply/do_not_apply/undetermined` and exposing all valid record IDs.

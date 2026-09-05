@@ -102,3 +102,7 @@ This secondary pattern is not confirmatory: all six are lexical surfaces of one 
 ## Corrected development extension awaiting approval
 
 A zero-cost successor pack now has four non-isomorphic causal families, balanced valid/withdrawn truths, exact 2:2 condition order, the same one-prefetch plus one-read budget, and 512-byte allocation files in both conditions. A fail-closed runner permits no model call unless an approval file authorizes exactly eight OAuth episodes. This is corrected development B2, not confirmation C.
+
+## Corrected-B2 outcome and B3 blocker
+
+Corrected B2 exhausted its exact eight-episode approval but cannot support a causal endpoint because the stale label, action wording, record tool, and unstratified decision rule were defective. A status-only diagnostic matched the mechanism—TARGET won both affected families and preserved both unaffected families—but remains post-hoc. A B3 runner with unambiguous apply/do-not-apply semantics and dynamic record access is validated and blocked on a new exact eight-episode approval. Confirmation C remains held.
