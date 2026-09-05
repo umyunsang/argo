@@ -45,3 +45,9 @@ python3 experiments/argo_workflow_followup/discoveryworld_pack/test_validate_pac
 ```
 
 The 12/12 tests validate schema and mutation sensitivity only. No seed-specific task gold was generated. Long-horizon RNG, procedural action-success semantics, OS isolation, runner identity, cost, and approval remain open. Do not execute or call this an official DiscoveryWorld benchmark result.
+
+## Arbor comparator source audit
+
+The strong TREE comparator is pinned to official Arbor commit `2f4e65410a5c21c9e55835a9a0d77ead21a64ffa`. Its `Node` schema supplies hierarchy, hypothesis, insight, result, dev/test scores, code reference, grounding, outcome status, and attempts. It does not supply typed evidence identity, version, validity, applicability, or dependency edges, so both future arms must receive the same external raw evidence log.
+
+The repository is not an independent real-graph task source. Its bundled 7-node/117-event recording is explicitly illustrative and hand-authored. The separate BrowseComp HTML embeds ten nodes, but the referenced raw run directory is absent, and embedded non-root status counts (`4 done / 1 merged / 4 pruned`) disagree with its narrative (`5 / 1 / 3`). Use the code/schema as a comparator prior. Do not claim run reproduction or dependency-targeting evidence from these demo bytes.
