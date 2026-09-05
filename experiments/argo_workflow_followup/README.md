@@ -77,3 +77,11 @@ This is not approval. Do not run it until the user explicitly authorizes the exa
 `real_decision_packets/` rederives facts from four existing canonical receipt families: the external architecture trace, the grounded-physics public archive, the DiscoveryWorld pack design, and isolation-canary v2 readiness. The evaluator keeps route fidelity, claim-relative sufficiency, narrow policy-decision correctness, and external task outcome separate.
 
 Measured descriptive replay: route fidelity 4/4, sufficient evidence for the stated narrow claim 2/4, correct narrow hold/admit-with-limit decisions 4/4, and external task outcomes 0/4. Four one-artifact withdrawal trials were selectively exact 4/4; a global-reset comparator over-revoked 12 unaffected packets. These are four curated real research-state packets, not four efficacy trials or a population estimate.
+
+## Third external programme: Graphectory
+
+The pinned Graphectory repository (`052079f7`) contains 3,972 precomputed graph paths and exactly matching metric rows across eight agent/model collections. The paper reports 3,973 non-empty trajectories; the one-row difference is localized to SWE-agent/DeepSeek-V3 (`498` repository rows versus `499` in the paper). Twenty-two selected graph files match their metric status.
+
+The graph builder reads terminal resolution from a separate evaluator report. In six bundled raw samples, report-backed graph status matches 6/6. The three OpenHands records' embedded `resolved` fields match only 1/3. Thus a correctly routed trajectory does not itself establish the terminal outcome. Static selected graph JSON files contain no complete raw `thought`, `observation`, or `response` fields.
+
+Pinned-builder replay initially failed because the capsule omitted three parser YAML files (SWE full-graph exactness 0/3). After adding those recipe dependencies, SWE raw-to-full graphs reproduced byte-exactly 3/3. Across six current-versus-bundled graph comparisons, 26 of 382 metadata/node/edge units changed and 356 were stable; global invalidation would over-revoke those 356 units. This is a retrospective version-diff locality oracle within one external programme, not six independent trials or policy efficacy.
