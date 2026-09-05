@@ -162,3 +162,14 @@ NOTICE p.5에 따라 실제 개발 전 과정은 본선 기간 안에서 수행�
 
 Stage 0에서 scorer 16/16, evaluator 96회, environment parity, 실제 OS runtime policy는 검증됐다. 이는 계측기 결과다.
 `integrated_task_runner_certified=false`, 인정된 효능 결과 0, paid model call 0이다.
+
+## 12. Frontier-model development pilot outcome (2026-09-05)
+
+`anthropic/claude-opus-4-6` under OAuth was tested in a same-two-record verification-budget task. The computed dependency target allocated one slot to the sole support and left one model-selected slot. A thin four-tool mechanism enforced actual reads.
+
+- preregistered primary non-stale decision: BASE 6/6, TARGET 6/6, paired delta 0
+- secondary fully resolved withdrawal: BASE 0/6, TARGET 6/6
+- critical record inspection: BASE 0/6, TARGET 6/6
+- TARGET/BASE tokens: 59,214/53,796 = 1.1007×
+
+The primary null is compatible with a frontier ceiling: the base model already avoided stale action by abstaining. The secondary suggests targeting can convert conservative abstention into a resolved decision, but it is not a causal efficacy result because the six topics share one causal template, realized order was TARGET→BASE in every pair, and treatment content increased tokens. Therefore confirmation C is **HOLD**, not promoted.

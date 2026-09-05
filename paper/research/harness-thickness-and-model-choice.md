@@ -58,3 +58,20 @@
 oauth 좌석으로 실행하면 **에피소드당 달러 청구가 성립하지 않는다.** 과거 Haiku 기준 $0.29–3.69 추정은
 청구 예측으로는 무효이고, **216 에피소드라는 물량 추정**으로만 남는다. 실제 제약은 금액이 아니라 사용량·속도 한도다.
 따라서 파일럿은 물량을 작게 유지하고 실행 기록에 호출 수와 토큰을 남긴다.
+
+## 6. Opus 4.6 개발 파일럿 결과
+
+OAuth `anthropic/claude-opus-4-6`로 총 24 에피소드(계측 결함 스모크 포함)를 실행했다. 최종 frozen protocol의
+6개 주제 표면 × 2조건 결과는 다음과 같다.
+
+- 사전 primary `non-stale decision`: BASE 6/6, TARGET 6/6, paired mean delta **0**.
+- secondary `fully resolved withdrawn/recheck`: BASE 0/6, TARGET 6/6, delta **+1.0**.
+- BASE는 6/6 `unverified/recheck`로 안전하게 보류했고 TARGET은 6/6 임계 R3를 확인해 완결했다.
+- TARGET token은 59,214 대 BASE 53,796으로 **1.1007×**, 시간은 **1.0969×**였다.
+
+이는 프론티어 모델에서 하네스가 primary safety를 개선하지 못한 **천장**과 양립한다. 동시에 얇은 deterministic
+allocation이 보수적 보류를 완결 결정으로 바꿀 가능성을 보였다. 그러나 여섯 task는 한 인과 template의 어휘 변형이고,
+실현 순서는 6/6 TARGET→BASE이며, TARGET은 관련 content를 prefetch해 token surface가 10.1% 크다. 따라서 secondary를
+인과 효능으로 승격하지 않는다. C 확증은 보류한다.
+
+근거: `paper/research/receipts/stage-b-pilot-interpretation.json`, SHA-256 `1f87eda38d0327e247cff4036261ef84f83102a6b933e8dd251d63575093328d`.

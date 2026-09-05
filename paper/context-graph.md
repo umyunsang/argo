@@ -92,3 +92,9 @@ runner and one synthetic development capsule. Its population task pack, confirma
 
 The next authorized research action is one execution of the frozen zero-cost manipulation command, followed by byte-level receipt validation.
 A fixture pass is manipulation evidence only. No paid episode or native runtime construction is authorized.
+
+## Frontier-model development pilot
+
+A 24-episode OAuth development budget was consumed, including measurement-defect smoke runs. In the frozen final block, Opus 4.6 avoided stale decisions in both conditions (6/6 versus 6/6), so the preregistered primary contrast was null. Dependency targeting changed six conservative `unverified/recheck` outputs into six fully resolved `withdrawn/recheck` outputs, while using 1.1007× tokens.
+
+This secondary pattern is not confirmatory: all six are lexical surfaces of one causal template, realized order was target-first in all pairs, and input token surfaces differ. Confirmation is held. The active next action is a zero-cost non-isomorphic task pack with exact schedule and token controls.

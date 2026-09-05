@@ -82,9 +82,11 @@ APP의 LangGraph StateGraph/SqliteSaver는 구체적인 graph-plane 구현 **후
 - 공통 image: Linux arm64 `sha256:026ce848fa7de5d15510192aaeaadfe05cc252364df51ddc292d3655f0cc2060`
 - environment parity: Python distribution 91개, Debian package 95개, PASS
 - actual syscall isolation: runtime policy PASS
-- 한계: `integrated_task_runner_certified=false`, fully certified task 0, 인정된 효능 결과 0
+- Opus 4.6 OAuth 개발 파일럿: primary non-stale delta 0; secondary full-resolution BASE 0/6, TARGET 6/6
+- 한계: 여섯 주제는 한 인과 template의 표면 변형, 최종 순서 6/6 TARGET→BASE, TARGET token 1.1007×
+- Confirmatory efficacy result 0; C confirmation은 HOLD
 
-이는 계측기·runtime boundary 결과이며 ARGO 효능이 아니다. Study A, T3, T1′, B2와 구 synthetic 결과는 active efficacy
+Stage 0은 계측기·runtime boundary 결과다. Stage B는 한 template-family의 탐색 행동 결과이며 모집단 효능이 아니다. Study A, T3, T1′, B2와 구 synthetic 결과는 active efficacy
 근거에서 격리·철회한다.
 
 ## 8. Graph authority와 revision
@@ -115,6 +117,6 @@ fresh-context 인계다. 한 번의 실행만으로 병렬 경쟁을 구현했�
 Native construction은 계속 중단한다. paid episode는 Stage별 exact upper cost와 20% contingency를 숫자로 계산하고 사용자가
 그 금액을 승인하기 전 실행하지 않는다. LG Aimers와 private instance는 접근하지 않는다.
 
-Active 설계와 기제–native 계약은 canonical graph에 연결됐다. 현재 다음 행동은 고정된 zero-cost deterministic
-manipulation command를 한 번 실행하고 receipt를 검증하는 것이다. 이 fixture는 population efficacy가 아니며 paid task pack·
-sample size·confirmatory cost는 계속 미정이다.
+Stage A와 Opus 4.6 개발 파일럿은 완료됐다. 현재 다음 행동은 **유료 호출 없이** 비동형 causal task family를 만들고,
+정확한 조건 순서 균형과 token surface control을 통과시키는 것이다. C confirmation은 새 task pack이 준비되고 사용자가
+별도로 승인하기 전 실행하지 않는다.
