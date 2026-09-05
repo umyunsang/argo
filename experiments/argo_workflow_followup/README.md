@@ -85,3 +85,9 @@ The pinned Graphectory repository (`052079f7`) contains 3,972 precomputed graph 
 The graph builder reads terminal resolution from a separate evaluator report. In six bundled raw samples, report-backed graph status matches 6/6. The three OpenHands records' embedded `resolved` fields match only 1/3. Thus a correctly routed trajectory does not itself establish the terminal outcome. Static selected graph JSON files contain no complete raw `thought`, `observation`, or `response` fields.
 
 Pinned-builder replay initially failed because the capsule omitted three parser YAML files (SWE full-graph exactness 0/3). After adding those recipe dependencies, SWE raw-to-full graphs reproduced byte-exactly 3/3. Across six current-versus-bundled graph comparisons, 26 of 382 metadata/node/edge units changed and 356 were stable; global invalidation would over-revoke those 356 units. This is a retrospective version-diff locality oracle within one external programme, not six independent trials or policy efficacy.
+
+## Isolation canary v2 closure and v3 proposal
+
+The explicitly approved v2 launch consumed its only attempt and exited 125 before container creation because Docker Desktop could not see the writable output bind under `/private/var/folders/...`. Image identity passed, but the policy did not execute. All canary fields other than image identity are therefore `NOT_OBSERVED`, not isolation failures. There is no v2 retry.
+
+V3 removes the failed dependency. It has no writable host bind: the policy writes only to container `/tmp` and emits its JSON on stdout; the host runner writes the receipt after exit. Two read-only repository mounts remain. V3 tests pass 8/8 and its unapproved probe exits before Docker with zero calls. V3 remains unapproved and unexecuted.
