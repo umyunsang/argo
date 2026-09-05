@@ -71,3 +71,9 @@ This does not make the archive a raw decision graph. The README explicitly withh
 A new runner prepares exactly one zero-model isolation canary. It resolves macOS bind paths before Docker, pins the local Python 3.11 image digest, disables image pulls and networking, uses a read-only root with all capabilities dropped, limits the container to 1 CPU / 256 MB / 64 PIDs, and enforces a 30-second run timeout. The approval template is intentionally `AWAITING_USER_APPROVAL`; invoking the runner with that file exits before Docker with `docker_calls=0`.
 
 This is not approval. Do not run it until the user explicitly authorizes the exact envelope in `paper/research/isolation-canary-v2-proposal.json`. If approved, exactly one container attempt is permitted and there is no retry.
+
+## Canonical real decision packets
+
+`real_decision_packets/` rederives facts from four existing canonical receipt families: the external architecture trace, the grounded-physics public archive, the DiscoveryWorld pack design, and isolation-canary v2 readiness. The evaluator keeps route fidelity, claim-relative sufficiency, narrow policy-decision correctness, and external task outcome separate.
+
+Measured descriptive replay: route fidelity 4/4, sufficient evidence for the stated narrow claim 2/4, correct narrow hold/admit-with-limit decisions 4/4, and external task outcomes 0/4. Four one-artifact withdrawal trials were selectively exact 4/4; a global-reset comparator over-revoked 12 unaffected packets. These are four curated real research-state packets, not four efficacy trials or a population estimate.
