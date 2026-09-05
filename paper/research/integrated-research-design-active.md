@@ -198,3 +198,13 @@ The frozen rule therefore permits **C planning**, not C execution. This remains 
 Sixteen confirmation structures are graph-isomorphism-distinct from each other and from B3, with eight affected and eight unaffected decisions, balanced valid/withdrawn truths, exact 8:8 condition order, and a reversed replication schedule. Condition pairs share task, index and record bytes; both receive one 768-byte allocation and one remaining record read. The selected allocation is decision-relevant in TARGET and a deterministic decoy in BASE.
 
 Two executable but unauthorized options remain: C32 (one rollout per task-condition) and C64 (C32 plus a separately reported reversed-order reliability repeat). C64 is recommended for thesis credibility, but neither option is authorized.
+
+## 16. C64 confirmation outcome and invalidation
+
+C64 completed 64 OAuth episodes: 32 preregistered first-rollout episodes and a separately reported reversed-order reliability block. All bytes, scores, order and budgets were rederived.
+
+- primary: TARGET wins 6, BASE wins 0, ties 10, exact p=0.03125, mean delta +0.375, token ratio 0.9822
+- replication: TARGET wins 4, BASE wins 0, ties 12, exact p=0.125, mean delta +0.25, token ratio 1.0141
+- task-level full-correct agreement: TARGET 15/16, BASE 13/16
+
+The frozen overall success is **false** because one unaffected TARGET task overreacted in both blocks. Audit showed `u_same_source_paths` had a task–oracle contradiction: the graph removed one S1 edge while record W said S1 support was globally withdrawn, so the model followed the text and the scorer followed the graph. `needs_more_verification` also failed to specify that it referred only to the active constraint. No post-outcome exclusion or endpoint replacement is allowed. Confirmation is therefore invalid for a causal claim. The positive post-hoc sensitivity is retained only as diagnosis.

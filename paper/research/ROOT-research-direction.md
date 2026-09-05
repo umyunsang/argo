@@ -120,5 +120,6 @@ Native construction은 계속 중단한다. paid episode는 Stage별 exact upper
 Stage A와 Opus 4.6 개발 파일럿은 완료됐다. 네 비동형 causal family와 fail-closed runner도 무과금으로 검증됐다.
 교정 B2 8개는 실행됐으나 scorer의 stale 정의, action 의미, record 접근 enum 결함 때문에 인과 판정에 사용할 수 없다.
 원 결과는 보존하고 status-only 감도분석만 보고한다. B3 8개는 frozen stratified rule을 통과했다. B3와 비동형인 16개 confirmation task, scorer, 순서, runner도 무과금
-검증을 마쳤다. 사용자가 C 실행을 승인했고 root는 사전 권고에 따라 C64를 선택했다. 현재 다음 행동은 정확히 64개 OAuth episode를
-실행하고 primary와 순서 반전 reliability를 별도 분석해 중단·보고하는 것이다.
+검증을 마쳤다. C64 64개는 완료됐으나 task text–oracle 의미 충돌 1건과 outcome 범위 모호성 때문에 confirmatory 인과 주장을 확립하지
+못했다. 추가 유료 실행은 승인되지 않았다. 현재 다음 행동은 답이 나온 C 바이트를 보존하고 zero-cost successor semantics와
+원고 evidence handoff를 작성하는 것이다.

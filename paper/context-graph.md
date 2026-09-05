@@ -114,3 +114,7 @@ The unambiguous B3 contract passed its frozen stratified rule: TARGET won both a
 ## Confirmation options awaiting user choice
 
 A 16-structure task pack disjoint from B3 and a fail-closed runner now pass zero-cost validation. C32 uses 32 episodes for the preregistered first rollout. C64 adds a reversed-order 32-episode reliability block that is reported separately and never counted as additional tasks. Neither option is authorized; C64 is recommended if OAuth quota permits.
+
+## C64 outcome
+
+C64 completed all 64 approved OAuth episodes. The first rollout showed six TARGET wins and no BASE wins (exact p=0.03125), while the reversed-order block showed four TARGET wins and no BASE wins (p=0.125). Confirmation nevertheless fails its frozen safety contract because one unaffected task overreacted in both blocks. The task text globally withdrew a source while its graph oracle removed only one of two surviving edges. No task is excluded post outcome. Confirmatory efficacy remains unestablished; further paid calls are unauthorized.
