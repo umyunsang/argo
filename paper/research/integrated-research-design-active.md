@@ -192,3 +192,9 @@ B3 held model, OAuth path, four graph families, allocation, two-record budget an
 - TARGET/BASE tokens: 0.9194
 
 The frozen rule therefore permits **C planning**, not C execution. This remains a one-rollout, four-family development result and is not a population effect.
+
+## 15. Disjoint confirmation plan
+
+Sixteen confirmation structures are graph-isomorphism-distinct from each other and from B3, with eight affected and eight unaffected decisions, balanced valid/withdrawn truths, exact 8:8 condition order, and a reversed replication schedule. Condition pairs share task, index and record bytes; both receive one 768-byte allocation and one remaining record read. The selected allocation is decision-relevant in TARGET and a deterministic decoy in BASE.
+
+Two executable but unauthorized options remain: C32 (one rollout per task-condition) and C64 (C32 plus a separately reported reversed-order reliability repeat). C64 is recommended for thesis credibility, but neither option is authorized.

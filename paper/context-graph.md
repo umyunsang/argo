@@ -110,3 +110,7 @@ Corrected B2 exhausted its exact eight-episode approval but cannot support a cau
 ## B3 outcome
 
 The unambiguous B3 contract passed its frozen stratified rule: TARGET won both affected families, harmed neither unaffected family, inspected both critical records, produced 4/4 fully correct decisions versus BASE 1/4, and used 0.9194× tokens. This authorizes only zero-cost confirmation planning. C execution remains unapproved because the result has four families and one rollout per condition.
+
+## Confirmation options awaiting user choice
+
+A 16-structure task pack disjoint from B3 and a fail-closed runner now pass zero-cost validation. C32 uses 32 episodes for the preregistered first rollout. C64 adds a reversed-order 32-episode reliability block that is reported separately and never counted as additional tasks. Neither option is authorized; C64 is recommended if OAuth quota permits.
