@@ -35,3 +35,13 @@ python3 experiments/argo_workflow_followup/historical_multihop/test_isolation_co
 ```
 
 Do not run `historical_multihop/run_isolated.py` again under the current authority. Both Docker attempts failed before launch because a macOS logical temporary path was not daemon-visible. The one allowed infrastructure retry is consumed. The path is prospectively resolved and passes pure command tests, but end-to-end isolation remains `FIXED_UNVALIDATED`.
+
+## DiscoveryWorld-derived pack design
+
+`discoveryworld_pack/pack-design.json` defines ten paired rows from two source-audited families: Combinatorial Chemistry Normal and Archaeology Dating Normal, each at literal API seeds `0..4`. The inference unit is the task family, so this is `n=2`, never `n=10`. The design uses text only, excludes the LLM knowledge judge, keeps `completedSuccessfully` as primary, retains old record versions, and requires a fresh-context handoff plus unaffected-decision preservation.
+
+```bash
+python3 experiments/argo_workflow_followup/discoveryworld_pack/test_validate_pack.py
+```
+
+The 12/12 tests validate schema and mutation sensitivity only. No seed-specific task gold was generated. Long-horizon RNG, procedural action-success semantics, OS isolation, runner identity, cost, and approval remain open. Do not execute or call this an official DiscoveryWorld benchmark result.
