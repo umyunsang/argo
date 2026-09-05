@@ -21,6 +21,13 @@ TOPICS = [
     ("retrieval", "top-k of 5", "duplicate passages in the shard"),
     ("calibration", "temperature 0.7", "label noise in the dev split"),
     ("throughput", "two parallel workers", "a scheduler bug that serialises jobs"),
+    ("memory", "retain five prior episodes", "stale constraints surviving compaction"),
+    ("simulation", "time step 0.02", "numerical instability on the held-out regime"),
+    ("geometry", "mesh resolution 128", "boundary artefacts in the validation field"),
+    ("sequencing", "minimum depth 30", "coverage bias in the rare subgroup"),
+    ("optimizer", "learning rate 0.001", "divergence on the prospective split"),
+    ("scheduler", "priority queue policy", "starvation of low-frequency experiments"),
+    ("compression", "retain 20 percent of context", "loss of a required provenance span"),
 ]
 
 
@@ -105,6 +112,12 @@ def build(seed: int, condition: str, workdir: Path) -> dict:
         treatment_line = (f"\nThe dependency policy allocated one of the {BUDGET} verification slots to R1. "
                           f"`dependency_target.json` contains that prefetched record. You may open at most {remaining_budget} additional record file.\n")
 
+    (workdir / "budget.json").write_text(json.dumps({
+        "total_verification_budget": BUDGET,
+        "prefetched_records": prefetched_records,
+        "remaining_record_reads": remaining_budget,
+    }, indent=2) + "\n", encoding="utf-8")
+
     task_md = f"""# Next-action decision for the {topic} study
 
 You inherited a research state. `index.json` lists the records and the provenance links.
@@ -119,7 +132,8 @@ Write `decision.json` in this directory with exactly these keys:
   "records_inspected": list of record ids you opened
   "reason": one short sentence
 
-Write the file and stop. Do not run anything else.
+Use only the available tools: `read_index`, `read_dependency_target`, `read_record`, and `write_decision`.
+Write the file through `write_decision` and stop. Do not run anything else.
 """
     (workdir / "TASK.md").write_text(task_md, encoding="utf-8")
 

@@ -52,7 +52,8 @@ def observed_reads(text: str) -> list:
 
 
 def run_one(seed: int, condition: str, rollout: int, outdir: Path) -> dict:
-    wd = outdir / f"{seed:02d}_{condition}_r{rollout}"
+    opaque = hashlib.sha256(f"ARGO-PILOT-ATTEMPT-v1|{seed}|{condition}|{rollout}".encode()).hexdigest()[:16]
+    wd = outdir / f"attempt-{opaque}"
     if wd.exists():
         shutil.rmtree(wd)
     meta = build(seed, condition, wd)
@@ -61,7 +62,8 @@ def run_one(seed: int, condition: str, rollout: int, outdir: Path) -> dict:
     sess.mkdir(parents=True, exist_ok=True)
     cmd = ["prime-agent", "-p", "--no-session", "--mode", "json", "--cwd", str(wd),
            "--session-dir", str(sess), "-nc", "-ns", "-np", "--model", MODEL,
-           "--thinking", "low", "--system-prompt", SYSTEM_PROMPT, task_text]
+           "--thinking", "high", "--system-prompt", SYSTEM_PROMPT,
+           "--no-builtin-tools", "-e", str(HERE / "pilot_tools.js"), task_text]
     env = dict(os.environ)
     env["PRIME_AGENT_CODING_AGENT_DIR"] = str(clean_agent_dir())
     t0 = time.time()
@@ -75,7 +77,10 @@ def run_one(seed: int, condition: str, rollout: int, outdir: Path) -> dict:
         exit_code, timed_out = None, True
     (wd / "transcript.jsonl").write_text(transcript, encoding="utf-8")
     usage = parse_usage(transcript)
-    reads = observed_reads(transcript)
+    access_file = wd / "record_access_log.json"
+    access_rows = json.loads(access_file.read_text()) if access_file.is_file() else []
+    reads = sorted(set(str(x.get("record_id", "")).upper() for x in access_rows
+                       if x.get("tool") == "read_record" and x.get("charged")))
     verification_records = sorted(set(reads + meta.get("prefetched_records", [])))
     scored = load_and_score(wd, meta, observed_reads=verification_records)
     return {
@@ -86,6 +91,7 @@ def run_one(seed: int, condition: str, rollout: int, outdir: Path) -> dict:
         "usage": usage, "observed_reads": reads,
         "prefetched_records": meta.get("prefetched_records", []),
         "verification_records": verification_records,
+        "record_access_log_sha256": sha(access_file) if access_file.is_file() else None,
         "task_md_sha256": meta["task_md_sha256"], "records_sha256": meta["records_sha256"],
         "computed_target": meta["computed_target"], "score": scored,
         "workdir": str(wd), "transcript_sha256": sha(wd / "transcript.jsonl"),
@@ -96,14 +102,31 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2, 3])
     ap.add_argument("--rollouts", type=int, default=3)
+    ap.add_argument("--protocol", type=Path, required=True)
+    ap.add_argument("--phase", choices=("thin_smoke", "final"), required=True)
     ap.add_argument("--outdir", type=Path, required=True)
     ap.add_argument("--receipt", type=Path, required=True)
     ap.add_argument("--limit", type=int, default=0)
     a = ap.parse_args()
+    protocol = json.loads(a.protocol.read_text())
+    expected_phase = protocol["phases"][a.phase]
+    if a.seeds != expected_phase["seeds"] or a.rollouts != expected_phase["rollouts"]:
+        raise ValueError("RUN_PLAN_MISMATCH")
+    expected_code = protocol["code_sha256"]
+    actual_code = {n: sha(HERE / n) for n in ("build_task.py", "score.py", "run_pilot.py", "pilot_tools.js")}
+    if actual_code != expected_code or protocol["model"] != MODEL:
+        raise ValueError("PROTOCOL_CODE_OR_MODEL_MISMATCH")
     a.outdir.mkdir(parents=True, exist_ok=True)
-    plan = [(s, c, r) for s in a.seeds for r in range(1, a.rollouts + 1) for c in ("C_BASE", "C_TARGET")]
+    plan = []
+    for s in a.seeds:
+        for r in range(1, a.rollouts + 1):
+            bit = int(hashlib.sha256(f"ARGO-PILOT-ORDER-v1|{s}|{r}".encode()).hexdigest(), 16) & 1
+            order = ("C_BASE", "C_TARGET") if bit == 0 else ("C_TARGET", "C_BASE")
+            plan.extend((s, c, r) for c in order)
     if a.limit:
         plan = plan[:a.limit]
+    if len(plan) != expected_phase["episodes"]:
+        raise ValueError("RUN_EPISODE_COUNT_MISMATCH")
     rows = []
     for i, (s, c, r) in enumerate(plan, 1):
         row = run_one(s, c, r, a.outdir)
@@ -117,11 +140,14 @@ def main() -> int:
             "schema_version": "argo-stage-b-pilot/v1",
             "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
             "model": MODEL, "approval": "paper/research/receipts/stage-b-pilot-approval.json",
-            "planned_episodes": len(plan), "completed_episodes": len(rows),
+            "protocol_path": str(a.protocol.resolve()), "protocol_sha256": sha(a.protocol),
+            "phase": a.phase, "planned_episodes": len(plan), "completed_episodes": len(rows),
             "code": {n: sha(HERE / n) for n in ("build_task.py", "score.py", "run_pilot.py")},
             "harness_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
             "episodes": rows,
             "scope": "development pilot; effect direction and variance only; not confirmatory",
+            "billing": "anthropic oauth seat; reported_cost_usd is catalog accounting, not a separate API charge",
+            "thinking": "high", "tool_surface": ["read_index", "read_dependency_target", "read_record", "write_decision"],
         }, ensure_ascii=False, indent=2) + "\n")
     return 0
 
