@@ -118,5 +118,5 @@ Native construction은 계속 중단한다. paid episode는 Stage별 exact upper
 그 금액을 승인하기 전 실행하지 않는다. LG Aimers와 private instance는 접근하지 않는다.
 
 Stage A와 Opus 4.6 개발 파일럿은 완료됐다. 네 비동형 causal family와 fail-closed runner도 무과금으로 검증됐다.
-현재 다음 행동은 사용자에게 정확히 8개 OAuth episode의 **교정 B2** 승인을 요청하는 것이다. C confirmation은 B2 결과를
-본 뒤 별도 판단하며 현재 승인되지 않았다.
+사용자가 정확히 8개 OAuth episode의 **교정 B2**를 승인했다. 현재 다음 행동은 고정된 runner로 8개를 실행하고
+frozen decision rule을 적용한 뒤 중단·보고하는 것이다. C confirmation은 여전히 승인되지 않았다.
