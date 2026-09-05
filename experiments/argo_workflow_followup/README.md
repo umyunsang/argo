@@ -51,3 +51,11 @@ The 12/12 tests validate schema and mutation sensitivity only. No seed-specific 
 The strong TREE comparator is pinned to official Arbor commit `2f4e65410a5c21c9e55835a9a0d77ead21a64ffa`. Its `Node` schema supplies hierarchy, hypothesis, insight, result, dev/test scores, code reference, grounding, outcome status, and attempts. It does not supply typed evidence identity, version, validity, applicability, or dependency edges, so both future arms must receive the same external raw evidence log.
 
 The repository is not an independent real-graph task source. Its bundled 7-node/117-event recording is explicitly illustrative and hand-authored. The separate BrowseComp HTML embeds ten nodes, but the referenced raw run directory is absent, and embedded non-root status counts (`4 done / 1 merged / 4 pruned`) disagree with its narrative (`5 / 1 / 3`). Use the code/schema as a comparator prior. Do not claim run reproduction or dependency-targeting evidence from these demo bytes.
+
+## External architecture research trace
+
+The supplementary repository for `2608.01995v1` contributes an external real research trace: 111 hypotheses plus three baselines in one programme. The authors' parser reproduces the committed 114-row CSV byte-for-byte from the 211-KB Markdown log. Three Phase-1→Phase-2 decisions reverse under a combined regime change: stochastic-depth removal (`+0.46` to `-0.60`), label smoothing off→on (`+0.13` / `+0.30`), and Mixup off→mild (`+0.68` / `+0.77`).
+
+A retrospective replay gives scoped revalidation `3/3` exact while preserving all original-scope results. Unscoped reuse selects the wrong Phase-2 setting `3/3`; global invalidation destroys all three still-valid original-scope records. These three pairs are nested observations in one programme, not `n=3`. Dataset, parameter scale, augmentation, and evaluation protocol changed together, so this is a regime-applicability result, not a scale-only effect or prospective predictor.
+
+The snapshot omits training code, tracking-service exports, failed-run configurations, and per-hypothesis Git commits. It supports trace semantics, not score/code reproduction or ARGO efficacy.
