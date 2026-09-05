@@ -117,6 +117,6 @@ fresh-context 인계다. 한 번의 실행만으로 병렬 경쟁을 구현했�
 Native construction은 계속 중단한다. paid episode는 Stage별 exact upper cost와 20% contingency를 숫자로 계산하고 사용자가
 그 금액을 승인하기 전 실행하지 않는다. LG Aimers와 private instance는 접근하지 않는다.
 
-Stage A와 Opus 4.6 개발 파일럿은 완료됐다. 현재 다음 행동은 **유료 호출 없이** 비동형 causal task family를 만들고,
-정확한 조건 순서 균형과 token surface control을 통과시키는 것이다. C confirmation은 새 task pack이 준비되고 사용자가
-별도로 승인하기 전 실행하지 않는다.
+Stage A와 Opus 4.6 개발 파일럿은 완료됐다. 네 비동형 causal family와 fail-closed runner도 무과금으로 검증됐다.
+현재 다음 행동은 사용자에게 정확히 8개 OAuth episode의 **교정 B2** 승인을 요청하는 것이다. C confirmation은 B2 결과를
+본 뒤 별도 판단하며 현재 승인되지 않았다.

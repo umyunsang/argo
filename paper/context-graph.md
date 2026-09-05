@@ -98,3 +98,7 @@ A fixture pass is manipulation evidence only. No paid episode or native runtime 
 A 24-episode OAuth development budget was consumed, including measurement-defect smoke runs. In the frozen final block, Opus 4.6 avoided stale decisions in both conditions (6/6 versus 6/6), so the preregistered primary contrast was null. Dependency targeting changed six conservative `unverified/recheck` outputs into six fully resolved `withdrawn/recheck` outputs, while using 1.1007× tokens.
 
 This secondary pattern is not confirmatory: all six are lexical surfaces of one causal template, realized order was target-first in all pairs, and input token surfaces differ. Confirmation is held. The active next action is a zero-cost non-isomorphic task pack with exact schedule and token controls.
+
+## Corrected development extension awaiting approval
+
+A zero-cost successor pack now has four non-isomorphic causal families, balanced valid/withdrawn truths, exact 2:2 condition order, the same one-prefetch plus one-read budget, and 512-byte allocation files in both conditions. A fail-closed runner permits no model call unless an approval file authorizes exactly eight OAuth episodes. This is corrected development B2, not confirmation C.
