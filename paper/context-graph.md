@@ -106,3 +106,7 @@ A zero-cost successor pack now has four non-isomorphic causal families, balanced
 ## Corrected-B2 outcome and B3 blocker
 
 Corrected B2 exhausted its exact eight-episode approval but cannot support a causal endpoint because the stale label, action wording, record tool, and unstratified decision rule were defective. A status-only diagnostic matched the mechanism—TARGET won both affected families and preserved both unaffected families—but remains post-hoc. A B3 runner with unambiguous apply/do-not-apply semantics and dynamic record access is validated and blocked on a new exact eight-episode approval. Confirmation C remains held.
+
+## B3 outcome
+
+The unambiguous B3 contract passed its frozen stratified rule: TARGET won both affected families, harmed neither unaffected family, inspected both critical records, produced 4/4 fully correct decisions versus BASE 1/4, and used 0.9194× tokens. This authorizes only zero-cost confirmation planning. C execution remains unapproved because the result has four families and one rollout per condition.

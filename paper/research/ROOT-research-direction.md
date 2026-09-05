@@ -119,5 +119,5 @@ Native construction은 계속 중단한다. paid episode는 Stage별 exact upper
 
 Stage A와 Opus 4.6 개발 파일럿은 완료됐다. 네 비동형 causal family와 fail-closed runner도 무과금으로 검증됐다.
 교정 B2 8개는 실행됐으나 scorer의 stale 정의, action 의미, record 접근 enum 결함 때문에 인과 판정에 사용할 수 없다.
-원 결과는 보존하고 status-only 감도분석만 보고한다. 사용자가 outcome contract를 교정한 B3 8개를 승인했다. 현재 다음 행동은 정확히 8개를 실행하고 frozen stratified rule을
-적용해 중단·보고하는 것이다. C confirmation은 계속 승인되지 않았다.
+원 결과는 보존하고 status-only 감도분석만 보고한다. B3 8개는 frozen stratified rule을 통과해 C **계획**으로 승격됐다. 현재 다음 행동은 유료 호출 없이 16개 새 비동형
+confirmation task, 표본·quota·순서·scorer를 고정하는 것이다. C 실행은 여전히 승인되지 않았다.

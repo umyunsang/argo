@@ -179,3 +179,16 @@ The primary null is compatible with a frontier ceiling: the base model already a
 The four-family B2 run completed eight OAuth episodes, but its original causal endpoint is invalid. The scorer labelled any `valid/proceed` output stale even when valid was ground truth; `proceed/recheck` did not specify whether it referred to applying the constraint or advancing the workflow; and the record tool omitted identifiers used by the multi-hop family. The frozen 3-of-4 rule also incorrectly treated unaffected-family ties as failures for a targeted mechanism.
 
 A post-hoc status-only sensitivity found TARGET improved both affected families and harmed neither unaffected family (TARGET status correct 4/4, BASE 2/4). This is diagnostic, not efficacy. Confirmation remains held. A separate B3 proposal keeps model, tasks, budgets and allocation fixed while replacing the outcome with `apply/do_not_apply/undetermined` and exposing all valid record IDs.
+
+## 14. B3 unambiguous four-family result
+
+B3 held model, OAuth path, four graph families, allocation, two-record budget and exact 2:2 order fixed while replacing ambiguous action semantics with `apply/do_not_apply/undetermined` and allowing every valid record id. All eight episodes and their access logs were rederived.
+
+- affected families: TARGET fully-correct wins 2/2, losses 0
+- unaffected families: TARGET no-harm 2/2
+- critical-record inspection wins: 2/2
+- fully correct: TARGET 4/4, BASE 1/4
+- stale: TARGET 0, BASE 1
+- TARGET/BASE tokens: 0.9194
+
+The frozen rule therefore permits **C planning**, not C execution. This remains a one-rollout, four-family development result and is not a population effect.
