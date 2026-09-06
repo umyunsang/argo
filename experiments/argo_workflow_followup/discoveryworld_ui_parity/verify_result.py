@@ -3,7 +3,7 @@
 from __future__ import annotations
 import argparse,gzip,hashlib,json,os
 from pathlib import Path
-from lifecycle import final_status,validate_ledger
+from lifecycle import CELL_RESULT_KEYS,final_status,validate_ledger
 from protocol import compare_pair,validate_cell
 def read_nofollow(path):
  flags=os.O_RDONLY
@@ -27,14 +27,17 @@ def verify(root,approval_path):
   approval=json.loads(read_nofollow(approval_path));manifest_path=root/approval["bindings"]["manifest"]["path"];manifest=json.loads(read_nofollow(manifest_path));result_path=root/manifest["paths"]["result"];ledger_path=root/manifest["paths"]["ledger"];result=json.loads(read_nofollow(result_path));ledger_bytes=read_nofollow(ledger_path)
  except (OSError,KeyError,json.JSONDecodeError) as exc:return {"schema_version":"argo-ui-parity-post-run-verification/v1","execution_root_sha256":None,"verdict":"NOT_PASS","passed":False,"errors":["READ:"+type(exc).__name__],"status":None,"cells":0,"mode_pairs":0,"ui_repeat_pairs":0,"result_sha256":None,"ledger_sha256":None}
  ledger=validate_ledger(ledger_path,manifest,allow_partial=result.get("status")=="INCOMPLETE",expected_header={"manifest_sha256":hashlib.sha256(read_nofollow(manifest_path)).hexdigest(),"approval_sha256":hashlib.sha256(read_nofollow(approval_path)).hexdigest(),"source_archive_sha256":result.get("source_archive_sha256"),"preflight_identity_sha256":result.get("preflight_identity_sha256"),"execution_root_sha256":result.get("execution_root_sha256")},strict_sidecars=True,result_payload_path=result_path,artifact_root=root,ledger_bytes=ledger_bytes)
- if not ledger["passed"]:errors.append("LEDGER:"+",".join(ledger["errors"]))
+ if not ledger["passed"] or not ledger.get("finalized"):errors.append("LEDGER:"+",".join(ledger["errors"]+([] if ledger.get("finalized") else ["FINALIZED_REQUIRED"])))
  rederived={}
  for cell in manifest["ordered_cells"]:
   prior=result.get("cells",{}).get(cell["cell_id"])
   if prior is None:continue
+  if not isinstance(prior,dict) or set(prior)!=CELL_RESULT_KEYS:errors.append("CELL_SCHEMA:"+cell["cell_id"]);continue
   if prior.get("status")!="valid_complete":rederived[cell["cell_id"]]=prior;continue
   try:
-   event_path=root/cell["event_path"];events=read_nofollow(event_path).splitlines();start=json.loads(events[0]);bundle=Path(start["adapter_module_path"]).parent;source=Path(start["module_path"]).parents[1];site=Path(start["sys_path"][2]);runtime_cell={**cell,"workdir":prior["runtime_workdir"]};frames=json.loads(read_nofollow(root/cell["frame_manifest_path"]));validation=validate_cell(runtime_cell,prior["run"],event_path,root/cell["ui_gzip_path"],frames,source_commit=start["source_commit"],source_tree=start["source_tree"],source_archive_sha256=start["source_archive_sha256"],adapter_sha256=approval["bindings"]["adapter"]["sha256"],state_projection_sha256=approval["bindings"]["state_projection"]["sha256"],environment_content_sha256=approval["bindings"]["environment_content_manifest"]["sha256"],bootstrap_sha256=approval["bindings"]["bootstrap"]["sha256"],interpreter_path=start["interpreter_path"],site_packages=site,source_root=source,bundle_root=bundle)
+   event_path=root/cell["event_path"];events=read_nofollow(event_path).splitlines();start=json.loads(events[0]);bundle=Path(start["adapter_module_path"]).parent;source=Path(start["module_path"]).parents[1];site=Path(start["sys_path"][2]);runtime_cell={**cell,"workdir":prior["runtime_workdir"]};frames=json.loads(read_nofollow(root/cell["frame_manifest_path"]));
+   if frames!=prior.get("frame_manifest"):errors.append("FRAME_INLINE:"+cell["cell_id"])
+   validation=validate_cell(runtime_cell,prior["run"],event_path,root/cell["ui_gzip_path"],frames,source_commit=start["source_commit"],source_tree=start["source_tree"],source_archive_sha256=start["source_archive_sha256"],adapter_sha256=approval["bindings"]["adapter"]["sha256"],state_projection_sha256=approval["bindings"]["state_projection"]["sha256"],environment_content_sha256=approval["bindings"]["environment_content_manifest"]["sha256"],bootstrap_sha256=approval["bindings"]["bootstrap"]["sha256"],interpreter_path=start["interpreter_path"],site_packages=site,source_root=source,bundle_root=bundle)
    if not validation_matches(prior,validation):errors.append("CELL:"+cell["cell_id"])
    rederived[cell["cell_id"]]={**prior,**validation}
   except (OSError,KeyError,IndexError,json.JSONDecodeError) as exc:errors.append("CELL_READ:"+cell["cell_id"]+":"+type(exc).__name__)

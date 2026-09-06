@@ -5,12 +5,13 @@ import hashlib,json,os,re,stat
 from pathlib import Path,PurePosixPath
 CELL_TERMINAL={"valid_complete","timeout","crash","malformed","identity_drift","spawn_failure","unreaped","sidecar_error","ledger_error","global_deadline","controller_signal"}
 COMMON={"previous_record_sha256","record_sha256"}
+CELL_RESULT_KEYS={"status","errors","ui_hashes","pre_state_hashes","post_state_hashes","run","sidecars","frame_manifest","runtime_workdir","event_sha256","ui_gzip_sha256"}
 RESULT_KEYS={"schema_version","run_id","status","approval_sha256","manifest_sha256","source_archive_sha256","preflight_identity_sha256","execution_root_sha256","cells","mode_pairs","ui_repeat_pairs","summary","ledger_last_record_sha256_before_final","model_calls","spend_usd"}
 LEDGER_KEYS={
  "header":COMMON|{"event","schema_version","run_id","manifest_sha256","approval_sha256","source_archive_sha256","preflight_identity_sha256","execution_root_sha256","started_at"},
  "planned":COMMON|{"event","sequence","run_id","cell_id","cell_nonce","cell_index","timestamp"},
  "spawned":COMMON|{"event","sequence","run_id","cell_id","cell_nonce","cell_index","pid","pgid","timestamp"},
- "finished":COMMON|{"event","sequence","run_id","cell_id","cell_nonce","cell_index","status","exit_code","timed_out","stdout","stderr","events","ui_gzip","frame_manifest","timestamp"},
+ "finished":COMMON|{"event","sequence","run_id","cell_id","cell_nonce","cell_index","status","exit_code","timed_out","stdout","stderr","events","ui_gzip","frame_manifest","run","cell_result_sha256","timestamp"},
  "controller_stop":COMMON|{"event","sequence","run_id","reason","timestamp"},
  "finalized":COMMON|{"event","sequence","run_id","status","result_sha256","timestamp"},
 }
@@ -113,7 +114,7 @@ def validate_ledger(path,manifest,allow_partial=False,expected_header=None,stric
    states[cid]="spawned"
   elif event=="finished":
    status=r.get("status")
-   if type(r.get("timed_out")) is not bool or (r.get("exit_code") is not None and type(r.get("exit_code")) is not int):errors.append("FINISHED_SCHEMA")
+   if type(r.get("timed_out")) is not bool or (r.get("exit_code") is not None and type(r.get("exit_code")) is not int) or not isinstance(r.get("run"),dict) or not re.fullmatch(r"[0-9a-f]{64}",str(r.get("cell_result_sha256",""))):errors.append("FINISHED_SCHEMA")
    if strict_sidecars:
     for key in ["stdout","stderr","events","ui_gzip","frame_manifest"]:
      meta=r.get(key)
@@ -153,7 +154,7 @@ def validate_ledger(path,manifest,allow_partial=False,expected_header=None,stric
      else:
       for cell_id,finished in finished_records.items():
        cell_result=result_cells[cell_id];expected_sidecars={key:finished[key] for key in ["stdout","stderr","events","ui_gzip","frame_manifest"]}
-       if cell_result.get("status")!=finished.get("status") or cell_result.get("sidecars")!=expected_sidecars or cell_result.get("run",{}).get("exit_code")!=finished.get("exit_code") or cell_result.get("run",{}).get("timed_out")!=finished.get("timed_out"):errors.append("RESULT_CELL_BINDING")
+       if set(cell_result)!=CELL_RESULT_KEYS or hashlib.sha256(canonical(cell_result)).hexdigest()!=finished.get("cell_result_sha256") or cell_result.get("status")!=finished.get("status") or cell_result.get("sidecars")!=expected_sidecars or cell_result.get("run")!=finished.get("run") or cell_result.get("run",{}).get("exit_code")!=finished.get("exit_code") or cell_result.get("run",{}).get("timed_out")!=finished.get("timed_out"):errors.append("RESULT_CELL_BINDING")
      mode=result.get("mode_pairs",[]);repeat=result.get("ui_repeat_pairs",[])
      if len(mode)!=20 or len(repeat)!=10 or any({key:value for key,value in pair.items() if key!="status"}!=expected or pair.get("status") not in {"EXACT","OBSERVED_MISMATCH","UNOBSERVABLE"} for pair,expected in zip(mode,manifest.get("mode_pairs",[]))) or any({key:value for key,value in pair.items() if key!="status"}!=expected or pair.get("status") not in {"EXACT","OBSERVED_MISMATCH","UNOBSERVABLE"} for pair,expected in zip(repeat,manifest.get("ui_repeat_pairs",[]))):errors.append("RESULT_PAIRS")
      summary=result.get("summary",{});cell_statuses=[result_cells[cell["cell_id"]]["status"] for cell in manifest.get("ordered_cells",[]) if isinstance(result_cells,dict) and cell["cell_id"] in result_cells];pair_statuses=[pair.get("status") for pair in mode+repeat];computed=final_status(cell_statuses,pair_statuses,30)
@@ -164,6 +165,7 @@ def validate_ledger(path,manifest,allow_partial=False,expected_header=None,stric
    finalized=True
   else:errors.append("UNKNOWN_EVENT")
  if any(v!="finished" for v in states.values()):errors.append("PLANNED_NOT_TERMINAL")
+ if result_payload_path is not None and sum(r.get("event")=="finalized" for r in records)!=1:errors.append("FINALIZED_COUNT")
  if not allow_partial:
   if len(states)!=30:errors.append("INCOMPLETE")
   if sum(r.get("event")=="finalized" for r in records)!=1:errors.append("FINALIZED_COUNT")

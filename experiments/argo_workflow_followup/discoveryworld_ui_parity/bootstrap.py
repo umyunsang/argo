@@ -5,10 +5,10 @@ import runpy,sys
 from pathlib import Path
 def main(argv=None):
  args=list(sys.argv[1:] if argv is None else argv)
- if not args or args[0] not in {"controller","worker"}:raise RuntimeError("BOOTSTRAP_ROLE")
+ if not args or args[0] not in {"controller","worker","verifier","admission"}:raise RuntimeError("BOOTSTRAP_ROLE")
  role=args.pop(0)
- if role=="controller":
-  root=Path(args.pop(0)).resolve();script=root/"run.py";paths=[root]
+ if role in {"controller","verifier","admission"}:
+  root=Path(args.pop(0)).resolve();script=root/{"controller":"run.py","verifier":"verify_result.py","admission":"admit_result.py"}[role];paths=[root]
  else:
   bundle=Path(args.pop(0)).resolve();source=Path(args.pop(0)).resolve();site=Path(args.pop(0)).resolve();script=bundle/"episode.py";paths=[bundle,source,site]
  if not all(path.is_dir() for path in paths) or not script.is_file():raise RuntimeError("BOOTSTRAP_PATH")
