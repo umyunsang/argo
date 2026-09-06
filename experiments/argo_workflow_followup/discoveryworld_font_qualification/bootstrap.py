@@ -22,7 +22,7 @@ def verify_postrun_identity(role,root,args):
  try:
   index=args.index("--approval");approval_path=Path(args[index+1]);approval=json.loads(read_regular(approval_path));repo=Path(approval["engine_repo"]).resolve();expected_root=repo/"experiments/argo_workflow_followup/discoveryworld_font_qualification"
   if root!=expected_root or Path(__file__).resolve()!=root/"bootstrap.py" or read_hash(__file__)!=approval["bindings"]["bootstrap"]["sha256"]:return False
-  keys=["runner","episode","font_registry","protocol","process_control","manifest","environment_manifest","environment_content","bootstrap","result_verifier"]+(["admission_consumer"] if role=="admission" else [])
+  keys=["runner","episode","font_registry","protocol","process_control","manifest","environment_manifest","environment_content","bootstrap","worker_gate","result_verifier"]+(["admission_consumer"] if role=="admission" else [])
   for key in keys:
    spec=approval["bindings"][key];path=repo/spec["path"]
    if read_hash(path)!=spec["sha256"]:return False

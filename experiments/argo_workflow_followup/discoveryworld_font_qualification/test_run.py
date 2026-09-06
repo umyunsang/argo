@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import json,sys,tempfile,unittest
+import json,os,signal,sys,tempfile,unittest
 from pathlib import Path
 HERE=Path(__file__).resolve().parent;ROOT=HERE.parents[2];sys.path.insert(0,str(HERE));import run
 class Tests(unittest.TestCase):
@@ -24,6 +24,10 @@ class Tests(unittest.TestCase):
    p=Path(td)/"x";run.exclusive(p,b"one")
    with self.assertRaises(FileExistsError):run.exclusive(p,b"two")
    self.assertEqual(p.read_bytes(),b"one")
+ def test_late_blocked_signal_is_consumed_by_latch_before_handler_restore(self):
+  latch=run.SignalLatch();latch.install();latch.block_for_closure();os.kill(os.getpid(),signal.SIGTERM);self.assertTrue(latch.closure_pending());self.assertTrue(latch.restore())
+ def test_runtime_destination_is_shared_base_python(self):
+  environment=json.loads((HERE/"environment-content-manifest.json").read_text());base,site=run.runtime_paths(Path("/sealed"),environment);self.assertEqual(base,Path("/sealed/runtime/base-python"));self.assertEqual(site,Path("/sealed/runtime/site-packages"))
  def test_sysfont_hash_three_way_invariant(self):
   font=json.loads((ROOT/"paper/research/discoveryworld-pinned-font-manifest-v1.json").read_text());environment=json.loads((HERE/"environment-content-manifest.json").read_text());entry=next(x for spec in environment["roots"] if spec["name"]=="site_packages" for x in spec["entries"] if x.get("path")=="pygame/sysfont.py");self.assertEqual(run.SYSFONT_SHA,font["source"]["pygame_sysfont_sha256"]);self.assertEqual(run.SYSFONT_SHA,entry["sha256"])
  def test_execution_root_binds_runtime_paths_and_hashes(self):

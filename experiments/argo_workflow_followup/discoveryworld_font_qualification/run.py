@@ -15,7 +15,7 @@ HERE=Path(__file__).resolve().parent
 ENGINE=Path("/Users/um-yunsang/argo-paper-orx");SOURCE=Path("/Users/um-yunsang/.cache/argo-research/DiscoveryWorld");INTERPRETER=SOURCE/".venv/bin/python";SANDBOX=Path("/usr/bin/sandbox-exec")
 CONTROLLER_INTERPRETER=Path("/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/bin/python3.14")
 RUN_ID="dw-font-registry-qual-20260906-v1";SOURCE_COMMIT="fd591323920be0d3786ef350955de1945aa571e5";SOURCE_TREE="e83be66c3f357352e8d5d68755100cbc8fdc4d11";SOURCE_ARCHIVE="0dafdd25b5a51892bd470dc20ea2fba4fc78abe2a986f20e4ce132f42b3ddb6a";SYSFONT_SHA="f3ea7d5eaa0f3f5e55926b66f56708ce2ff19a922f93e5a86df1317f8316c6c3"
-EXEC_KEYS=("runner","episode","font_registry","protocol","process_control","manifest","font_manifest","environment_manifest","environment_content","bootstrap","launcher","result_verifier","admission_consumer")
+EXEC_KEYS=("runner","episode","font_registry","protocol","process_control","manifest","font_manifest","environment_manifest","environment_content","bootstrap","worker_gate","launcher","result_verifier","admission_consumer")
 def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 def canonical(value):return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(",",":"),allow_nan=False).encode()
 def fsync_path(path):
@@ -110,6 +110,10 @@ def validate_approval(a,root):
  try:u=json.loads((Path(root)/a["bindings"]["user_authorization"]["path"]).read_bytes());checks["USER_AUTHORIZATION"]=u.get("run_id")==RUN_ID and u.get("authority_root_sha256")==ar and u.get("message")==text and u.get("message_sha256")==hashlib.sha256(text.encode()).hexdigest()
  except (OSError,KeyError,json.JSONDecodeError,TypeError):checks["USER_AUTHORIZATION"]=False
  return {"approved":all(checks.values()),"checks":checks,"errors":[k for k,v in checks.items() if not v]}
+def runtime_paths(temp,environment):
+ destinations={spec["name"]:spec["destination"] for spec in environment.get("roots",[])}
+ if set(destinations)!={"base_python","site_packages"}:raise RuntimeError("RUNTIME_DESTINATIONS")
+ root=Path(temp)/"runtime";return root/destinations["base_python"],root/destinations["site_packages"]
 def binding_snapshot(approval,root):return {key:sha(Path(root)/spec["path"]) for key,spec in sorted(approval["bindings"].items())}
 def tree_digest(root):
  rows=[]
@@ -145,14 +149,17 @@ class SignalLatch:
  def block_for_closure(self):self.previous_mask=signal.pthread_sigmask(signal.SIG_BLOCK,set(self.SIGNALS))
  def closure_pending(self):return self.pending is not None or bool(set(signal.sigpending())&set(self.SIGNALS))
  def restore(self):
+  if self.previous_mask is not None:
+   signal.pthread_sigmask(signal.SIG_SETMASK,self.previous_mask);self.previous_mask=None
+  late=self.pending is not None
   for sig,value in self.old.items():signal.signal(sig,value)
-  if self.previous_mask is not None:signal.pthread_sigmask(signal.SIG_SETMASK,self.previous_mask);self.previous_mask=None
+  self.old.clear();return late
 def sanitized(bundle,source,site,work):return {"HOME":str(work),"TMPDIR":str(work/"tmp"),"PATH":"/usr/bin:/bin:/opt/homebrew/bin:/usr/X11/bin","PYTHONNOUSERSITE":"1","PYTHONHASHSEED":"0","PYGAME_HIDE_SUPPORT_PROMPT":"1","SDL_VIDEODRIVER":"dummy","SDL_AUDIODRIVER":"dummy","LC_ALL":"C.UTF-8","TZ":"UTC","PYTHONDONTWRITEBYTECODE":"1"}
 def sealed_controller_identity(approval):
  try:
   root=Path(os.environ["ARGO_FONT_CONTROLLER_SEAL"]).resolve();seal_path=root/"seal.json";seal_bytes=seal_path.read_bytes()
   if root!=HERE or hashlib.sha256(seal_bytes).hexdigest()!=os.environ["ARGO_FONT_CONTROLLER_SEAL_SHA256"]:return False
-  seal=json.loads(seal_bytes);expected={"run.py":"runner","episode.py":"episode","font_registry.py":"font_registry","protocol.py":"protocol","process_control.py":"process_control","manifest.json":"manifest","font-manifest.json":"font_manifest","environment_manifest.py":"environment_manifest","environment-content-manifest.json":"environment_content","bootstrap.py":"bootstrap","launcher.py":"launcher","verify_result.py":"result_verifier","admit_result.py":"admission_consumer"}
+  seal=json.loads(seal_bytes);expected={"run.py":"runner","episode.py":"episode","font_registry.py":"font_registry","protocol.py":"protocol","process_control.py":"process_control","manifest.json":"manifest","font-manifest.json":"font_manifest","environment_manifest.py":"environment_manifest","environment-content-manifest.json":"environment_content","bootstrap.py":"bootstrap","worker_gate.py":"worker_gate","launcher.py":"launcher","verify_result.py":"result_verifier","admit_result.py":"admission_consumer"}
   return {Path(module.__file__).resolve().parent for module in [environment_manifest_module,font_registry_module,process_control_module,protocol_module]}=={root} and seal.get("execution_root_sha256")==execution_root(approval) and all((root/name).is_file() and sha(root/name)==approval["bindings"][key]["sha256"] for name,key in expected.items())
  except (OSError,KeyError,json.JSONDecodeError):return False
 def main(argv=None):
@@ -160,6 +167,8 @@ def main(argv=None):
  if not gate["approved"]:print(json.dumps({"status":"BLOCKED_BEFORE_CONSUMPTION","approval":gate},indent=2));return 2
  if not sealed_controller_identity(approval):raise RuntimeError("UNSEALED_CONTROLLER")
  authority_snapshot=binding_snapshot(approval,root)
+ try:supervisor_fd=int(os.environ["ARGO_FONT_SUPERVISOR_FD"]);os.fstat(supervisor_fd)
+ except (KeyError,ValueError,OSError):raise RuntimeError("SUPERVISOR_FD")
  manifest=json.loads((HERE/"manifest.json").read_bytes());font_manifest=json.loads((HERE/"font-manifest.json").read_bytes());paths={k:root/v for k,v in manifest["paths"].items()}
  preflight=output_preflight(paths.values(),root)
  if a.out.resolve()!=paths["result"].resolve() or not preflight["passed"]:raise RuntimeError("OUTPUT_PREFLIGHT:"+str(preflight["errors"]))
@@ -170,10 +179,11 @@ def main(argv=None):
  if not Path("/usr/bin/true").is_file() or Path("/usr/bin/true").is_symlink():raise RuntimeError("TRUE_PREFLIGHT")
  with tempfile.TemporaryDirectory(prefix="dw-font-qualification-") as td:
   temp=Path(td);source=prepare_source(temp);source_digest=tree_digest(source);bundle=temp/"bundle";bundle.mkdir()
-  mapping={"episode.py":"episode","font_registry.py":"font_registry","protocol.py":"protocol","process_control.py":"process_control","manifest.json":"manifest","font-manifest.json":"font_manifest","environment_manifest.py":"environment_manifest","environment-content-manifest.json":"environment_content","bootstrap.py":"bootstrap"}
+  mapping={"episode.py":"episode","font_registry.py":"font_registry","protocol.py":"protocol","process_control.py":"process_control","manifest.json":"manifest","font-manifest.json":"font_manifest","environment_manifest.py":"environment_manifest","environment-content-manifest.json":"environment_content","bootstrap.py":"bootstrap","worker_gate.py":"worker_gate"}
   for name,key in mapping.items():
    src=HERE/name;dest=bundle/name;dest.write_bytes(src.read_bytes());dest.chmod(0o444);fsync_path(dest)
-  fsync_path(bundle);bundle.chmod(0o555);env_manifest=json.loads((bundle/"environment-content-manifest.json").read_bytes());copied=copy_and_verify(env_manifest,temp/"runtime");sealed_python=copied["base_python"]/"bin/python3.11";site=copied["site_packages"]
+  fsync_path(bundle);bundle.chmod(0o555);env_manifest=json.loads((bundle/"environment-content-manifest.json").read_bytes());copied=copy_and_verify(env_manifest,temp/"runtime");base,site=runtime_paths(temp,env_manifest);sealed_python=base/"bin/python3.11"
+  if copied!={"base_python":base,"site_packages":site}:raise RuntimeError("RUNTIME_PATH_MAPPING")
   if not all(verify_root(spec,copied[spec["name"]]) for spec in env_manifest["roots"]):raise RuntimeError("SEALED_RUNTIME")
   sealed_sysfont=site/"pygame/sysfont.py"
   if sha(sealed_sysfont)!=SYSFONT_SHA:raise RuntimeError("SEALED_SYSFONT")
@@ -187,10 +197,10 @@ def main(argv=None):
    for cell in manifest["ordered_cells"]:
     if latch.pending is not None or time.monotonic()>=work_deadline:break
     mode=cell["mode"];work=temp/mode;(work/"tmp").mkdir(parents=True);profile_path=work/"profile.sb";profile_path.write_text(profile(mode,work,sealed_python));profile_path.chmod(0o444);side=paths["sidecar_root"]/mode;side.mkdir();event=side/"event.jsonl";stdout=side/"stdout.bin";stderr=side/"stderr.bin";profile_sidecar=side/"profile.sb";temp_event=work/"event.jsonl";temp_stdout=work/"stdout.bin";temp_stderr=work/"stderr.bin";previous=append_ledger(paths["ledger"],{"event":"planned","run_id":RUN_ID,"cell_id":cell["cell_id"],"mode":mode},previous)
-    args=[str(SANDBOX),"-f",str(profile_path),str(sealed_python),"-I","-S","-B",str(bundle/"bootstrap.py"),"worker",str(bundle),str(source),str(site),"--mode",mode,"--manifest",str(bundle/"font-manifest.json"),"--source",str(source),"--event-fd","{EVENT_FD}","--source-commit",SOURCE_COMMIT,"--source-tree",SOURCE_TREE,"--source-archive-sha256",SOURCE_ARCHIVE,"--pygame-sysfont-sha256",SYSFONT_SHA,"--font-manifest-sha256",sha(bundle/"font-manifest.json"),"--episode-sha256",sha(bundle/"episode.py"),"--font-registry-sha256",sha(bundle/"font_registry.py")]
+    worker_args=[str(SANDBOX),"-f",str(profile_path),str(sealed_python),"-I","-S","-B",str(bundle/"bootstrap.py"),"worker",str(bundle),str(source),str(site),"--mode",mode,"--manifest",str(bundle/"font-manifest.json"),"--source",str(source),"--event-fd","{EVENT_FD}","--source-commit",SOURCE_COMMIT,"--source-tree",SOURCE_TREE,"--source-archive-sha256",SOURCE_ARCHIVE,"--pygame-sysfont-sha256",SYSFONT_SHA,"--font-manifest-sha256",sha(bundle/"font-manifest.json"),"--episode-sha256",sha(bundle/"episode.py"),"--font-registry-sha256",sha(bundle/"font_registry.py")];args=[str(sealed_python),str(bundle/"worker_gate.py"),str(supervisor_fd),*worker_args]
     def spawned(pid,pgid,cell=cell):
      nonlocal previous;previous=append_ledger(paths["ledger"],{"event":"spawned","run_id":RUN_ID,"cell_id":cell["cell_id"],"pid":pid,"pgid":pgid},previous)
-    run=run_process(args,work,sanitized(bundle,source,site,work),temp_stdout,temp_stderr,temp_event,cell["timeout_seconds"],work_deadline,on_spawn=spawned,stop_signal=lambda:latch.pending);exclusive(stdout,temp_stdout.read_bytes());exclusive(stderr,temp_stderr.read_bytes());exclusive(event,temp_event.read_bytes());exclusive(profile_sidecar,profile_path.read_bytes());identity={"source_commit":SOURCE_COMMIT,"source_tree":SOURCE_TREE,"source_archive_sha256":SOURCE_ARCHIVE,"pygame_sysfont_sha256":SYSFONT_SHA,"font_manifest_sha256":sha(bundle/"font-manifest.json"),"python_executable":str(sealed_python.resolve()),"pygame_sysfont_path":str(sealed_sysfont.resolve()),"episode_path":str((bundle/"episode.py").resolve()),"episode_sha256":sha(bundle/"episode.py"),"font_registry_path":str((bundle/"font_registry.py").resolve()),"font_registry_sha256":sha(bundle/"font_registry.py")};validation=validate_event(event,mode,font_manifest,identity) if run["exit_code"]==0 and event.is_file() else {"passed":False,"errors":["PROCESS_OR_EVENT"]};artifacts={"event_sha256":sha(event),"stdout_sha256":sha(stdout),"stderr_sha256":sha(stderr),"profile_sha256":sha(profile_sidecar)};value={"cell_id":cell["cell_id"],"mode":mode,"run":run,"validation":validation,"artifacts":artifacts};results.append(value);previous=append_ledger(paths["ledger"],{"event":"finished","run_id":RUN_ID,"cell_id":cell["cell_id"],"mode":mode,"exit_code":run["exit_code"],"valid":validation["passed"],"errors":validation["errors"],"artifacts":artifacts},previous)
+    run=run_process(args,work,sanitized(bundle,source,site,work),temp_stdout,temp_stderr,temp_event,cell["timeout_seconds"],work_deadline,on_spawn=spawned,stop_signal=lambda:latch.pending,supervisor_fd=supervisor_fd);exclusive(stdout,temp_stdout.read_bytes());exclusive(stderr,temp_stderr.read_bytes());exclusive(event,temp_event.read_bytes());exclusive(profile_sidecar,profile_path.read_bytes());identity={"source_commit":SOURCE_COMMIT,"source_tree":SOURCE_TREE,"source_archive_sha256":SOURCE_ARCHIVE,"pygame_sysfont_sha256":SYSFONT_SHA,"font_manifest_sha256":sha(bundle/"font-manifest.json"),"python_executable":str(sealed_python.resolve()),"pygame_sysfont_path":str(sealed_sysfont.resolve()),"episode_path":str((bundle/"episode.py").resolve()),"episode_sha256":sha(bundle/"episode.py"),"font_registry_path":str((bundle/"font_registry.py").resolve()),"font_registry_sha256":sha(bundle/"font_registry.py")};validation=validate_event(event,mode,font_manifest,identity) if run["exit_code"]==0 and event.is_file() else {"passed":False,"errors":["PROCESS_OR_EVENT"]};artifacts={"event_sha256":sha(event),"stdout_sha256":sha(stdout),"stderr_sha256":sha(stderr),"profile_sha256":sha(profile_sidecar)};value={"cell_id":cell["cell_id"],"mode":mode,"run":run,"validation":validation,"artifacts":artifacts};results.append(value);previous=append_ledger(paths["ledger"],{"event":"finished","run_id":RUN_ID,"cell_id":cell["cell_id"],"mode":mode,"exit_code":run["exit_code"],"valid":validation["passed"],"errors":validation["errors"],"artifacts":artifacts},previous)
    latch.block_for_closure()
    if latch.closure_pending():raise RuntimeError("CONTROLLER_SIGNAL_BEFORE_CLOSURE")
    values={x["mode"]:x["validation"].get("value") for x in results if x["validation"]["passed"]}
@@ -206,7 +216,9 @@ def main(argv=None):
    if latch.closure_pending():raise RuntimeError("CONTROLLER_SIGNAL_BEFORE_FINALIZE")
    payload=canonical(result)+b"\n";previous=append_ledger(paths["ledger"],{"event":"finalized","run_id":RUN_ID,"status":status,"result_sha256":hashlib.sha256(payload).hexdigest(),"execution_root_sha256":er,"authority_root_sha256":ar},previous)
    if latch.closure_pending() or time.monotonic()>=work_deadline or parent_snapshot(paths.values(),root)!=output_parents:raise RuntimeError("CLOSURE_DEADLINE_SIGNAL_OR_PARENT")
-   atomic_publish(paths["result_pending"],paths["result"],payload);print(json.dumps(result,indent=2,ensure_ascii=False));return 0 if status=="PASS" else 1
+   atomic_publish(paths["result_pending"],paths["result"],payload)
+   if latch.restore():raise RuntimeError("CONTROLLER_SIGNAL_DURING_FINAL_RESTORE")
+   print(json.dumps(result,indent=2,ensure_ascii=False));return 0 if status=="PASS" else 1
   except BaseException as exc:
    if not marker_owned:raise
    abort={"schema_version":"argo-font-qualification-abort/v1","run_id":RUN_ID,"error":type(exc).__name__+":"+str(exc),"no_retry":True,"timestamp":datetime.datetime.now().astimezone().isoformat(timespec="seconds")};atomic_publish(paths["abort_pending"],paths["abort"],canonical(abort)+b"\n");raise
