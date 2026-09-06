@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import copy,json,sys,tempfile,unittest
+import copy,json,os,sys,tempfile,unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 HERE=Path(__file__).resolve().parent;sys.path.insert(0,str(HERE))
-from lifecycle import append_record,atomic_create,ensure_directory_durable,final_status,publish_exclusive,validate_ledger,validate_manifest
+from lifecycle import ArtifactNamespace,append_record,atomic_create,ensure_directory_durable,final_status,publish_exclusive,validate_ledger,validate_manifest
 M=json.loads((HERE/"manifest.json").read_text())
 class Tests(unittest.TestCase):
  def test_manifest_valid(self):self.assertTrue(validate_manifest(M)["passed"])
@@ -14,6 +14,22 @@ class Tests(unittest.TestCase):
   x=copy.deepcopy(M);x["ordered_cells"][0]["stdout_path"]="../x";self.assertFalse(validate_manifest(x)["passed"])
  def test_bool_not_integer(self):
   x=copy.deepcopy(M);x["ordered_cells"][0]["seed"]=True;self.assertFalse(validate_manifest(x)["passed"])
+ def test_pinned_namespace_rejects_file_symlink_replacement(self):
+  with tempfile.TemporaryDirectory() as td:
+   root=Path(td);namespace=ArtifactNamespace(root);namespace.create_bytes("side/cell/raw",b"safe");secret=root/"secret";secret.write_bytes(b"secret");path=root/"side/cell/raw";path.unlink();path.symlink_to(secret)
+   with self.assertRaises(RuntimeError):namespace.read_bytes("side/cell/raw")
+   namespace.close()
+ def test_pinned_namespace_detects_root_replacement(self):
+  with tempfile.TemporaryDirectory() as td:
+   parent=Path(td);root=parent/"receipts";root.mkdir();namespace=ArtifactNamespace(root);namespace.create_bytes("ledger",b"original");root.rename(parent/"old");root.mkdir();(root/"ledger").write_bytes(b"replacement");self.assertFalse(namespace.verify());self.assertEqual(os.pread(namespace.files["ledger"],8,0),b"original");namespace.close()
+ def test_pinned_namespace_pending_symlink_cannot_publish(self):
+  with tempfile.TemporaryDirectory() as td:
+   root=Path(td);namespace=ArtifactNamespace(root);namespace.create_bytes("pending",b"payload");secret=root/"secret";secret.write_bytes(b"payload");(root/"pending").unlink();(root/"pending").symlink_to(secret)
+   with self.assertRaises(RuntimeError):namespace.publish("pending","result")
+   self.assertFalse((root/"result").exists());namespace.close()
+ def test_pinned_namespace_publishes_same_inode_and_fd_ledger(self):
+  with tempfile.TemporaryDirectory() as td:
+   root=Path(td);namespace=ArtifactNamespace(root);previous=namespace.append_record("ledger",{"event":"x"});self.assertEqual(json.loads(namespace.read_bytes("ledger"))["record_sha256"],previous);namespace.create_bytes("pending",b"payload");identity=os.fstat(namespace.files["pending"]);published=namespace.publish("pending","result");self.assertEqual((published.st_dev,published.st_ino),(identity.st_dev,identity.st_ino));self.assertEqual(namespace.read_bytes("result"),b"payload");namespace.close()
  def test_atomic_race_one_winner(self):
   with tempfile.TemporaryDirectory() as td:
    p=Path(td)/"m";

@@ -16,6 +16,9 @@ def fixture(td,cell=CELL):
  run={"exit_code":0,"timed_out":False};return event,ui,frame,run
 def kwargs():return {"source_commit":"c","source_tree":"t","source_archive_sha256":"d"*64,"adapter_sha256":"e"*64,"state_projection_sha256":"f"*64,"environment_content_sha256":"1"*64,"bootstrap_sha256":"2"*64,"interpreter_path":"/runtime/base/bin/python","site_packages":"/site","source_root":"/snapshot","bundle_root":"/bundle"}
 class Tests(unittest.TestCase):
+ def test_artifact_reader_binds_validation_bytes(self):
+  with tempfile.TemporaryDirectory() as td:
+   e,u,f,r=fixture(td);bound={str(e):e.read_bytes(),str(u):u.read_bytes()};e.write_bytes(b"replaced");u.write_bytes(b"replaced");options=kwargs();options["artifact_reader"]=lambda path:bound[path];self.assertEqual(validate_cell(CELL,r,e,u,f,**options)["status"],"valid_complete")
  def test_valid_official(self):
   with tempfile.TemporaryDirectory() as td:
    e,u,f,r=fixture(td);self.assertEqual(validate_cell(CELL,r,e,u,f,**kwargs())["status"],"valid_complete")

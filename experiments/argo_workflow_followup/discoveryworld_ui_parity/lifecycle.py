@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One-shot manifest, atomic marker, and hash-chained ledger primitives."""
 from __future__ import annotations
-import hashlib,json,os,re
+import hashlib,json,os,re,stat
 from pathlib import Path,PurePosixPath
 CELL_TERMINAL={"valid_complete","timeout","crash","malformed","identity_drift","spawn_failure","unreaped","sidecar_error","ledger_error","global_deadline","controller_signal"}
 COMMON={"previous_record_sha256","record_sha256"}
@@ -78,10 +78,10 @@ def append_record(path,record,previous=None):
  try:write_all(fd,line);os.fsync(fd)
  finally:os.close(fd)
  fsync_parent(path);return value["record_sha256"]
-def validate_ledger(path,manifest,allow_partial=False,expected_header=None,strict_sidecars=False,result_payload_path=None,artifact_root=None):
+def validate_ledger(path,manifest,allow_partial=False,expected_header=None,strict_sidecars=False,result_payload_path=None,artifact_root=None,ledger_bytes=None,artifact_reader=None):
  errors=[];records=[]
  try:
-  lines=Path(path).read_bytes().splitlines();records=[json.loads(line) for line in lines]
+  lines=(Path(path).read_bytes() if ledger_bytes is None else ledger_bytes).splitlines();records=[json.loads(line) for line in lines]
   if any(canonical(record)!=line for record,line in zip(records,lines)):errors.append("NONCANONICAL")
  except Exception:return {"passed":False,"errors":["READ"]}
  prev="0"*64;states={};last_seq=0;finalized=False;planned_order=[];cells={c["cell_id"]:c for c in manifest.get("ordered_cells",[])}
@@ -125,7 +125,9 @@ def validate_ledger(path,manifest,allow_partial=False,expected_header=None,stric
       manifest_key={"stdout":"stdout_path","stderr":"stderr_path","events":"event_path","ui_gzip":"ui_gzip_path","frame_manifest":"frame_manifest_path"}[key];expected_path=(Path(artifact_root)/cell[manifest_key]).resolve()
       if Path(meta["path"]).resolve()!=expected_path:errors.append("SIDECAR_PATH:"+key)
      sidecar=Path(meta["path"])
-     if not sidecar.is_file() or sidecar.stat().st_size!=meta["size"] or hashlib.sha256(sidecar.read_bytes()).hexdigest()!=meta["sha256"]:errors.append("SIDECAR_BYTES:"+key)
+     try:data=artifact_reader(meta["path"]) if artifact_reader is not None else sidecar.read_bytes()
+     except (OSError,RuntimeError,ValueError):data=None
+     if data is None or len(data)!=meta["size"] or hashlib.sha256(data).hexdigest()!=meta["sha256"]:errors.append("SIDECAR_BYTES:"+key)
      if status=="valid_complete" and key in {"events","ui_gzip","frame_manifest"} and meta["size"]==0:errors.append("SIDECAR_EMPTY:"+key)
     if status=="valid_complete" and (r.get("exit_code")!=0 or r.get("timed_out") is not False):errors.append("VALID_COMPLETE_PROCESS")
    legal=states.get(cid)=="spawned" and status in CELL_TERMINAL
@@ -139,11 +141,11 @@ def validate_ledger(path,manifest,allow_partial=False,expected_header=None,stric
    if result_payload_path is not None:
     payload=Path(result_payload_path)
     try:
-     payload_bytes=payload.read_bytes();result=json.loads(payload_bytes)
+     payload_bytes=artifact_reader(str(payload)) if artifact_reader is not None else payload.read_bytes();result=json.loads(payload_bytes)
      if canonical(result)+b"\n"!=payload_bytes:errors.append("FINALIZED_RESULT_CANONICAL")
      if hashlib.sha256(payload_bytes).hexdigest()!=r.get("result_sha256"):errors.append("FINALIZED_RESULT_BYTES")
      if result.get("ledger_last_record_sha256_before_final")!=r.get("previous_record_sha256") or result.get("status")!=r.get("status"):errors.append("FINALIZED_RESULT_BINDING")
-    except (OSError,json.JSONDecodeError,AttributeError):errors.append("FINALIZED_RESULT_BYTES")
+    except (OSError,RuntimeError,ValueError,json.JSONDecodeError,AttributeError):errors.append("FINALIZED_RESULT_BYTES")
    finalized=True
   else:errors.append("UNKNOWN_EVENT")
  if any(v!="finished" for v in states.values()):errors.append("PLANNED_NOT_TERMINAL")
@@ -151,6 +153,85 @@ def validate_ledger(path,manifest,allow_partial=False,expected_header=None,stric
   if len(states)!=30:errors.append("INCOMPLETE")
   if sum(r.get("event")=="finalized" for r in records)!=1:errors.append("FINALIZED_COUNT")
  return {"passed":not errors,"errors":errors,"records":len(records),"last_record_sha256":prev,"states":states,"finalized":finalized}
+class ArtifactNamespace:
+ def __init__(self,root):
+  self.root=Path(root).resolve();flags=os.O_RDONLY
+  if hasattr(os,"O_DIRECTORY"):flags|=os.O_DIRECTORY
+  if hasattr(os,"O_NOFOLLOW"):flags|=os.O_NOFOLLOW
+  self.root_fd=os.open(self.root,flags);st=os.fstat(self.root_fd);self.root_identity=(st.st_dev,st.st_ino);self.dirs={"":self.root_fd};self.files={}
+ def _parts(self,relative):
+  path=PurePosixPath(relative)
+  if path.is_absolute() or not path.parts or ".." in path.parts:raise ValueError("unsafe artifact path")
+  return path.parts
+ def ensure_dir(self,relative):
+  parts=self._parts(relative);current=self.root_fd;key=[]
+  for part in parts:
+   key.append(part);joined="/".join(key)
+   if joined in self.dirs:current=self.dirs[joined];continue
+   try:os.mkdir(part,0o700,dir_fd=current);os.fsync(current)
+   except FileExistsError:pass
+   flags=os.O_RDONLY
+   if hasattr(os,"O_DIRECTORY"):flags|=os.O_DIRECTORY
+   if hasattr(os,"O_NOFOLLOW"):flags|=os.O_NOFOLLOW
+   current=os.open(part,flags,dir_fd=current);self.dirs[joined]=current
+  return current
+ def _parent(self,relative):
+  parts=self._parts(relative);parent="/".join(parts[:-1]);return (self.ensure_dir(parent) if parent else self.root_fd),parts[-1]
+ def create_bytes(self,relative,data):
+  if relative in self.files:raise FileExistsError(relative)
+  parent,name=self._parent(relative);flags=os.O_RDWR|os.O_CREAT|os.O_EXCL
+  if hasattr(os,"O_NOFOLLOW"):flags|=os.O_NOFOLLOW
+  fd=os.open(name,flags,0o600,dir_fd=parent)
+  try:write_all(fd,data);os.fsync(fd);os.fsync(parent)
+  except BaseException:os.close(fd);raise
+  self.files[relative]=fd;return fd
+ def read_bytes(self,relative):
+  fd=self.files.get(relative)
+  if fd is None:
+   parent,name=self._parent(relative);flags=os.O_RDONLY
+   if hasattr(os,"O_NOFOLLOW"):flags|=os.O_NOFOLLOW
+   fd=os.open(name,flags,dir_fd=parent);self.files[relative]=fd
+  st=os.fstat(fd);parent,name=self._parent(relative);named=os.stat(name,dir_fd=parent,follow_symlinks=False)
+  if not stat.S_ISREG(st.st_mode) or (st.st_dev,st.st_ino)!=(named.st_dev,named.st_ino):raise RuntimeError("ARTIFACT_INODE_DRIFT:"+relative)
+  size=st.st_size;chunks=[];offset=0
+  while offset<size:
+   chunk=os.pread(fd,min(1048576,size-offset),offset)
+   if not chunk:raise OSError("short artifact read")
+   chunks.append(chunk);offset+=len(chunk)
+  return b"".join(chunks)
+ def append_record(self,relative,record,previous=None):
+  fd=self.files.get(relative)
+  if fd is None:fd=self.create_bytes(relative,b"")
+  value=dict(record);value["previous_record_sha256"]=previous or "0"*64;value["record_sha256"]=hashlib.sha256(canonical(value)).hexdigest();os.lseek(fd,0,os.SEEK_END);write_all(fd,canonical(value)+b"\n");os.fsync(fd);return value["record_sha256"]
+ def metadata(self,relative):
+  data=self.read_bytes(relative);return {"path":str(self.root/relative),"size":len(data),"sha256":hashlib.sha256(data).hexdigest()}
+ def publish(self,pending,result):
+  source_parent,source_name=self._parent(pending);target_parent,target_name=self._parent(result);source=os.fstat(self.files[pending]);os.link(source_name,target_name,src_dir_fd=source_parent,dst_dir_fd=target_parent,follow_symlinks=False);os.fsync(target_parent);target=os.stat(target_name,dir_fd=target_parent,follow_symlinks=False)
+  if not stat.S_ISREG(target.st_mode) or (source.st_dev,source.st_ino)!=(target.st_dev,target.st_ino):
+   os.unlink(target_name,dir_fd=target_parent);os.fsync(target_parent);raise RuntimeError("PUBLISHED_INODE_DRIFT")
+  pending_fd=self.files.pop(pending);self.files[result]=pending_fd;os.unlink(source_name,dir_fd=source_parent);os.fsync(source_parent);return target
+ def remove(self,relative):
+  parent,name=self._parent(relative);fd=self.files.pop(relative,None);os.unlink(name,dir_fd=parent);os.fsync(parent)
+  if fd is not None:os.close(fd)
+ def verify(self):
+  try:
+   current=self.root.lstat()
+   if self.root.is_symlink() or (current.st_dev,current.st_ino)!=self.root_identity:return False
+   for relative,fd in self.dirs.items():
+    if not relative:continue
+    named=os.stat(relative,dir_fd=self.root_fd,follow_symlinks=False);actual=os.fstat(fd)
+    if not stat.S_ISDIR(named.st_mode) or (named.st_dev,named.st_ino)!=(actual.st_dev,actual.st_ino):return False
+   for relative in self.files:self.read_bytes(relative)
+   return True
+  except (OSError,RuntimeError):return False
+ def close(self):
+  seen=set()
+  for fd in list(self.files.values())+list(self.dirs.values()):
+   if fd not in seen:
+    seen.add(fd)
+    try:os.close(fd)
+    except OSError:pass
+  self.files.clear();self.dirs.clear()
 def final_status(cell_statuses,pair_statuses,planned=30):
  if len(cell_statuses)<planned:return "INCOMPLETE"
  if len(cell_statuses)!=planned or any(x!="valid_complete" for x in cell_statuses):return "INVALID"

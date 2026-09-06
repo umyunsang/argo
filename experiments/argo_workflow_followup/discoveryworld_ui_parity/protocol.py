@@ -12,12 +12,12 @@ def file_sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 def strict_loads(data):
  def reject(value):raise ValueError("non-finite JSON")
  return json.loads(data,parse_constant=reject)
-def validate_cell(cell,run,event_path,ui_gzip_path,frame_manifest,*,source_commit,source_tree,source_archive_sha256,adapter_sha256,state_projection_sha256,environment_content_sha256,bootstrap_sha256,interpreter_path,site_packages,source_root,bundle_root):
+def validate_cell(cell,run,event_path,ui_gzip_path,frame_manifest,*,source_commit,source_tree,source_archive_sha256,adapter_sha256,state_projection_sha256,environment_content_sha256,bootstrap_sha256,interpreter_path,site_packages,source_root,bundle_root,artifact_reader=None):
  if run.get("timed_out") is True:return {"status":"timeout","errors":["TIMEOUT"]}
  if run.get("exit_code")!=0:return {"status":"crash","errors":["NONZERO_EXIT"]}
  errors=[]
  try:
-  raw=Path(event_path).read_bytes();lines=raw.splitlines();events=[strict_loads(x) for x in lines]
+  raw=artifact_reader(str(event_path)) if artifact_reader is not None else Path(event_path).read_bytes();lines=raw.splitlines();events=[strict_loads(x) for x in lines]
   if any(canonical_bytes(event)!=line for event,line in zip(events,lines)):raise ValueError("noncanonical event")
  except Exception:return {"status":"malformed","errors":["EVENT_READ"]}
  if any(type(event) is not dict for event in events):return {"status":"malformed","errors":["EVENT_SCHEMA"]}
@@ -40,7 +40,7 @@ def validate_cell(cell,run,event_path,ui_gzip_path,frame_manifest,*,source_commi
   if i>0 and (e["action_success"] is not True or e["tick_success"] is not True):errors.append("TRANSITION_RESULT")
   ui_hashes.append(e["ui_sha256"]);pre_hashes.append(e["pre_state_sha256"]);post_hashes.append(e["post_state_sha256"])
  try:
-  with gzip.open(ui_gzip_path,"rb") as f:ui_lines=f.read().splitlines()
+  ui_bytes=artifact_reader(str(ui_gzip_path)) if artifact_reader is not None else Path(ui_gzip_path).read_bytes();ui_lines=gzip.decompress(ui_bytes).splitlines()
   ui_rows=[strict_loads(x) for x in ui_lines]
   if any(canonical_bytes(value)!=line for value,line in zip(ui_rows,ui_lines)):raise ValueError("noncanonical ui")
  except Exception:errors.append("UI_SIDECAR_READ");ui_rows=[]
@@ -55,7 +55,7 @@ def validate_cell(cell,run,event_path,ui_gzip_path,frame_manifest,*,source_commi
   if frame_manifest.get("count")!=1002 or actual_frame_names!=expected_frame_names or frame_manifest.get("bytes",0)>67108864 or c.get("vision_generated") is not True:errors.append("OFFICIAL_FRAME_CONTRACT")
  else:
   if frame_manifest.get("count")!=0 or frame_manifest.get("bytes")!=0 or c.get("vision_generated") is not False:errors.append("UI_ONLY_FRAME_CONTRACT")
- return {"status":"malformed" if errors else "valid_complete","errors":errors,"ui_hashes":ui_hashes,"pre_state_hashes":pre_hashes,"post_state_hashes":post_hashes,"event_sha256":file_sha(event_path),"ui_gzip_sha256":file_sha(ui_gzip_path)}
+ return {"status":"malformed" if errors else "valid_complete","errors":errors,"ui_hashes":ui_hashes,"pre_state_hashes":pre_hashes,"post_state_hashes":post_hashes,"event_sha256":hashlib.sha256(raw).hexdigest(),"ui_gzip_sha256":hashlib.sha256(ui_bytes).hexdigest()}
 def compare_pair(a,b):
  if a.get("status")!="valid_complete" or b.get("status")!="valid_complete":return "UNOBSERVABLE"
  for key in ["ui_hashes","pre_state_hashes","post_state_hashes"]:
