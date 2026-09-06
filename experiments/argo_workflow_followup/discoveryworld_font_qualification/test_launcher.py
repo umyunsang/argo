@@ -9,16 +9,25 @@ class Tests(unittest.TestCase):
  def test_execution_key_agreement(self):self.assertEqual(set(launcher.EXEC_KEYS),set(run.EXEC_KEYS));self.assertEqual(launcher.EXEC_NAMES["launcher"],"launcher.py")
  def test_root_formula_agreement(self):
   value=json.loads((ROOT/launcher.APPROVAL_REL).read_text());proposal=json.loads((ROOT/value["bindings"]["proposal"]["path"]).read_text());self.assertEqual(launcher.execution_root(value),run.execution_root(value));self.assertEqual(launcher.authority_root(value,proposal),run.authority_root(value,proposal));self.assertEqual(launcher.required_text(value,"e","a"),run.approval_text(value,"e","a"))
+ def test_launcher_ack_waits_for_matching_controller_pre_record(self):
+  registry_read,registry_write=os.pipe();ack_read,ack_write=os.pipe();os.set_blocking(registry_read,False);os.set_blocking(ack_read,False);state={"buffer":b"","pids":set(),"pgids":set(),"phases":{},"pre_identity":{},"acked":set(),"errors":[],"eof":False,"controller_pgid":100,"controller_sid":100}
+  def send(phase):os.write(registry_write,(json.dumps({"schema_version":"argo-font-worker-pgid/v2","phase":phase,"pid":101,"pgid":100,"sid":100},sort_keys=True,separators=(",",":"))+"\n").encode());launcher.drain_registry(registry_read,ack_write,state)
+  try:
+   send("pre_session")
+   with self.assertRaises(BlockingIOError):os.read(ack_read,1)
+   send("controller_pre_session");self.assertEqual(os.read(ack_read,1),b"G");self.assertFalse(state["errors"])
+  finally:
+   for fd in [registry_read,registry_write,ack_read,ack_write]:os.close(fd)
  def test_supervisor_enforces_hard_deadline(self):
   read_fd,write_fd=os.pipe();ack_read,ack_write=os.pipe();os.close(write_fd);os.close(ack_read);proc=subprocess.Popen([sys.executable,"-c","import time;time.sleep(10)"],start_new_session=True);started=time.monotonic()
   try:out=launcher.supervise_process(proc,started,read_fd,ack_write,.1)
   finally:os.close(read_fd);os.close(ack_write)
   self.assertTrue(out["timed_out"]);self.assertFalse(out["unreaped"]);self.assertFalse(out["descendant_leak"]);self.assertTrue(out["registry_eof"]);self.assertEqual(out["controller_exit_code"],124)
  def test_supervisor_tracks_and_kills_separate_worker_group(self):
-  read_fd,write_fd=os.pipe();ack_read,ack_write=os.pipe();code="import os,subprocess,sys,time;fd=int(sys.argv[1]);ack=int(sys.argv[2]);cr,cw=os.pipe();subprocess.Popen([sys.executable,sys.argv[3],str(fd),str(ack),str(cr),sys.executable,'-c','import time;time.sleep(10)'],pass_fds=(fd,ack,cr),start_new_session=False);time.sleep(.05);os.write(cw,b'C');os.close(cr);os.close(cw);os.close(fd);os.close(ack);time.sleep(10)";proc=subprocess.Popen([sys.executable,"-c",code,str(write_fd),str(ack_read),str(HERE/"worker_gate.py")],pass_fds=(write_fd,ack_read),start_new_session=True);os.close(write_fd);os.close(ack_read)
+  read_fd,write_fd=os.pipe();ack_read,ack_write=os.pipe();code="import json,os,subprocess,sys,time;fd=int(sys.argv[1]);ack=int(sys.argv[2]);cr,cw=os.pipe();child=subprocess.Popen([sys.executable,sys.argv[3],str(fd),str(ack),str(cr),sys.executable,'-c','import time;time.sleep(10)'],pass_fds=(fd,ack,cr),start_new_session=False);time.sleep(.1);record={'schema_version':'argo-font-worker-pgid/v2','phase':'controller_pre_session','pid':child.pid,'pgid':os.getpgrp(),'sid':os.getsid(0)};os.write(fd,(json.dumps(record,sort_keys=True,separators=(',',':'))+'\\n').encode());time.sleep(.05);os.write(cw,b'C');os.close(cr);os.close(cw);os.close(fd);os.close(ack);time.sleep(10)";proc=subprocess.Popen([sys.executable,"-c",code,str(write_fd),str(ack_read),str(HERE/"worker_gate.py")],pass_fds=(write_fd,ack_read),start_new_session=True);os.close(write_fd);os.close(ack_read)
   try:out=launcher.supervise_process(proc,time.monotonic(),read_fd,ack_write,.2)
   finally:os.close(read_fd);os.close(ack_write)
-  self.assertTrue(out["timed_out"]);self.assertEqual(len(out["worker_pgids"]),1);self.assertEqual(len(out["worker_pids"]),1);self.assertEqual(set(next(iter(out["worker_registry_phases"].values()))),{"pre_session","post_session"});self.assertTrue(out["descendant_leak"]);self.assertFalse(out["unreaped"])
+  self.assertTrue(out["timed_out"]);self.assertEqual(len(out["worker_pgids"]),1);self.assertEqual(len(out["worker_pids"]),1);self.assertEqual(set(next(iter(out["worker_registry_phases"].values()))),{"controller_pre_session","pre_session","post_session"});self.assertTrue(out["descendant_leak"]);self.assertFalse(out["unreaped"])
  def test_supervisor_interrupt_callback_cleans_controller(self):
   read_fd,write_fd=os.pipe();ack_read,ack_write=os.pipe();os.close(write_fd);os.close(ack_read);proc=subprocess.Popen([sys.executable,"-c","import time;time.sleep(10)"],start_new_session=True);calls=[0]
   def stop():calls[0]+=1;return 15 if calls[0]>1 else None

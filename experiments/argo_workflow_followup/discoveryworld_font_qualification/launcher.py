@@ -104,14 +104,18 @@ def drain_registry(fd,ack_fd,state):
    phases=state["phases"].setdefault(pid,set())
    if phase in phases:state["errors"].append("REGISTRY_DUPLICATE")
    phases.add(phase);state["pids"].add(pid)
+   if phase in {"pre_session","controller_pre_session"}:state["pre_identity"].setdefault(pid,{})[phase]=(pgid,sid)
    if phase in {"post_session","controller_post_session"}:state["pgids"].add(pgid)
-   if phase=="pre_session" and pid not in state["acked"]:
-    try:
-     if os.write(ack_fd,b"G")!=1:raise OSError("ack")
-     state["acked"].add(pid)
-    except OSError:state["errors"].append("REGISTRY_ACK")
+   pre=state["pre_identity"].get(pid,{})
+   if {"pre_session","controller_pre_session"}.issubset(phases) and pid not in state["acked"]:
+    if pre["pre_session"]!=pre["controller_pre_session"] or pre["pre_session"]!=(state["controller_pgid"],state["controller_sid"]) or pid==state["controller_pgid"]:state["errors"].append("REGISTRY_PRE_CONTAINMENT")
+    else:
+     try:
+      if os.write(ack_fd,b"G")!=1:raise OSError("ack")
+      state["acked"].add(pid)
+     except OSError:state["errors"].append("REGISTRY_ACK")
 def supervise_process(proc,started,registry_fd,ack_fd,deadline_seconds=120,stop_signal=None):
- deadline=started+deadline_seconds;timed_out=False;interrupted=False;unreaped=False;descendant_leak=False;code=None;state={"buffer":b"","pids":set(),"pgids":set(),"phases":{},"acked":set(),"errors":[],"eof":False};fcntl.fcntl(registry_fd,fcntl.F_SETFL,fcntl.fcntl(registry_fd,fcntl.F_GETFL)|os.O_NONBLOCK)
+ deadline=started+deadline_seconds;timed_out=False;interrupted=False;unreaped=False;descendant_leak=False;code=None;state={"buffer":b"","pids":set(),"pgids":set(),"phases":{},"pre_identity":{},"acked":set(),"errors":[],"eof":False,"controller_pgid":proc.pid,"controller_sid":proc.pid};fcntl.fcntl(registry_fd,fcntl.F_SETFL,fcntl.fcntl(registry_fd,fcntl.F_GETFL)|os.O_NONBLOCK)
  try:
   while True:
    drain_registry(registry_fd,ack_fd,state)
@@ -162,7 +166,7 @@ def main(argv=None):
   try:
    os.close(write_fd);write_fd=-1;os.close(ack_read);ack_read=-1;observed=supervise_process(proc,started,read_fd,ack_write,120,stop_signal=lambda:latch.pending)
   except BaseException:
-   if proc.poll() is None:supervise_process(proc,started,read_fd,ack_write,0,stop_signal=lambda:130)
+   if proc is not None:supervise_process(proc,started,read_fd,ack_write,0,stop_signal=lambda:130)
    raise
  finally:
   if write_fd>=0:os.close(write_fd)

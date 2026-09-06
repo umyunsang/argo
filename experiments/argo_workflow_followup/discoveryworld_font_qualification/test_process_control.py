@@ -15,7 +15,9 @@ class Tests(unittest.TestCase):
      buffer+=os.read(read_fd,4096)
      while b"\n" in buffer:
       line,buffer=buffer.split(b"\n",1);record=json.loads(line);records.append(record)
-      if record["phase"]=="pre_session":os.write(ack_write,b"G")
+      phases={x["phase"] for x in records if x["pid"]==record["pid"]}
+      if {"pre_session","controller_pre_session"}.issubset(phases):
+       pre=[x for x in records if x["pid"]==record["pid"] and x["phase"] in {"pre_session","controller_pre_session"}];self.assertEqual({(x["pgid"],x["sid"]) for x in pre},{(os.getpgrp(),os.getsid(0))});os.write(ack_write,b"G")
    thread=threading.Thread(target=supervise);thread.start()
    try:r=run_process([sys.executable,str(HERE/"worker_gate.py"),str(write_fd),str(ack_read),"{CONTROLLER_ACK_FD}","/usr/bin/true"],root,dict(os.environ),o,e,v,2,time.monotonic()+3,on_spawn=lambda pid,pgid:seen.append((pid,pgid)),supervisor_fd=write_fd,ack_fd=ack_read);thread.join(timeout=2);self.assertFalse(thread.is_alive());self.assertEqual(r["exit_code"],0);self.assertEqual({x["phase"] for x in records},{"pre_session","controller_pre_session","post_session","controller_post_session"});self.assertEqual((records[0]["pid"],records[0]["pid"]),seen[0])
    finally:
