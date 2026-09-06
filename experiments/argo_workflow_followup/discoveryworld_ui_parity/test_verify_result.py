@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import copy,hashlib,subprocess,sys,tempfile,unittest
+import copy,hashlib,json,subprocess,sys,tempfile,unittest
 from pathlib import Path
 from verify_result import publish_receipt,rederive_pairs,rederive_timing,validation_matches,verify
 HERE=Path(__file__).resolve().parent;ROOT=HERE.parents[2]
@@ -10,7 +10,7 @@ class Tests(unittest.TestCase):
    path=Path(td)/"receipt";digest=publish_receipt(path,{"verdict":"PASS"});self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),digest)
    with self.assertRaises(FileExistsError):publish_receipt(path,{"verdict":"PASS"})
  def test_production_isolated_command_imports_verifier(self):
-  command=[sys.executable,"-I","-S","-B",str(HERE/"bootstrap.py"),"verifier",str(HERE),"--root",str(ROOT),"--approval",str(HERE/"approval-template.json")];done=subprocess.run(command,cwd=ROOT,text=True,capture_output=True,check=False);self.assertEqual(done.returncode,1,done.stdout+done.stderr);self.assertIn('"schema_version": "argo-ui-parity-post-run-verification/v1"',done.stdout);self.assertNotIn("ModuleNotFoundError",done.stderr)
+  command=[sys.executable,"-I","-S","-B",str(HERE/"bootstrap.py"),"verifier",str(HERE),"--root",str(ROOT),"--approval",str(HERE/"approval-template.json")];done=subprocess.run(command,cwd=ROOT,text=True,capture_output=True,check=False);self.assertEqual(done.returncode,1,done.stdout+done.stderr);canonical=Path(json.loads((HERE/"approval-template.json").read_text())["engine_repo"]).resolve()==ROOT.resolve();self.assertIn('"schema_version": "argo-ui-parity-post-run-verification/v1"',done.stdout) if canonical else self.assertIn("POSTRUN_IDENTITY",done.stderr);self.assertNotIn("ModuleNotFoundError",done.stderr)
  def test_missing_artifacts_fail(self):
   with tempfile.TemporaryDirectory() as td:self.assertFalse(verify(Path(td),HERE/"approval-template.json")["passed"])
  def test_pair_rederivation_never_uses_reported_pair_status(self):
