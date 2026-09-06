@@ -1,16 +1,27 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import json,os,sys,tempfile,time,unittest
+import json,os,sys,tempfile,threading,time,unittest
 from unittest.mock import patch
 from pathlib import Path
 HERE=Path(__file__).resolve().parent;sys.path.insert(0,str(HERE));from process_control import group_exists,run_process
 class Tests(unittest.TestCase):
  def paths(self,root):return root/"o",root/"e",root/"v"
- def test_controller_registers_worker_pgid_before_callback(self):
+ def test_contained_gate_handshake_registers_before_and_after_session(self):
   with tempfile.TemporaryDirectory(dir=HERE) as td:
-   root=Path(td);o,e,v=self.paths(root);read_fd,write_fd=os.pipe();seen=[]
-   try:r=run_process(["/usr/bin/true"],root,dict(os.environ),o,e,v,2,time.monotonic()+3,on_spawn=lambda pid,pgid:seen.append((pid,pgid)),supervisor_fd=write_fd);record=json.loads(os.read(read_fd,4096));self.assertEqual(record["source"],"controller");self.assertEqual((record["pid"],record["pgid"]),seen[0]);self.assertEqual(record["sid"],record["pgid"])
-   finally:os.close(read_fd);os.close(write_fd)
+   root=Path(td);o,e,v=self.paths(root);read_fd,write_fd=os.pipe();ack_read,ack_write=os.pipe();seen=[];records=[]
+   def supervise():
+    buffer=b""
+    while len(records)<4:
+     buffer+=os.read(read_fd,4096)
+     while b"\n" in buffer:
+      line,buffer=buffer.split(b"\n",1);record=json.loads(line);records.append(record)
+      if record["phase"]=="pre_session":os.write(ack_write,b"G")
+   thread=threading.Thread(target=supervise);thread.start()
+   try:r=run_process([sys.executable,str(HERE/"worker_gate.py"),str(write_fd),str(ack_read),"{CONTROLLER_ACK_FD}","/usr/bin/true"],root,dict(os.environ),o,e,v,2,time.monotonic()+3,on_spawn=lambda pid,pgid:seen.append((pid,pgid)),supervisor_fd=write_fd,ack_fd=ack_read);thread.join(timeout=2);self.assertFalse(thread.is_alive());self.assertEqual(r["exit_code"],0);self.assertEqual({x["phase"] for x in records},{"pre_session","controller_pre_session","post_session","controller_post_session"});self.assertEqual((records[0]["pid"],records[0]["pid"]),seen[0])
+   finally:
+    for fd in [read_fd,write_fd,ack_read,ack_write]:
+     try:os.close(fd)
+     except OSError:pass
  def test_success_and_event_fd(self):
   with tempfile.TemporaryDirectory(dir=HERE) as td:
    root=Path(td);o,e,v=self.paths(root);r=run_process([sys.executable,"-c","import os,sys;os.write(int(sys.argv[1]),b'{}\\n')","{EVENT_FD}"],root,dict(os.environ),o,e,v,2,time.monotonic()+3);self.assertEqual(r["exit_code"],0);self.assertEqual(v.read_bytes(),b"{}\n");self.assertFalse(group_exists(r["pgid"]))

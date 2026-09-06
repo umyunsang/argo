@@ -24,8 +24,13 @@ class Tests(unittest.TestCase):
    p=Path(td)/"x";run.exclusive(p,b"one")
    with self.assertRaises(FileExistsError):run.exclusive(p,b"two")
    self.assertEqual(p.read_bytes(),b"one")
- def test_late_blocked_signal_is_consumed_by_latch_before_handler_restore(self):
-  latch=run.SignalLatch();latch.install();latch.block_for_closure();os.kill(os.getpid(),signal.SIGTERM);self.assertTrue(latch.closure_pending());self.assertTrue(latch.restore())
+ def test_late_blocked_signal_uses_terminating_prior_handler(self):
+  code="import os,signal,sys;sys.path.insert(0,'.');import run;latch=run.SignalLatch();latch.install();latch.block_for_closure();os.kill(os.getpid(),signal.SIGTERM);latch.restore();raise SystemExit(0)";proc=__import__("subprocess").run([sys.executable,"-c",code],cwd=HERE);self.assertEqual(proc.returncode,-signal.SIGTERM)
+ def test_nonterminating_inherited_policy_rejected(self):
+  prior=signal.getsignal(signal.SIGTERM);signal.signal(signal.SIGTERM,signal.SIG_IGN)
+  try:
+   with self.assertRaisesRegex(RuntimeError,"NONTERMINATING"):run.SignalLatch().install()
+  finally:signal.signal(signal.SIGTERM,prior)
  def test_runtime_destination_is_shared_base_python(self):
   environment=json.loads((HERE/"environment-content-manifest.json").read_text());base,site=run.runtime_paths(Path("/sealed"),environment);self.assertEqual(base,Path("/sealed/runtime/base-python"));self.assertEqual(site,Path("/sealed/runtime/site-packages"))
  def test_sysfont_hash_three_way_invariant(self):

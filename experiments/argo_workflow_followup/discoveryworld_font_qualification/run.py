@@ -144,16 +144,22 @@ class SignalLatch:
  def install(self):
   prior=signal.pthread_sigmask(signal.SIG_BLOCK,set(self.SIGNALS))
   try:
-   for sig in self.SIGNALS:self.old[sig]=signal.getsignal(sig);signal.signal(sig,self.handler)
+   for sig in self.SIGNALS:
+    current=signal.getsignal(sig);allowed={signal.SIG_DFL,signal.default_int_handler} if sig==signal.SIGINT else {signal.SIG_DFL}
+    if current not in allowed:raise RuntimeError("NONTERMINATING_INHERITED_SIGNAL_POLICY")
+    self.old[sig]=current;signal.signal(sig,self.handler)
+  except BaseException:
+   for sig,value in self.old.items():signal.signal(sig,value)
+   self.old.clear();raise
   finally:signal.pthread_sigmask(signal.SIG_SETMASK,prior)
  def block_for_closure(self):self.previous_mask=signal.pthread_sigmask(signal.SIG_BLOCK,set(self.SIGNALS))
  def closure_pending(self):return self.pending is not None or bool(set(signal.sigpending())&set(self.SIGNALS))
  def restore(self):
   if self.previous_mask is not None:
-   signal.pthread_sigmask(signal.SIG_SETMASK,self.previous_mask);self.previous_mask=None
-  late=self.pending is not None
+   for sig,value in self.old.items():signal.signal(sig,value)
+   self.old.clear();previous=self.previous_mask;self.previous_mask=None;signal.pthread_sigmask(signal.SIG_SETMASK,previous);return False
   for sig,value in self.old.items():signal.signal(sig,value)
-  self.old.clear();return late
+  self.old.clear();return self.pending is not None
 def sanitized(bundle,source,site,work):return {"HOME":str(work),"TMPDIR":str(work/"tmp"),"PATH":"/usr/bin:/bin:/opt/homebrew/bin:/usr/X11/bin","PYTHONNOUSERSITE":"1","PYTHONHASHSEED":"0","PYGAME_HIDE_SUPPORT_PROMPT":"1","SDL_VIDEODRIVER":"dummy","SDL_AUDIODRIVER":"dummy","LC_ALL":"C.UTF-8","TZ":"UTC","PYTHONDONTWRITEBYTECODE":"1"}
 def sealed_controller_identity(approval):
  try:
@@ -167,8 +173,8 @@ def main(argv=None):
  if not gate["approved"]:print(json.dumps({"status":"BLOCKED_BEFORE_CONSUMPTION","approval":gate},indent=2));return 2
  if not sealed_controller_identity(approval):raise RuntimeError("UNSEALED_CONTROLLER")
  authority_snapshot=binding_snapshot(approval,root)
- try:supervisor_fd=int(os.environ["ARGO_FONT_SUPERVISOR_FD"]);os.fstat(supervisor_fd)
- except (KeyError,ValueError,OSError):raise RuntimeError("SUPERVISOR_FD")
+ try:supervisor_fd=int(os.environ["ARGO_FONT_SUPERVISOR_FD"]);supervisor_ack_fd=int(os.environ["ARGO_FONT_SUPERVISOR_ACK_FD"]);os.fstat(supervisor_fd);os.fstat(supervisor_ack_fd)
+ except (KeyError,ValueError,OSError):raise RuntimeError("SUPERVISOR_FDS")
  manifest=json.loads((HERE/"manifest.json").read_bytes());font_manifest=json.loads((HERE/"font-manifest.json").read_bytes());paths={k:root/v for k,v in manifest["paths"].items()}
  preflight=output_preflight(paths.values(),root)
  if a.out.resolve()!=paths["result"].resolve() or not preflight["passed"]:raise RuntimeError("OUTPUT_PREFLIGHT:"+str(preflight["errors"]))
@@ -197,10 +203,10 @@ def main(argv=None):
    for cell in manifest["ordered_cells"]:
     if latch.pending is not None or time.monotonic()>=work_deadline:break
     mode=cell["mode"];work=temp/mode;(work/"tmp").mkdir(parents=True);profile_path=work/"profile.sb";profile_path.write_text(profile(mode,work,sealed_python));profile_path.chmod(0o444);side=paths["sidecar_root"]/mode;side.mkdir();event=side/"event.jsonl";stdout=side/"stdout.bin";stderr=side/"stderr.bin";profile_sidecar=side/"profile.sb";temp_event=work/"event.jsonl";temp_stdout=work/"stdout.bin";temp_stderr=work/"stderr.bin";previous=append_ledger(paths["ledger"],{"event":"planned","run_id":RUN_ID,"cell_id":cell["cell_id"],"mode":mode},previous)
-    worker_args=[str(SANDBOX),"-f",str(profile_path),str(sealed_python),"-I","-S","-B",str(bundle/"bootstrap.py"),"worker",str(bundle),str(source),str(site),"--mode",mode,"--manifest",str(bundle/"font-manifest.json"),"--source",str(source),"--event-fd","{EVENT_FD}","--source-commit",SOURCE_COMMIT,"--source-tree",SOURCE_TREE,"--source-archive-sha256",SOURCE_ARCHIVE,"--pygame-sysfont-sha256",SYSFONT_SHA,"--font-manifest-sha256",sha(bundle/"font-manifest.json"),"--episode-sha256",sha(bundle/"episode.py"),"--font-registry-sha256",sha(bundle/"font_registry.py")];args=[str(sealed_python),str(bundle/"worker_gate.py"),str(supervisor_fd),*worker_args]
+    worker_args=[str(SANDBOX),"-f",str(profile_path),str(sealed_python),"-I","-S","-B",str(bundle/"bootstrap.py"),"worker",str(bundle),str(source),str(site),"--mode",mode,"--manifest",str(bundle/"font-manifest.json"),"--source",str(source),"--event-fd","{EVENT_FD}","--source-commit",SOURCE_COMMIT,"--source-tree",SOURCE_TREE,"--source-archive-sha256",SOURCE_ARCHIVE,"--pygame-sysfont-sha256",SYSFONT_SHA,"--font-manifest-sha256",sha(bundle/"font-manifest.json"),"--episode-sha256",sha(bundle/"episode.py"),"--font-registry-sha256",sha(bundle/"font_registry.py")];args=[str(sealed_python),str(bundle/"worker_gate.py"),str(supervisor_fd),str(supervisor_ack_fd),"{CONTROLLER_ACK_FD}",*worker_args]
     def spawned(pid,pgid,cell=cell):
      nonlocal previous;previous=append_ledger(paths["ledger"],{"event":"spawned","run_id":RUN_ID,"cell_id":cell["cell_id"],"pid":pid,"pgid":pgid},previous)
-    run=run_process(args,work,sanitized(bundle,source,site,work),temp_stdout,temp_stderr,temp_event,cell["timeout_seconds"],work_deadline,on_spawn=spawned,stop_signal=lambda:latch.pending,supervisor_fd=supervisor_fd);exclusive(stdout,temp_stdout.read_bytes());exclusive(stderr,temp_stderr.read_bytes());exclusive(event,temp_event.read_bytes());exclusive(profile_sidecar,profile_path.read_bytes());identity={"source_commit":SOURCE_COMMIT,"source_tree":SOURCE_TREE,"source_archive_sha256":SOURCE_ARCHIVE,"pygame_sysfont_sha256":SYSFONT_SHA,"font_manifest_sha256":sha(bundle/"font-manifest.json"),"python_executable":str(sealed_python.resolve()),"pygame_sysfont_path":str(sealed_sysfont.resolve()),"episode_path":str((bundle/"episode.py").resolve()),"episode_sha256":sha(bundle/"episode.py"),"font_registry_path":str((bundle/"font_registry.py").resolve()),"font_registry_sha256":sha(bundle/"font_registry.py")};validation=validate_event(event,mode,font_manifest,identity) if run["exit_code"]==0 and event.is_file() else {"passed":False,"errors":["PROCESS_OR_EVENT"]};artifacts={"event_sha256":sha(event),"stdout_sha256":sha(stdout),"stderr_sha256":sha(stderr),"profile_sha256":sha(profile_sidecar)};value={"cell_id":cell["cell_id"],"mode":mode,"run":run,"validation":validation,"artifacts":artifacts};results.append(value);previous=append_ledger(paths["ledger"],{"event":"finished","run_id":RUN_ID,"cell_id":cell["cell_id"],"mode":mode,"exit_code":run["exit_code"],"valid":validation["passed"],"errors":validation["errors"],"artifacts":artifacts},previous)
+    run=run_process(args,work,sanitized(bundle,source,site,work),temp_stdout,temp_stderr,temp_event,cell["timeout_seconds"],work_deadline,on_spawn=spawned,stop_signal=lambda:latch.pending,supervisor_fd=supervisor_fd,ack_fd=supervisor_ack_fd);exclusive(stdout,temp_stdout.read_bytes());exclusive(stderr,temp_stderr.read_bytes());exclusive(event,temp_event.read_bytes());exclusive(profile_sidecar,profile_path.read_bytes());identity={"source_commit":SOURCE_COMMIT,"source_tree":SOURCE_TREE,"source_archive_sha256":SOURCE_ARCHIVE,"pygame_sysfont_sha256":SYSFONT_SHA,"font_manifest_sha256":sha(bundle/"font-manifest.json"),"python_executable":str(sealed_python.resolve()),"pygame_sysfont_path":str(sealed_sysfont.resolve()),"episode_path":str((bundle/"episode.py").resolve()),"episode_sha256":sha(bundle/"episode.py"),"font_registry_path":str((bundle/"font_registry.py").resolve()),"font_registry_sha256":sha(bundle/"font_registry.py")};validation=validate_event(event,mode,font_manifest,identity) if run["exit_code"]==0 and event.is_file() else {"passed":False,"errors":["PROCESS_OR_EVENT"]};artifacts={"event_sha256":sha(event),"stdout_sha256":sha(stdout),"stderr_sha256":sha(stderr),"profile_sha256":sha(profile_sidecar)};value={"cell_id":cell["cell_id"],"mode":mode,"run":run,"validation":validation,"artifacts":artifacts};results.append(value);previous=append_ledger(paths["ledger"],{"event":"finished","run_id":RUN_ID,"cell_id":cell["cell_id"],"mode":mode,"exit_code":run["exit_code"],"valid":validation["passed"],"errors":validation["errors"],"artifacts":artifacts},previous)
    latch.block_for_closure()
    if latch.closure_pending():raise RuntimeError("CONTROLLER_SIGNAL_BEFORE_CLOSURE")
    values={x["mode"]:x["validation"].get("value") for x in results if x["validation"]["passed"]}
@@ -217,7 +223,7 @@ def main(argv=None):
    payload=canonical(result)+b"\n";previous=append_ledger(paths["ledger"],{"event":"finalized","run_id":RUN_ID,"status":status,"result_sha256":hashlib.sha256(payload).hexdigest(),"execution_root_sha256":er,"authority_root_sha256":ar},previous)
    if latch.closure_pending() or time.monotonic()>=work_deadline or parent_snapshot(paths.values(),root)!=output_parents:raise RuntimeError("CLOSURE_DEADLINE_SIGNAL_OR_PARENT")
    atomic_publish(paths["result_pending"],paths["result"],payload)
-   if latch.restore():raise RuntimeError("CONTROLLER_SIGNAL_DURING_FINAL_RESTORE")
+   latch.restore()
    print(json.dumps(result,indent=2,ensure_ascii=False));return 0 if status=="PASS" else 1
   except BaseException as exc:
    if not marker_owned:raise

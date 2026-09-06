@@ -61,6 +61,18 @@ def group_exists(pgid):
  try:os.killpg(pgid,0);return True
  except ProcessLookupError:return False
  except PermissionError:return True
+def process_exists(pid):
+ try:os.kill(pid,0);return True
+ except ProcessLookupError:return False
+ except PermissionError:return True
+def kill_pid(pid):
+ try:os.kill(pid,signal.SIGTERM)
+ except ProcessLookupError:return False
+ time.sleep(.02)
+ if process_exists(pid):
+  try:os.kill(pid,signal.SIGKILL)
+  except ProcessLookupError:pass
+ time.sleep(.02);return process_exists(pid)
 def kill_group(pgid,proc=None):
  try:os.killpg(pgid,signal.SIGTERM)
  except ProcessLookupError:pass
@@ -75,7 +87,7 @@ def kill_group(pgid,proc=None):
    try:proc.wait(timeout=.5)
    except subprocess.TimeoutExpired:pass
  time.sleep(.02);return group_exists(pgid)
-def drain_registry(fd,state):
+def drain_registry(fd,ack_fd,state):
  while True:
   try:chunk=os.read(fd,4096)
   except BlockingIOError:break
@@ -86,15 +98,23 @@ def drain_registry(fd,state):
    line,state["buffer"]=state["buffer"].split(b"\n",1)
    try:record=json.loads(line)
    except (UnicodeDecodeError,json.JSONDecodeError):state["errors"].append("REGISTRY_JSON");continue
-   if set(record)!={"schema_version","source","pid","pgid","sid"} or record.get("schema_version")!="argo-font-worker-pgid/v1" or record.get("source") not in {"controller","gate"} or record.get("pid")!=record.get("pgid") or record.get("sid")!=record.get("pgid") or not isinstance(record.get("pgid"),int) or record["pgid"]<=0:state["errors"].append("REGISTRY_RECORD");continue
-   sources=state["sources"].setdefault(record["pgid"],set())
-   if record["source"] in sources:state["errors"].append("REGISTRY_DUPLICATE")
-   sources.add(record["source"]);state["pgids"].add(record["pgid"])
-def supervise_process(proc,started,registry_fd,deadline_seconds=120,stop_signal=None):
- deadline=started+deadline_seconds;timed_out=False;interrupted=False;unreaped=False;descendant_leak=False;code=None;state={"buffer":b"","pgids":set(),"sources":{},"errors":[],"eof":False};fcntl.fcntl(registry_fd,fcntl.F_SETFL,fcntl.fcntl(registry_fd,fcntl.F_GETFL)|os.O_NONBLOCK)
+   phase=record.get("phase");pid=record.get("pid");pgid=record.get("pgid");sid=record.get("sid")
+   if set(record)!={"schema_version","phase","pid","pgid","sid"} or record.get("schema_version")!="argo-font-worker-pgid/v2" or phase not in {"pre_session","controller_pre_session","post_session","controller_post_session"} or not all(isinstance(x,int) and x>0 for x in [pid,pgid,sid]):state["errors"].append("REGISTRY_RECORD");continue
+   if phase in {"post_session","controller_post_session"} and (pid!=pgid or pid!=sid):state["errors"].append("REGISTRY_POST_IDENTITY");continue
+   phases=state["phases"].setdefault(pid,set())
+   if phase in phases:state["errors"].append("REGISTRY_DUPLICATE")
+   phases.add(phase);state["pids"].add(pid)
+   if phase in {"post_session","controller_post_session"}:state["pgids"].add(pgid)
+   if phase=="pre_session" and pid not in state["acked"]:
+    try:
+     if os.write(ack_fd,b"G")!=1:raise OSError("ack")
+     state["acked"].add(pid)
+    except OSError:state["errors"].append("REGISTRY_ACK")
+def supervise_process(proc,started,registry_fd,ack_fd,deadline_seconds=120,stop_signal=None):
+ deadline=started+deadline_seconds;timed_out=False;interrupted=False;unreaped=False;descendant_leak=False;code=None;state={"buffer":b"","pids":set(),"pgids":set(),"phases":{},"acked":set(),"errors":[],"eof":False};fcntl.fcntl(registry_fd,fcntl.F_SETFL,fcntl.fcntl(registry_fd,fcntl.F_GETFL)|os.O_NONBLOCK)
  try:
   while True:
-   drain_registry(registry_fd,state)
+   drain_registry(registry_fd,ack_fd,state)
    if stop_signal is not None and stop_signal() is not None:interrupted=True;code=130;break
    now=time.monotonic()
    if now>=deadline:timed_out=True;code=124;break
@@ -103,13 +123,15 @@ def supervise_process(proc,started,registry_fd,deadline_seconds=120,stop_signal=
  finally:
   if timed_out or interrupted or proc.poll() is None:unreaped=kill_group(proc.pid,proc) or unreaped
   end=time.monotonic()+.5
-  while not state["eof"] and time.monotonic()<end:drain_registry(registry_fd,state);time.sleep(.01)
-  drain_registry(registry_fd,state)
+  while not state["eof"] and time.monotonic()<end:drain_registry(registry_fd,ack_fd,state);time.sleep(.01)
+  drain_registry(registry_fd,ack_fd,state)
   if state["buffer"]:state["errors"].append("REGISTRY_TRUNCATED")
   for pgid in sorted(state["pgids"]):
    if group_exists(pgid):descendant_leak=True;unreaped=kill_group(pgid) or unreaped
+  for pid in sorted(state["pids"]):
+   if process_exists(pid):descendant_leak=True;unreaped=kill_pid(pid) or unreaped
   if group_exists(proc.pid):descendant_leak=True;unreaped=kill_group(proc.pid,proc) or unreaped
- return {"controller_exit_code":code,"timed_out":timed_out,"interrupted":interrupted,"unreaped":unreaped,"descendant_leak":descendant_leak,"worker_pgids":sorted(state["pgids"]),"worker_pgid_sources":{str(k):sorted(v) for k,v in sorted(state["sources"].items())},"registry_errors":state["errors"],"registry_eof":state["eof"],"elapsed_seconds":time.monotonic()-started}
+ return {"controller_exit_code":code,"timed_out":timed_out,"interrupted":interrupted,"unreaped":unreaped,"descendant_leak":descendant_leak,"worker_pids":sorted(state["pids"]),"worker_pgids":sorted(state["pgids"]),"worker_registry_phases":{str(k):sorted(v) for k,v in sorted(state["phases"].items())},"registry_errors":state["errors"],"registry_eof":state["eof"],"elapsed_seconds":time.monotonic()-started}
 class SupervisorLatch:
  SIGNALS=(signal.SIGINT,signal.SIGTERM,signal.SIGHUP)
  def __init__(self):self.pending=None;self.old={}
@@ -117,7 +139,13 @@ class SupervisorLatch:
  def install(self):
   prior=signal.pthread_sigmask(signal.SIG_BLOCK,set(self.SIGNALS))
   try:
-   for sig in self.SIGNALS:self.old[sig]=signal.getsignal(sig);signal.signal(sig,self.handler)
+   for sig in self.SIGNALS:
+    current=signal.getsignal(sig);allowed={signal.SIG_DFL,signal.default_int_handler} if sig==signal.SIGINT else {signal.SIG_DFL}
+    if current not in allowed:raise RuntimeError("NONTERMINATING_INHERITED_SIGNAL_POLICY")
+    self.old[sig]=current;signal.signal(sig,self.handler)
+  except BaseException:
+   for sig,value in self.old.items():signal.signal(sig,value)
+   self.old.clear();raise
   finally:signal.pthread_sigmask(signal.SIG_SETMASK,prior)
  def restore(self):
   for sig,value in self.old.items():signal.signal(sig,value)
@@ -127,15 +155,22 @@ def ledger_pgids(path):
 def main(argv=None):
  p=argparse.ArgumentParser();p.add_argument("--approval",type=Path,required=True);p.add_argument("--out",type=Path,required=True);x=p.parse_args(argv);root=Path.cwd();approval_bytes=read_once(x.approval);a=json.loads(approval_bytes)
  if not validate(a,x.approval,root):print(json.dumps({"status":"BLOCKED_BEFORE_CONSUMPTION","reason":"CANONICAL_APPROVAL"}));return 2
- parent=Path(tempfile.mkdtemp(prefix="dw-font-controller-seal-"));destination=parent/"controller";seal_sha=seal(a,approval_bytes,destination);started=time.monotonic();env=dict(os.environ);read_fd,write_fd=os.pipe();env.update({"ARGO_FONT_CONTROLLER_SEAL":str(destination),"ARGO_FONT_CONTROLLER_SEAL_SHA256":seal_sha,"ARGO_FONT_LAUNCH_MONOTONIC":repr(started),"ARGO_FONT_SUPERVISOR_FD":str(write_fd)});python=a["controller_interpreter"];args=[python,"-I","-S","-B",str(destination/"bootstrap.py"),"controller",str(destination),"--approval",str(x.approval.resolve()),"--out",str(x.out.resolve())];latch=SupervisorLatch();latch.install();proc=None
+ parent=Path(tempfile.mkdtemp(prefix="dw-font-controller-seal-"));destination=parent/"controller";seal_sha=seal(a,approval_bytes,destination);started=time.monotonic();env=dict(os.environ);read_fd,write_fd=os.pipe();ack_read,ack_write=os.pipe();env.update({"ARGO_FONT_CONTROLLER_SEAL":str(destination),"ARGO_FONT_CONTROLLER_SEAL_SHA256":seal_sha,"ARGO_FONT_LAUNCH_MONOTONIC":repr(started),"ARGO_FONT_SUPERVISOR_FD":str(write_fd),"ARGO_FONT_SUPERVISOR_ACK_FD":str(ack_read)});python=a["controller_interpreter"];args=[python,"-I","-S","-B",str(destination/"bootstrap.py"),"controller",str(destination),"--approval",str(x.approval.resolve()),"--out",str(x.out.resolve())];latch=SupervisorLatch();latch.install();proc=None
  try:
   if latch.pending is not None:return 130
-  proc=subprocess.Popen(args,env=env,pass_fds=(write_fd,),start_new_session=True);os.close(write_fd);write_fd=-1;observed=supervise_process(proc,started,read_fd,120,stop_signal=lambda:latch.pending)
+  proc=subprocess.Popen(args,env=env,pass_fds=(write_fd,ack_read),start_new_session=True)
+  try:
+   os.close(write_fd);write_fd=-1;os.close(ack_read);ack_read=-1;observed=supervise_process(proc,started,read_fd,ack_write,120,stop_signal=lambda:latch.pending)
+  except BaseException:
+   if proc.poll() is None:supervise_process(proc,started,read_fd,ack_write,0,stop_signal=lambda:130)
+   raise
  finally:
   if write_fd>=0:os.close(write_fd)
-  os.close(read_fd);latch.restore()
+  if ack_read>=0:os.close(ack_read)
+  os.close(ack_write);os.close(read_fd);latch.restore()
+ if latch.pending is not None:observed["interrupted"]=True;observed["controller_exit_code"]=130
  code=observed["controller_exit_code"]
  try:destination.chmod(0o700);shutil.rmtree(parent);seal_removed=not parent.exists()
  except OSError:seal_removed=False
- manifest=json.loads(read_once(ENGINE/a["bindings"]["manifest"]["path"]));paths={k:ENGINE/v for k,v in manifest["paths"].items()};result_sha=sha_bytes(read_once(paths["result"])) if paths["result"].is_file() else None;marker_sha=sha_bytes(read_once(paths["marker"])) if paths["marker"].is_file() else None;spawned=ledger_pgids(paths["ledger"]) if paths["ledger"].is_file() else [];registry_matches=spawned==observed["worker_pgids"] and all(sources==["controller","gate"] for sources in observed["worker_pgid_sources"].values());passed=not observed["timed_out"] and not observed["interrupted"] and not observed["unreaped"] and not observed["descendant_leak"] and not observed["registry_errors"] and observed["registry_eof"] and registry_matches and seal_removed and code in {0,1} and observed["elapsed_seconds"]<120 and result_sha is not None and marker_sha is not None;receipt={"schema_version":"argo-font-qualification-supervision/v1","run_id":RUN_ID,"passed":passed,**observed,"ledger_spawned_pgids":spawned,"pgid_registry_matches":registry_matches,"controller_seal_removed":seal_removed,"launch_monotonic":started,"observed_completion_monotonic":time.monotonic(),"deadline_seconds":120,"marker_sha256":marker_sha,"result_sha256":result_sha};write_once(paths["supervision"],canonical(receipt)+b"\n",0o600);fd=os.open(paths["supervision"].parent,os.O_RDONLY);os.fsync(fd);os.close(fd);return code if passed else 1
+ manifest=json.loads(read_once(ENGINE/a["bindings"]["manifest"]["path"]));paths={k:ENGINE/v for k,v in manifest["paths"].items()};result_sha=sha_bytes(read_once(paths["result"])) if paths["result"].is_file() else None;marker_sha=sha_bytes(read_once(paths["marker"])) if paths["marker"].is_file() else None;spawned=ledger_pgids(paths["ledger"]) if paths["ledger"].is_file() else [];required_phases=["controller_post_session","controller_pre_session","post_session","pre_session"];registry_matches=spawned==observed["worker_pgids"] and spawned==observed["worker_pids"] and all(phases==required_phases for phases in observed["worker_registry_phases"].values());passed=not observed["timed_out"] and not observed["interrupted"] and not observed["unreaped"] and not observed["descendant_leak"] and not observed["registry_errors"] and observed["registry_eof"] and registry_matches and seal_removed and code in {0,1} and observed["elapsed_seconds"]<120 and result_sha is not None and marker_sha is not None;receipt={"schema_version":"argo-font-qualification-supervision/v1","run_id":RUN_ID,"passed":passed,**observed,"ledger_spawned_pgids":spawned,"pgid_registry_matches":registry_matches,"controller_seal_removed":seal_removed,"launch_monotonic":started,"observed_completion_monotonic":time.monotonic(),"deadline_seconds":120,"marker_sha256":marker_sha,"result_sha256":result_sha};write_once(paths["supervision"],canonical(receipt)+b"\n",0o600);fd=os.open(paths["supervision"].parent,os.O_RDONLY);os.fsync(fd);os.close(fd);return code if passed else 1
 if __name__=="__main__":raise SystemExit(main())
