@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""One-shot manifest, atomic marker, and hash-chained ledger primitives."""
+from __future__ import annotations
+import hashlib,json,os,re
+from pathlib import Path,PurePosixPath
+CELL_TERMINAL={"valid_complete","timeout","crash","malformed","identity_drift","spawn_failure","unreaped","sidecar_error","ledger_error","global_deadline"}
+COMMON={"previous_record_sha256","record_sha256"}
+LEDGER_KEYS={
+ "header":COMMON|{"event","schema_version","run_id","manifest_sha256","approval_sha256","source_archive_sha256","started_at"},
+ "planned":COMMON|{"event","sequence","run_id","cell_id","cell_nonce","cell_index","timestamp"},
+ "spawned":COMMON|{"event","sequence","run_id","cell_id","cell_nonce","cell_index","pid","pgid","timestamp"},
+ "finished":COMMON|{"event","sequence","run_id","cell_id","cell_nonce","cell_index","status","exit_code","timed_out","stdout","stderr","events","ui_gzip","frame_manifest","timestamp"},
+ "controller_stop":COMMON|{"event","sequence","run_id","reason","timestamp"},
+ "finalized":COMMON|{"event","sequence","run_id","status","result_sha256","timestamp"},
+}
+def canonical(value):return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(",",":"),allow_nan=False).encode()
+def safe_path(value):
+ try:p=PurePosixPath(value);return bool(value) and not p.is_absolute() and ".." not in p.parts
+ except TypeError:return False
+def validate_manifest(m):
+ errors=[]
+ if m.get("schema_version")!="argo-discoveryworld-ui-parity-manifest/v1":errors.append("SCHEMA")
+ cells=m.get("ordered_cells",[])
+ if len(cells)!=30:errors.append("CELL_COUNT")
+ expected=[];idx=0
+ for family,scenario in [("chemistry","Combinatorial Chemistry"),("archaeology","Archaeology Dating")]:
+  for seed in range(5):
+   for mode,repeat in [("official",0),("ui_only",0),("ui_only",1)]:
+    expected.append((idx,f"{family}-s{seed}-{mode}-r{repeat}",family,scenario,seed,mode,repeat,1000,1110000+idx));idx+=1
+ keys=[];paths=[]
+ for cell,want in zip(cells,expected):
+  got=(cell.get("index"),cell.get("cell_id"),cell.get("family"),cell.get("scenario"),cell.get("seed"),cell.get("mode"),cell.get("repeat"),cell.get("steps"),cell.get("thread_id"))
+  if got!=want or any(type(x) is not int for x in [cell.get("index"),cell.get("seed"),cell.get("repeat"),cell.get("steps"),cell.get("thread_id"),cell.get("timeout_seconds")]):errors.append("CELL_GRID:"+str(cell.get("index")))
+  if not re.fullmatch(r"[0-9a-f]{32}",str(cell.get("cell_nonce",""))):errors.append("NONCE")
+  keys.append(cell.get("cell_id"))
+  for k in ["workdir","event_path","ui_gzip_path","stdout_path","stderr_path","frame_manifest_path"]:
+   p=cell.get(k);paths.append(p)
+   if not safe_path(p):errors.append("PATH:"+k)
+ if len(keys)!=len(set(keys)):errors.append("DUPLICATE_CELL")
+ if len(paths)!=len(set(paths)):errors.append("DUPLICATE_PATH")
+ if len({c.get("cell_nonce") for c in cells})!=len(cells):errors.append("DUPLICATE_NONCE")
+ if len({c.get("thread_id") for c in cells})!=len(cells):errors.append("DUPLICATE_THREAD")
+ if [c.get("index") for c in cells]!=list(range(30)):errors.append("ORDER")
+ if len(m.get("mode_pairs",[]))!=20 or len(m.get("ui_repeat_pairs",[]))!=10:errors.append("PAIR_COUNT")
+ all_ids=set(keys)
+ if any(set(p.values())-all_ids for p in m.get("mode_pairs",[])+m.get("ui_repeat_pairs",[])):errors.append("PAIR_KEY")
+ return {"passed":not errors,"errors":errors}
+def write_all(fd,data):
+ view=memoryview(data)
+ while view:
+  written=os.write(fd,view)
+  if written<=0:raise OSError("short durable write")
+  view=view[written:]
+def fsync_parent(path):
+ fd=os.open(str(Path(path).parent),os.O_RDONLY)
+ try:os.fsync(fd)
+ finally:os.close(fd)
+def atomic_create(path,data):
+ path=Path(path);path.parent.mkdir(parents=True,exist_ok=True);flags=os.O_WRONLY|os.O_CREAT|os.O_EXCL
+ if hasattr(os,"O_NOFOLLOW"):flags|=os.O_NOFOLLOW
+ try:fd=os.open(path,flags,0o600)
+ except FileExistsError:return False
+ try:
+  write_all(fd,data);os.fsync(fd)
+ finally:os.close(fd)
+ fsync_parent(path);return True
+def append_record(path,record,previous=None):
+ path=Path(path);path.parent.mkdir(parents=True,exist_ok=True);value=dict(record);value["previous_record_sha256"]=previous or "0"*64;value["record_sha256"]=hashlib.sha256(canonical(value)).hexdigest();line=canonical(value)+b"\n";flags=os.O_WRONLY|os.O_CREAT|os.O_APPEND
+ if hasattr(os,"O_NOFOLLOW"):flags|=os.O_NOFOLLOW
+ fd=os.open(path,flags,0o600)
+ try:write_all(fd,line);os.fsync(fd)
+ finally:os.close(fd)
+ fsync_parent(path);return value["record_sha256"]
+def validate_ledger(path,manifest,allow_partial=False,expected_header=None):
+ errors=[];records=[]
+ try:
+  lines=Path(path).read_bytes().splitlines();records=[json.loads(line) for line in lines]
+  if any(canonical(record)!=line for record,line in zip(records,lines)):errors.append("NONCANONICAL")
+ except Exception:return {"passed":False,"errors":["READ"]}
+ prev="0"*64;states={};last_seq=0;finalized=False;planned_order=[];cells={c["cell_id"]:c for c in manifest.get("ordered_cells",[])}
+ for i,r in enumerate(records):
+  got=r.get("record_sha256");value=dict(r);value.pop("record_sha256",None)
+  if r.get("previous_record_sha256")!=prev or hashlib.sha256(canonical(value)).hexdigest()!=got:errors.append("HASH_CHAIN")
+  prev=got or prev;event=r.get("event")
+  if finalized:errors.append("POST_FINALIZED")
+  if event not in LEDGER_KEYS or set(r)!=LEDGER_KEYS.get(event,set()):errors.append("RECORD_SCHEMA")
+  if i==0:
+   if event!="header" or r.get("schema_version")!="argo-ui-parity-ledger/v1" or r.get("run_id")!=manifest.get("run_id"):errors.append("HEADER")
+   if expected_header and any(r.get(k)!=v for k,v in expected_header.items()):errors.append("HEADER_IDENTITY")
+   continue
+  if r.get("run_id")!=manifest.get("run_id"):errors.append("RUN_IDENTITY")
+  seq=r.get("sequence")
+  if type(seq) is not int or seq!=last_seq+1:errors.append("SEQUENCE")
+  else:last_seq=seq
+  cid=r.get("cell_id")
+  if event in {"planned","spawned","finished"}:
+   cell=cells.get(cid)
+   if cell is None or r.get("cell_nonce")!=cell["cell_nonce"] or r.get("cell_index")!=cell["index"]:errors.append("CELL_IDENTITY")
+  if event=="planned":
+   if cid in states:errors.append("DUPLICATE_PLANNED")
+   states[cid]="planned";planned_order.append(cid)
+   if planned_order!=[c["cell_id"] for c in manifest["ordered_cells"][:len(planned_order)]]:errors.append("PLAN_ORDER")
+  elif event=="spawned":
+   if states.get(cid)!="planned":errors.append("BAD_SPAWN_TRANSITION")
+   states[cid]="spawned"
+  elif event=="finished":
+   status=r.get("status")
+   if type(r.get("timed_out")) is not bool or (r.get("exit_code") is not None and type(r.get("exit_code")) is not int):errors.append("FINISHED_SCHEMA")
+   legal=states.get(cid)=="spawned" and status in CELL_TERMINAL
+   legal_pre=states.get(cid)=="planned" and status in {"spawn_failure","sidecar_error","ledger_error"}
+   if not (legal or legal_pre):errors.append("BAD_FINISH_TRANSITION")
+   states[cid]="finished"
+  elif event=="controller_stop":pass
+  elif event=="finalized":
+   if finalized:errors.append("DUPLICATE_FINALIZED")
+   if r.get("status") not in {"PASS","FAIL_PARITY_NOT_ESTABLISHED","INVALID","INCOMPLETE"} or not re.fullmatch(r"[0-9a-f]{64}",str(r.get("result_sha256",""))):errors.append("FINALIZED_SCHEMA")
+   finalized=True
+  else:errors.append("UNKNOWN_EVENT")
+ if not allow_partial:
+  if len(states)!=30 or any(v!="finished" for v in states.values()):errors.append("INCOMPLETE")
+  if sum(r.get("event")=="finalized" for r in records)!=1:errors.append("FINALIZED_COUNT")
+ return {"passed":not errors,"errors":errors,"records":len(records),"last_record_sha256":prev,"states":states,"finalized":finalized}
+def final_status(cell_statuses,pair_statuses,planned=30):
+ if len(cell_statuses)<planned:return "INCOMPLETE"
+ if len(cell_statuses)!=planned or any(x!="valid_complete" for x in cell_statuses):return "INVALID"
+ if any(x=="UNOBSERVABLE" for x in pair_statuses) or len(pair_statuses)!=30:return "INVALID"
+ if any(x=="OBSERVED_MISMATCH" for x in pair_statuses):return "FAIL_PARITY_NOT_ESTABLISHED"
+ return "PASS" if all(x=="EXACT" for x in pair_statuses) else "INVALID"

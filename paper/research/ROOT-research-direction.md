@@ -1,7 +1,7 @@
 # 연구 방향과 목적 — ROOT active entrypoint
 
 상태: **AUTHORITATIVE RESEARCH ENTRYPOINT · NATIVE CONSTRUCTION PAUSED**
-갱신: 2026-09-05T06:52:41+09:00
+갱신: 2026-09-06T13:20:00+09:00
 
 이 문서가 현재 연구의 루트다. 하위 가설·방법·지표·판정은 이 문서와 active revision을 따라야 한다.
 원본 PDF는 수정하지 않으며 개인 식별값을 graph나 공개 산출물에 복사하지 않는다.
@@ -91,13 +91,18 @@ Stage 0은 계측기·runtime boundary 결과다. Stage B는 한 template-family
 
 ## 8. Graph authority와 revision
 
-`paper/context-graph.json`은 현재 구 root/status와 역사 edge를 포함하므로 active projection으로 그대로 사용하지 않는다.
-`07-context-graph-repair-overlay.json`은 `DRAFT_NOT_APPLIED`이며 canonical 수리로 보고하지 않는다. 원고의
-`current-evidence-20260905/context-graph.json`은 46-node local editing map이며 제품/canonical graph가 아니다.
+`paper/context-graph.json`은 현재 연구의 canonical **research projection**이다. 제품 runtime graph나 append-only event journal은
+아직 구현되지 않았다. 현재 projection은 predecessor commit/SHA를 명시하고, immutable receipt는 자신이 검증한 predecessor
+snapshot에만 효력이 있다. mutable latest status 자체는 과학적 근거가 아니며 source/result/decision receipt가 우선한다.
 
-모든 새 agent는 `active-graph-handoff-manifest.json`을 통해 실제 consumer, precedence, 미적용 상태를 먼저 확인한다.
-RETRACTED result의 역사 `supports` edge는 보존할 수 있으나 active support로 소비하지 않는다. source 무효화는 영향받는
-결정만 `requires_recheck`로 열고 독립 근거와 무관한 결과를 보존한다.
+`active-graph-handoff-manifest.json`의 `active_chain`은 canonical graph에 실제 존재하는 node/edge ID만 참조한다. Binding 순서는
+`next-experiment-manifest.json → active-graph-handoff-manifest.json → context-graph.json`으로 고정해 상호 hash cycle을 피한다.
+구 conceptual chain과 uncommitted Stage-0 문서는 legacy/quarantine로 보존하며 active authority로 소비하지 않는다. 원고의
+`current-evidence-20260905/context-graph.json`은 보호된 local editing map이며 제품/canonical graph가 아니다.
+
+RETRACTED result의 역사 edge는 `historical`/`superseded_by` 표식과 함께 보존할 수 있으나 active support로 소비하지 않는다.
+source 무효화는 영향받는 결정만 `requires_recheck`로 열고 독립 근거와 무관한 결과를 보존한다. 미래 native 단계에서는
+ResearchEvent journal이 projection을 재도출해야 하지만, native construction pause 동안 현재 JSON/validator는 연구 명세와 fixture다.
 
 ## 9. NAIS 조건과 clean-room
 
@@ -123,3 +128,6 @@ Stage A와 Opus 4.6 개발 파일럿은 완료됐다. 네 비동형 causal famil
 검증을 마쳤다. C64 64개는 완료됐으나 task text–oracle 의미 충돌 1건과 outcome 범위 모호성 때문에 confirmatory 인과 주장을 확립하지
 못했다. 추가 유료 실행은 승인되지 않았다. 답이 나온 C 바이트는 비순환 capsule에 보존됐다. 현재 다음 행동은 강한 result-aware tree와 typed policy를 실제 workflow에서
 비교하는 단일 후속 제안만 유지하고, runner·task·고정 OpenResearch command·비용·승인이 없으면 실행하지 않는 것이다.
+
+
+2026-09-06 현재, 1,000-step/180초 DiscoveryWorld v2 readiness는 clean-clone을 통과했지만 독립 RLM 통계·방법·runtime·graph review에서 BLOCK됐다. 공식 `getAgentObservation()`은 UI JSON뿐 아니라 vision base64와 PNG frame을 생성하며, 기존 두 실행에서 20,003 PNG/675,199,257 bytes의 부작용이 측정됐다. 따라서 봉인된 v2를 실행하지 않는다. 현재 active next action은 pinned official observation과 source-mirrored UI-only adapter를 1,000 steps에서 비교하는 parity instrument의 one-shot marker, hash-chained ledger, raw sidecar, strict cell schema와 fresh-agent handoff를 완성·검증하는 것이다. Adapter parity가 통과해도 두 family·고정 rotate/tick public-UI projection 밖으로 일반화하지 않으며, 실행은 최종 reviewer/immutable validation과 별도 exact approval 뒤에만 가능하다.
