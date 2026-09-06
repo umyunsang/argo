@@ -101,3 +101,7 @@ The separately approved v3 attempt passed all nine exact canary checks in 0.3119
 ## DiscoveryWorld long-horizon determinism proposal
 
 A separate design freezes 20 zero-model host-subprocess episodes: two task families, literal API seeds 0–4, two fresh-process repeats, and 1,000 fixed rotation/action-tick steps per episode. It hashes text/UI state and action/tick results at fixed checkpoints. It excludes vision, task scorecards, hidden gold, correction generation, task completion, and models. The environment is sanitized and Python socket calls are denied, but this is not OS-container isolation. Seeds and repeats are nested; the inference unit remains two task families. Tests pass 9/9 and the unapproved runner exits before episodes with zero steps. Execution requires separate explicit approval.
+
+## DiscoveryWorld long-horizon result
+
+The separately approved frozen run exhausted all 20 one-attempt subprocesses. Every 1,000-step episode hit its 120-second timeout; no episode emitted a terminal receipt. The controller stopped after 2,400.32 seconds with no retries, exclusions, or endpoint shortening. Therefore the zero values in its raw summary are aggregation over missing episode receipts, not observations that zero steps/actions occurred. The result rejects the exact runtime envelope as infeasible and yields no determinism, task-success, hidden-key, or model conclusion.
