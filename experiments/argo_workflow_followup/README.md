@@ -97,3 +97,7 @@ V3 immutable readiness attempt at commit `5f82fdf28` exposed one test-only path 
 ## Isolation canary v3 result
 
 The separately approved v3 attempt passed all nine exact canary checks in 0.311928 seconds. The pinned image started with two read-only repository mounts and no writable host bind; released input was readable, four forbidden/oracle paths were unreadable, external networking and the tested loopback service were unreachable, no named secret environment keys were present, and no withheld mount was visible. The one-attempt authority is consumed. This validates only the exact generic canary boundary, not a DiscoveryWorld runner, 1,000-step replay, score semantics, correction gold, integrated tasks, or model efficacy.
+
+## DiscoveryWorld long-horizon determinism proposal
+
+A separate design freezes 20 zero-model host-subprocess episodes: two task families, literal API seeds 0–4, two fresh-process repeats, and 1,000 fixed rotation/action-tick steps per episode. It hashes text/UI state and action/tick results at fixed checkpoints. It excludes vision, task scorecards, hidden gold, correction generation, task completion, and models. The environment is sanitized and Python socket calls are denied, but this is not OS-container isolation. Seeds and repeats are nested; the inference unit remains two task families. Tests pass 9/9 and the unapproved runner exits before episodes with zero steps. Execution requires separate explicit approval.
