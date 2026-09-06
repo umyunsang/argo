@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import os,sys,tempfile,time,unittest
+from unittest.mock import patch
 from pathlib import Path
 HERE=Path(__file__).resolve().parent;sys.path.insert(0,str(HERE));from process_control import group_exists,run_process
 class Tests(unittest.TestCase):
@@ -13,6 +14,11 @@ class Tests(unittest.TestCase):
    root=Path(td);o,e,v=self.paths(root);calls=[0]
    def stop():calls[0]+=1;return 15 if calls[0]>2 else None
    r=run_process([sys.executable,"-c","import time;time.sleep(10)"],root,dict(os.environ),o,e,v,2,time.monotonic()+3,stop_signal=stop);self.assertEqual(r["exit_code"],130);self.assertEqual(r["controller_signal"],15);self.assertFalse(group_exists(r["pgid"]))
+ def test_unreaped_is_exception(self):
+  with tempfile.TemporaryDirectory(dir=HERE) as td:
+   root=Path(td);o,e,v=self.paths(root)
+   with patch("process_control.group_exists",return_value=True),patch("process_control.terminate_group",return_value=True):
+    with self.assertRaisesRegex(RuntimeError,"UNREAPED"):run_process([sys.executable,"-c","pass"],root,dict(os.environ),o,e,v,1,time.monotonic()+2)
  def test_timeout_kills_group(self):
   with tempfile.TemporaryDirectory(dir=HERE) as td:
    root=Path(td);o,e,v=self.paths(root);code="import subprocess,time,sys;subprocess.Popen([sys.executable,'-c','import time;time.sleep(10)']);time.sleep(10)";r=run_process([sys.executable,"-c",code],root,dict(os.environ),o,e,v,.2,time.monotonic()+2);self.assertEqual(r["exit_code"],124);self.assertFalse(r["unreaped"]);self.assertFalse(group_exists(r["pgid"]))

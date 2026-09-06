@@ -42,9 +42,10 @@ def run_process(argv,cwd,env,stdout_path,stderr_path,event_path,cell_timeout,abs
    except subprocess.TimeoutExpired:continue
   unreaped=False
   if timed_out or controller_signal is not None or group_exists(pgid):unreaped=terminate_group(proc,pgid)
+  if unreaped:raise RuntimeError("UNREAPED_PROCESS_GROUP")
   return {"exit_code":code,"timed_out":timed_out,"global_deadline":global_deadline,"controller_signal":controller_signal,"unreaped":unreaped,"pid":proc.pid,"pgid":pgid,"duration_seconds":round(time.monotonic()-started,6)}
- except BaseException:
-  if proc is not None and pgid is not None:terminate_group(proc,pgid)
+ except BaseException as exc:
+  if proc is not None and pgid is not None and terminate_group(proc,pgid):raise RuntimeError("UNREAPED_AFTER_EXCEPTION") from exc
   raise
  finally:
   for fd in fds:

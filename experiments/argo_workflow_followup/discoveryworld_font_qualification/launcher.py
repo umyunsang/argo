@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Validate authority, seal the font controller, then replace this process."""
 from __future__ import annotations
-import argparse,hashlib,json,os,stat,tempfile
+import argparse,hashlib,json,os,signal,stat,subprocess,tempfile,time
 from pathlib import Path
-ENGINE=Path("/Users/um-yunsang/argo-paper-orx");APPROVAL_REL=Path("paper/research/discoveryworld-font-registry-qualification-approval-v1.json");RUN_ID="dw-font-registry-qual-20260906-v1"
+ENGINE=Path("/Users/um-yunsang/argo-paper-orx");CONTROLLER_INTERPRETER=Path("/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/bin/python3.14");APPROVAL_REL=Path("paper/research/discoveryworld-font-registry-qualification-approval-v1.json");RUN_ID="dw-font-registry-qual-20260906-v1"
 EXEC_NAMES={"runner":"run.py","episode":"episode.py","font_registry":"font_registry.py","protocol":"protocol.py","process_control":"process_control.py","manifest":"manifest.json","font_manifest":"font-manifest.json","environment_manifest":"environment_manifest.py","environment_content":"environment-content-manifest.json","bootstrap":"bootstrap.py","launcher":"launcher.py","result_verifier":"verify_result.py","admission_consumer":"admit_result.py"}
 EXEC_KEYS=tuple(EXEC_NAMES);EXPECTED={key:Path("experiments/argo_workflow_followup/discoveryworld_font_qualification")/name for key,name in EXEC_NAMES.items()};EXPECTED["font_manifest"]=Path("paper/research/discoveryworld-pinned-font-manifest-v1.json")
 def canonical(value):return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(",",":"),allow_nan=False).encode()
@@ -33,12 +33,14 @@ def write_once(path,data,mode):
  finally:os.close(fd)
 def proposal_core(value):
  v=dict(value);v.pop("required_approval_text",None);return sha_bytes(canonical(v))
-def execution_root(a):return sha_bytes(canonical({k:a.get("bindings",{}).get(k,{}).get("sha256") for k in EXEC_KEYS}))
+def execution_material(a):return {**{k:a.get("bindings",{}).get(k,{}).get("sha256") for k in EXEC_KEYS},"source_commit":a.get("source_commit"),"source_tree":a.get("source_tree"),"source_archive_sha256":a.get("source_archive_sha256"),"worker_interpreter":a.get("interpreter"),"worker_interpreter_sha256":a.get("interpreter_sha256"),"controller_interpreter":a.get("controller_interpreter"),"controller_interpreter_sha256":a.get("controller_interpreter_sha256"),"sandbox_exec":a.get("sandbox_exec"),"sandbox_exec_sha256":a.get("sandbox_exec_sha256")}
+def execution_root(a):return sha_bytes(canonical(execution_material(a)))
 def authority_root(a,p):return sha_bytes(canonical({**{k:a.get("bindings",{}).get(k,{}).get("sha256") for k in EXEC_KEYS},"design":a.get("bindings",{}).get("design",{}).get("sha256"),"proposal_core":proposal_core(p)}))
 def required_text(a,er,ar):return f'I approve exactly one local zero-model DiscoveryWorld font-registry qualification run {RUN_ID} for execution root {er}, authority root {ar}, and design SHA-256 {a.get("bindings",{}).get("design",{}).get("sha256")}, limited to exactly two zero-scenario cells, a 120-second launch/execution deadline, zero model calls, zero Docker calls, and USD 0 API spend. No retry or resume.'
 def validate(a,approval_path,root):
  if Path(root).resolve()!=ENGINE or Path(approval_path).resolve()!=ENGINE/APPROVAL_REL:return False
  if a.get("status")!="APPROVED" or a.get("approved_by")!="user" or a.get("run_id")!=RUN_ID:return False
+ if set(a.get("bindings",{}))!=set(EXEC_KEYS)|{"design","proposal","immutable_validation","method_review","runtime_review","handoff_review","user_authorization"}:return False
  for key,path in EXPECTED.items():
   spec=a.get("bindings",{}).get(key,{});actual=ENGINE/path
   if spec.get("path")!=path.as_posix() or not actual.is_file() or sha_bytes(read_once(actual))!=spec.get("sha256"):return False
@@ -48,15 +50,45 @@ def validate(a,approval_path,root):
  try:proposal=json.loads(read_once(ENGINE/a["bindings"]["proposal"]["path"]));er=execution_root(a);ar=authority_root(a,proposal);text=required_text(a,er,ar)
  except (OSError,KeyError,json.JSONDecodeError,TypeError):return False
  if a.get("execution_root_sha256")!=er or a.get("authority_root_sha256")!=ar or a.get("proposal_core_sha256")!=proposal_core(proposal) or proposal.get("required_approval_text")!=text or a.get("required_approval_text")!=text or a.get("user_approval_message")!=text or a.get("user_approval_message_sha256")!=sha_bytes(text.encode()):return False
- if sha_bytes(read_once(a.get("controller_interpreter","")))!=a.get("controller_interpreter_sha256"):return False
+ if a.get("controller_interpreter")!=str(CONTROLLER_INTERPRETER) or sha_bytes(read_once(CONTROLLER_INTERPRETER))!=a.get("controller_interpreter_sha256"):return False
  return True
 def seal(a,approval_bytes,destination):
  destination=Path(destination);destination.mkdir(mode=0o700);files={}
  for key,name in EXEC_NAMES.items():
   source=ENGINE/a["bindings"][key]["path"];data=read_once(source);target=destination/name;write_once(target,data,0o500 if name.endswith(".py") else 0o400);files[name]=sha_bytes(data)
  write_once(destination/"approval.json",approval_bytes,0o400);files["approval.json"]=sha_bytes(approval_bytes);value={"schema_version":"argo-font-controller-seal/v1","execution_root_sha256":execution_root(a),"files":files};data=canonical(value)+b"\n";write_once(destination/"seal.json",data,0o400);fd=os.open(destination,os.O_RDONLY);os.fsync(fd);os.close(fd);destination.chmod(0o500);return sha_bytes(data)
+def supervise_process(proc,started,deadline_seconds=120):
+ deadline=started+deadline_seconds;timed_out=False;unreaped=False
+ while True:
+  now=time.monotonic()
+  if now>=deadline:timed_out=True;break
+  try:code=proc.wait(timeout=min(0.05,deadline-now));break
+  except subprocess.TimeoutExpired:continue
+ if timed_out:
+  try:os.killpg(proc.pid,signal.SIGTERM)
+  except ProcessLookupError:pass
+  try:proc.wait(timeout=1)
+  except subprocess.TimeoutExpired:
+   try:os.killpg(proc.pid,signal.SIGKILL)
+   except ProcessLookupError:pass
+   try:proc.wait(timeout=1)
+   except subprocess.TimeoutExpired:unreaped=True
+  code=124
+ descendant_leak=False
+ try:
+  os.killpg(proc.pid,0);descendant_leak=True
+  try:os.killpg(proc.pid,signal.SIGTERM)
+  except ProcessLookupError:pass
+  time.sleep(0.05)
+  try:os.killpg(proc.pid,signal.SIGKILL)
+  except ProcessLookupError:pass
+  time.sleep(0.05)
+  try:os.killpg(proc.pid,0);unreaped=True
+  except ProcessLookupError:pass
+ except ProcessLookupError:pass
+ return {"controller_exit_code":code,"timed_out":timed_out,"unreaped":unreaped,"descendant_leak":descendant_leak,"elapsed_seconds":time.monotonic()-started}
 def main(argv=None):
  p=argparse.ArgumentParser();p.add_argument("--approval",type=Path,required=True);p.add_argument("--out",type=Path,required=True);x=p.parse_args(argv);root=Path.cwd();approval_bytes=read_once(x.approval);a=json.loads(approval_bytes)
  if not validate(a,x.approval,root):print(json.dumps({"status":"BLOCKED_BEFORE_CONSUMPTION","reason":"CANONICAL_APPROVAL"}));return 2
- parent=Path(tempfile.mkdtemp(prefix="dw-font-controller-seal-"));destination=parent/"controller";seal_sha=seal(a,approval_bytes,destination);env=dict(os.environ);env.update({"ARGO_FONT_CONTROLLER_SEAL":str(destination),"ARGO_FONT_CONTROLLER_SEAL_SHA256":seal_sha});python=a["controller_interpreter"];args=[python,"-I","-S","-B",str(destination/"bootstrap.py"),"controller",str(destination),"--approval",str(x.approval.resolve()),"--out",str(x.out.resolve())];os.execve(python,args,env)
+ parent=Path(tempfile.mkdtemp(prefix="dw-font-controller-seal-"));destination=parent/"controller";seal_sha=seal(a,approval_bytes,destination);started=time.monotonic();deadline=started+120;env=dict(os.environ);env.update({"ARGO_FONT_CONTROLLER_SEAL":str(destination),"ARGO_FONT_CONTROLLER_SEAL_SHA256":seal_sha,"ARGO_FONT_LAUNCH_MONOTONIC":repr(started)});python=a["controller_interpreter"];args=[python,"-I","-S","-B",str(destination/"bootstrap.py"),"controller",str(destination),"--approval",str(x.approval.resolve()),"--out",str(x.out.resolve())];proc=subprocess.Popen(args,env=env,start_new_session=True);observed=supervise_process(proc,started,120);code=observed["controller_exit_code"];timed_out=observed["timed_out"];unreaped=observed["unreaped"];descendant_leak=observed["descendant_leak"];elapsed=observed["elapsed_seconds"];manifest=json.loads(read_once(ENGINE/a["bindings"]["manifest"]["path"]));paths={k:ENGINE/v for k,v in manifest["paths"].items()};result_sha=sha_bytes(read_once(paths["result"])) if paths["result"].is_file() else None;marker_sha=sha_bytes(read_once(paths["marker"])) if paths["marker"].is_file() else None;passed=not timed_out and not unreaped and not descendant_leak and code in {0,1} and elapsed<120 and result_sha is not None and marker_sha is not None;receipt={"schema_version":"argo-font-qualification-supervision/v1","run_id":RUN_ID,"passed":passed,"controller_exit_code":code,"timed_out":timed_out,"unreaped":unreaped,"descendant_leak":descendant_leak,"launch_monotonic":started,"observed_completion_monotonic":time.monotonic(),"elapsed_seconds":elapsed,"deadline_seconds":120,"marker_sha256":marker_sha,"result_sha256":result_sha};write_once(paths["supervision"],canonical(receipt)+b"\n",0o600);fd=os.open(paths["supervision"].parent,os.O_RDONLY);os.fsync(fd);os.close(fd);return code if passed else 1
 if __name__=="__main__":raise SystemExit(main())

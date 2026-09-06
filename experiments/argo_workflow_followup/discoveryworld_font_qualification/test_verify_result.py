@@ -1,29 +1,42 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import hashlib,json,sys,tempfile,unittest
+import copy,hashlib,json,sys,tempfile,unittest
 from pathlib import Path
 from unittest.mock import patch
 HERE=Path(__file__).resolve().parent;sys.path.insert(0,str(HERE));import verify_result as V
-RUN="dw-font-registry-qual-20260906-v1"
-def fixture(root):
- paths={"marker":"marker","ledger":"ledger","result":"result"};manifest={"paths":paths};(root/"manifest").write_text(json.dumps(manifest));approval={"bindings":{"manifest":{"path":"manifest"}}};(root/"approval").write_text(json.dumps(approval));marker={"run_id":RUN,"no_retry":True};(root/"marker").write_bytes(V.canonical(marker)+b"\n");result={"schema_version":"argo-font-qualification-result/v1","run_id":RUN,"status":"PASS","cells_planned":2,"cell_results":[{"validation":{"passed":True},"run":{"unreaped":False}},{"validation":{"passed":True},"run":{"unreaped":False}}],"comparison":{"passed":True,"matched_calls":5},"font_pre_post_stable":True,"source_pre_post_stable":True,"sealed_runtime_postcheck":True,"within_deadline":True,"scenario_loads":0,"agent_observations":0,"model_calls":0,"docker_calls":0,"spend_usd":0.0,"no_retry":True};rb=V.canonical(result)+b"\n";(root/"result").write_bytes(rb);previous=None;rows=[]
- for event in ["header","planned","spawned","finished","planned","spawned","finished"]:
-  row={"event":event,"previous_sha256":previous};row["record_sha256"]=hashlib.sha256(V.canonical(row)).hexdigest();previous=row["record_sha256"];rows.append(row)
- row={"event":"finalized","status":"PASS","result_sha256":hashlib.sha256(rb).hexdigest(),"previous_sha256":previous};row["record_sha256"]=hashlib.sha256(V.canonical(row)).hexdigest();rows.append(row);(root/"ledger").write_bytes(b"".join(V.canonical(x)+b"\n" for x in rows));return root/"approval"
+RUN=V.RUN_ID;H="a"*64;D="d"*64;E="e"*64
+CALLS=[]
+for source,line,name,size,bold in [("discoveryworld/World.py",63,"Arial",8,False),("discoveryworld/World.py",552,"monospace",15,True),("discoveryworld/UserInterface.py",21,"monospace",10,False),("discoveryworld/UserInterface.py",22,"monospace",15,False),("discoveryworld/UserInterface.py",23,"monospace",15,True)]:CALLS.append({"source":source,"line":line,"name":name,"size":size,"bold":bold,"italic":False,"resolved_path":"/font","font_sha256":H,"samples":[{"sample":x,"size":[1,2],"metrics":[[1,2,3,4,5] for _ in x],"render_rgba_sha256":H} for x in ["ARGO 0123","한글 ARGO"]]})
+def raw(mode,temp,font_sha):
+ bundle=temp/"bundle";python=temp/"runtime/base/bin/python3.11";sysfont=temp/"runtime/site-packages/pygame/sysfont.py";return {"schema_version":"argo-font-qualification-cell/v1","mode":mode,"source_commit":V.SOURCE_COMMIT,"source_tree":V.SOURCE_TREE,"source_archive_sha256":V.SOURCE_ARCHIVE,"pygame_sysfont_sha256":V.SYSFONT_SHA,"font_manifest_sha256":font_sha,"python_executable":str(python.resolve()),"pygame_sysfont_path":str(sysfont.resolve()),"episode_path":str((bundle/"episode.py").resolve()),"episode_sha256":H,"font_registry_path":str((bundle/"font_registry.py").resolve()),"font_registry_sha256":H,"calls":copy.deepcopy(CALLS),"font_discovery_subprocesses":[["/usr/X11/bin/fc-list",":","file","family","style"]] if mode=="native" else [],"os_fork_denied":None if mode=="native" else True,"scenario_loads":0,"agent_observations":0,"model_calls":0,"spend_usd":0.0}
+def write(root):
+ paths={"marker":"marker","ledger":"ledger","result":"result","supervision":"supervision","sidecar_root":"side","post_run_verification":"verification"};manifest={"ordered_cells":[{"cell_id":"native-r0","mode":"native"},{"cell_id":"pinned-r0","mode":"pinned"}],"paths":paths};(root/"manifest").write_bytes(V.canonical(manifest)+b"\n");font={"calls":[{k:v for k,v in row.items() if k in {"source","line","name","size","bold","italic","resolved_path","font_sha256"}} for row in CALLS]};(root/"font").write_bytes(V.canonical(font)+b"\n");font_sha=V.sha(root/"font");environment={"aggregate_sha256":E,"roots":[]};(root/"environment").write_bytes(V.canonical(environment)+b"\n");proposal={"required_approval_text":"x"};(root/"proposal").write_bytes(V.canonical(proposal)+b"\n");approval={"bindings":{"manifest":{"path":"manifest","sha256":V.sha(root/"manifest")},"font_manifest":{"path":"font","sha256":font_sha},"environment_content":{"path":"environment","sha256":V.sha(root/"environment")},"proposal":{"path":"proposal","sha256":V.sha(root/"proposal")},"episode":{"path":"episode","sha256":H},"font_registry":{"path":"registry","sha256":H}},"source_commit":V.SOURCE_COMMIT,"source_tree":V.SOURCE_TREE,"source_archive_sha256":V.SOURCE_ARCHIVE};(root/"approval").write_bytes(V.canonical(approval)+b"\n");er=V.execution_root(approval);ar=V.authority_root(approval,proposal);cells=[];temp=root/"sealed";(root/"side").mkdir()
+ for index,mode in enumerate(["native","pinned"]):
+  side=root/"side"/mode;side.mkdir();event=side/"event.jsonl";event.write_bytes(V.canonical(raw(mode,temp,font_sha))+b"\n");(side/"stdout.bin").write_bytes(b"");(side/"stderr.bin").write_bytes(b"");(side/"profile.sb").write_text(V.profile(mode,temp/mode,temp/"runtime/base/bin/python3.11"));identity={k:raw(mode,temp,font_sha)[k] for k in ["source_commit","source_tree","source_archive_sha256","pygame_sysfont_sha256","font_manifest_sha256","python_executable","pygame_sysfont_path","episode_path","episode_sha256","font_registry_path","font_registry_sha256"]};validation=V.validate_event(event,mode,font,identity);artifacts={"event_sha256":V.sha(event),"stdout_sha256":V.sha(side/"stdout.bin"),"stderr_sha256":V.sha(side/"stderr.bin"),"profile_sha256":V.sha(side/"profile.sb")};cells.append({"cell_id":manifest["ordered_cells"][index]["cell_id"],"mode":mode,"run":{"exit_code":0,"timed_out":False,"global_deadline":False,"controller_signal":None,"unreaped":False,"pid":1+index,"pgid":1+index,"duration_seconds":0.1},"validation":validation,"artifacts":artifacts})
+ comparison=V.compare(raw("native",temp,font_sha),raw("pinned",temp,font_sha));fonts=[{"font":1} for _ in range(5)];result={"schema_version":"argo-font-qualification-result/v1","run_id":RUN,"status":"PASS","approval_sha256":V.sha(root/"approval"),"execution_root_sha256":er,"authority_root_sha256":ar,"cells_planned":2,"cells_finished":2,"cell_results":cells,"comparison":comparison,"font_before":fonts,"font_after":fonts,"font_pre_post_stable":True,"source_digest_before":D,"source_digest_after":D,"source_pre_post_stable":True,"environment_content_aggregate_sha256":E,"sealed_runtime_postcheck":True,"within_deadline":True,"elapsed_seconds":1.0,"scenario_loads":0,"agent_observations":0,"model_calls":0,"docker_calls":0,"spend_usd":0.0,"no_retry":True};rb=V.canonical(result)+b"\n";(root/"result").write_bytes(rb);marker={"schema_version":"argo-font-qualification-marker/v1","run_id":RUN,"no_retry":True,"approval_sha256":V.sha(root/"approval"),"execution_root_sha256":er,"authority_root_sha256":ar,"launch_monotonic":5.0,"deadline_monotonic":125.0,"sealed_temp_root":str(temp.resolve()),"environment_content_aggregate_sha256":E,"source_digest":D,"consumed_at":"time"};(root/"marker").write_bytes(V.canonical(marker)+b"\n");supervision={"schema_version":"argo-font-qualification-supervision/v1","run_id":RUN,"passed":True,"controller_exit_code":0,"timed_out":False,"unreaped":False,"descendant_leak":False,"launch_monotonic":5.0,"observed_completion_monotonic":15.0,"elapsed_seconds":10.0,"deadline_seconds":120,"marker_sha256":V.sha(root/"marker"),"result_sha256":V.sha(root/"result")};(root/"supervision").write_bytes(V.canonical(supervision)+b"\n");previous=None;rows=[];events=[("header",None,None)]
+ for cell in cells:events += [("planned",cell["cell_id"],cell["mode"]),("spawned",cell["cell_id"],None),("finished",cell["cell_id"],cell["mode"])]
+ events += [("finalized",None,None)]
+ for event,cid,mode in events:
+  row={"event":event,"run_id":RUN,"previous_sha256":previous}
+  if event=="header":row["timestamp"]="time"
+  if cid:row["cell_id"]=cid
+  if mode:row["mode"]=mode
+  if event=="spawned":
+   cell=next(x for x in cells if x["cell_id"]==cid);row.update({"pid":cell["run"]["pid"],"pgid":cell["run"]["pgid"]})
+  if event=="finished":
+   cell=next(x for x in cells if x["cell_id"]==cid);row.update({"exit_code":cell["run"]["exit_code"],"valid":cell["validation"]["passed"],"errors":cell["validation"]["errors"],"artifacts":cell["artifacts"]})
+  if event=="finalized":row.update({"status":"PASS","result_sha256":V.sha(root/"result"),"execution_root_sha256":er,"authority_root_sha256":ar})
+  row["record_sha256"]=hashlib.sha256(V.canonical(row)).hexdigest();previous=row["record_sha256"];rows.append(row)
+ (root/"ledger").write_bytes(b"".join(V.canonical(x)+b"\n" for x in rows));return root/"approval"
+def verified(root,approval):
+ with patch.object(V,"validate_approval",return_value={"approved":True}),patch.object(V,"stat_font",return_value={"font":1}),patch.object(V,"prepare_source",side_effect=lambda p:p),patch.object(V,"tree_digest",return_value=D):return V.verify(root,approval)
 class Tests(unittest.TestCase):
- def test_valid_pass_integrity(self):
-  with tempfile.TemporaryDirectory(dir=HERE) as td:
-   root=Path(td);approval=fixture(root)
-   with patch.object(V,"validate_approval",return_value={"approved":True}):out=V.verify(root,approval)
-   self.assertEqual(out["verdict"],"PASS");self.assertEqual(out["controller_status"],"PASS")
- def test_invalid_result_can_be_integrity_pass(self):
-  with tempfile.TemporaryDirectory(dir=HERE) as td:
-   root=Path(td);approval=fixture(root);r=json.loads((root/"result").read_text());r["status"]="INVALID";(root/"result").write_bytes(V.canonical(r)+b"\n");lines=[json.loads(x) for x in (root/"ledger").read_bytes().splitlines()];body=dict(lines[-1]);body.update({"status":"INVALID","result_sha256":V.sha(root/"result")});body.pop("record_sha256");body["record_sha256"]=hashlib.sha256(V.canonical(body)).hexdigest();lines[-1]=body;(root/"ledger").write_bytes(b"".join(V.canonical(x)+b"\n" for x in lines))
-   with patch.object(V,"validate_approval",return_value={"approved":True}):out=V.verify(root,approval)
-   self.assertEqual(out["verdict"],"PASS");self.assertEqual(out["controller_status"],"INVALID")
- def test_ledger_mutation_fails(self):
-  with tempfile.TemporaryDirectory(dir=HERE) as td:
-   root=Path(td);approval=fixture(root);lines=(root/"ledger").read_bytes().splitlines();row=json.loads(lines[2]);row["pid"]=1;lines[2]=V.canonical(row);(root/"ledger").write_bytes(b"\n".join(lines)+b"\n")
-   with patch.object(V,"validate_approval",return_value={"approved":True}):out=V.verify(root,approval)
-   self.assertEqual(out["verdict"],"FAIL")
+ def test_raw_evidence_rederives_pass(self):
+  with tempfile.TemporaryDirectory(dir=HERE) as td:root=Path(td);approval=write(root);out=verified(root,approval);self.assertEqual(out["verdict"],"PASS",out)
+ def test_event_mutation_fails(self):
+  with tempfile.TemporaryDirectory(dir=HERE) as td:root=Path(td);approval=write(root);p=root/"side/native/event.jsonl";p.write_bytes(p.read_bytes()+b"{}\n");self.assertEqual(verified(root,approval)["verdict"],"FAIL")
+ def test_marker_root_mutation_fails(self):
+  with tempfile.TemporaryDirectory(dir=HERE) as td:root=Path(td);approval=write(root);m=json.loads((root/"marker").read_text());m["authority_root_sha256"]="bad";(root/"marker").write_bytes(V.canonical(m)+b"\n");self.assertEqual(verified(root,approval)["verdict"],"FAIL")
+ def test_minimal_fabricated_pass_fails(self):
+  with tempfile.TemporaryDirectory(dir=HERE) as td:root=Path(td);approval=write(root);r=json.loads((root/"result").read_text());r["cell_results"]=[];r["cells_finished"]=0;(root/"result").write_bytes(V.canonical(r)+b"\n");self.assertEqual(verified(root,approval)["verdict"],"FAIL")
 if __name__=="__main__":unittest.main(verbosity=2)
