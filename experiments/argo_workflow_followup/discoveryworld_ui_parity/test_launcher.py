@@ -25,7 +25,8 @@ class Tests(unittest.TestCase):
   args=type("A",(),{"approval":HERE/"approval-template.json","out":ROOT/"out"})()
   with patch("launcher.argparse.ArgumentParser.parse_args",return_value=args),patch("launcher.tempfile.mkdtemp") as make,patch("launcher.os.execve") as execute:self.assertEqual(launcher.main(),2);make.assert_not_called();execute.assert_not_called()
  def test_canonical_approved_value_passes(self):
-  value=approved_value();self_sha=hashlib.sha256(Path(launcher.__file__).read_bytes()).hexdigest();self.assertTrue(launcher.validate_canonical_approval(value,HERE/"approval-template.json",ROOT,self_sha))
+  value=approved_value();self_sha=hashlib.sha256(Path(launcher.__file__).read_bytes()).hexdigest()
+  with patch("launcher.ENGINE_REPO",str(ROOT.resolve())):self.assertTrue(launcher.validate_canonical_approval(value,HERE/"approval-template.json",ROOT,self_sha))
  def test_approved_main_seals_nonexistent_child_and_reaches_exec(self):
   approval_path=HERE/"approval-template.json"
   with tempfile.TemporaryDirectory() as td:
