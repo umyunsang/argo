@@ -34,7 +34,7 @@ class Tests(unittest.TestCase):
     review=root/(key+".json");review.write_text(json.dumps({"execution_root_sha256":execution,"verdict":verdict}));template["bindings"][key]={"path":str(review),"sha256":hashlib.sha256(review.read_bytes()).hexdigest()}
    user=root/"user_authorization.json";user.write_text("{}");template["bindings"]["user_authorization"]={"path":str(user),"sha256":hashlib.sha256(user.read_bytes()).hexdigest()}
    approval_path=root/"approval.json";approval_path.write_text(json.dumps(template));approval_bytes=approval_path.read_bytes();approval=template;manifest_path=ROOT/approval["bindings"]["manifest"]["path"];manifest_bytes=manifest_path.read_bytes();bundle=root/"bundle";source=root/"source"/"discoveryworld";bundle.mkdir();source.mkdir(parents=True)
-   mapping={"run.py":HERE/"run.py","episode.py":HERE/"episode.py","adapter_v2.py":HERE/"adapter_v2.py","state_projection.py":HERE/"state_projection.py","lifecycle.py":HERE/"lifecycle.py","protocol.py":HERE/"protocol.py","schemas.json":HERE/"schemas.json","manifest.json":manifest_path,"proposal.json":ROOT/approval["bindings"]["proposal"]["path"],"design.json":ROOT/approval["bindings"]["design"]["path"],"environment_manifest.py":HERE/"environment_manifest.py","environment-content-manifest.json":HERE/"environment-content-manifest.json","bootstrap.py":HERE/"bootstrap.py","approval.json":approval_path}
+   mapping={"run.py":HERE/"run.py","episode.py":HERE/"episode.py","adapter_v2.py":HERE/"adapter_v2.py","state_projection.py":HERE/"state_projection.py","lifecycle.py":HERE/"lifecycle.py","protocol.py":HERE/"protocol.py","schemas.json":HERE/"schemas.json","manifest.json":manifest_path,"proposal.json":ROOT/approval["bindings"]["proposal"]["path"],"design.json":ROOT/approval["bindings"]["design"]["path"],"environment_manifest.py":HERE/"environment_manifest.py","environment-content-manifest.json":HERE/"environment-content-manifest.json","bootstrap.py":HERE/"bootstrap.py","verify_result.py":HERE/"verify_result.py","approval.json":approval_path}
    for name,path in mapping.items():shutil.copy2(path,bundle/name)
    shutil.copy2(Path(SOURCE_REPO)/"discoveryworld/DiscoveryWorldAPI.py",source/"DiscoveryWorldAPI.py");shutil.copy2(Path(SOURCE_REPO)/"discoveryworld/UserInterface.py",source/"UserInterface.py")
    with patch("run.subprocess.run",side_effect=AssertionError("post-consumption subprocess")):
@@ -168,6 +168,10 @@ class Tests(unittest.TestCase):
    try:
     os.kill(os.getpid(),signal.SIGTERM);completed=[];completed.append(label);self.assertEqual(completed,[label]);self.assertEqual(latch.pending,signal.SIGTERM)
    finally:latch.restore()
+ def test_frame_directory_creates_production_shape_parents(self):
+  import os
+  with tempfile.TemporaryDirectory() as td:
+   frame=Path(td)/"work/chemistry-s0-official-r0/frames";fd,identity=open_frame_directory(frame);self.assertTrue(frame.is_dir());self.assertEqual((os.fstat(fd).st_dev,os.fstat(fd).st_ino),(identity["device"],identity["inode"]));os.close(fd)
  def test_frame_manifest_rejects_symlink_entry_and_directory_swap(self):
   import os
   with tempfile.TemporaryDirectory() as td:
