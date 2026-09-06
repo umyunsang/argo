@@ -6,7 +6,7 @@ from pathlib import Path,PurePosixPath
 CELL_TERMINAL={"valid_complete","timeout","crash","malformed","identity_drift","spawn_failure","unreaped","sidecar_error","ledger_error","global_deadline"}
 COMMON={"previous_record_sha256","record_sha256"}
 LEDGER_KEYS={
- "header":COMMON|{"event","schema_version","run_id","manifest_sha256","approval_sha256","source_archive_sha256","started_at"},
+ "header":COMMON|{"event","schema_version","run_id","manifest_sha256","approval_sha256","source_archive_sha256","preflight_identity_sha256","started_at"},
  "planned":COMMON|{"event","sequence","run_id","cell_id","cell_nonce","cell_index","timestamp"},
  "spawned":COMMON|{"event","sequence","run_id","cell_id","cell_nonce","cell_index","pid","pgid","timestamp"},
  "finished":COMMON|{"event","sequence","run_id","cell_id","cell_nonce","cell_index","status","exit_code","timed_out","stdout","stderr","events","ui_gzip","frame_manifest","timestamp"},
@@ -55,8 +55,12 @@ def fsync_parent(path):
  fd=os.open(str(Path(path).parent),os.O_RDONLY)
  try:os.fsync(fd)
  finally:os.close(fd)
+def ensure_directory_durable(path):
+ path=Path(path);missing=[];current=path
+ while not current.exists():missing.append(current);current=current.parent
+ for directory in reversed(missing):directory.mkdir();fsync_parent(directory)
 def atomic_create(path,data):
- path=Path(path);path.parent.mkdir(parents=True,exist_ok=True);flags=os.O_WRONLY|os.O_CREAT|os.O_EXCL
+ path=Path(path);ensure_directory_durable(path.parent);flags=os.O_WRONLY|os.O_CREAT|os.O_EXCL
  if hasattr(os,"O_NOFOLLOW"):flags|=os.O_NOFOLLOW
  try:fd=os.open(path,flags,0o600)
  except FileExistsError:return False
@@ -64,14 +68,17 @@ def atomic_create(path,data):
   write_all(fd,data);os.fsync(fd)
  finally:os.close(fd)
  fsync_parent(path);return True
+def publish_exclusive(temp_path,result_path):
+ temp_path=Path(temp_path);result_path=Path(result_path);ensure_directory_durable(result_path.parent)
+ os.link(temp_path,result_path,follow_symlinks=False);fsync_parent(result_path);os.unlink(temp_path);fsync_parent(result_path)
 def append_record(path,record,previous=None):
- path=Path(path);path.parent.mkdir(parents=True,exist_ok=True);value=dict(record);value["previous_record_sha256"]=previous or "0"*64;value["record_sha256"]=hashlib.sha256(canonical(value)).hexdigest();line=canonical(value)+b"\n";flags=os.O_WRONLY|os.O_CREAT|os.O_APPEND
+ path=Path(path);ensure_directory_durable(path.parent);value=dict(record);value["previous_record_sha256"]=previous or "0"*64;value["record_sha256"]=hashlib.sha256(canonical(value)).hexdigest();line=canonical(value)+b"\n";flags=os.O_WRONLY|os.O_CREAT|os.O_APPEND
  if hasattr(os,"O_NOFOLLOW"):flags|=os.O_NOFOLLOW
  fd=os.open(path,flags,0o600)
  try:write_all(fd,line);os.fsync(fd)
  finally:os.close(fd)
  fsync_parent(path);return value["record_sha256"]
-def validate_ledger(path,manifest,allow_partial=False,expected_header=None):
+def validate_ledger(path,manifest,allow_partial=False,expected_header=None,strict_sidecars=False):
  errors=[];records=[]
  try:
   lines=Path(path).read_bytes().splitlines();records=[json.loads(line) for line in lines]
@@ -106,6 +113,14 @@ def validate_ledger(path,manifest,allow_partial=False,expected_header=None):
   elif event=="finished":
    status=r.get("status")
    if type(r.get("timed_out")) is not bool or (r.get("exit_code") is not None and type(r.get("exit_code")) is not int):errors.append("FINISHED_SCHEMA")
+   if strict_sidecars and status=="valid_complete":
+    if r.get("exit_code")!=0 or r.get("timed_out") is not False:errors.append("VALID_COMPLETE_PROCESS")
+    for key in ["stdout","stderr","events","ui_gzip","frame_manifest"]:
+     meta=r.get(key);valid_meta=isinstance(meta,dict) and set(meta)=={"path","size","sha256"} and type(meta.get("size")) is int and meta.get("size")>=0 and re.fullmatch(r"[0-9a-f]{64}",str(meta.get("sha256","")))
+     if not valid_meta:errors.append("SIDECAR_META:"+key);continue
+     sidecar=Path(meta["path"])
+     if not sidecar.is_file() or sidecar.stat().st_size!=meta["size"] or hashlib.sha256(sidecar.read_bytes()).hexdigest()!=meta["sha256"]:errors.append("SIDECAR_BYTES:"+key)
+     if key in {"events","ui_gzip","frame_manifest"} and meta["size"]==0:errors.append("SIDECAR_EMPTY:"+key)
    legal=states.get(cid)=="spawned" and status in CELL_TERMINAL
    legal_pre=states.get(cid)=="planned" and status in {"spawn_failure","sidecar_error","ledger_error"}
    if not (legal or legal_pre):errors.append("BAD_FINISH_TRANSITION")

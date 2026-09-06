@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Strict per-cell validator for DiscoveryWorld official/UI-only parity."""
 from __future__ import annotations
-import gzip,hashlib,json
+import gzip,hashlib,json,re
 from pathlib import Path
 from state_projection import canonical_bytes
 START_KEYS={"event","schema_version","run_id","cell_id","cell_nonce","scenario","difficulty","seed","mode","repeat","steps","thread_id","source_commit","source_tree","source_archive_sha256","adapter_sha256","state_projection_sha256","module_path","adapter_module_path","state_projection_module_path"}
@@ -33,7 +33,7 @@ def validate_cell(cell,run,event_path,ui_gzip_path,frame_manifest,*,source_commi
  ui_hashes=[];post_hashes=[];pre_hashes=[]
  for i,e in enumerate(obs):
   if e["cell_id"]!=cell["cell_id"] or e["cell_nonce"]!=cell["cell_nonce"]:errors.append("OBS_IDENTITY");break
-  if set(e["pre_state"])!=STATE_KEYS or e["pre_state"].get("api_steps")!=i+1 or e["pre_state"].get("world_counter")!=i+1 or hashlib.sha256(canonical_bytes(e["pre_state"])).hexdigest()!=e["pre_state_sha256"]:errors.append("PRE_STATE_SCHEMA_HASH")
+  if set(e["pre_state"])!=STATE_KEYS or e["pre_state"].get("api_steps")!=i or e["pre_state"].get("world_counter")!=i+1 or hashlib.sha256(canonical_bytes(e["pre_state"])).hexdigest()!=e["pre_state_sha256"]:errors.append("PRE_STATE_SCHEMA_HASH")
   if set(e["post_state"])!=STATE_KEYS or e["post_state"].get("api_steps")!=i+1 or e["post_state"].get("world_counter")!=i+1:errors.append("STATE_SCHEMA")
   if hashlib.sha256(canonical_bytes(e["post_state"])).hexdigest()!=e["post_state_sha256"]:errors.append("STATE_HASH")
   if i==0 and (e["action_success"] is not None or e["tick_success"] is not None):errors.append("STEP0_RESULT")
@@ -58,4 +58,6 @@ def validate_cell(cell,run,event_path,ui_gzip_path,frame_manifest,*,source_commi
  return {"status":"malformed" if errors else "valid_complete","errors":errors,"ui_hashes":ui_hashes,"pre_state_hashes":pre_hashes,"post_state_hashes":post_hashes,"event_sha256":file_sha(event_path),"ui_gzip_sha256":file_sha(ui_gzip_path)}
 def compare_pair(a,b):
  if a.get("status")!="valid_complete" or b.get("status")!="valid_complete":return "UNOBSERVABLE"
- return "EXACT" if a.get("ui_hashes")==b.get("ui_hashes") and a.get("pre_state_hashes")==b.get("pre_state_hashes") and a.get("post_state_hashes")==b.get("post_state_hashes") else "OBSERVED_MISMATCH"
+ for key in ["ui_hashes","pre_state_hashes","post_state_hashes"]:
+  if type(a.get(key)) is not list or type(b.get(key)) is not list or len(a[key])!=1001 or len(b[key])!=1001 or any(not isinstance(value,str) or not re.fullmatch(r"[0-9a-f]{64}",value) for value in a[key]+b[key]):return "UNOBSERVABLE"
+ return "EXACT" if all(a[key]==b[key] for key in ["ui_hashes","pre_state_hashes","post_state_hashes"]) else "OBSERVED_MISMATCH"

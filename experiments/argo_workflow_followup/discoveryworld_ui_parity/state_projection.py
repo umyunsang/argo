@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exact allowlisted post-observation state projection for UI parity."""
 from __future__ import annotations
-import hashlib,json
+import copy,hashlib,json
 
 def uuid_or_none(value):
     if value is None:return None
@@ -9,7 +9,7 @@ def uuid_or_none(value):
 
 def project_state(api, agent_index: int) -> dict:
     ui=api.ui[agent_index];agent=ui.currentAgent;dialog=ui.dialogToDisplay
-    return {
+    return copy.deepcopy({
         "inModal":bool(ui.inModal),
         "inDiscoveryFeedModal":bool(getattr(ui,"inDiscoveryFeedModal",False)),
         "dialog_present":dialog is not None,
@@ -25,7 +25,7 @@ def project_state(api, agent_index: int) -> dict:
         "task_progress":api.taskProgress,
         "api_steps":api.steps,
         "world_counter":api.world.getStepCounter(),
-    }
+    })
 
 def canonical_bytes(value: object) -> bytes:
     return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(",",":"),allow_nan=False).encode("utf-8")

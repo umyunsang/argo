@@ -4,7 +4,7 @@ import copy,json,sys,tempfile,unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 HERE=Path(__file__).resolve().parent;sys.path.insert(0,str(HERE))
-from lifecycle import append_record,atomic_create,final_status,validate_ledger,validate_manifest
+from lifecycle import append_record,atomic_create,ensure_directory_durable,final_status,publish_exclusive,validate_ledger,validate_manifest
 M=json.loads((HERE/"manifest.json").read_text())
 class Tests(unittest.TestCase):
  def test_manifest_valid(self):self.assertTrue(validate_manifest(M)["passed"])
@@ -21,21 +21,21 @@ class Tests(unittest.TestCase):
    self.assertEqual(sorted(r),[False,True])
  def test_hash_chain_and_transitions(self):
   with tempfile.TemporaryDirectory() as td:
-   p=Path(td)/"l";h=append_record(p,{"event":"header","schema_version":"argo-ui-parity-ledger/v1","run_id":M["run_id"],"manifest_sha256":"a"*64,"approval_sha256":"b"*64,"source_archive_sha256":"c"*64,"started_at":"t"});cell=M["ordered_cells"][0];h=append_record(p,{"event":"planned","sequence":1,"run_id":M["run_id"],"cell_id":cell["cell_id"],"cell_nonce":cell["cell_nonce"],"cell_index":0,"timestamp":"t"},h);h=append_record(p,{"event":"spawned","sequence":2,"run_id":M["run_id"],"cell_id":cell["cell_id"],"cell_nonce":cell["cell_nonce"],"cell_index":0,"pid":1,"pgid":1,"timestamp":"t"},h);append_record(p,{"event":"finished","sequence":3,"run_id":M["run_id"],"cell_id":cell["cell_id"],"cell_nonce":cell["cell_nonce"],"cell_index":0,"status":"valid_complete","exit_code":0,"timed_out":False,"stdout":{},"stderr":{},"events":{},"ui_gzip":{},"frame_manifest":{},"timestamp":"t"},h);self.assertTrue(validate_ledger(p,M,allow_partial=True)["passed"])
+   p=Path(td)/"l";h=append_record(p,{"event":"header","schema_version":"argo-ui-parity-ledger/v1","run_id":M["run_id"],"manifest_sha256":"a"*64,"approval_sha256":"b"*64,"source_archive_sha256":"c"*64,"preflight_identity_sha256":"d"*64,"started_at":"t"});cell=M["ordered_cells"][0];h=append_record(p,{"event":"planned","sequence":1,"run_id":M["run_id"],"cell_id":cell["cell_id"],"cell_nonce":cell["cell_nonce"],"cell_index":0,"timestamp":"t"},h);h=append_record(p,{"event":"spawned","sequence":2,"run_id":M["run_id"],"cell_id":cell["cell_id"],"cell_nonce":cell["cell_nonce"],"cell_index":0,"pid":1,"pgid":1,"timestamp":"t"},h);append_record(p,{"event":"finished","sequence":3,"run_id":M["run_id"],"cell_id":cell["cell_id"],"cell_nonce":cell["cell_nonce"],"cell_index":0,"status":"valid_complete","exit_code":0,"timed_out":False,"stdout":{},"stderr":{},"events":{},"ui_gzip":{},"frame_manifest":{},"timestamp":"t"},h);self.assertTrue(validate_ledger(p,M,allow_partial=True)["passed"])
  def test_tampered_ledger_fails(self):
   with tempfile.TemporaryDirectory() as td:
-   p=Path(td)/"l";append_record(p,{"event":"header","schema_version":"argo-ui-parity-ledger/v1","run_id":M["run_id"],"manifest_sha256":"a"*64,"approval_sha256":"b"*64,"source_archive_sha256":"c"*64,"started_at":"t"});p.write_text(p.read_text().replace('"run_id"', '"run_ix"',1));self.assertFalse(validate_ledger(p,M,allow_partial=True)["passed"])
+   p=Path(td)/"l";append_record(p,{"event":"header","schema_version":"argo-ui-parity-ledger/v1","run_id":M["run_id"],"manifest_sha256":"a"*64,"approval_sha256":"b"*64,"source_archive_sha256":"c"*64,"preflight_identity_sha256":"d"*64,"started_at":"t"});p.write_text(p.read_text().replace('"run_id"', '"run_ix"',1));self.assertFalse(validate_ledger(p,M,allow_partial=True)["passed"])
  def test_header_identity_mismatch_fails(self):
   with tempfile.TemporaryDirectory() as td:
-   p=Path(td)/"l";append_record(p,{"event":"header","schema_version":"argo-ui-parity-ledger/v1","run_id":M["run_id"],"manifest_sha256":"a"*64,"approval_sha256":"b"*64,"source_archive_sha256":"c"*64,"started_at":"t"});self.assertFalse(validate_ledger(p,M,allow_partial=True,expected_header={"manifest_sha256":"d"*64})["passed"])
+   p=Path(td)/"l";append_record(p,{"event":"header","schema_version":"argo-ui-parity-ledger/v1","run_id":M["run_id"],"manifest_sha256":"a"*64,"approval_sha256":"b"*64,"source_archive_sha256":"c"*64,"preflight_identity_sha256":"d"*64,"started_at":"t"});self.assertFalse(validate_ledger(p,M,allow_partial=True,expected_header={"manifest_sha256":"d"*64})["passed"])
  def test_final_statuses(self):
   self.assertEqual(final_status(["valid_complete"]*30,["EXACT"]*30),"PASS");self.assertEqual(final_status(["valid_complete"]*30,["EXACT"]*29+["OBSERVED_MISMATCH"]),"FAIL_PARITY_NOT_ESTABLISHED");self.assertEqual(final_status(["timeout"]+["valid_complete"]*29,["UNOBSERVABLE"]*30),"INVALID");self.assertEqual(final_status(["valid_complete"]*29,["UNOBSERVABLE"]*30),"INCOMPLETE")
  def test_planned_to_spawn_failure_is_legal(self):
   with tempfile.TemporaryDirectory() as td:
-   p=Path(td)/"l";h=append_record(p,{"event":"header","schema_version":"argo-ui-parity-ledger/v1","run_id":M["run_id"],"manifest_sha256":"a"*64,"approval_sha256":"b"*64,"source_archive_sha256":"c"*64,"started_at":"t"});c=M["ordered_cells"][0];h=append_record(p,{"event":"planned","sequence":1,"run_id":M["run_id"],"cell_id":c["cell_id"],"cell_nonce":c["cell_nonce"],"cell_index":0,"timestamp":"t"},h);append_record(p,{"event":"finished","sequence":2,"run_id":M["run_id"],"cell_id":c["cell_id"],"cell_nonce":c["cell_nonce"],"cell_index":0,"status":"spawn_failure","exit_code":None,"timed_out":False,"stdout":{},"stderr":{},"events":{},"ui_gzip":{},"frame_manifest":{},"timestamp":"t"},h);self.assertTrue(validate_ledger(p,M,allow_partial=True)["passed"])
+   p=Path(td)/"l";h=append_record(p,{"event":"header","schema_version":"argo-ui-parity-ledger/v1","run_id":M["run_id"],"manifest_sha256":"a"*64,"approval_sha256":"b"*64,"source_archive_sha256":"c"*64,"preflight_identity_sha256":"d"*64,"started_at":"t"});c=M["ordered_cells"][0];h=append_record(p,{"event":"planned","sequence":1,"run_id":M["run_id"],"cell_id":c["cell_id"],"cell_nonce":c["cell_nonce"],"cell_index":0,"timestamp":"t"},h);append_record(p,{"event":"finished","sequence":2,"run_id":M["run_id"],"cell_id":c["cell_id"],"cell_nonce":c["cell_nonce"],"cell_index":0,"status":"spawn_failure","exit_code":None,"timed_out":False,"stdout":{},"stderr":{},"events":{},"ui_gzip":{},"frame_manifest":{},"timestamp":"t"},h);self.assertTrue(validate_ledger(p,M,allow_partial=True)["passed"])
  def test_post_final_record_fails(self):
   with tempfile.TemporaryDirectory() as td:
-   p=Path(td)/"l";h=append_record(p,{"event":"header","schema_version":"argo-ui-parity-ledger/v1","run_id":M["run_id"],"manifest_sha256":"a"*64,"approval_sha256":"b"*64,"source_archive_sha256":"c"*64,"started_at":"t"});h=append_record(p,{"event":"finalized","sequence":1,"run_id":M["run_id"],"status":"INCOMPLETE","result_sha256":"a"*64,"timestamp":"t"},h);append_record(p,{"event":"controller_stop","sequence":2,"run_id":M["run_id"],"reason":"x","timestamp":"t"},h);self.assertFalse(validate_ledger(p,M,allow_partial=True)["passed"])
+   p=Path(td)/"l";h=append_record(p,{"event":"header","schema_version":"argo-ui-parity-ledger/v1","run_id":M["run_id"],"manifest_sha256":"a"*64,"approval_sha256":"b"*64,"source_archive_sha256":"c"*64,"preflight_identity_sha256":"d"*64,"started_at":"t"});h=append_record(p,{"event":"finalized","sequence":1,"run_id":M["run_id"],"status":"INCOMPLETE","result_sha256":"a"*64,"timestamp":"t"},h);append_record(p,{"event":"controller_stop","sequence":2,"run_id":M["run_id"],"reason":"x","timestamp":"t"},h);self.assertFalse(validate_ledger(p,M,allow_partial=True)["passed"])
  def test_write_all_handles_short_writes(self):
   import lifecycle,os
   from unittest.mock import patch
@@ -44,4 +44,31 @@ class Tests(unittest.TestCase):
    def short(fd,data):return original(fd,bytes(data[:max(1,len(data)//2)]))
    with patch("lifecycle.os.write",side_effect=short):self.assertTrue(atomic_create(p,b"abcdefghij"))
    self.assertEqual(p.read_bytes(),b"abcdefghij")
+ def test_result_publication_is_atomic_and_exclusive(self):
+  with tempfile.TemporaryDirectory() as td:
+   root=Path(td);temp=root/"pending";result=root/"result";self.assertTrue(atomic_create(temp,b"complete"));publish_exclusive(temp,result);self.assertEqual(result.read_bytes(),b"complete");self.assertFalse(temp.exists());second=root/"second";self.assertTrue(atomic_create(second,b"other"))
+   with self.assertRaises(FileExistsError):publish_exclusive(second,result)
+   self.assertEqual(result.read_bytes(),b"complete")
+ def test_nested_directory_creation_fsyncs_each_parent_entry(self):
+  import lifecycle
+  from unittest.mock import patch
+  with tempfile.TemporaryDirectory() as td:
+   root=Path(td);calls=[];original=lifecycle.fsync_parent
+   def record(path):calls.append(Path(path));return original(path)
+   with patch("lifecycle.fsync_parent",side_effect=record):ensure_directory_durable(root/"sidecars"/"cell")
+   self.assertEqual(calls,[root/"sidecars",root/"sidecars"/"cell"])
+ def test_strict_valid_complete_rehashes_sidecars(self):
+  import hashlib
+  with tempfile.TemporaryDirectory() as td:
+   root=Path(td);ledger=root/"ledger";h=append_record(ledger,{"event":"header","schema_version":"argo-ui-parity-ledger/v1","run_id":M["run_id"],"manifest_sha256":"a"*64,"approval_sha256":"b"*64,"source_archive_sha256":"c"*64,"preflight_identity_sha256":"d"*64,"started_at":"t"});cell=M["ordered_cells"][0];h=append_record(ledger,{"event":"planned","sequence":1,"run_id":M["run_id"],"cell_id":cell["cell_id"],"cell_nonce":cell["cell_nonce"],"cell_index":0,"timestamp":"t"},h);h=append_record(ledger,{"event":"spawned","sequence":2,"run_id":M["run_id"],"cell_id":cell["cell_id"],"cell_nonce":cell["cell_nonce"],"cell_index":0,"pid":1,"pgid":1,"timestamp":"t"},h);metas={}
+   for key in ["stdout","stderr","events","ui_gzip","frame_manifest"]:
+    path=root/key;data=b"" if key in {"stdout","stderr"} else b"x";path.write_bytes(data);metas[key]={"path":str(path),"size":len(data),"sha256":hashlib.sha256(data).hexdigest()}
+   append_record(ledger,{"event":"finished","sequence":3,"run_id":M["run_id"],"cell_id":cell["cell_id"],"cell_nonce":cell["cell_nonce"],"cell_index":0,"status":"valid_complete","exit_code":0,"timed_out":False,**metas,"timestamp":"t"},h);self.assertTrue(validate_ledger(ledger,M,allow_partial=True,strict_sidecars=True)["passed"]);(root/"events").write_bytes(b"bad");self.assertFalse(validate_ledger(ledger,M,allow_partial=True,strict_sidecars=True)["passed"])
+ def test_interrupted_result_publication_never_creates_partial_result(self):
+  from unittest.mock import patch
+  with tempfile.TemporaryDirectory() as td:
+   root=Path(td);temp=root/"pending";result=root/"result";self.assertTrue(atomic_create(temp,b"complete"))
+   with patch("lifecycle.os.link",side_effect=OSError("interrupt")):
+    with self.assertRaises(OSError):publish_exclusive(temp,result)
+   self.assertFalse(result.exists());self.assertEqual(temp.read_bytes(),b"complete")
 if __name__=="__main__":unittest.main(verbosity=2)

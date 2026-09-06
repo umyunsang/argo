@@ -56,7 +56,7 @@ class Tests(unittest.TestCase):
    official=make_api(Path(td1),queue,dialog);adapted=make_api(Path(td2),queue,dialog);old=api_module.pygame;api_module.pygame=FakePygame
    try:
     for _ in range(2):
-     ro=DiscoveryWorldAPI.getAgentObservation(official,0);ra=get_ui_only_observation(adapted,0);self.assertEqual(ro["ui"],ra["ui"]);self.assertEqual(project_state(official,0),project_state(adapted,0));self.assertEqual(set(ro["vision"]),{"base64_no_grid","base64_with_grid"});self.assertNotIn("vision",ra)
+     ro=DiscoveryWorldAPI.getAgentObservation(official,0);ra=get_ui_only_observation(adapted,0);self.assertEqual(set(ro),{"errors","ui","vision"});self.assertEqual(set(ra),{"errors","ui"});self.assertEqual(ro["errors"],[]);self.assertEqual(ra["errors"],[]);self.assertEqual(ro["ui"],ra["ui"]);self.assertEqual(project_state(official,0),project_state(adapted,0));self.assertEqual(set(ro["vision"]),{"base64_no_grid","base64_with_grid"});self.assertNotIn("vision",ra)
    finally:api_module.pygame=old
    self.assertEqual(len(list(Path(td1).glob("*.png"))),2);self.assertEqual(len(list(Path(td2).glob("*.png"))),0)
  def test_queue_0(self):self.one_case([])

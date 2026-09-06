@@ -18,4 +18,6 @@ class Tests(unittest.TestCase):
  def test_order_preserved(self):self.assertEqual(project_state(A(),0)["arg_object_uuids"],[2,1])
  def test_canonical_utf8(self):self.assertEqual(canonical_bytes({"b":"한","a":1}),'{"a":1,"b":"한"}'.encode())
  def test_hash_stable(self):self.assertEqual(projection_sha256(project_state(A(),0)),projection_sha256(project_state(A(),0)))
+ def test_snapshot_is_deeply_immutable_from_live_state(self):
+  api=A();snapshot=project_state(api,0);api.ui[0].dialogToDisplay["dialogOptions"].append("y");api.taskProgress[0]["completed"]=True;self.assertEqual(snapshot["dialog_options"],["x"]);self.assertEqual(snapshot["task_progress"],[{"completed":False}])
 if __name__=="__main__":unittest.main(verbosity=2)

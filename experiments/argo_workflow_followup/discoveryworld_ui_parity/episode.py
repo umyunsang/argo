@@ -30,6 +30,7 @@ def main():
     block_network();started=time.monotonic();import discoveryworld
     from discoveryworld.DiscoveryWorldAPI import DiscoveryWorldAPI
     api=DiscoveryWorldAPI(threadID=a.thread_id);api.FRAME_DIR=str(Path(a.frame_directory).resolve())+"/";loaded=api.loadScenario(a.scenario,a.difficulty,a.seed,numUserAgents=1)
+    if loaded is not True:raise RuntimeError("SCENARIO_LOAD_FAILED")
     emit(a.event_fd,{"event":"start","schema_version":"argo-discoveryworld-ui-parity-worker/v1","run_id":a.run_id,"cell_id":a.cell_id,"cell_nonce":a.cell_nonce,"scenario":a.scenario,"difficulty":a.difficulty,"seed":a.seed,"mode":a.mode,"repeat":a.repeat,"steps":a.steps,"thread_id":a.thread_id,"source_commit":a.source_commit,"source_tree":a.source_tree,"source_archive_sha256":a.source_archive_sha256,"adapter_sha256":a.adapter_sha256,"state_projection_sha256":a.state_projection_sha256,"module_path":str(Path(discoveryworld.__file__).resolve()),"adapter_module_path":str(Path(adapter_v2.__file__).resolve()),"state_projection_module_path":str(Path(state_projection.__file__).resolve())})
     raw_file=open(a.ui_gzip_path,"xb");gz=gzip.GzipFile(fileobj=raw_file,mode="wb",mtime=0);actions=ticks=0;vision_generated=False;directions=["north","east","south","west"]
     try:
@@ -41,6 +42,8 @@ def main():
             if a.mode=="official":
                 observation=api.getAgentObservation(0);vision_generated=vision_generated or bool(observation.get("vision"))
             else:observation=get_ui_only_observation(api,0)
+            expected_outer={"errors","ui","vision"} if a.mode=="official" else {"errors","ui"}
+            if type(observation) is not dict or set(observation)!=expected_outer or observation["errors"]!=[] or type(observation["ui"]) is not dict:raise RuntimeError("OBSERVATION_OUTER_SCHEMA")
             post=project_state(api,0);ui=observation["ui"];ui_bytes=canonical_bytes({"observation_index":step,"ui":ui});gz.write(ui_bytes+b"\n")
             emit(a.event_fd,{"event":"observation","cell_id":a.cell_id,"cell_nonce":a.cell_nonce,"observation_index":step,"world_counter":api.world.getStepCounter(),"ui_sha256":hashlib.sha256(canonical_bytes(ui)).hexdigest(),"pre_state_sha256":projection_sha256(pre),"pre_state":pre,"post_state_sha256":projection_sha256(post),"post_state":post,"action_success":action_success,"tick_success":tick_success})
     finally:
