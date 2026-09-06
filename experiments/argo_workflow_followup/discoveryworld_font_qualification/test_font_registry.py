@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import copy,json,sys,tempfile,types,unittest
+import copy,json,subprocess,sys,tempfile,types,unittest
 from pathlib import Path
 HERE=Path(__file__).resolve().parent;ROOT=HERE.parents[2];sys.path.insert(0,str(HERE))
 from font_registry import EXPECTED_CENSUS,configure,scan_calls,validate_manifest
@@ -13,6 +13,13 @@ class Tests(unittest.TestCase):
    root=Path(td);(root/"x.py").write_text("from pygame.font import SysFont as SF\nSF(name='Arial', size=8)\ngetattr(pygame.font, 'SysFont')('Arial', 8)\n");rows=scan_calls(root);self.assertEqual(len(rows),2);self.assertEqual({row[2] for row in rows},{"SF","getattr.SysFont"});self.assertEqual(rows[0][3:5],("Arial",8))
  def test_source_call_census(self):self.assertEqual(scan_calls(SOURCE),EXPECTED_CENSUS)
  def test_current_manifest(self):self.assertTrue(validate_manifest(json.loads(MANIFEST.read_text()),SOURCE)["passed"])
+ def test_pinned_configure_is_subprocess_free(self):
+  module=types.SimpleNamespace(sysfont=Sysfont());value=json.loads(MANIFEST.read_text());original=subprocess.run
+  def fail(*args,**kwargs):raise AssertionError("subprocess")
+  subprocess.run=fail
+  try:configure(module,value,SOURCE)
+  finally:subprocess.run=original
+  self.assertTrue(module.sysfont.is_init)
  def test_hash_drift_fails(self):
   value=json.loads(MANIFEST.read_text());value["calls"][0]["sha256"]="0"*64;self.assertFalse(validate_manifest(value,SOURCE)["passed"])
  def test_configure_exact_registry_without_discovery(self):
