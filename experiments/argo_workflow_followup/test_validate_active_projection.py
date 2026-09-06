@@ -55,5 +55,5 @@ class Tests(unittest.TestCase):
  def test_active_decision_test_status_contradiction(self):
   td=workspace_copy();path=td/"paper/context-graph.json";graph=json.loads(path.read_text());next(node for node in graph["nodes"] if node["id"]=="decision:rd_2026_09_06_discoveryworld_ui_parity")["status"]="CONTROLLER_48_TESTS_PASS";path.write_text(json.dumps(graph,ensure_ascii=False,indent=2)+"\n");self.assertIn("ACTIVE_TEST_STATUS",validate(td,td/C.relative_to(ROOT))["errors"])
  def test_next_action_test_count_contradiction(self):
-  td=workspace_copy();path=td/"paper/research/next-experiment-manifest.json";nxt=json.loads(path.read_text());nxt["next_zero_cost_actions"]=[re.sub(r"validate \d+ tests","validate 79 tests",action) for action in nxt["next_zero_cost_actions"]];path.write_text(json.dumps(nxt,ensure_ascii=False,indent=2)+"\n");self.assertIn("TEST_COUNT_CONSISTENCY",validate(td,td/C.relative_to(ROOT))["errors"])
+  td=workspace_copy();path=td/"paper/research/next-experiment-manifest.json";nxt=json.loads(path.read_text());nxt["next_zero_cost_actions"].append("validate 79 tests");path.write_text(json.dumps(nxt,ensure_ascii=False,indent=2)+"\n");self.assertIn("TEST_COUNT_CONSISTENCY",validate(td,td/C.relative_to(ROOT))["errors"])
 if __name__=="__main__":unittest.main(verbosity=2)
