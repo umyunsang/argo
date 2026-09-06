@@ -105,3 +105,7 @@ A separate design freezes 20 zero-model host-subprocess episodes: two task famil
 ## DiscoveryWorld long-horizon result
 
 The separately approved frozen run exhausted all 20 one-attempt subprocesses. Every 1,000-step episode hit its 120-second timeout; no episode emitted a terminal receipt. The controller stopped after 2,400.32 seconds with no retries, exclusions, or endpoint shortening. Therefore the zero values in its raw summary are aggregation over missing episode receipts, not observations that zero steps/actions occurred. The result rejects the exact runtime envelope as infeasible and yields no determinism, task-success, hidden-key, or model conclusion.
+
+## DiscoveryWorld exploratory latency calibration proposal
+
+A new, explicitly exploratory protocol does not retry or replace the closed long-horizon endpoint. It fixes two task families at seed 0, horizons 10/50/100, two fresh-process repeats, 12 cells and 640 planned steps. Each cell has a 60-second timeout and flushes NDJSON after load and at fixed progress checkpoints so timeouts preserve partial evidence. It excludes vision, scorecard, gold, task completion, behavioral conditions, models and confirmatory inference. Tests pass 10/10; the unapproved branch starts zero episodes. Separate approval is required.
