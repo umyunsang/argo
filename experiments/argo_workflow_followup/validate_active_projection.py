@@ -30,7 +30,7 @@ def validate(root,contract_path):
  if design_node.get("sha256")!=sha(design_path) or root_node.get("active_design_sha256")!=sha(design_path):errors.append("DESIGN_BINDING")
  if next_node.get("sha256")!=sha(root/contract["objects"]["next"]):errors.append("NEXT_NODE")
  cf=nxt.get("current_frontier",{})
- for pk,hk in [("design","design_sha256"),("proposal","proposal_sha256"),("manifest","manifest_sha256"),("schemas","schemas_sha256"),("adapter_v2","adapter_v2_sha256"),("state_projection","state_projection_sha256"),("lifecycle","lifecycle_sha256"),("protocol","protocol_sha256"),("runner","runner_sha256"),("episode","episode_sha256"),("approval","approval_sha256")]:
+ for pk,hk in [("design","design_sha256"),("proposal","proposal_sha256"),("manifest","manifest_sha256"),("schemas","schemas_sha256"),("adapter_v2","adapter_v2_sha256"),("state_projection","state_projection_sha256"),("lifecycle","lifecycle_sha256"),("protocol","protocol_sha256"),("runner","runner_sha256"),("episode","episode_sha256"),("approval","approval_sha256"),("launcher","launcher_sha256"),("bootstrap","bootstrap_sha256"),("environment_manifest_module","environment_manifest_module_sha256"),("environment_content_manifest","environment_content_manifest_sha256"),("graph_validation_authority","graph_validation_authority_sha256"),("graph_integrity_validator","graph_integrity_validator_sha256"),("graph_integrity_test","graph_integrity_test_sha256")]:
   p=root/cf.get(pk,"")
   if not p.is_file() or sha(p)!=cf.get(hk):errors.append("FRONTIER_BINDING:"+pk)
  try:
@@ -40,7 +40,10 @@ def validate(root,contract_path):
   bindings=parity_design["candidate_binding"];test_keys=sorted(key for key in bindings if key.endswith("_test"));test_paths=[bindings.get(key) for key in test_keys]
   if len(test_paths)!=len(set(test_paths)) or any(not (root/path).is_file() or sha(root/path)!=bindings.get(key+"_sha256") for key,path in zip(test_keys,test_paths)):errors.append("CANDIDATE_TEST_BINDING")
   declared_counts={int(match.group(1)) for action in nxt.get("next_zero_cost_actions",[]) if (match:=re.search(r"validate (\d+) tests",action))}
-  if declared_counts!={readiness.get("total_tests")}:errors.append("TEST_COUNT_CONSISTENCY")
+  total=readiness.get("total_tests")
+  if declared_counts!={total}:errors.append("TEST_COUNT_CONSISTENCY")
+  decision=nodes.get("decision:rd_2026_09_06_discoveryworld_ui_parity",{});readiness_edge=edges.get("edge:1297",{})
+  if not isinstance(total,int) or f"_{total}_TESTS_" not in decision.get("status","") or readiness_edge.get("scope")!=f"{total}-test static readiness" or str(total) not in nxt.get("status","") or str(total) not in handoff.get("status",""):errors.append("ACTIVE_TEST_STATUS")
  except (KeyError,TypeError,FileNotFoundError,json.JSONDecodeError):errors.append("PARITY_HANDOFF_READ")
  if not set(contract.get("required_prohibited_claims",[])).issubset(set(handoff.get("prohibited_claims",[]))):errors.append("PROHIBITED_CLAIMS")
  if handoff.get("inference_scope",{}).get("candidate_n")!=2 or nxt.get("inference_scope",{}).get("candidate_n")!=2:errors.append("INFERENCE_SCOPE")
@@ -49,5 +52,5 @@ def validate(root,contract_path):
  if graph.get("evidence_cutoff")!="2026-09-06":errors.append("EVIDENCE_CUTOFF")
  return {"passed":not errors,"errors":errors,"nodes":len(nodes),"edges":len(edges),"active_chain_nodes":len(node_ids),"active_chain_edges":len(edge_ids),"used_relations":len(used)}
 def main():
- p=argparse.ArgumentParser();p.add_argument("--root",type=Path,default=Path(__file__).resolve().parents[1]);p.add_argument("--contract",type=Path,required=True);a=p.parse_args();r=validate(a.root,a.contract);print(json.dumps(r,indent=2,sort_keys=True));return 0 if r["passed"] else 1
+ p=argparse.ArgumentParser();p.add_argument("--root",type=Path,default=Path(__file__).resolve().parents[2]);p.add_argument("--contract",type=Path,required=True);a=p.parse_args();r=validate(a.root,a.contract);print(json.dumps(r,indent=2,sort_keys=True));return 0 if r["passed"] else 1
 if __name__=="__main__":raise SystemExit(main())

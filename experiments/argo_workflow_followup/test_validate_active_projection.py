@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import copy,json,re,sys,tempfile,unittest
+import copy,json,re,subprocess,sys,tempfile,unittest
 from pathlib import Path
 HERE=Path(__file__).resolve().parent;ROOT=HERE.parents[1];sys.path.insert(0,str(HERE))
 from validate_active_projection import validate
@@ -20,6 +20,8 @@ def workspace_mutate(rel,fn):
 class Tests(unittest.TestCase):
  def test_current(self):
   r=validate(ROOT,C);self.assertTrue(r["passed"],r["errors"])
+ def test_cli_default_root(self):
+  done=subprocess.run([sys.executable,str(HERE/"validate_active_projection.py"),"--contract",str(C)],text=True,capture_output=True,check=False);self.assertEqual(done.returncode,0,done.stdout+done.stderr)
  def test_noncanonical_chain_node(self):
   td=workspace_mutate("paper/research/active-graph-handoff-manifest.json",lambda o:o["active_chain"]["current_node_ids"].append("missing"));self.assertFalse(validate(td,td/C.relative_to(ROOT))["passed"])
  def test_missing_relation_vocabulary(self):
@@ -30,6 +32,8 @@ class Tests(unittest.TestCase):
   td=workspace_mutate("paper/context-graph.json",lambda o:next(e for e in o["edges"] if e["id"]=="edge:889").update({"active":True}));self.assertFalse(validate(td,td/C.relative_to(ROOT))["passed"])
  def test_root_handoff_hash(self):
   td=workspace_mutate("paper/context-graph.json",lambda o:next(n for n in o["nodes"] if n["id"]=="root:research_direction").update({"active_handoff_sha256":"0"*64}));self.assertFalse(validate(td,td/C.relative_to(ROOT))["passed"])
+ def test_v4_environment_frontier_hash(self):
+  td=workspace_mutate("paper/research/next-experiment-manifest.json",lambda value:value["current_frontier"].update({"environment_content_manifest_sha256":"0"*64}));self.assertIn("FRONTIER_BINDING:environment_content_manifest",validate(td,td/C.relative_to(ROOT))["errors"])
  def test_active_design_hash(self):
   td=workspace_mutate("paper/context-graph.json",lambda o:next(n for n in o["nodes"] if n["id"]=="artifact:active_integrated_research_design").update({"sha256":"0"*64}));self.assertFalse(validate(td,td/C.relative_to(ROOT))["passed"])
  def test_prohibited_claim_projection(self):
@@ -40,6 +44,8 @@ class Tests(unittest.TestCase):
   td=workspace_copy();graph_path=td/"paper/context-graph.json";handoff_path=td/"paper/research/active-graph-handoff-manifest.json";graph=json.loads(graph_path.read_text());handoff=json.loads(handoff_path.read_text());next(e for e in graph["edges"] if e["id"]=="edge:1272")["scope"]="40-cell paired parity design";next(e for e in handoff["active_chain"]["current_edges"] if e["id"]=="edge:1272")["scope"]="40-cell paired parity design";graph_path.write_text(json.dumps(graph,ensure_ascii=False,indent=2)+"\n");handoff_path.write_text(json.dumps(handoff,ensure_ascii=False,indent=2)+"\n");self.assertIn("PARITY_CELL_SCOPE",validate(td,td/C.relative_to(ROOT))["errors"])
  def test_duplicate_or_stale_sentinel_binding(self):
   td=workspace_copy();path=td/"paper/research/discoveryworld-ui-adapter-parity-design.json";design=json.loads(path.read_text());design["candidate_binding"].update({"official_sentinel_test":design["candidate_binding"]["sentinel_test"],"official_sentinel_test_sha256":"0"*64});path.write_text(json.dumps(design,ensure_ascii=False,indent=2)+"\n");self.assertIn("CANDIDATE_TEST_BINDING",validate(td,td/C.relative_to(ROOT))["errors"])
+ def test_active_decision_test_status_contradiction(self):
+  td=workspace_copy();path=td/"paper/context-graph.json";graph=json.loads(path.read_text());next(node for node in graph["nodes"] if node["id"]=="decision:rd_2026_09_06_discoveryworld_ui_parity")["status"]="CONTROLLER_48_TESTS_PASS";path.write_text(json.dumps(graph,ensure_ascii=False,indent=2)+"\n");self.assertIn("ACTIVE_TEST_STATUS",validate(td,td/C.relative_to(ROOT))["errors"])
  def test_next_action_test_count_contradiction(self):
   td=workspace_copy();path=td/"paper/research/next-experiment-manifest.json";nxt=json.loads(path.read_text());nxt["next_zero_cost_actions"]=[re.sub(r"validate \d+ tests","validate 79 tests",action) for action in nxt["next_zero_cost_actions"]];path.write_text(json.dumps(nxt,ensure_ascii=False,indent=2)+"\n");self.assertIn("TEST_COUNT_CONSISTENCY",validate(td,td/C.relative_to(ROOT))["errors"])
 if __name__=="__main__":unittest.main(verbosity=2)

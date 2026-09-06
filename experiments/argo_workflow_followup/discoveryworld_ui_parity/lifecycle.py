@@ -3,10 +3,10 @@
 from __future__ import annotations
 import hashlib,json,os,re
 from pathlib import Path,PurePosixPath
-CELL_TERMINAL={"valid_complete","timeout","crash","malformed","identity_drift","spawn_failure","unreaped","sidecar_error","ledger_error","global_deadline"}
+CELL_TERMINAL={"valid_complete","timeout","crash","malformed","identity_drift","spawn_failure","unreaped","sidecar_error","ledger_error","global_deadline","controller_signal"}
 COMMON={"previous_record_sha256","record_sha256"}
 LEDGER_KEYS={
- "header":COMMON|{"event","schema_version","run_id","manifest_sha256","approval_sha256","source_archive_sha256","preflight_identity_sha256","started_at"},
+ "header":COMMON|{"event","schema_version","run_id","manifest_sha256","approval_sha256","source_archive_sha256","preflight_identity_sha256","execution_root_sha256","started_at"},
  "planned":COMMON|{"event","sequence","run_id","cell_id","cell_nonce","cell_index","timestamp"},
  "spawned":COMMON|{"event","sequence","run_id","cell_id","cell_nonce","cell_index","pid","pgid","timestamp"},
  "finished":COMMON|{"event","sequence","run_id","cell_id","cell_nonce","cell_index","status","exit_code","timed_out","stdout","stderr","events","ui_gzip","frame_manifest","timestamp"},
@@ -78,7 +78,7 @@ def append_record(path,record,previous=None):
  try:write_all(fd,line);os.fsync(fd)
  finally:os.close(fd)
  fsync_parent(path);return value["record_sha256"]
-def validate_ledger(path,manifest,allow_partial=False,expected_header=None,strict_sidecars=False):
+def validate_ledger(path,manifest,allow_partial=False,expected_header=None,strict_sidecars=False,result_payload_path=None,artifact_root=None):
  errors=[];records=[]
  try:
   lines=Path(path).read_bytes().splitlines();records=[json.loads(line) for line in lines]
@@ -113,26 +113,42 @@ def validate_ledger(path,manifest,allow_partial=False,expected_header=None,stric
   elif event=="finished":
    status=r.get("status")
    if type(r.get("timed_out")) is not bool or (r.get("exit_code") is not None and type(r.get("exit_code")) is not int):errors.append("FINISHED_SCHEMA")
-   if strict_sidecars and status=="valid_complete":
-    if r.get("exit_code")!=0 or r.get("timed_out") is not False:errors.append("VALID_COMPLETE_PROCESS")
+   if strict_sidecars:
     for key in ["stdout","stderr","events","ui_gzip","frame_manifest"]:
-     meta=r.get(key);valid_meta=isinstance(meta,dict) and set(meta)=={"path","size","sha256"} and type(meta.get("size")) is int and meta.get("size")>=0 and re.fullmatch(r"[0-9a-f]{64}",str(meta.get("sha256","")))
+     meta=r.get(key)
+     if meta=={}:
+      if status=="valid_complete":errors.append("SIDECAR_MISSING:"+key)
+      continue
+     valid_meta=isinstance(meta,dict) and set(meta)=={"path","size","sha256"} and type(meta.get("size")) is int and meta.get("size")>=0 and re.fullmatch(r"[0-9a-f]{64}",str(meta.get("sha256","")))
      if not valid_meta:errors.append("SIDECAR_META:"+key);continue
+     if artifact_root is not None:
+      manifest_key={"stdout":"stdout_path","stderr":"stderr_path","events":"event_path","ui_gzip":"ui_gzip_path","frame_manifest":"frame_manifest_path"}[key];expected_path=(Path(artifact_root)/cell[manifest_key]).resolve()
+      if Path(meta["path"]).resolve()!=expected_path:errors.append("SIDECAR_PATH:"+key)
      sidecar=Path(meta["path"])
      if not sidecar.is_file() or sidecar.stat().st_size!=meta["size"] or hashlib.sha256(sidecar.read_bytes()).hexdigest()!=meta["sha256"]:errors.append("SIDECAR_BYTES:"+key)
-     if key in {"events","ui_gzip","frame_manifest"} and meta["size"]==0:errors.append("SIDECAR_EMPTY:"+key)
+     if status=="valid_complete" and key in {"events","ui_gzip","frame_manifest"} and meta["size"]==0:errors.append("SIDECAR_EMPTY:"+key)
+    if status=="valid_complete" and (r.get("exit_code")!=0 or r.get("timed_out") is not False):errors.append("VALID_COMPLETE_PROCESS")
    legal=states.get(cid)=="spawned" and status in CELL_TERMINAL
-   legal_pre=states.get(cid)=="planned" and status in {"spawn_failure","sidecar_error","ledger_error"}
+   legal_pre=states.get(cid)=="planned" and status in {"spawn_failure","sidecar_error","ledger_error","global_deadline","controller_signal"}
    if not (legal or legal_pre):errors.append("BAD_FINISH_TRANSITION")
    states[cid]="finished"
   elif event=="controller_stop":pass
   elif event=="finalized":
    if finalized:errors.append("DUPLICATE_FINALIZED")
    if r.get("status") not in {"PASS","FAIL_PARITY_NOT_ESTABLISHED","INVALID","INCOMPLETE"} or not re.fullmatch(r"[0-9a-f]{64}",str(r.get("result_sha256",""))):errors.append("FINALIZED_SCHEMA")
+   if result_payload_path is not None:
+    payload=Path(result_payload_path)
+    try:
+     payload_bytes=payload.read_bytes();result=json.loads(payload_bytes)
+     if canonical(result)+b"\n"!=payload_bytes:errors.append("FINALIZED_RESULT_CANONICAL")
+     if hashlib.sha256(payload_bytes).hexdigest()!=r.get("result_sha256"):errors.append("FINALIZED_RESULT_BYTES")
+     if result.get("ledger_last_record_sha256_before_final")!=r.get("previous_record_sha256") or result.get("status")!=r.get("status"):errors.append("FINALIZED_RESULT_BINDING")
+    except (OSError,json.JSONDecodeError,AttributeError):errors.append("FINALIZED_RESULT_BYTES")
    finalized=True
   else:errors.append("UNKNOWN_EVENT")
+ if any(v!="finished" for v in states.values()):errors.append("PLANNED_NOT_TERMINAL")
  if not allow_partial:
-  if len(states)!=30 or any(v!="finished" for v in states.values()):errors.append("INCOMPLETE")
+  if len(states)!=30:errors.append("INCOMPLETE")
   if sum(r.get("event")=="finalized" for r in records)!=1:errors.append("FINALIZED_COUNT")
  return {"passed":not errors,"errors":errors,"records":len(records),"last_record_sha256":prev,"states":states,"finalized":finalized}
 def final_status(cell_statuses,pair_statuses,planned=30):

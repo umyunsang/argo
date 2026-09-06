@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One sealed DiscoveryWorld official/UI-only parity cell."""
 from __future__ import annotations
-import argparse,gzip,hashlib,json,os,socket,time
+import argparse,gzip,hashlib,json,os,signal,socket,sys,time
 from pathlib import Path
 import adapter_v2,state_projection
 from adapter_v2 import get_ui_only_observation
@@ -23,16 +23,17 @@ def write_all(fd:int,data:bytes):
 
 def emit(fd:int,value:dict):write_all(fd,canonical_bytes(value)+b"\n")
 def main():
+    signal.pthread_sigmask(signal.SIG_UNBLOCK,{signal.SIGINT,signal.SIGTERM,signal.SIGHUP})
     p=argparse.ArgumentParser()
-    for name in ["run-id","cell-id","cell-nonce","scenario","difficulty","mode","source-commit","source-tree","source-archive-sha256","adapter-sha256","state-projection-sha256","frame-directory","ui-gzip-path"]:p.add_argument("--"+name,required=True)
-    p.add_argument("--seed",type=int,required=True);p.add_argument("--repeat",type=int,required=True);p.add_argument("--steps",type=int,choices=[1000],required=True);p.add_argument("--thread-id",type=int,required=True);p.add_argument("--event-fd",type=int,required=True);a=p.parse_args()
+    for name in ["run-id","cell-id","cell-nonce","scenario","difficulty","mode","source-commit","source-tree","source-archive-sha256","adapter-sha256","state-projection-sha256","environment-content-sha256","bootstrap-sha256","frame-directory"]:p.add_argument("--"+name,required=True)
+    p.add_argument("--seed",type=int,required=True);p.add_argument("--ui-fd",type=int,required=True);p.add_argument("--repeat",type=int,required=True);p.add_argument("--steps",type=int,choices=[1000],required=True);p.add_argument("--thread-id",type=int,required=True);p.add_argument("--event-fd",type=int,required=True);a=p.parse_args()
     if a.mode not in {"official","ui_only"}:raise ValueError("invalid mode")
-    block_network();started=time.monotonic();import discoveryworld
+    block_network();started=time.monotonic();import discoveryworld,numpy,pygame
     from discoveryworld.DiscoveryWorldAPI import DiscoveryWorldAPI
     api=DiscoveryWorldAPI(threadID=a.thread_id);api.FRAME_DIR=str(Path(a.frame_directory).resolve())+"/";loaded=api.loadScenario(a.scenario,a.difficulty,a.seed,numUserAgents=1)
     if loaded is not True:raise RuntimeError("SCENARIO_LOAD_FAILED")
-    emit(a.event_fd,{"event":"start","schema_version":"argo-discoveryworld-ui-parity-worker/v1","run_id":a.run_id,"cell_id":a.cell_id,"cell_nonce":a.cell_nonce,"scenario":a.scenario,"difficulty":a.difficulty,"seed":a.seed,"mode":a.mode,"repeat":a.repeat,"steps":a.steps,"thread_id":a.thread_id,"source_commit":a.source_commit,"source_tree":a.source_tree,"source_archive_sha256":a.source_archive_sha256,"adapter_sha256":a.adapter_sha256,"state_projection_sha256":a.state_projection_sha256,"module_path":str(Path(discoveryworld.__file__).resolve()),"adapter_module_path":str(Path(adapter_v2.__file__).resolve()),"state_projection_module_path":str(Path(state_projection.__file__).resolve())})
-    raw_file=open(a.ui_gzip_path,"xb");gz=gzip.GzipFile(fileobj=raw_file,mode="wb",mtime=0);actions=ticks=0;vision_generated=False;directions=["north","east","south","west"]
+    emit(a.event_fd,{"event":"start","schema_version":"argo-discoveryworld-ui-parity-worker/v1","run_id":a.run_id,"cell_id":a.cell_id,"cell_nonce":a.cell_nonce,"scenario":a.scenario,"difficulty":a.difficulty,"seed":a.seed,"mode":a.mode,"repeat":a.repeat,"steps":a.steps,"thread_id":a.thread_id,"source_commit":a.source_commit,"source_tree":a.source_tree,"source_archive_sha256":a.source_archive_sha256,"adapter_sha256":a.adapter_sha256,"state_projection_sha256":a.state_projection_sha256,"environment_content_sha256":a.environment_content_sha256,"bootstrap_sha256":a.bootstrap_sha256,"interpreter_path":str(Path(sys.executable).resolve()),"interpreter_prefix":str(Path(sys.prefix).resolve()),"sys_path":[str(Path(value).resolve()) for value in sys.path],"numpy_module_path":str(Path(numpy.__file__).resolve()),"pygame_module_path":str(Path(pygame.__file__).resolve()),"module_path":str(Path(discoveryworld.__file__).resolve()),"adapter_module_path":str(Path(adapter_v2.__file__).resolve()),"state_projection_module_path":str(Path(state_projection.__file__).resolve())})
+    raw_file=os.fdopen(a.ui_fd,"wb",closefd=False);gz=gzip.GzipFile(fileobj=raw_file,mode="wb",mtime=0);actions=ticks=0;vision_generated=False;directions=["north","east","south","west"]
     try:
         for step in range(0,a.steps+1):
             action_success=tick_success=None
