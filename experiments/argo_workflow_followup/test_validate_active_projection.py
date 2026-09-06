@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import copy,json,sys,tempfile,unittest
+import copy,json,re,sys,tempfile,unittest
 from pathlib import Path
 HERE=Path(__file__).resolve().parent;ROOT=HERE.parents[1];sys.path.insert(0,str(HERE))
 from validate_active_projection import validate
 C=ROOT/"paper/research/context-graph-projection-contract-v1.json"
-def workspace_mutate(rel,fn):
+def workspace_copy():
  import shutil
- td=Path(tempfile.mkdtemp());
- for p in ["paper/context-graph.json","paper/research/ROOT-research-direction.md","paper/research/integrated-research-design-active.md","paper/research/next-experiment-manifest.json","paper/research/active-graph-handoff-manifest.json"]:
-  d=td/p;d.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(ROOT/p,d)
- shutil.copy2(C,td/C.relative_to(ROOT));target=td/rel;o=json.loads(target.read_text());fn(o);target.write_text(json.dumps(o,ensure_ascii=False,indent=2)+"\n");return td
+ td=Path(tempfile.mkdtemp());paths={"paper/context-graph.json","paper/research/ROOT-research-direction.md","paper/research/integrated-research-design-active.md","paper/research/next-experiment-manifest.json","paper/research/active-graph-handoff-manifest.json",str(C.relative_to(ROOT))}
+ handoff=json.loads((ROOT/"paper/research/active-graph-handoff-manifest.json").read_text());paths.update(doc["path"] for doc in handoff.get("active_documents",[]))
+ nxt=json.loads((ROOT/"paper/research/next-experiment-manifest.json").read_text());paths.update(value for value in nxt.get("current_frontier",{}).values() if isinstance(value,str) and (ROOT/value).is_file())
+ design=json.loads((ROOT/nxt["current_frontier"]["design"]).read_text());paths.update(value for key,value in design.get("candidate_binding",{}).items() if key.endswith("_test") and isinstance(value,str) and (ROOT/value).is_file())
+ for rel in paths:
+  source=ROOT/rel
+  if source.is_file():target=td/rel;target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
+ return td
+def workspace_mutate(rel,fn):
+ td=workspace_copy();target=td/rel;o=json.loads(target.read_text());fn(o);target.write_text(json.dumps(o,ensure_ascii=False,indent=2)+"\n");return td
 class Tests(unittest.TestCase):
  def test_current(self):
   r=validate(ROOT,C);self.assertTrue(r["passed"],r["errors"])
@@ -28,4 +34,12 @@ class Tests(unittest.TestCase):
   td=workspace_mutate("paper/context-graph.json",lambda o:next(n for n in o["nodes"] if n["id"]=="artifact:active_integrated_research_design").update({"sha256":"0"*64}));self.assertFalse(validate(td,td/C.relative_to(ROOT))["passed"])
  def test_prohibited_claim_projection(self):
   td=workspace_mutate("paper/research/active-graph-handoff-manifest.json",lambda o:o["prohibited_claims"].pop());self.assertFalse(validate(td,td/C.relative_to(ROOT))["passed"])
+ def test_mutation_workspace_baseline(self):
+  td=workspace_copy();r=validate(td,td/C.relative_to(ROOT));self.assertTrue(r["passed"],r["errors"])
+ def test_parity_cell_scope_contradiction(self):
+  td=workspace_copy();graph_path=td/"paper/context-graph.json";handoff_path=td/"paper/research/active-graph-handoff-manifest.json";graph=json.loads(graph_path.read_text());handoff=json.loads(handoff_path.read_text());next(e for e in graph["edges"] if e["id"]=="edge:1272")["scope"]="40-cell paired parity design";next(e for e in handoff["active_chain"]["current_edges"] if e["id"]=="edge:1272")["scope"]="40-cell paired parity design";graph_path.write_text(json.dumps(graph,ensure_ascii=False,indent=2)+"\n");handoff_path.write_text(json.dumps(handoff,ensure_ascii=False,indent=2)+"\n");self.assertIn("PARITY_CELL_SCOPE",validate(td,td/C.relative_to(ROOT))["errors"])
+ def test_duplicate_or_stale_sentinel_binding(self):
+  td=workspace_copy();path=td/"paper/research/discoveryworld-ui-adapter-parity-design.json";design=json.loads(path.read_text());design["candidate_binding"].update({"official_sentinel_test":design["candidate_binding"]["sentinel_test"],"official_sentinel_test_sha256":"0"*64});path.write_text(json.dumps(design,ensure_ascii=False,indent=2)+"\n");self.assertIn("CANDIDATE_TEST_BINDING",validate(td,td/C.relative_to(ROOT))["errors"])
+ def test_next_action_test_count_contradiction(self):
+  td=workspace_copy();path=td/"paper/research/next-experiment-manifest.json";nxt=json.loads(path.read_text());nxt["next_zero_cost_actions"]=[re.sub(r"validate \d+ tests","validate 79 tests",action) for action in nxt["next_zero_cost_actions"]];path.write_text(json.dumps(nxt,ensure_ascii=False,indent=2)+"\n");self.assertIn("TEST_COUNT_CONSISTENCY",validate(td,td/C.relative_to(ROOT))["errors"])
 if __name__=="__main__":unittest.main(verbosity=2)

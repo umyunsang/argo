@@ -33,6 +33,15 @@ def validate(root,contract_path):
  for pk,hk in [("design","design_sha256"),("proposal","proposal_sha256"),("manifest","manifest_sha256"),("schemas","schemas_sha256"),("adapter_v2","adapter_v2_sha256"),("state_projection","state_projection_sha256"),("lifecycle","lifecycle_sha256"),("protocol","protocol_sha256"),("runner","runner_sha256"),("episode","episode_sha256"),("approval","approval_sha256")]:
   p=root/cf.get(pk,"")
   if not p.is_file() or sha(p)!=cf.get(hk):errors.append("FRONTIER_BINDING:"+pk)
+ try:
+  parity_design=json.loads((root/cf["design"]).read_text());readiness=json.loads((root/cf["static_readiness"]).read_text())
+  cells=parity_design["selected_design"]["cells"];parity_edge=edges["edge:1272"]
+  if type(cells) is not int or cells!=30 or parity_edge.get("scope")!=f"{cells}-cell paired parity design":errors.append("PARITY_CELL_SCOPE")
+  bindings=parity_design["candidate_binding"];test_keys=sorted(key for key in bindings if key.endswith("_test"));test_paths=[bindings.get(key) for key in test_keys]
+  if len(test_paths)!=len(set(test_paths)) or any(not (root/path).is_file() or sha(root/path)!=bindings.get(key+"_sha256") for key,path in zip(test_keys,test_paths)):errors.append("CANDIDATE_TEST_BINDING")
+  declared_counts={int(match.group(1)) for action in nxt.get("next_zero_cost_actions",[]) if (match:=re.search(r"validate (\d+) tests",action))}
+  if declared_counts!={readiness.get("total_tests")}:errors.append("TEST_COUNT_CONSISTENCY")
+ except (KeyError,TypeError,FileNotFoundError,json.JSONDecodeError):errors.append("PARITY_HANDOFF_READ")
  if not set(contract.get("required_prohibited_claims",[])).issubset(set(handoff.get("prohibited_claims",[]))):errors.append("PROHIBITED_CLAIMS")
  if handoff.get("inference_scope",{}).get("candidate_n")!=2 or nxt.get("inference_scope",{}).get("candidate_n")!=2:errors.append("INFERENCE_SCOPE")
  lineage=graph.get("projection_lineage",{})
