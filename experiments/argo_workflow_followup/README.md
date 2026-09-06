@@ -109,3 +109,7 @@ The separately approved frozen run exhausted all 20 one-attempt subprocesses. Ev
 ## DiscoveryWorld exploratory latency calibration proposal
 
 A new, explicitly exploratory protocol does not retry or replace the closed long-horizon endpoint. It fixes two task families at seed 0, horizons 10/50/100, two fresh-process repeats, 12 cells and 640 planned steps. Each cell has a 60-second timeout and flushes NDJSON after load and at fixed progress checkpoints so timeouts preserve partial evidence. It excludes vision, scorecard, gold, task completion, behavioral conditions, models and confirmatory inference. Tests pass 10/10; the unapproved branch starts zero episodes. Separate approval is required.
+
+## DiscoveryWorld exploratory latency result
+
+All 12 fixed cells completed 640/640 actions and ticks in 85.16 seconds with no timeouts. Same-cell final chains were exact 6/6, and 14/14 cross-horizon prefix groups were exact through the maximum observed horizon of 100 steps at seed 0. Median per-step latency was about 0.121 seconds in both families; median-based 1,000-step projections were 121.58–121.61 seconds, slightly above the failed 120-second cap. These are exploratory planning measurements, not observed 1,000-step or all-seed determinism. The calibration authority is consumed and cannot be reused.
