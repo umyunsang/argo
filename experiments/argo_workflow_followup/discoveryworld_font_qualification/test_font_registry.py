@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import copy,json,sys,types,unittest
+import copy,json,sys,tempfile,types,unittest
 from pathlib import Path
 HERE=Path(__file__).resolve().parent;ROOT=HERE.parents[2];sys.path.insert(0,str(HERE))
-from font_registry import EXPECTED_CALLS,configure,scan_calls,validate_manifest
+from font_registry import EXPECTED_CENSUS,configure,scan_calls,validate_manifest
 SOURCE=Path("/Users/um-yunsang/.cache/argo-research/DiscoveryWorld");MANIFEST=ROOT/"paper/research/discoveryworld-pinned-font-manifest-v1.json"
 class Sysfont:
  def __init__(self):self.Sysfonts={"old":{}};self.Sysalias={"old":{}};self.is_init=False
 class Tests(unittest.TestCase):
- def test_source_call_census(self):self.assertEqual(scan_calls(SOURCE),sorted(EXPECTED_CALLS))
+ def test_alias_keyword_dynamic_calls_are_visible(self):
+  with tempfile.TemporaryDirectory(dir=HERE) as td:
+   root=Path(td);(root/"x.py").write_text("from pygame.font import SysFont as SF\nSF(name='Arial', size=8)\ngetattr(pygame.font, 'SysFont')('Arial', 8)\n");rows=scan_calls(root);self.assertEqual(len(rows),2);self.assertEqual({row[2] for row in rows},{"SF","getattr.SysFont"});self.assertEqual(rows[0][3:5],("Arial",8))
+ def test_source_call_census(self):self.assertEqual(scan_calls(SOURCE),EXPECTED_CENSUS)
  def test_current_manifest(self):self.assertTrue(validate_manifest(json.loads(MANIFEST.read_text()),SOURCE)["passed"])
  def test_hash_drift_fails(self):
   value=json.loads(MANIFEST.read_text());value["calls"][0]["sha256"]="0"*64;self.assertFalse(validate_manifest(value,SOURCE)["passed"])
