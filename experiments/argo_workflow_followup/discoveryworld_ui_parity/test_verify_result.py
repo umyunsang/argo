@@ -9,6 +9,17 @@ class Tests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as td:
    path=Path(td)/"receipt";digest=publish_receipt(path,{"verdict":"PASS"});self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),digest)
    with self.assertRaises(FileExistsError):publish_receipt(path,{"verdict":"PASS"})
+ def test_relocated_bound_postrun_roles_reach_main(self):
+  import shutil
+  with tempfile.TemporaryDirectory() as td:
+   root=Path(td);module=root/"experiments/argo_workflow_followup/discoveryworld_ui_parity";module.mkdir(parents=True);names=["bootstrap.py","lifecycle.py","protocol.py","state_projection.py","run.py","environment_manifest.py","verify_result.py","admit_result.py"]
+   for name in names:shutil.copy2(HERE/name,module/name)
+   approval=json.loads((HERE/"approval-template.json").read_text());approval["engine_repo"]=str(root)
+   key_by_name={"bootstrap.py":"bootstrap","lifecycle.py":"lifecycle","protocol.py":"protocol","state_projection.py":"state_projection","run.py":"runner","environment_manifest.py":"environment_manifest_module","verify_result.py":"result_verifier","admit_result.py":"admission_consumer"}
+   for name,key in key_by_name.items():approval["bindings"][key]={"path":str((module/name).relative_to(root)),"sha256":hashlib.sha256((module/name).read_bytes()).hexdigest()}
+   approval_path=module/"approval-template.json";approval_path.write_text(json.dumps(approval))
+   for role,needle in [("verifier",'"verdict": "NOT_PASS"'),("admission",'"verdict": "NOT_ADMITTED"')]:
+    command=[sys.executable,"-I","-S","-B",str(module/"bootstrap.py"),role,str(module),"--root",str(root),"--approval",str(approval_path)];done=subprocess.run(command,cwd=root,text=True,capture_output=True,check=False);self.assertEqual(done.returncode,1,done.stdout+done.stderr);self.assertIn(needle,done.stdout);self.assertNotIn("ModuleNotFoundError",done.stderr)
  def test_production_isolated_command_imports_verifier(self):
   command=[sys.executable,"-I","-S","-B",str(HERE/"bootstrap.py"),"verifier",str(HERE),"--root",str(ROOT),"--approval",str(HERE/"approval-template.json")];done=subprocess.run(command,cwd=ROOT,text=True,capture_output=True,check=False);self.assertEqual(done.returncode,1,done.stdout+done.stderr);canonical=Path(json.loads((HERE/"approval-template.json").read_text())["engine_repo"]).resolve()==ROOT.resolve();self.assertIn('"schema_version": "argo-ui-parity-post-run-verification/v1"',done.stdout) if canonical else self.assertIn("POSTRUN_IDENTITY",done.stderr);self.assertNotIn("ModuleNotFoundError",done.stderr)
  def test_missing_artifacts_fail(self):

@@ -48,7 +48,8 @@ def validate_cell(cell,run,event_path,ui_gzip_path,frame_manifest,*,source_commi
  elif any(hashlib.sha256(canonical_bytes(x.get("ui"))).hexdigest()!=ui_hashes[i] for i,x in enumerate(ui_rows)):errors.append("UI_SIDECAR_HASH")
  expected_complete={"cell_id":cell["cell_id"],"cell_nonce":cell["cell_nonce"],"observations":1001,"transitions":1000,"action_successes":1000,"tick_successes":1000,"start_counter":1,"end_counter":1001,"counter_delta":1000,"vision_consumed":False,"model_calls":0,"spend_usd":0.0}
  if any(c.get(k)!=v for k,v in expected_complete.items()) or Path(c.get("frame_directory","")).resolve()!=Path(cell["workdir"]).resolve()/"frames":errors.append("COMPLETE_SCHEMA")
- if frame_manifest.get("count")!=len(frame_manifest.get("files",[])) or frame_manifest.get("bytes")!=sum(x.get("size",0) for x in frame_manifest.get("files",[])):errors.append("FRAME_MANIFEST")
+ frame_files=frame_manifest.get("files",[])
+ if set(frame_manifest)!={"files","count","bytes"} or not isinstance(frame_files,list) or type(frame_manifest.get("count")) is not int or type(frame_manifest.get("bytes")) is not int or frame_manifest.get("count")!=len(frame_files) or any(not isinstance(item,dict) or set(item)!={"path","size","sha256"} or not isinstance(item.get("path"),str) or "/" in item.get("path","") or type(item.get("size")) is not int or item.get("size")<0 or not re.fullmatch(r"[0-9a-f]{64}",str(item.get("sha256",""))) for item in frame_files) or len({item.get("path") for item in frame_files})!=len(frame_files) or frame_manifest.get("bytes")!=sum(item.get("size",0) for item in frame_files):errors.append("FRAME_MANIFEST")
  expected_frame_names={f"ui_agent_0_frame_{i}.png" for i in range(1,1002)}|{"ui_agent_0_current_viewport.png"}
  actual_frame_names={x.get("path") for x in frame_manifest.get("files",[])}
  if cell["mode"]=="official":

@@ -39,7 +39,7 @@ class Tests(unittest.TestCase):
    e,u,f,r=fixture(td);lines=e.read_text().splitlines();x=json.loads(lines[1]);x["ui_sha256"]="0"*64;lines[1]=json.dumps(x,sort_keys=True,separators=(",",":"));e.write_text("\n".join(lines)+"\n");self.assertEqual(validate_cell(CELL,r,e,u,f,**kwargs())["status"],"malformed")
  def test_official_frame_count(self):
   with tempfile.TemporaryDirectory() as td:
-   e,u,f,r=fixture(td);f["count"]=1;self.assertEqual(validate_cell(CELL,r,e,u,f,**kwargs())["status"],"malformed")
+   e,u,f,r=fixture(td);f["count"]=1;self.assertEqual(validate_cell(CELL,r,e,u,f,**kwargs())["status"],"malformed");e,u,f,r=fixture(td);f["files"][0]["extra"]=1;self.assertEqual(validate_cell(CELL,r,e,u,f,**kwargs())["status"],"malformed");e,u,f,r=fixture(td);f["files"][0]["size"]=True;self.assertEqual(validate_cell(CELL,r,e,u,f,**kwargs())["status"],"malformed")
  def test_ui_only_zero_frames(self):
   cell=copy.deepcopy(CELL);cell.update({"cell_id":"chemistry-s0-ui_only-r0","mode":"ui_only"})
   with tempfile.TemporaryDirectory() as td:

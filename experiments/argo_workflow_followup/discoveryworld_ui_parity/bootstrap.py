@@ -22,7 +22,7 @@ def verify_postrun_identity(role,root,args):
  try:
   index=args.index("--approval");approval_path=Path(args[index+1]);approval=json.loads(read_regular(approval_path));repo=Path(approval["engine_repo"]).resolve();expected_root=repo/"experiments/argo_workflow_followup/discoveryworld_ui_parity"
   if root!=expected_root or Path(__file__).resolve()!=root/"bootstrap.py" or read_hash(__file__)!=approval["bindings"]["bootstrap"]["sha256"]:return False
-  keys=["lifecycle","protocol","runner","environment_manifest_module",("result_verifier" if role=="verifier" else "admission_consumer")]+(["result_verifier"] if role=="admission" else [])
+  keys=["lifecycle","protocol","state_projection","runner","environment_manifest_module",("result_verifier" if role=="verifier" else "admission_consumer")]+(["result_verifier"] if role=="admission" else [])
   for key in keys:
    spec=approval["bindings"][key];path=repo/spec["path"]
    if path.parent!=root or read_hash(path)!=spec["sha256"]:return False

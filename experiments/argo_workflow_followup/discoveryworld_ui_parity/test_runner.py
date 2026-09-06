@@ -115,7 +115,7 @@ class Tests(unittest.TestCase):
   from unittest.mock import patch
   with patch("run.os.killpg",side_effect=PermissionError()):self.assertTrue(group_exists(123))
  def test_unreaped_status_dominates_later_sidecar_error(self):
-  error=OSError("copy");error.unreaped=True;self.assertEqual(classify_failure(None,error),"unreaped")
+  error=OSError("copy");error.unreaped=True;self.assertEqual(classify_failure(None,error),"unreaped");self.assertEqual(classify_failure({"global_deadline":True},OSError("copy")),"global_deadline");self.assertEqual(classify_failure({"controller_signal":15},OSError("copy")),"controller_signal")
  def test_getpgid_failure_kills_child_group(self):
   import os
   from unittest.mock import patch

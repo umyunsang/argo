@@ -49,6 +49,11 @@ def validate(root,contract_path):
   if nav_counts!={total}:errors.append("ACTIVE_NAV_COUNT")
   proposal_obj=json.loads((root/cf["proposal"]).read_text());approval_obj=json.loads((root/cf["approval"]).read_text());phase_text=" ".join([decision.get("next_action",""),handoff.get("current_allowed_next_action",""),readiness.get("decision",""),nxt.get("status",""),*nxt.get("next_zero_cost_actions",[]),proposal_obj.get("review_status",""),json.dumps(handoff.get("active_documents",[]),sort_keys=True),json.dumps(readiness.get("reviews",{}),sort_keys=True)]).lower()
   if any(term in phase_text for term in ["resolved_in_uncommitted_successor","v4 is uncommitted","v5 is uncommitted","pending_immutable_commit","requires immutable commit","commit exact v4","unreviewed_v4","cascade_pending","clean immutable v5 roots"]):errors.append("STALE_PHASE")
+  current_match=re.search(r"UI_PARITY_V(\d+)",nxt.get("status",""));current_version=int(current_match.group(1)) if current_match else None
+  active_statuses=[nodes[node_id].get("status","") for node_id in node_ids if node_id in nodes]
+  stale_active=any((match:=re.search(r"V(\d+)_",status)) and int(match.group(1))<current_version and not any(label in status for label in ["PREDECESSOR","REJECTED","NOT_PASS_FOR"]) for status in active_statuses) if current_version else True
+  stale_reviews=any((match:=re.fullmatch(r"v(\d+)_(?:clean|method|runtime|handoff)",key)) and int(match.group(1))<current_version and isinstance(value,str) and "PENDING" in value for key,value in readiness.get("reviews",{}).items()) if current_version else True
+  if stale_active or stale_reviews:errors.append("STALE_VERSION")
   required_paths=proposal_obj.get("required_preapproval_receipts",{});approval_paths={key:approval_obj.get("bindings",{}).get(key,{}).get("path") for key in ["immutable_validation","method_review","runtime_review","handoff_review"]}
   versions={match.group(1) for path in required_paths.values() if (match:=re.search(r"ui-parity-v(\d+)-",str(path)))}
   if required_paths!=approval_paths or len(versions)!=1 or len(required_paths)!=4:errors.append("RECEIPT_NAMESPACE")
