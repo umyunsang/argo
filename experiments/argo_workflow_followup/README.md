@@ -93,3 +93,7 @@ The explicitly approved v2 launch consumed its only attempt and exited 125 befor
 V3 removes the failed dependency. It has no writable host bind: the policy writes only to container `/tmp` and emits its JSON on stdout; the host runner writes the receipt after exit. Two read-only repository mounts remain. V3 tests pass 8/8 and its unapproved probe exits before Docker with zero calls. V3 remains unapproved and unexecuted.
 
 V3 immutable readiness attempt at commit `5f82fdf28` exposed one test-only path assumption: the clean clone lived under `/private/var/folders`, which the test incorrectly banned even for read-only source mounts. The corrected test enforces the real invariant—exactly two read-only mounts and no `/output` bind. Runner, policy, command, resources, and execution scope are unchanged. V3 remains unapproved and unexecuted.
+
+## Isolation canary v3 result
+
+The separately approved v3 attempt passed all nine exact canary checks in 0.311928 seconds. The pinned image started with two read-only repository mounts and no writable host bind; released input was readable, four forbidden/oracle paths were unreadable, external networking and the tested loopback service were unreachable, no named secret environment keys were present, and no withheld mount was visible. The one-attempt authority is consumed. This validates only the exact generic canary boundary, not a DiscoveryWorld runner, 1,000-step replay, score semantics, correction gold, integrated tasks, or model efficacy.
