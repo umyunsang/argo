@@ -113,3 +113,7 @@ A new, explicitly exploratory protocol does not retry or replace the closed long
 ## DiscoveryWorld exploratory latency result
 
 All 12 fixed cells completed 640/640 actions and ticks in 85.16 seconds with no timeouts. Same-cell final chains were exact 6/6, and 14/14 cross-horizon prefix groups were exact through the maximum observed horizon of 100 steps at seed 0. Median per-step latency was about 0.121 seconds in both families; median-based 1,000-step projections were 121.58–121.61 seconds, slightly above the failed 120-second cap. These are exploratory planning measurements, not observed 1,000-step or all-seed determinism. The calibration authority is consumed and cannot be reused.
+
+## DiscoveryWorld prospective long-horizon v2
+
+The successor design is evidence-selected rather than a post-hoc retry. The official Normal-task horizon is 1,000 steps. The closed 120-second protocol failed 20/20, while exploratory seed-0 calibration measured about 0.121 seconds per step and median-based 1,000-step projections of 121.58–121.61 seconds. Among 120/150/180/240-second alternatives, 180 seconds is selected prospectively: 48.0% headroom over the higher median projection with a 3,600-second maximum across 20 serial cells. The design retains both families, seeds 0–4 and two fresh-process repeats, emits progress at ten checkpoints, and forbids retries, shortening, scorecard/gold/vision/model access and task-success claims. It remains unapproved and unexecuted.
