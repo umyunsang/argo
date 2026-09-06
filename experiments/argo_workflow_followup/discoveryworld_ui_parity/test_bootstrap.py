@@ -12,11 +12,11 @@ class Tests(unittest.TestCase):
  def test_admission_inserts_bound_root(self):
   with tempfile.TemporaryDirectory() as td:
    root=Path(td);(root/"admit_result.py").write_text("x=1")
-   with patch("bootstrap.runpy.run_path") as run:bootstrap.main(["admission",str(root),"--root","/repo"]);self.assertEqual(sys.path[0],str(root.resolve()));run.assert_called_once_with(str(root.resolve()/"admit_result.py"),run_name="__main__")
+   with patch("bootstrap.runpy.run_path") as run,patch("bootstrap.verify_postrun_identity",return_value=True):bootstrap.main(["admission",str(root),"--root","/repo"]);self.assertEqual(sys.path[0],str(root.resolve()));run.assert_called_once_with(str(root.resolve()/"admit_result.py"),run_name="__main__")
  def test_verifier_inserts_bound_root(self):
   with tempfile.TemporaryDirectory() as td:
    root=Path(td);(root/"verify_result.py").write_text("x=1")
-   with patch("bootstrap.runpy.run_path") as run:bootstrap.main(["verifier",str(root),"--root","/repo"]);self.assertEqual(sys.path[0],str(root.resolve()));self.assertEqual(sys.argv[1:],["--root","/repo"]);run.assert_called_once_with(str(root.resolve()/"verify_result.py"),run_name="__main__")
+   with patch("bootstrap.runpy.run_path") as run,patch("bootstrap.verify_postrun_identity",return_value=True):bootstrap.main(["verifier",str(root),"--root","/repo"]);self.assertEqual(sys.path[0],str(root.resolve()));self.assertEqual(sys.argv[1:],["--root","/repo"]);run.assert_called_once_with(str(root.resolve()/"verify_result.py"),run_name="__main__")
  def test_worker_root_order(self):
   with tempfile.TemporaryDirectory() as td:
    root=Path(td);bundle=root/"bundle";source=root/"source";site=root/"site"

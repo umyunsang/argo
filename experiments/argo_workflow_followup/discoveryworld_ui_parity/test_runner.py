@@ -42,9 +42,9 @@ class Tests(unittest.TestCase):
  def test_strong_closure_revalidates_prior_valid_cell(self):
   from unittest.mock import patch
   with tempfile.TemporaryDirectory() as td:
-   root=Path(td);cell=copy.deepcopy(M["ordered_cells"][0]);cell.update({"event_path":"event","ui_gzip_path":"ui","frame_manifest_path":"frame"});(root/"event").write_bytes(b"e");(root/"ui").write_bytes(b"u");(root/"frame").write_text('{"files":[],"count":0,"bytes":0}');bundle=root/"bundle";source=root/"source";bundle.mkdir();source.mkdir();(bundle/"adapter_v2.py").write_bytes(b"a");(bundle/"state_projection.py").write_bytes(b"s");(bundle/"environment-content-manifest.json").write_bytes(b"e");(bundle/"bootstrap.py").write_bytes(b"b");prior={cell["cell_id"]:{"status":"valid_complete","runtime_workdir":"/sealed/work","run":{"exit_code":0,"timed_out":False},"sidecars":{}}};vectors={"status":"valid_complete","errors":[],"ui_hashes":["a"*64]*1001,"pre_state_hashes":["b"*64]*1001,"post_state_hashes":["c"*64]*1001,"event_sha256":"d"*64,"ui_gzip_sha256":"e"*64}
+   root=Path(td);cell=copy.deepcopy(M["ordered_cells"][0]);cell.update({"event_path":"event","ui_gzip_path":"ui","frame_manifest_path":"frame"});(root/"event").write_bytes(b"e");(root/"ui").write_bytes(b"u");(root/"frame").write_text('{"files":[],"count":0,"bytes":0}');bundle=root/"bundle";source=root/"source";bundle.mkdir();source.mkdir();(bundle/"adapter_v2.py").write_bytes(b"a");(bundle/"state_projection.py").write_bytes(b"s");(bundle/"environment-content-manifest.json").write_bytes(b"e");(bundle/"bootstrap.py").write_bytes(b"b");interpreter=root/"python";interpreter.write_bytes(b"python");prior={cell["cell_id"]:{"status":"valid_complete","runtime_workdir":"/sealed/work","run":{"exit_code":0,"timed_out":False},"sidecars":{}}};vectors={"status":"valid_complete","errors":[],"ui_hashes":["a"*64]*1001,"pre_state_hashes":["b"*64]*1001,"post_state_hashes":["c"*64]*1001,"event_sha256":"d"*64,"ui_gzip_sha256":"e"*64}
    with patch("run.validate_cell",return_value=vectors) as validate:
-    closed=revalidate_complete_cells({"ordered_cells":[cell]},prior,root,source,bundle,"/runtime/base/bin/python","/site")
+    closed=revalidate_complete_cells({"ordered_cells":[cell]},prior,root,source,bundle,interpreter,"/site","e"*64)
    validate.assert_called_once();self.assertEqual(closed[cell["cell_id"]]["ui_hashes"],vectors["ui_hashes"])
  def test_preflight_path_collision(self):
   with tempfile.TemporaryDirectory() as td:
@@ -53,9 +53,9 @@ class Tests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as td:
    root=Path(td);m=copy.deepcopy(M);m["paths"]={k:k for k in m["paths"]};self.assertTrue(preflight_paths(m,root)["passed"])
  def test_golden_argv_identity(self):
-  c=M["ordered_cells"][0];argv=build_argv(c,"/python",HERE/"episode.py",HERE,"/source");self.assertIn(c["cell_id"],argv);self.assertIn(c["cell_nonce"],argv);self.assertIn(str(c["thread_id"]),argv);self.assertIn(str(HERE/"episode.py"),argv)
+  c={**M["ordered_cells"][0],"execution_root_sha256":"e"*64,"interpreter_sha256":"i"*64};argv=build_argv(c,"/python",HERE/"episode.py",HERE,"/source");self.assertIn(c["cell_id"],argv);self.assertIn(c["cell_nonce"],argv);self.assertIn(str(c["thread_id"]),argv);self.assertIn(str(HERE/"episode.py"),argv)
  def test_sealed_worker_argv_is_isolated(self):
-  c=M["ordered_cells"][0];argv=build_argv(c,"/sealed/python",HERE/"episode.py",HERE,"/source","/sealed/site");self.assertEqual(argv[:9],["/sealed/python","-I","-S","-B",str(HERE/"bootstrap.py"),"worker",str(HERE),"/source","/sealed/site"]);self.assertIn("{EVENT_FD}",argv);self.assertIn("{UI_FD}",argv);self.assertNotIn(str(HERE/"episode.py"),argv)
+  c={**M["ordered_cells"][0],"execution_root_sha256":"e"*64,"interpreter_sha256":"i"*64};argv=build_argv(c,"/sealed/python",HERE/"episode.py",HERE,"/source","/sealed/site");self.assertEqual(argv[:9],["/sealed/python","-I","-S","-B",str(HERE/"bootstrap.py"),"worker",str(HERE),"/source","/sealed/site"]);self.assertIn("{EVENT_FD}",argv);self.assertIn("{UI_FD}",argv);self.assertNotIn(str(HERE/"episode.py"),argv)
  def test_timeout_kills_process_group(self):
   with tempfile.TemporaryDirectory() as td:
    p=Path(td);r=managed_run([sys.executable,"-c","import time; time.sleep(5)"],p,{},p/"o",p/"e",p/"events",0.05,1.0);self.assertTrue(r["timed_out"]);self.assertEqual(r["exit_code"],124);self.assertFalse(r["unreaped"])

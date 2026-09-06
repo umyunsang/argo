@@ -2,7 +2,7 @@
 from __future__ import annotations
 import copy,hashlib,subprocess,sys,tempfile,unittest
 from pathlib import Path
-from verify_result import publish_receipt,rederive_pairs,validation_matches,verify
+from verify_result import publish_receipt,rederive_pairs,rederive_timing,validation_matches,verify
 HERE=Path(__file__).resolve().parent;ROOT=HERE.parents[2]
 class Tests(unittest.TestCase):
  def test_verifier_receipt_publication_is_exclusive(self):
@@ -14,7 +14,7 @@ class Tests(unittest.TestCase):
  def test_missing_artifacts_fail(self):
   with tempfile.TemporaryDirectory() as td:self.assertFalse(verify(Path(td),HERE/"approval-template.json")["passed"])
  def test_pair_rederivation_never_uses_reported_pair_status(self):
-  manifest={"mode_pairs":[{"pair_id":"p","official":"a","ui_only":"b"}],"ui_repeat_pairs":[]};vector=["a"*64]*1001;cell={"status":"valid_complete","ui_hashes":vector,"pre_state_hashes":vector,"post_state_hashes":vector};mode,repeat=rederive_pairs(manifest,{"a":cell,"b":copy.deepcopy(cell)});self.assertEqual(mode[0]["status"],"EXACT");changed=copy.deepcopy(cell);changed["ui_hashes"][0]="b"*64;self.assertEqual(rederive_pairs(manifest,{"a":cell,"b":changed})[0][0]["status"],"OBSERVED_MISMATCH")
+  manifest={"mode_pairs":[{"pair_id":"p","official":"a","ui_only":"b"}],"ui_repeat_pairs":[]};vector=["a"*64]*1001;cell={"status":"valid_complete","ui_hashes":vector,"pre_state_hashes":vector,"post_state_hashes":vector};mode,repeat=rederive_pairs(manifest,{"a":cell,"b":copy.deepcopy(cell)});self.assertEqual(mode[0]["status"],"EXACT");changed=copy.deepcopy(cell);changed["ui_hashes"][0]="b"*64;self.assertEqual(rederive_pairs(manifest,{"a":cell,"b":changed})[0][0]["status"],"OBSERVED_MISMATCH");a={**cell,"run":{"duration_seconds":2.0}};b={**cell,"run":{"duration_seconds":1.0}};timing=rederive_timing(manifest["mode_pairs"],{"a":a,"b":b})[0];self.assertEqual((timing["ui_minus_official_seconds"],timing["ui_to_official_ratio"]),(-1.0,0.5))
  def test_revalidated_vectors_must_match_result(self):
-  value={"status":"valid_complete","ui_hashes":["a"],"pre_state_hashes":["b"],"post_state_hashes":["c"],"event_sha256":"d","ui_gzip_sha256":"e"};self.assertTrue(validation_matches(value,copy.deepcopy(value)));changed=copy.deepcopy(value);changed["post_state_hashes"]=["x"];self.assertFalse(validation_matches(value,changed))
+  value={"status":"valid_complete","ui_hashes":["a"],"pre_state_hashes":["b"],"post_state_hashes":["c"],"event_sha256":"d","ui_gzip_sha256":"e"};self.assertTrue(validation_matches(value,copy.deepcopy(value)));changed=copy.deepcopy(value);changed["post_state_hashes"]=["x"];self.assertFalse(validation_matches(value,changed));changed=copy.deepcopy(value);changed["errors"]=["x"];self.assertFalse(validation_matches(value,changed))
 if __name__=="__main__":unittest.main(verbosity=2)

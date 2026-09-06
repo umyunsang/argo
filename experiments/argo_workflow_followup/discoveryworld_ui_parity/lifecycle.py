@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """One-shot manifest, atomic marker, and hash-chained ledger primitives."""
 from __future__ import annotations
-import hashlib,json,os,re,stat
+import hashlib,json,math,os,re,stat
 from pathlib import Path,PurePosixPath
 CELL_TERMINAL={"valid_complete","timeout","crash","malformed","identity_drift","spawn_failure","unreaped","sidecar_error","ledger_error","global_deadline","controller_signal"}
 COMMON={"previous_record_sha256","record_sha256"}
+RUN_KEYS={"exit_code","timed_out","global_deadline","controller_signal","unreaped","duration_seconds","pid","pgid","output_identities"}
 CELL_RESULT_KEYS={"status","errors","ui_hashes","pre_state_hashes","post_state_hashes","run","sidecars","frame_manifest","runtime_workdir","event_sha256","ui_gzip_sha256"}
-RESULT_KEYS={"schema_version","run_id","status","approval_sha256","manifest_sha256","source_archive_sha256","preflight_identity_sha256","execution_root_sha256","cells","mode_pairs","ui_repeat_pairs","summary","ledger_last_record_sha256_before_final","model_calls","spend_usd"}
+RESULT_KEYS={"schema_version","run_id","status","approval_sha256","manifest_sha256","source_archive_sha256","preflight_identity_sha256","execution_root_sha256","cells","mode_pairs","ui_repeat_pairs","timing_pairs","summary","ledger_last_record_sha256_before_final","model_calls","spend_usd"}
 LEDGER_KEYS={
  "header":COMMON|{"event","schema_version","run_id","manifest_sha256","approval_sha256","source_archive_sha256","preflight_identity_sha256","execution_root_sha256","started_at"},
  "planned":COMMON|{"event","sequence","run_id","cell_id","cell_nonce","cell_index","timestamp"},
@@ -15,6 +16,14 @@ LEDGER_KEYS={
  "controller_stop":COMMON|{"event","sequence","run_id","reason","timestamp"},
  "finalized":COMMON|{"event","sequence","run_id","status","result_sha256","timestamp"},
 }
+def valid_run(run):
+ if not isinstance(run,dict) or set(run)!=RUN_KEYS:return False
+ if type(run.get("timed_out")) is not bool or type(run.get("global_deadline")) is not bool or type(run.get("unreaped")) is not bool:return False
+ if any(value is not None and type(value) is not int for value in [run.get("exit_code"),run.get("controller_signal"),run.get("pid"),run.get("pgid")]):return False
+ duration=run.get("duration_seconds")
+ if isinstance(duration,bool) or not isinstance(duration,(int,float)) or not math.isfinite(duration) or duration<0:return False
+ identities=run.get("output_identities")
+ return isinstance(identities,dict) and all(isinstance(path,str) and isinstance(identity,dict) and set(identity)=={"device","inode","mode"} and all(type(identity[key]) is int for key in identity) for path,identity in identities.items())
 def canonical(value):return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(",",":"),allow_nan=False).encode()
 def safe_path(value):
  try:p=PurePosixPath(value);return bool(value) and not p.is_absolute() and ".." not in p.parts
@@ -86,7 +95,7 @@ def validate_ledger(path,manifest,allow_partial=False,expected_header=None,stric
   lines=(Path(path).read_bytes() if ledger_bytes is None else ledger_bytes).splitlines();records=[json.loads(line) for line in lines]
   if any(canonical(record)!=line for record,line in zip(records,lines)):errors.append("NONCANONICAL")
  except Exception:return {"passed":False,"errors":["READ"]}
- prev="0"*64;states={};last_seq=0;finalized=False;planned_order=[];header_record=None;finished_records={};cells={c["cell_id"]:c for c in manifest.get("ordered_cells",[])}
+ prev="0"*64;states={};last_seq=0;finalized=False;planned_order=[];header_record=None;finished_records={};controller_stops=[];cells={c["cell_id"]:c for c in manifest.get("ordered_cells",[])}
  for i,r in enumerate(records):
   got=r.get("record_sha256");value=dict(r);value.pop("record_sha256",None)
   if r.get("previous_record_sha256")!=prev or hashlib.sha256(canonical(value)).hexdigest()!=got:errors.append("HASH_CHAIN")
@@ -114,7 +123,7 @@ def validate_ledger(path,manifest,allow_partial=False,expected_header=None,stric
    states[cid]="spawned"
   elif event=="finished":
    status=r.get("status")
-   if type(r.get("timed_out")) is not bool or (r.get("exit_code") is not None and type(r.get("exit_code")) is not int) or not isinstance(r.get("run"),dict) or not re.fullmatch(r"[0-9a-f]{64}",str(r.get("cell_result_sha256",""))):errors.append("FINISHED_SCHEMA")
+   if type(r.get("timed_out")) is not bool or (r.get("exit_code") is not None and type(r.get("exit_code")) is not int) or not valid_run(r.get("run")) or not re.fullmatch(r"[0-9a-f]{64}",str(r.get("cell_result_sha256",""))):errors.append("FINISHED_SCHEMA")
    if strict_sidecars:
     for key in ["stdout","stderr","events","ui_gzip","frame_manifest"]:
      meta=r.get(key)
@@ -131,12 +140,15 @@ def validate_ledger(path,manifest,allow_partial=False,expected_header=None,stric
      except (OSError,RuntimeError,ValueError):data=None
      if data is None or len(data)!=meta["size"] or hashlib.sha256(data).hexdigest()!=meta["sha256"]:errors.append("SIDECAR_BYTES:"+key)
      if status=="valid_complete" and key in {"events","ui_gzip","frame_manifest"} and meta["size"]==0:errors.append("SIDECAR_EMPTY:"+key)
-    if status=="valid_complete" and (r.get("exit_code")!=0 or r.get("timed_out") is not False):errors.append("VALID_COMPLETE_PROCESS")
+    if status=="valid_complete" and (r.get("exit_code")!=0 or r.get("timed_out") is not False or r.get("run",{}).get("unreaped") is not False or r.get("run",{}).get("global_deadline") is not False or r.get("run",{}).get("controller_signal") is not None):errors.append("VALID_COMPLETE_PROCESS")
    legal=states.get(cid)=="spawned" and status in CELL_TERMINAL
    legal_pre=states.get(cid)=="planned" and status in {"spawn_failure","sidecar_error","ledger_error","global_deadline","controller_signal"}
    if not (legal or legal_pre):errors.append("BAD_FINISH_TRANSITION")
    states[cid]="finished";finished_records[cid]=r
-  elif event=="controller_stop":pass
+  elif event=="controller_stop":
+   if not isinstance(r.get("reason"),str) or not r["reason"]:errors.append("CONTROLLER_STOP_SCHEMA")
+   controller_stops.append(r.get("reason"))
+   if len(controller_stops)>1:errors.append("CONTROLLER_STOP_COUNT")
   elif event=="finalized":
    if finalized:errors.append("DUPLICATE_FINALIZED")
    if r.get("status") not in {"PASS","FAIL_PARITY_NOT_ESTABLISHED","INVALID","INCOMPLETE"} or not re.fullmatch(r"[0-9a-f]{64}",str(r.get("result_sha256",""))):errors.append("FINALIZED_SCHEMA")
@@ -154,12 +166,19 @@ def validate_ledger(path,manifest,allow_partial=False,expected_header=None,stric
      else:
       for cell_id,finished in finished_records.items():
        cell_result=result_cells[cell_id];expected_sidecars={key:finished[key] for key in ["stdout","stderr","events","ui_gzip","frame_manifest"]}
-       if set(cell_result)!=CELL_RESULT_KEYS or hashlib.sha256(canonical(cell_result)).hexdigest()!=finished.get("cell_result_sha256") or cell_result.get("status")!=finished.get("status") or cell_result.get("sidecars")!=expected_sidecars or cell_result.get("run")!=finished.get("run") or cell_result.get("run",{}).get("exit_code")!=finished.get("exit_code") or cell_result.get("run",{}).get("timed_out")!=finished.get("timed_out"):errors.append("RESULT_CELL_BINDING")
+       if set(cell_result)!=CELL_RESULT_KEYS or not isinstance(cell_result.get("errors"),list) or any(not isinstance(error,str) for error in cell_result.get("errors",[])) or not valid_run(cell_result.get("run")) or hashlib.sha256(canonical(cell_result)).hexdigest()!=finished.get("cell_result_sha256") or cell_result.get("status")!=finished.get("status") or cell_result.get("sidecars")!=expected_sidecars or cell_result.get("run")!=finished.get("run") or cell_result.get("run",{}).get("exit_code")!=finished.get("exit_code") or cell_result.get("run",{}).get("timed_out")!=finished.get("timed_out"):errors.append("RESULT_CELL_BINDING")
      mode=result.get("mode_pairs",[]);repeat=result.get("ui_repeat_pairs",[])
      if len(mode)!=20 or len(repeat)!=10 or any({key:value for key,value in pair.items() if key!="status"}!=expected or pair.get("status") not in {"EXACT","OBSERVED_MISMATCH","UNOBSERVABLE"} for pair,expected in zip(mode,manifest.get("mode_pairs",[]))) or any({key:value for key,value in pair.items() if key!="status"}!=expected or pair.get("status") not in {"EXACT","OBSERVED_MISMATCH","UNOBSERVABLE"} for pair,expected in zip(repeat,manifest.get("ui_repeat_pairs",[]))):errors.append("RESULT_PAIRS")
+     timing=result.get("timing_pairs",[])
+     if len(timing)!=20:errors.append("RESULT_TIMING")
+     else:
+      for timing_value,pair in zip(timing,manifest.get("mode_pairs",[])):
+       expected_keys=set(pair)|{"observed","official_seconds","ui_only_seconds","ui_minus_official_seconds","ui_to_official_ratio"};official=result_cells.get(pair["official"],{});ui=result_cells.get(pair["ui_only"],{});a=official.get("run",{}).get("duration_seconds");b=ui.get("run",{}).get("duration_seconds");observed=official.get("status")=="valid_complete" and ui.get("status")=="valid_complete";expected_timing={**pair,"observed":observed,"official_seconds":a if observed else None,"ui_only_seconds":b if observed else None,"ui_minus_official_seconds":round(b-a,6) if observed else None,"ui_to_official_ratio":round(b/a,6) if observed and a>0 else None}
+       if set(timing_value)!=expected_keys or timing_value!=expected_timing:errors.append("RESULT_TIMING")
      summary=result.get("summary",{});cell_statuses=[result_cells[cell["cell_id"]]["status"] for cell in manifest.get("ordered_cells",[]) if isinstance(result_cells,dict) and cell["cell_id"] in result_cells];pair_statuses=[pair.get("status") for pair in mode+repeat];computed=final_status(cell_statuses,pair_statuses,30)
      if summary.get("controller_error") is not None:computed="INCOMPLETE" if len(cell_statuses)<30 else "INVALID"
-     expected_summary={"cells_planned":len(cell_statuses),"valid_complete":sum(value=="valid_complete" for value in cell_statuses),"mode_exact":sum(pair.get("status")=="EXACT" for pair in mode),"mode_mismatch":sum(pair.get("status")=="OBSERVED_MISMATCH" for pair in mode),"mode_unobservable":sum(pair.get("status")=="UNOBSERVABLE" for pair in mode),"ui_repeat_exact":sum(pair.get("status")=="EXACT" for pair in repeat),"ui_repeat_mismatch":sum(pair.get("status")=="OBSERVED_MISMATCH" for pair in repeat),"ui_repeat_unobservable":sum(pair.get("status")=="UNOBSERVABLE" for pair in repeat),"controller_error":summary.get("controller_error")}
+     if summary.get("controller_error")!=(controller_stops[0] if controller_stops else None):errors.append("RESULT_CONTROLLER_STOP")
+     expected_summary={"cells_planned":len(cell_statuses),"valid_complete":sum(value=="valid_complete" for value in cell_statuses),"mode_exact":sum(pair.get("status")=="EXACT" for pair in mode),"mode_mismatch":sum(pair.get("status")=="OBSERVED_MISMATCH" for pair in mode),"mode_unobservable":sum(pair.get("status")=="UNOBSERVABLE" for pair in mode),"ui_repeat_exact":sum(pair.get("status")=="EXACT" for pair in repeat),"ui_repeat_mismatch":sum(pair.get("status")=="OBSERVED_MISMATCH" for pair in repeat),"ui_repeat_unobservable":sum(pair.get("status")=="UNOBSERVABLE" for pair in repeat),"timing_pairs_observed":sum(pair.get("observed") is True for pair in timing),"controller_error":summary.get("controller_error")}
      if summary!=expected_summary or result.get("status")!=computed:errors.append("RESULT_DERIVATION")
     except (OSError,RuntimeError,ValueError,json.JSONDecodeError,AttributeError):errors.append("FINALIZED_RESULT_BYTES")
    finalized=True
