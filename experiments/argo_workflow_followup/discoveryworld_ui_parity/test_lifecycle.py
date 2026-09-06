@@ -14,6 +14,10 @@ class Tests(unittest.TestCase):
   x=copy.deepcopy(M);x["ordered_cells"][0]["stdout_path"]="../x";self.assertFalse(validate_manifest(x)["passed"])
  def test_bool_not_integer(self):
   x=copy.deepcopy(M);x["ordered_cells"][0]["seed"]=True;self.assertFalse(validate_manifest(x)["passed"])
+ def test_pinned_namespace_rejects_root_symlink(self):
+  with tempfile.TemporaryDirectory() as td:
+   parent=Path(td);target=parent/"target";target.mkdir();link=parent/"receipts";link.symlink_to(target,target_is_directory=True)
+   with self.assertRaises(OSError):ArtifactNamespace(link)
  def test_pinned_namespace_rejects_file_symlink_replacement(self):
   with tempfile.TemporaryDirectory() as td:
    root=Path(td);namespace=ArtifactNamespace(root);namespace.create_bytes("side/cell/raw",b"safe");secret=root/"secret";secret.write_bytes(b"secret");path=root/"side/cell/raw";path.unlink();path.symlink_to(secret)
@@ -79,7 +83,11 @@ class Tests(unittest.TestCase):
  def test_finalized_result_mutual_binding_passes(self):
   import hashlib
   with tempfile.TemporaryDirectory() as td:
-   root=Path(td);ledger=root/"ledger";h=append_record(ledger,{"event":"header","schema_version":"argo-ui-parity-ledger/v1","run_id":M["run_id"],"manifest_sha256":"a"*64,"approval_sha256":"b"*64,"source_archive_sha256":"c"*64,"preflight_identity_sha256":"d"*64,"execution_root_sha256":"e"*64,"started_at":"t"});result={"status":"INCOMPLETE","ledger_last_record_sha256_before_final":h};payload=json.dumps(result,sort_keys=True,separators=(",",":")).encode()+b"\n";path=root/"pending";path.write_bytes(payload);append_record(ledger,{"event":"finalized","sequence":1,"run_id":M["run_id"],"status":"INCOMPLETE","result_sha256":hashlib.sha256(payload).hexdigest(),"timestamp":"t"},h);self.assertTrue(validate_ledger(ledger,M,allow_partial=True,result_payload_path=path)["passed"])
+   root=Path(td);ledger=root/"ledger";h=append_record(ledger,{"event":"header","schema_version":"argo-ui-parity-ledger/v1","run_id":M["run_id"],"manifest_sha256":"a"*64,"approval_sha256":"b"*64,"source_archive_sha256":"c"*64,"preflight_identity_sha256":"d"*64,"execution_root_sha256":"e"*64,"started_at":"t"});mode=[{**pair,"status":"UNOBSERVABLE"} for pair in M["mode_pairs"]];repeat=[{**pair,"status":"UNOBSERVABLE"} for pair in M["ui_repeat_pairs"]];summary={"cells_planned":0,"valid_complete":0,"mode_exact":0,"mode_mismatch":0,"mode_unobservable":20,"ui_repeat_exact":0,"ui_repeat_mismatch":0,"ui_repeat_unobservable":10,"controller_error":"test"};result={"schema_version":"argo-discoveryworld-ui-parity-result/v1","run_id":M["run_id"],"status":"INCOMPLETE","approval_sha256":"b"*64,"manifest_sha256":"a"*64,"source_archive_sha256":"c"*64,"preflight_identity_sha256":"d"*64,"execution_root_sha256":"e"*64,"cells":{},"mode_pairs":mode,"ui_repeat_pairs":repeat,"summary":summary,"ledger_last_record_sha256_before_final":h,"model_calls":0,"spend_usd":0.0};payload=json.dumps(result,sort_keys=True,separators=(",",":")).encode()+b"\n";path=root/"pending";path.write_bytes(payload);append_record(ledger,{"event":"finalized","sequence":1,"run_id":M["run_id"],"status":"INCOMPLETE","result_sha256":hashlib.sha256(payload).hexdigest(),"timestamp":"t"},h);self.assertTrue(validate_ledger(ledger,M,allow_partial=True,result_payload_path=path)["passed"])
+ def test_two_field_result_is_rejected(self):
+  import hashlib
+  with tempfile.TemporaryDirectory() as td:
+   root=Path(td);ledger=root/"ledger";h=append_record(ledger,{"event":"header","schema_version":"argo-ui-parity-ledger/v1","run_id":M["run_id"],"manifest_sha256":"a"*64,"approval_sha256":"b"*64,"source_archive_sha256":"c"*64,"preflight_identity_sha256":"d"*64,"execution_root_sha256":"e"*64,"started_at":"t"});result={"status":"INCOMPLETE","ledger_last_record_sha256_before_final":h};payload=json.dumps(result,sort_keys=True,separators=(",",":")).encode()+b"\n";path=root/"pending";path.write_bytes(payload);append_record(ledger,{"event":"finalized","sequence":1,"run_id":M["run_id"],"status":"INCOMPLETE","result_sha256":hashlib.sha256(payload).hexdigest(),"timestamp":"t"},h);self.assertFalse(validate_ledger(ledger,M,allow_partial=True,result_payload_path=path)["passed"])
  def test_finalized_record_rehashes_pending_result(self):
   import hashlib
   with tempfile.TemporaryDirectory() as td:

@@ -46,6 +46,10 @@ class Tests(unittest.TestCase):
   td=workspace_copy();path=td/"paper/research/discoveryworld-ui-adapter-parity-design.json";design=json.loads(path.read_text());design["candidate_binding"].update({"official_sentinel_test":design["candidate_binding"]["sentinel_test"],"official_sentinel_test_sha256":"0"*64});path.write_text(json.dumps(design,ensure_ascii=False,indent=2)+"\n");self.assertIn("CANDIDATE_TEST_BINDING",validate(td,td/C.relative_to(ROOT))["errors"])
  def test_active_navigation_count_contradiction(self):
   td=workspace_copy();path=td/"paper/context-graph.json";graph=json.loads(path.read_text());next(node for node in graph["nodes"] if node["id"]=="artifact:discoveryworld_ui_parity_design")["status"]="V4_114_TESTS_PASS";path.write_text(json.dumps(graph,ensure_ascii=False,indent=2)+"\n");self.assertIn("ACTIVE_NAV_COUNT",validate(td,td/C.relative_to(ROOT))["errors"])
+ def test_receipt_namespace_matches_approval(self):
+  td=workspace_copy();path=td/"paper/research/discoveryworld-ui-adapter-parity-proposal.json";proposal=json.loads(path.read_text());proposal["required_preapproval_receipts"]["runtime_review"]="paper/research/reviews/x-v4-runtime-pass.json";path.write_text(json.dumps(proposal,ensure_ascii=False,indent=2)+"\n");self.assertIn("RECEIPT_NAMESPACE",validate(td,td/C.relative_to(ROOT))["errors"])
+ def test_readiness_graph_authority_hash(self):
+  td=workspace_copy();path=td/"paper/research/receipts/discoveryworld-ui-parity-static-readiness-v1.json";value=json.loads(path.read_text());value["graph_validation_authority"]["sha256"]="0"*64;path.write_text(json.dumps(value,ensure_ascii=False,indent=2)+"\n");self.assertIn("READINESS_GRAPH_AUTH",validate(td,td/C.relative_to(ROOT))["errors"])
  def test_stale_phase_language(self):
   td=workspace_copy();path=td/"paper/research/discoveryworld-ui-adapter-parity-proposal.json";proposal=json.loads(path.read_text());proposal["review_status"]="v4 is uncommitted";path.write_text(json.dumps(proposal,ensure_ascii=False,indent=2)+"\n");self.assertIn("STALE_PHASE",validate(td,td/C.relative_to(ROOT))["errors"])
  def test_active_decision_test_status_contradiction(self):

@@ -5,6 +5,7 @@ import hashlib,json,os,re,stat
 from pathlib import Path,PurePosixPath
 CELL_TERMINAL={"valid_complete","timeout","crash","malformed","identity_drift","spawn_failure","unreaped","sidecar_error","ledger_error","global_deadline","controller_signal"}
 COMMON={"previous_record_sha256","record_sha256"}
+RESULT_KEYS={"schema_version","run_id","status","approval_sha256","manifest_sha256","source_archive_sha256","preflight_identity_sha256","execution_root_sha256","cells","mode_pairs","ui_repeat_pairs","summary","ledger_last_record_sha256_before_final","model_calls","spend_usd"}
 LEDGER_KEYS={
  "header":COMMON|{"event","schema_version","run_id","manifest_sha256","approval_sha256","source_archive_sha256","preflight_identity_sha256","execution_root_sha256","started_at"},
  "planned":COMMON|{"event","sequence","run_id","cell_id","cell_nonce","cell_index","timestamp"},
@@ -84,7 +85,7 @@ def validate_ledger(path,manifest,allow_partial=False,expected_header=None,stric
   lines=(Path(path).read_bytes() if ledger_bytes is None else ledger_bytes).splitlines();records=[json.loads(line) for line in lines]
   if any(canonical(record)!=line for record,line in zip(records,lines)):errors.append("NONCANONICAL")
  except Exception:return {"passed":False,"errors":["READ"]}
- prev="0"*64;states={};last_seq=0;finalized=False;planned_order=[];cells={c["cell_id"]:c for c in manifest.get("ordered_cells",[])}
+ prev="0"*64;states={};last_seq=0;finalized=False;planned_order=[];header_record=None;finished_records={};cells={c["cell_id"]:c for c in manifest.get("ordered_cells",[])}
  for i,r in enumerate(records):
   got=r.get("record_sha256");value=dict(r);value.pop("record_sha256",None)
   if r.get("previous_record_sha256")!=prev or hashlib.sha256(canonical(value)).hexdigest()!=got:errors.append("HASH_CHAIN")
@@ -94,7 +95,7 @@ def validate_ledger(path,manifest,allow_partial=False,expected_header=None,stric
   if i==0:
    if event!="header" or r.get("schema_version")!="argo-ui-parity-ledger/v1" or r.get("run_id")!=manifest.get("run_id"):errors.append("HEADER")
    if expected_header and any(r.get(k)!=v for k,v in expected_header.items()):errors.append("HEADER_IDENTITY")
-   continue
+   header_record=r;continue
   if r.get("run_id")!=manifest.get("run_id"):errors.append("RUN_IDENTITY")
   seq=r.get("sequence")
   if type(seq) is not int or seq!=last_seq+1:errors.append("SEQUENCE")
@@ -133,7 +134,7 @@ def validate_ledger(path,manifest,allow_partial=False,expected_header=None,stric
    legal=states.get(cid)=="spawned" and status in CELL_TERMINAL
    legal_pre=states.get(cid)=="planned" and status in {"spawn_failure","sidecar_error","ledger_error","global_deadline","controller_signal"}
    if not (legal or legal_pre):errors.append("BAD_FINISH_TRANSITION")
-   states[cid]="finished"
+   states[cid]="finished";finished_records[cid]=r
   elif event=="controller_stop":pass
   elif event=="finalized":
    if finalized:errors.append("DUPLICATE_FINALIZED")
@@ -145,6 +146,20 @@ def validate_ledger(path,manifest,allow_partial=False,expected_header=None,stric
      if canonical(result)+b"\n"!=payload_bytes:errors.append("FINALIZED_RESULT_CANONICAL")
      if hashlib.sha256(payload_bytes).hexdigest()!=r.get("result_sha256"):errors.append("FINALIZED_RESULT_BYTES")
      if result.get("ledger_last_record_sha256_before_final")!=r.get("previous_record_sha256") or result.get("status")!=r.get("status"):errors.append("FINALIZED_RESULT_BINDING")
+     if set(result)!=RESULT_KEYS or result.get("schema_version")!="argo-discoveryworld-ui-parity-result/v1" or result.get("run_id")!=manifest.get("run_id") or result.get("model_calls")!=0 or result.get("spend_usd")!=0.0:errors.append("RESULT_SCHEMA")
+     if header_record is None or any(result.get(key)!=header_record.get(key) for key in ["run_id","approval_sha256","manifest_sha256","source_archive_sha256","preflight_identity_sha256","execution_root_sha256"]):errors.append("RESULT_HEADER_BINDING")
+     result_cells=result.get("cells",{})
+     if not isinstance(result_cells,dict) or set(result_cells)!=set(finished_records):errors.append("RESULT_CELL_SET")
+     else:
+      for cell_id,finished in finished_records.items():
+       cell_result=result_cells[cell_id];expected_sidecars={key:finished[key] for key in ["stdout","stderr","events","ui_gzip","frame_manifest"]}
+       if cell_result.get("status")!=finished.get("status") or cell_result.get("sidecars")!=expected_sidecars or cell_result.get("run",{}).get("exit_code")!=finished.get("exit_code") or cell_result.get("run",{}).get("timed_out")!=finished.get("timed_out"):errors.append("RESULT_CELL_BINDING")
+     mode=result.get("mode_pairs",[]);repeat=result.get("ui_repeat_pairs",[])
+     if len(mode)!=20 or len(repeat)!=10 or any({key:value for key,value in pair.items() if key!="status"}!=expected or pair.get("status") not in {"EXACT","OBSERVED_MISMATCH","UNOBSERVABLE"} for pair,expected in zip(mode,manifest.get("mode_pairs",[]))) or any({key:value for key,value in pair.items() if key!="status"}!=expected or pair.get("status") not in {"EXACT","OBSERVED_MISMATCH","UNOBSERVABLE"} for pair,expected in zip(repeat,manifest.get("ui_repeat_pairs",[]))):errors.append("RESULT_PAIRS")
+     summary=result.get("summary",{});cell_statuses=[result_cells[cell["cell_id"]]["status"] for cell in manifest.get("ordered_cells",[]) if isinstance(result_cells,dict) and cell["cell_id"] in result_cells];pair_statuses=[pair.get("status") for pair in mode+repeat];computed=final_status(cell_statuses,pair_statuses,30)
+     if summary.get("controller_error") is not None:computed="INCOMPLETE" if len(cell_statuses)<30 else "INVALID"
+     expected_summary={"cells_planned":len(cell_statuses),"valid_complete":sum(value=="valid_complete" for value in cell_statuses),"mode_exact":sum(pair.get("status")=="EXACT" for pair in mode),"mode_mismatch":sum(pair.get("status")=="OBSERVED_MISMATCH" for pair in mode),"mode_unobservable":sum(pair.get("status")=="UNOBSERVABLE" for pair in mode),"ui_repeat_exact":sum(pair.get("status")=="EXACT" for pair in repeat),"ui_repeat_mismatch":sum(pair.get("status")=="OBSERVED_MISMATCH" for pair in repeat),"ui_repeat_unobservable":sum(pair.get("status")=="UNOBSERVABLE" for pair in repeat),"controller_error":summary.get("controller_error")}
+     if summary!=expected_summary or result.get("status")!=computed:errors.append("RESULT_DERIVATION")
     except (OSError,RuntimeError,ValueError,json.JSONDecodeError,AttributeError):errors.append("FINALIZED_RESULT_BYTES")
    finalized=True
   else:errors.append("UNKNOWN_EVENT")
@@ -155,10 +170,12 @@ def validate_ledger(path,manifest,allow_partial=False,expected_header=None,stric
  return {"passed":not errors,"errors":errors,"records":len(records),"last_record_sha256":prev,"states":states,"finalized":finalized}
 class ArtifactNamespace:
  def __init__(self,root):
-  self.root=Path(root).resolve();flags=os.O_RDONLY
+  self.root=Path(os.path.abspath(os.fspath(root)));flags=os.O_RDONLY
   if hasattr(os,"O_DIRECTORY"):flags|=os.O_DIRECTORY
   if hasattr(os,"O_NOFOLLOW"):flags|=os.O_NOFOLLOW
-  self.root_fd=os.open(self.root,flags);st=os.fstat(self.root_fd);self.root_identity=(st.st_dev,st.st_ino);self.dirs={"":self.root_fd};self.files={}
+  self.root_fd=os.open(self.root,flags);st=os.fstat(self.root_fd);named=self.root.lstat()
+  if self.root.is_symlink() or (st.st_dev,st.st_ino)!=(named.st_dev,named.st_ino):os.close(self.root_fd);raise RuntimeError("ARTIFACT_ROOT_NOT_PINNED")
+  self.root_identity=(st.st_dev,st.st_ino);self.dirs={"":self.root_fd};self.files={}
  def _parts(self,relative):
   path=PurePosixPath(relative)
   if path.is_absolute() or not path.parts or ".." in path.parts:raise ValueError("unsafe artifact path")

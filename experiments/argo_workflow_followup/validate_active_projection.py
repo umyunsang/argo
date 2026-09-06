@@ -47,8 +47,13 @@ def validate(root,contract_path):
   design_nav=nodes.get("artifact:discoveryworld_ui_parity_design",{}).get("status","");handoff_design=next((doc.get("status","") for doc in handoff.get("active_documents",[]) if doc.get("role")=="ui_parity_design"),"");nav_text=" ".join([decision.get("status",""),design_nav,handoff_design,readiness.get("status",""),readiness.get("decision",""),nxt.get("status",""),*nxt.get("next_zero_cost_actions",[])])
   nav_counts={int(value) for value in re.findall(r"(?i)(\d+)(?:-test|_tests?)",nav_text)}
   if nav_counts!={total}:errors.append("ACTIVE_NAV_COUNT")
-  phase_text=" ".join([handoff.get("current_allowed_next_action",""),readiness.get("decision",""),nxt.get("status",""),*nxt.get("next_zero_cost_actions",[]),json.loads((root/cf["proposal"]).read_text()).get("review_status","")]).lower()
-  if any(term in phase_text for term in ["uncommitted","pending_immutable_commit","requires immutable commit","commit exact v4"]):errors.append("STALE_PHASE")
+  proposal_obj=json.loads((root/cf["proposal"]).read_text());approval_obj=json.loads((root/cf["approval"]).read_text());phase_text=" ".join([handoff.get("current_allowed_next_action",""),readiness.get("decision",""),nxt.get("status",""),*nxt.get("next_zero_cost_actions",[]),proposal_obj.get("review_status",""),json.dumps(handoff.get("active_documents",[]),sort_keys=True),json.dumps(readiness.get("reviews",{}),sort_keys=True)]).lower()
+  if any(term in phase_text for term in ["resolved_in_uncommitted_successor","v4 is uncommitted","v5 is uncommitted","pending_immutable_commit","requires immutable commit","commit exact v4","unreviewed_v4"]):errors.append("STALE_PHASE")
+  required_paths=proposal_obj.get("required_preapproval_receipts",{});approval_paths={key:approval_obj.get("bindings",{}).get(key,{}).get("path") for key in ["immutable_validation","method_review","runtime_review","handoff_review"]}
+  versions={match.group(1) for path in required_paths.values() if (match:=re.search(r"ui-parity-v(\d+)-",str(path)))}
+  if required_paths!=approval_paths or len(versions)!=1 or len(required_paths)!=4:errors.append("RECEIPT_NAMESPACE")
+  authority_path=root/cf["graph_validation_authority"]
+  if readiness.get("graph_validation_authority",{}).get("sha256")!=sha(authority_path):errors.append("READINESS_GRAPH_AUTH")
  except (KeyError,TypeError,FileNotFoundError,json.JSONDecodeError):errors.append("PARITY_HANDOFF_READ")
  if not set(contract.get("required_prohibited_claims",[])).issubset(set(handoff.get("prohibited_claims",[]))):errors.append("PROHIBITED_CLAIMS")
  if handoff.get("inference_scope",{}).get("candidate_n")!=2 or nxt.get("inference_scope",{}).get("candidate_n")!=2:errors.append("INFERENCE_SCOPE")

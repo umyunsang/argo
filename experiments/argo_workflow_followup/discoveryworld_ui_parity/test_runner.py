@@ -4,7 +4,7 @@ import copy,hashlib,json,sys,tempfile,unittest
 from pathlib import Path
 from unittest.mock import patch
 HERE=Path(__file__).resolve().parent;ROOT=HERE.parents[2];sys.path.insert(0,str(HERE))
-from run import ControllerSignalLatch,ENGINE_REPO,GlobalDeadlineError,_main,SANDBOX_EXEC,SOURCE_REPO,build_argv,managed_run,preflight_paths,authority_root_sha,classify_failure,copy_bound_output,derive_approval_text,execution_root_sha,frame_manifest,group_exists,open_frame_directory,revalidate_complete_cells,runtime_identity,sandbox_profile,validate_approval,write_abort_receipt
+from run import ControllerSignalLatch,ENGINE_REPO,RUN_CONTEXT,GlobalDeadlineError,_main,SANDBOX_EXEC,SOURCE_REPO,build_argv,managed_run,preflight_paths,authority_root_sha,classify_failure,copy_bound_output,derive_approval_text,execution_root_sha,frame_manifest,group_exists,open_frame_directory,proposal_core_sha,revalidate_complete_cells,runtime_identity,sandbox_profile,validate_approval,write_abort_receipt
 M=json.loads((HERE/"manifest.json").read_text())
 class Tests(unittest.TestCase):
  def test_approved_direct_runner_rejects_unsealed_controller(self):
@@ -17,17 +17,11 @@ class Tests(unittest.TestCase):
  def test_exact_approval_passes(self):
   a=json.loads((HERE/"approval-template.json").read_text());a.update({"status":"APPROVED","approved_by":"user","approved_at":"2026-09-06T00:00:00+09:00","engine_repo":str(ROOT.resolve())})
   with tempfile.TemporaryDirectory() as td:
-   root=Path(td);execution=execution_root_sha(a);authority=authority_root_sha(a);a["execution_root_sha256"]=execution;a["authority_root_sha256"]=authority;derived=derive_approval_text(a,execution,authority);a["required_approval_text"]=derived;a["user_approval_message"]=derived;a["user_approval_message_sha256"]=hashlib.sha256(derived.encode()).hexdigest()
+   root=Path(td);execution=execution_root_sha(a);proposal=json.loads((ROOT/a["bindings"]["proposal"]["path"]).read_text());authority=authority_root_sha(a,proposal);a["proposal_core_sha256"]=proposal_core_sha(proposal);a["execution_root_sha256"]=execution;a["authority_root_sha256"]=authority;derived=derive_approval_text(a,execution,authority);a["required_approval_text"]=derived;a["user_approval_message"]=derived;a["user_approval_message_sha256"]=hashlib.sha256(derived.encode()).hexdigest()
    for key,verdict,field,value in [("immutable_validation","PASS","execution_root_sha256",execution),("method_review","PASS","authority_root_sha256",authority),("runtime_review","PASS","execution_root_sha256",execution),("handoff_review","ACCEPT","authority_root_sha256",authority)]:
     path=root/(key+".json");path.write_text(json.dumps({field:value,"verdict":verdict}));a["bindings"][key]={"path":str(path),"sha256":hashlib.sha256(path.read_bytes()).hexdigest()}
    user=root/"user.json";user.write_text(json.dumps({"schema_version":"argo-ui-parity-user-authorization/v1","authority_root_sha256":authority,"message":derived,"message_sha256":hashlib.sha256(derived.encode()).hexdigest(),"approved_at":a["approved_at"]}));a["bindings"]["user_authorization"]={"path":str(user),"sha256":hashlib.sha256(user.read_bytes()).hexdigest()}
-   # Proposal text is separately bound in production; patch its parsed value only for this isolated gate unit.
-   real_loads=json.loads
-   def loads(data,*args,**kwargs):
-    value=real_loads(data,*args,**kwargs)
-    if isinstance(value,dict) and "research_question" in value:value["required_approval_text"]=derived
-    return value
-   with patch("run.ENGINE_REPO",str(ROOT.resolve())),patch("run.json.loads",side_effect=loads):self.assertTrue(validate_approval(a,ROOT)["approved"])
+   with patch("run.ENGINE_REPO",str(ROOT.resolve())):self.assertTrue(validate_approval(a,ROOT)["approved"])
  def test_manifest_hash_drift_fails(self):
   a=json.loads((HERE/"approval-template.json").read_text());a.update({"status":"APPROVED","approved_by":"user"});a["bindings"]["manifest"]["sha256"]="0"*64;self.assertFalse(validate_approval(a,ROOT)["approved"])
  def test_post_consumption_identity_uses_no_subprocess(self):
@@ -166,7 +160,7 @@ class Tests(unittest.TestCase):
    finally:latch.restore()
  def test_abort_receipt_is_atomic_and_requires_marker(self):
   with tempfile.TemporaryDirectory() as td:
-   root=Path(td);self.assertFalse(write_abort_receipt(root,RuntimeError("x")));marker=root/"paper/research/receipts/discoveryworld-ui-parity-v1.marker.json";marker.parent.mkdir(parents=True);marker.write_bytes(b"marker");self.assertTrue(write_abort_receipt(root,RuntimeError("x")));abort=root/"paper/research/receipts/discoveryworld-ui-parity-v1-controller-abort.json";self.assertEqual(json.loads(abort.read_text())["status"],"CONTROLLER_ABORT");self.assertFalse((root/"paper/research/receipts/discoveryworld-ui-parity-v1-controller-abort.pending").exists());other=Path(td)/"other";result=other/"paper/research/receipts/discoveryworld-ui-parity-v1-result.json";marker2=other/"paper/research/receipts/discoveryworld-ui-parity-v1.marker.json";result.parent.mkdir(parents=True);result.write_text("result");marker2.write_text("marker");self.assertFalse(write_abort_receipt(other,RuntimeError("post-publish")));self.assertFalse((other/"paper/research/receipts/discoveryworld-ui-parity-v1-controller-abort.json").exists())
+   root=Path(td);RUN_CONTEXT["marker_owned"]=False;self.assertFalse(write_abort_receipt(root,RuntimeError("x")));marker=root/"paper/research/receipts/discoveryworld-ui-parity-v1.marker.json";marker.parent.mkdir(parents=True);marker.write_bytes(b"marker");self.assertFalse(write_abort_receipt(root,RuntimeError("other launch")));RUN_CONTEXT["marker_owned"]=True;self.assertTrue(write_abort_receipt(root,RuntimeError("x")));abort=root/"paper/research/receipts/discoveryworld-ui-parity-v1-controller-abort.json";self.assertEqual(json.loads(abort.read_text())["status"],"CONTROLLER_ABORT");self.assertFalse((root/"paper/research/receipts/discoveryworld-ui-parity-v1-controller-abort.pending").exists());other=Path(td)/"other";result=other/"paper/research/receipts/discoveryworld-ui-parity-v1-result.json";marker2=other/"paper/research/receipts/discoveryworld-ui-parity-v1.marker.json";result.parent.mkdir(parents=True);result.write_text("result");marker2.write_text("marker");RUN_CONTEXT["marker_owned"]=True;self.assertFalse(write_abort_receipt(other,RuntimeError("post-publish")));self.assertFalse((other/"paper/research/receipts/discoveryworld-ui-parity-v1-controller-abort.json").exists());RUN_CONTEXT["marker_owned"]=False
  def test_controller_signal_latch_preserves_terminalization_failpoints(self):
   import os,signal
   for label in ["copy","validation","finished_append","cleanup"]:
