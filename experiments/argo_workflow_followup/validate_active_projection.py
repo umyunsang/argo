@@ -41,7 +41,7 @@ def validate(root,contract_path):
   if len(test_paths)!=len(set(test_paths)) or any(not (root/path).is_file() or sha(root/path)!=bindings.get(key+"_sha256") for key,path in zip(test_keys,test_paths)):errors.append("CANDIDATE_TEST_BINDING")
   declared_counts={int(match.group(1)) for action in nxt.get("next_zero_cost_actions",[]) if (match:=re.search(r"validate (\d+) tests",action))}
   total=readiness.get("total_tests")
-  if declared_counts and declared_counts!={total} or not declared_counts and "READY_TO_ASK" not in nxt.get("status",""):errors.append("TEST_COUNT_CONSISTENCY")
+  if declared_counts and declared_counts!={total} or not declared_counts and not any(stage in nxt.get("status","") for stage in ["READY_TO_ASK","CLOSED_INVALID","EXECUTED"]):errors.append("TEST_COUNT_CONSISTENCY")
   decision=nodes.get("decision:rd_2026_09_06_discoveryworld_ui_parity",{});readiness_edge=edges.get("edge:1297",{})
   if not isinstance(total,int) or f"_{total}_TESTS_" not in decision.get("status","") or readiness_edge.get("scope")!=f"{total}-test static readiness" or str(total) not in nxt.get("status","") or str(total) not in handoff.get("status",""):errors.append("ACTIVE_TEST_STATUS")
   design_nav=nodes.get("artifact:discoveryworld_ui_parity_design",{}).get("status","");handoff_design=next((doc.get("status","") for doc in handoff.get("active_documents",[]) if doc.get("role")=="ui_parity_design"),"");nav_text=" ".join([decision.get("status",""),design_nav,parity_design.get("review_convergence",{}).get("status",""),handoff_design,readiness.get("status",""),readiness.get("decision",""),nxt.get("status",""),*nxt.get("next_zero_cost_actions",[])])
