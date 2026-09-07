@@ -1,4 +1,4 @@
-# 통합 장기 자율연구 설계 — 5인 검토 반영 revision
+# 통합 장기 자율연구 설계 — Sol 5인과 Fable 5.1 검토 반영 revision
 
 상태: **DESIGN_REVISED · NOT_PREREGISTERED · NO_NEW_EXECUTION_AUTHORITY**
 갱신: 2026-09-07
@@ -87,3 +87,18 @@ ResearchDone는 task/protocol/개발·확증 분석/실패·비용/ArchitectureS
 내부 prototype crosswalk는 유일 owner와 chosen/rejected design에 연결한다. 현장 reuse 규칙과 native construction 재개 승인은 별도다. 정본 QMD·이전 exports·원본 계획서를 수정하지 않는다. 설치는 필요성과 project-local version/license/security/rollback을 확인한 경우만 판단하며 새 paid 실행을 허가하지 않는다.
 
 현재 next: task/baseline/metric의 구체화와 owner/port capability 검증. manuscript writing이나 새 native runtime 구현이 아니다.
+
+## 11. Fable 5.1 검토 후 현행 qualifier
+
+현행 prospective study: `paper/research/fable51-design-review-20260907/integration/integrated-study-design.json`.
+현행 완료/단계 권한: `paper/research/fable51-design-review-20260907/integration/research-completion-contract.json`.
+전체 판단: 같은 디렉터리 `review-synthesis-ko.md`, `finding-response-matrix.json`. 위 §2의 5인 문서는 predecessor로 보존하며 이 절의 명시적 qualifier가 우선한다. Fable이 읽은 commit은 `f2e203058`이고 이 수정본을 재승인한 것은 아니다.
+
+- **Apparatus:** 기존 session/REPL/RLM을 사용한 task-local prompt/모듈/journal/ORX adapter/scorer의 연구 계층을 정의한다. native runtime 재개, 다른 제품 wrapper, 두 번째 process/scientific-run authority가 아니다. 실제 구현/프로토콜 해시는 아직 없다.
+- **R1/R2:** task 학습·후보 생성·선택 평가·hidden scoring은 ORX R1 권위에 둔다. 이미 허용된 input/output의 bounded 로컬 분석은 code/input/output/env/cost R2 receipt를 갖는다. 작은 sanity 학습이라고 권한을 우회하지 않는다.
+- **조작:** B/C의 비graph 도구·원문·계산 권리는 같고 의무 gate 여부가 다르다. C/G는 의무의 실제 집행 강도를 맞춘다. G-only 도구, C의 동등 도구, prompt/capsule/context bytes는 task-bound 명세에서 고정한다. 사용 로그는 발화 증거일 뿐 topology·계산·context 효과의 인과 분리가 아니다.
+- **대상과 지표:** natural/event-inclusive 중 primary 모집단은 과제 근거·outcome-blind 적합성/잡음/비용으로 고정한다. event가 없으면 G 효과가 0이라고 가정하지 않는다. 공통 event content·exogenous trigger·미도달 처리는 사전 명세한다. 근거 승계·continuation은 secondary이며 primary null 시 승격하지 않는다.
+- **결측:** 모든 배정/launch/UNKNOWN/비용을 보존한다. treatment가 launch 수를 바꿀 때 whole-block 제외도 편향이므로 기본 규칙으로 기각한다. operational utility floor와 미관측 hidden 성과의 missingness를 구별하며 exact invalid rule은 metric 선정 후 동결한다.
+- **봉인과 통계:** hash는 변경 탐지이며 기밀성/무노출 증거가 아니다. trusted custody·접근·reveal/사전 노출을 별도 기록한다. programme별 paired block, 순서 무작위화, ancestry와 within/between 변동을 구별한다. 두 시작은 안정된 power 증거가 아니며 MUE를 잡음에 맞춰 낮추지 않는다.
+- **단계:** 새 P0 통합 feasibility(기존 SAB Stage 0와 별개), P1 개발, P2 확증을 둔다. RD4a-pre/RD4a-dev/RD4b를 각각 실행 전에 승인받는다. C feasibility/C-G confirmation은 권고안이며 미선택이다. 숫자·수리 횟수·전체 예산은 미정이다.
+- **종결/후행 구현:** 중단 후 닫힌 분석·범위 결정이 있어야 연구가 완료된다. inconclusive engineering fallback은 실제 측정된 feasible/safe 후보만 대상으로 한다. 효능 승자는 여전히 없고 기존 native/test-instance 재개 조건은 변경하지 않는다.

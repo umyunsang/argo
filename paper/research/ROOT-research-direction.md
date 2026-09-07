@@ -1,6 +1,6 @@
 # 연구 방향과 목적 — ROOT active entrypoint
 
-상태: **FIVE_REVIEW_INTEGRATED · RESEARCH_DESIGN_REVISED · EXPERIMENT_AND_WRITING_NOT_READY**
+상태: **FIVE_SOL_PLUS_FABLE_REVIEW_INTEGRATED · RESEARCH_DESIGN_REVISED · EXPERIMENT_AND_WRITING_NOT_READY**
 갱신: 2026-09-07
 
 ## 1. 두 핵심과 하나의 연구 연쇄
@@ -60,3 +60,11 @@ DiscoveryWorld를 버리지는 않지만 주 논문의 필수 벤치마크나 �
 현재 canonical JSON은 연구 projection이지 native event store가 아니다. 비순환 `next → handoff → graph`를 유지한다. UI-parity 전용 과거 navigation validator는 해당 frozen predecessor에 남기고, 새 연구 navigation은 별도 contract로 검사한다. 전체 graph byte/integrity와 출판 gate는 면제하지 않는다. 과거 experimental cutoff와 현재 literature/design revision date는 분리한다.
 
 **다음 우선순위:** 공개 ML task programme/neutral scorer 적합성 → B/C/G 차이 명세 → owner/port/uncertain-run capability 확인 → 예산·분산·표본 계획 → 별도 실행 승인. 원고나 native 기능 확장이 다음 단계가 아니다.
+
+## 8. Fable 5.1 독립 검토 반영
+
+검토 commit `f2e203058`의 Fable 판정은 `REVISE_BEFORE_EXPERIMENT`다. 보고서와 13개 입력 해시를 검증했고 F1–F14를 수용/조건/반박으로 조정했다. 이전 5인 문서와 원검토는 보존한다. 최신 qualifier는 `paper/research/fable51-design-review-20260907/integration/review-synthesis-ko.md`, 현행 study와 phase-completion 계약은 같은 디렉터리의 `integrated-study-design.json`, `research-completion-contract.json`이다. 수정본 Fable 재검토 PASS가 아니다.
+
+기존 Prime native 기질 위의 project-local 연구 apparatus를 제품 구현과 구별한다. R1 scientific run과 bounded R2 분석에 각각 receipt를 요구한다. P0 통합 feasibility → P1 B/C/G 개발 → P2 별도 봉인 확증을 작업용 경로로 둔다. 각 단계는 독립 계약·수치 예산·승인이 필요하며 아직 모두 미승인이다. UNKNOWN 블록 자동 제외, event 없는 G 효과 0, hash만으로 blindness, 기능 로그만으로 인과 분리, C/G primary 자동 고정은 채택하지 않는다.
+
+다음은 실제 공개 ML programme/scorer/ancestry에 이 정의를 맞추는 것이다. feasibility 실패나 예산 소진은 실행 중단이며 분석·명시적 범위 결정 없이 ResearchDone나 writing gate를 열지 않는다. native 재개는 기존 test-instance 조건과 사용자 승인에 계속 종속된다.

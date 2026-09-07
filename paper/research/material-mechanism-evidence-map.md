@@ -71,3 +71,11 @@ active 판정에서 대체한다. T3는 한 task dry run, T1′은 48회 중 eva
 - 연구 관리 graph, neutral audit graph, 실험용 active graph control을 서로 다른 역할로 명시한다. native store/service는 아직 구현되지 않았다.
 - 원고는 ResearchDone 이후, 최종 그림/metadata/페이지 검사는 PublicationReady에서 수행한다. Prototype는 ArchitectureSelectionRecord와 별도 구현/재사용 승인을 요구한다.
 - 기존 efficacy는 0이다. 현재 문구 수정은 owner 충돌의 설계상 해결이지 runtime/effect 검증 완료가 아니다.
+
+## Fable 5.1 qualifier — 연구 apparatus와 native 제품의 구분
+
+현행 qualifier는 `paper/research/fable51-design-review-20260907/integration/integrated-study-design.json`의 `apparatus`, `run_classes`, `arm_deltas`다. 기존 native owner 표는 후행 제품 crosswalk이며 구현 완료를 뜻하지 않는다. 연구 비교는 기존 Prime 세션/REPL/RLM 위의 project-local prompt·모듈·원문 journal·ORX receipt adapter·scorer 경계에서 설계한다. 제품 runtime, 새 supervisor 또는 두 번째 scientific-run registry를 만들지 않는다. 이 revision은 정의만 추가했고 아무 계층도 구현/실행하지 않았다.
+
+R1은 학습·후보 생성·선택 평가·hidden scoring 등 frozen scientific execution으로 ORX 권위를 따른다. R2는 이미 허용된 자료/실행 output의 bounded 분석·재계산으로 code/input/output/env/cost receipt를 journal에 연결한다. R2는 task 학습/평가 권한 우회나 별도 R1 lifecycle이 아니다. UNKNOWN의 미관측 상태를 실패/미실행으로 바꾸지 않고, 사후 programme block 자동 제외도 하지 않는다.
+
+P0 통합 feasibility는 실제 연결의 완주·실패 해부·비용을 보고할 후보 결과층이다. B/C/G 비교 효과나 native readiness를 증명하지 않는다. P0/P1/P2는 단계별로 따로 승인하며, 이 공개 연구가 기존 DeepVoice를 포함한 native 재개 조건을 해제하지 않는다.
