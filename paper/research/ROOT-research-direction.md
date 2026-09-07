@@ -1,6 +1,6 @@
 # 연구 방향과 목적 — ROOT active entrypoint
 
-상태: **FIVE_SOL_PLUS_FABLE_REVIEW_INTEGRATED · RESEARCH_DESIGN_REVISED · EXPERIMENT_AND_WRITING_NOT_READY**
+상태: **FABLE_RE_REVIEW_READY_FOR_TASK_QUALIFICATION_WITH_CONDITIONS · EXPERIMENT_AND_WRITING_NOT_READY**
 갱신: 2026-09-07
 
 ## 1. 두 핵심과 하나의 연구 연쇄
@@ -18,6 +18,8 @@
 - 다섯 Sol/xhigh 원검토와 수신 기록: `paper/research/five-reviewer-design-review-20260907/integration/five-reviews.json`, `intake.json`
 - 이견 조정: `paper/research/five-reviewer-design-review-20260907/integration/disagreement-resolution.json`
 - Active 설계: `paper/research/integrated-research-design-active.md`
+- 현행 Fable-reviewed study/완료 계약: `paper/research/fable51-design-review-20260907/integration/integrated-study-design.json`, `research-completion-contract.json` (검토 commit `ee7e0fdaf`). 위 5인 문서는 보존된 predecessor다.
+- 재검토 결론/과제별 필수 후속 조건: `paper/research/fable51-design-review-20260907/re-review-01/integration/review-synthesis-ko.md`, `task-qualification-requirements.json`.
 - 기제–owner/port: `paper/research/material-mechanism-evidence-map.md`
 - 인계와 다음 행동: `paper/research/active-graph-handoff-manifest.json`, `paper/research/next-experiment-manifest.json`
 
@@ -63,8 +65,16 @@ DiscoveryWorld를 버리지는 않지만 주 논문의 필수 벤치마크나 �
 
 ## 8. Fable 5.1 독립 검토 반영
 
-검토 commit `f2e203058`의 Fable 판정은 `REVISE_BEFORE_EXPERIMENT`다. 보고서와 13개 입력 해시를 검증했고 F1–F14를 수용/조건/반박으로 조정했다. 이전 5인 문서와 원검토는 보존한다. 최신 qualifier는 `paper/research/fable51-design-review-20260907/integration/review-synthesis-ko.md`, 현행 study와 phase-completion 계약은 같은 디렉터리의 `integrated-study-design.json`, `research-completion-contract.json`이다. 수정본 Fable 재검토 PASS가 아니다.
+검토 commit `f2e203058`의 Fable 판정은 `REVISE_BEFORE_EXPERIMENT`다. 보고서와 13개 입력 해시를 검증했고 F1–F14를 수용/조건/반박으로 조정했다. 이전 5인 문서와 원검토는 보존한다. 최신 qualifier는 `paper/research/fable51-design-review-20260907/integration/review-synthesis-ko.md`, 현행 study와 phase-completion 계약은 같은 디렉터리의 `integrated-study-design.json`, `research-completion-contract.json`이다. 이 첫 검토 기록은 당시 수정본의 재검토가 아니었다. 후속 `ee7e0fdaf` 재검토는 아래 §9에 별도로 기록한다.
 
 기존 Prime native 기질 위의 project-local 연구 apparatus를 제품 구현과 구별한다. R1 scientific run과 bounded R2 분석에 각각 receipt를 요구한다. P0 통합 feasibility → P1 B/C/G 개발 → P2 별도 봉인 확증을 작업용 경로로 둔다. 각 단계는 독립 계약·수치 예산·승인이 필요하며 아직 모두 미승인이다. UNKNOWN 블록 자동 제외, event 없는 G 효과 0, hash만으로 blindness, 기능 로그만으로 인과 분리, C/G primary 자동 고정은 채택하지 않는다.
 
 다음은 실제 공개 ML programme/scorer/ancestry에 이 정의를 맞추는 것이다. feasibility 실패나 예산 소진은 실행 중단이며 분석·명시적 범위 결정 없이 ResearchDone나 writing gate를 열지 않는다. native 재개는 기존 test-instance 조건과 사용자 승인에 계속 종속된다.
+
+## 9. 수정본 재검토 — 과제 구체화로 진행
+
+Fable 5.1 재검토 판정은 **READY_FOR_TASK_QUALIFICATION**(조건부)이다. F1–F14 중 12개는 설계 해결, F3/R1–R2 집행과 F7/강제 gate는 부분 해결이다. 실증 종결은 없고 task/arm/efficacy는 0이다. 전체 보고서와 22개 입력을 검토 commit `ee7e0fdaf`에서 확인했다. 다음은 추가 일반 검토가 아니라 실제 공개 ML programme/scorer/license/ancestry의 문서 수준 적합성 연구다.
+
+과제별 P0 명세에는 `re-review-01/integration/task-qualification-requirements.json`의 N1–N10 조건을 반영한다. 모든 단계에서 invalid/missingness/retry/repair 규칙을 고정하고, MUE는 P1 대비를 보기 전에 commit한다. 실행·최종 lock의 신뢰 경계와 자동 R1/R2 분류/lineage는 실제 capability로 검증한다. adapter 밖 우회 탐지나 비차등 scorer 결측을 가정하지 않는다.
+
+연구 apparatus의 정적 fixture를 넘는 코드 작성은 **별도 사용자 범위 결정 전 보류**한다. 제안은 같은 디렉터리 `apparatus-scope-decision.json`이다. 문서 수준 과제 연구는 이 결정과 병행 가능하다. 구현 범위 승인은 P0 실행 승인, native 재개, 설치·원고·push 권한을 포함하지 않는다.

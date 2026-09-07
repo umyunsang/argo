@@ -1,6 +1,6 @@
 # 통합 장기 자율연구 설계 — Sol 5인과 Fable 5.1 검토 반영 revision
 
-상태: **DESIGN_REVISED · NOT_PREREGISTERED · NO_NEW_EXECUTION_AUTHORITY**
+상태: **RE_REVIEW_READY_FOR_TASK_QUALIFICATION_WITH_CONDITIONS · NOT_PREREGISTERED · NO_NEW_EXECUTION_AUTHORITY**
 갱신: 2026-09-07
 상위: `paper/research/ROOT-research-direction.md`
 
@@ -15,9 +15,11 @@ typed-vs-tree 과거안, negative-result reuse pivot, compression, meta-recursio
 ## 2. 정확한 설계 기록
 
 - `paper/research/five-reviewer-design-review-20260907/integration/architecture-selection-record.json`: A–D 연구 후보와 B/C/G 개발 screen, reopen/null 규칙.
-- `paper/research/five-reviewer-design-review-20260907/integration/integrated-study-design.json`: 미확정 값까지 명시한 현재 prospective study.
-- `paper/research/five-reviewer-design-review-20260907/integration/owner-port-contracts.json`: 유일 owner, input/output, 금지 권한, external run reconciliation.
-- `paper/research/five-reviewer-design-review-20260907/integration/research-completion-contract.json`: ResearchDone, PublicationReady, PrototypeReadiness 분리.
+- `paper/research/fable51-design-review-20260907/integration/integrated-study-design.json`: 현행 prospective study. 검토 commit `ee7e0fdaf`; task-specific 프로토콜 값은 아직 미정이다.
+- `paper/research/fable51-design-review-20260907/integration/research-completion-contract.json`: 현행 ResearchDone/단계별 승인/PublicationReady/PrototypeReadiness 계약.
+- `paper/research/fable51-design-review-20260907/re-review-01/integration/task-qualification-requirements.json`: 재검토 후 다음 과제별 revision에 적용할 N1–N10 필수 조건. 이 조건 문서는 실행 계약이나 새 재검토 PASS가 아니다.
+- `paper/research/five-reviewer-design-review-20260907/integration/owner-port-contracts.json`: 보존된 유일 owner/input/output/금지 권한 명세. 현행 study와 재검토 후속 조건의 명시적 qualifier가 우선한다.
+- `paper/research/five-reviewer-design-review-20260907/integration/integrated-study-design.json`, `research-completion-contract.json`: 현행이 아닌 5인 검토 predecessor로 보존한다.
 - `paper/research/five-reviewer-design-review-20260907/integration/prior-art-rebinding.json`: 넓은 기존 문헌의 exact locator 재결합.
 - `paper/research/five-reviewer-design-review-20260907/integration/disagreement-resolution.json`: 리뷰 이견과 root 판단.
 
@@ -92,7 +94,7 @@ ResearchDone는 task/protocol/개발·확증 분석/실패·비용/ArchitectureS
 
 현행 prospective study: `paper/research/fable51-design-review-20260907/integration/integrated-study-design.json`.
 현행 완료/단계 권한: `paper/research/fable51-design-review-20260907/integration/research-completion-contract.json`.
-전체 판단: 같은 디렉터리 `review-synthesis-ko.md`, `finding-response-matrix.json`. 위 §2의 5인 문서는 predecessor로 보존하며 이 절의 명시적 qualifier가 우선한다. Fable이 읽은 commit은 `f2e203058`이고 이 수정본을 재승인한 것은 아니다.
+전체 판단: 같은 디렉터리 `review-synthesis-ko.md`, `finding-response-matrix.json`. 5인 문서는 predecessor로 보존하며 이 절의 명시적 qualifier가 우선한다. 첫 Fable은 `f2e203058`을 검토했고, 뒤의 새 세션은 수정본 `ee7e0fdaf`를 조건부 task qualification READY로 재검토했다. §12의 후속 조건은 task-bound protocol에서 닫아야 한다.
 
 - **Apparatus:** 기존 session/REPL/RLM을 사용한 task-local prompt/모듈/journal/ORX adapter/scorer의 연구 계층을 정의한다. native runtime 재개, 다른 제품 wrapper, 두 번째 process/scientific-run authority가 아니다. 실제 구현/프로토콜 해시는 아직 없다.
 - **R1/R2:** task 학습·후보 생성·선택 평가·hidden scoring은 ORX R1 권위에 둔다. 이미 허용된 input/output의 bounded 로컬 분석은 code/input/output/env/cost R2 receipt를 갖는다. 작은 sanity 학습이라고 권한을 우회하지 않는다.
@@ -102,3 +104,15 @@ ResearchDone는 task/protocol/개발·확증 분석/실패·비용/ArchitectureS
 - **봉인과 통계:** hash는 변경 탐지이며 기밀성/무노출 증거가 아니다. trusted custody·접근·reveal/사전 노출을 별도 기록한다. programme별 paired block, 순서 무작위화, ancestry와 within/between 변동을 구별한다. 두 시작은 안정된 power 증거가 아니며 MUE를 잡음에 맞춰 낮추지 않는다.
 - **단계:** 새 P0 통합 feasibility(기존 SAB Stage 0와 별개), P1 개발, P2 확증을 둔다. RD4a-pre/RD4a-dev/RD4b를 각각 실행 전에 승인받는다. C feasibility/C-G confirmation은 권고안이며 미선택이다. 숫자·수리 횟수·전체 예산은 미정이다.
 - **종결/후행 구현:** 중단 후 닫힌 분석·범위 결정이 있어야 연구가 완료된다. inconclusive engineering fallback은 실제 측정된 feasible/safe 후보만 대상으로 한다. 효능 승자는 여전히 없고 기존 native/test-instance 재개 조건은 변경하지 않는다.
+
+## 12. 재검토 후 task-bound 필수 조건
+
+`paper/research/fable51-design-review-20260907/re-review-01/integration/task-qualification-requirements.json`이 다음 P0/P1/P2 계약의 추가 요구사항이다. 검토된 ISD/RCC 바이트는 바꾸지 않는다. F3/F7의 집행 경계는 부분 해결이며 문구만으로 hard-gate runtime을 인증하지 않는다.
+
+- **권한/집행:** apparatus code 범위는 사용자 승인 전이다. 공통 authority/budget/identity gate는 B/C/G 모두, 추가 compulsory 연구 점검은 C/G가 같은 trusted launch/lock locus에서 집행하는 방향이다. agent-writable journal·guard 존재만으로 우회 방지를 주장하지 않는다. 직접 실행 census와 coverage가 검증돼야 한다.
+- **분류/선택:** 사전 고정한 자동 R1/R2/preparation 규칙과 사후 전수 lineage를 함께 검사한다. 새 task 학습/selection-performance score는 R1이다. 원문·데이터 진단·명시적 R1 재계산 R2는 별도 typed supporting evidence다. 사후 R1 분류가 미승인 실행을 정당화하지 않는다. 작업용 primary selection 클래스는 agent의 단일 artifact lock이며 미lock/fallback·deadline은 task 전에 고정한다.
+- **MUE/단계:** MUE 또는 outcome-independent 도출 규칙은 P1 arm 대비 계산·공개 전에 commit한다. RQ/candidate·개발 선택 절차는 개발 전, exact confirmation contrast는 P1 후 P2 outcome 전에 고정한다. 모든 단계는 invalid/missingness/retry/repair/no-replacement 계약과 별도 정확한 승인이 필요하다.
+- **결측/계보/비용:** process UNKNOWN, no-lock/no-artifact, lock 성공·scorer 결과·numerical observability를 분리한다. utility floor로 미관측 hidden 성과를 대입하지 않는다. scorer 한 번씩 호출했다고 비차등 결측으로 부르지 않는다. P0와 그 task/source-data/generator ancestry는 개발 측으로 기록하고 P2에서 제외한다. P0는 R1 latency·UNKNOWN/BLOCKED·gate 거부/우회·R2 위반과 각각의 분모/탐지 coverage/전체 비용을 보고한다.
+- **비교군:** 이 연구의 선택적 Arbor anchor는 별도 승인된 서술적 비교만이다. causal whole-system 연구는 별도 protocol과 승인이 필요하며 여기서 생기지 않는다.
+
+현재는 문서 수준 task qualification으로 진행할 수 있다. 다음 검토는 실제 과제·장치·평가·숫자 예산에 묶인 P0 protocol이며, 추가 일반 설계 검토나 native 구현이 아니다.
