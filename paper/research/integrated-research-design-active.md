@@ -96,7 +96,7 @@ ResearchDone는 task/protocol/개발·확증 분석/실패·비용/ArchitectureS
 현행 완료/단계 권한: `paper/research/fable51-design-review-20260907/integration/research-completion-contract.json`.
 전체 판단: 같은 디렉터리 `review-synthesis-ko.md`, `finding-response-matrix.json`. 5인 문서는 predecessor로 보존하며 이 절의 명시적 qualifier가 우선한다. 첫 Fable은 `f2e203058`을 검토했고, 뒤의 새 세션은 수정본 `ee7e0fdaf`를 조건부 task qualification READY로 재검토했다. §12의 후속 조건은 task-bound protocol에서 닫아야 한다.
 
-- **Apparatus:** 기존 session/REPL/RLM을 사용한 task-local prompt/모듈/journal/ORX adapter/scorer의 연구 계층을 정의한다. native runtime 재개, 다른 제품 wrapper, 두 번째 process/scientific-run authority가 아니다. 실제 구현/프로토콜 해시는 아직 없다.
+- **Apparatus:** 기존 session/REPL/RLM을 사용한 task-local prompt/모듈/journal/ORX adapter/scorer의 연구 계층을 정의한다. native runtime 재개, 다른 제품 wrapper, 두 번째 process/scientific-run authority가 아니다. task-bound B/C/G 구현/실행 프로토콜 해시는 아직 없다. 공통 static byte-binding fixture만 후속 commit `ccdbf3df0`에서 검증됐으며 native/runtime 인증은 아니다.
 - **R1/R2:** task 학습·후보 생성·선택 평가·hidden scoring은 ORX R1 권위에 둔다. 이미 허용된 input/output의 bounded 로컬 분석은 code/input/output/env/cost R2 receipt를 갖는다. 작은 sanity 학습이라고 권한을 우회하지 않는다.
 - **조작:** B/C의 비graph 도구·원문·계산 권리는 같고 의무 gate 여부가 다르다. C/G는 의무의 실제 집행 강도를 맞춘다. G-only 도구, C의 동등 도구, prompt/capsule/context bytes는 task-bound 명세에서 고정한다. 사용 로그는 발화 증거일 뿐 topology·계산·context 효과의 인과 분리가 아니다.
 - **대상과 지표:** natural/event-inclusive 중 primary 모집단은 과제 근거·outcome-blind 적합성/잡음/비용으로 고정한다. event가 없으면 G 효과가 0이라고 가정하지 않는다. 공통 event content·exogenous trigger·미도달 처리는 사전 명세한다. 근거 승계·continuation은 secondary이며 primary null 시 승격하지 않는다.
@@ -109,10 +109,19 @@ ResearchDone는 task/protocol/개발·확증 분석/실패·비용/ArchitectureS
 
 `paper/research/fable51-design-review-20260907/re-review-01/integration/task-qualification-requirements.json`이 다음 P0/P1/P2 계약의 추가 요구사항이다. 검토된 ISD/RCC 바이트는 바꾸지 않는다. F3/F7의 집행 경계는 부분 해결이며 문구만으로 hard-gate runtime을 인증하지 않는다.
 
-- **권한/집행:** apparatus code 범위는 사용자 승인 전이다. 공통 authority/budget/identity gate는 B/C/G 모두, 추가 compulsory 연구 점검은 C/G가 같은 trusted launch/lock locus에서 집행하는 방향이다. agent-writable journal·guard 존재만으로 우회 방지를 주장하지 않는다. 직접 실행 census와 coverage가 검증돼야 한다.
+- **권한/집행:** 재검토 당시 보류였던 apparatus code 범위는 사용자 `c40c59a9`가 승인했다. 현행 제한은 `paper/research/public-ml-programme-qualification/effective-authority-v2.json`을 따른다. 공통 authority/budget/identity gate는 B/C/G 모두, 추가 compulsory 연구 점검은 C/G가 같은 trusted launch/lock locus에서 집행하는 방향이다. agent-writable journal·guard 존재만으로 우회 방지를 주장하지 않는다. 직접 실행 census와 coverage가 검증돼야 한다.
 - **분류/선택:** 사전 고정한 자동 R1/R2/preparation 규칙과 사후 전수 lineage를 함께 검사한다. 새 task 학습/selection-performance score는 R1이다. 원문·데이터 진단·명시적 R1 재계산 R2는 별도 typed supporting evidence다. 사후 R1 분류가 미승인 실행을 정당화하지 않는다. 작업용 primary selection 클래스는 agent의 단일 artifact lock이며 미lock/fallback·deadline은 task 전에 고정한다.
 - **MUE/단계:** MUE 또는 outcome-independent 도출 규칙은 P1 arm 대비 계산·공개 전에 commit한다. RQ/candidate·개발 선택 절차는 개발 전, exact confirmation contrast는 P1 후 P2 outcome 전에 고정한다. 모든 단계는 invalid/missingness/retry/repair/no-replacement 계약과 별도 정확한 승인이 필요하다.
 - **결측/계보/비용:** process UNKNOWN, no-lock/no-artifact, lock 성공·scorer 결과·numerical observability를 분리한다. utility floor로 미관측 hidden 성과를 대입하지 않는다. scorer 한 번씩 호출했다고 비차등 결측으로 부르지 않는다. P0와 그 task/source-data/generator ancestry는 개발 측으로 기록하고 P2에서 제외한다. P0는 R1 latency·UNKNOWN/BLOCKED·gate 거부/우회·R2 위반과 각각의 분모/탐지 coverage/전체 비용을 보고한다.
 - **비교군:** 이 연구의 선택적 Arbor anchor는 별도 승인된 서술적 비교만이다. causal whole-system 연구는 별도 protocol과 승인이 필요하며 여기서 생기지 않는다.
 
 현재는 문서 수준 task qualification으로 진행할 수 있다. 다음 검토는 실제 과제·장치·평가·숫자 예산에 묶인 P0 protocol이며, 추가 일반 설계 검토나 native 구현이 아니다.
+
+
+## 13. 현재 source/code fan-in과 사용자 결정
+
+`paper/research/public-ml-programme-qualification/integration/parallel-audit-intake-v1.json`이 검증된 원문·공개 코드·현재 Prime/ORX 인터페이스의 입력이다. MLA 원문 v2는 완독했고, AgentHPOBench 논문과 pinned strict runner의 final-step 대 archive-best 차이는 프로토콜 불일치로 보존한다. published score나 코드의 CPU fallback/epoch 값은 local 성과·자원 측정이 아니다.
+
+계정 없는 접근은 필수 조건이 아니다(`666dade1`). Kaggle 두 후보의 파일 metadata 접근을 확인했지만 약관/재배포 권한·원본 다운로드·hidden custody는 미확정이다. 계정 요구를 이유로 제외했던 원결론은 superseded이며, House Price·Spaceship Titanic·CIFAR-10·California Housing은 비교안 상태다. 최종 선택/중요 제외는 사용자 확인 후 한다. routine source 연구와 승인된 static fixture는 병렬로 계속한다.
+
+공통 artifact-lock static fixture의 7 tests와 clean `npm run check`는 `integration/artifact-lock-immutable-validation-v1.json`에 있다. 어떤 실제 task score도 생성하지 않았으며 phase/run/hidden-scorer 권한은 닫혀 있다. 현행 authority·account policy는 같은 qualification 디렉터리의 별도 명시적 사용자 receipt를 따른다. 원 Fable 계약의 historical false/pending 값은 이 후속 승인/제한을 부정하는 값이 아니다.

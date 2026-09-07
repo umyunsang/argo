@@ -1,6 +1,6 @@
 # 연구 방향과 목적 — ROOT active entrypoint
 
-상태: **FABLE_RE_REVIEW_READY_FOR_TASK_QUALIFICATION_WITH_CONDITIONS · EXPERIMENT_AND_WRITING_NOT_READY**
+상태: **PUBLIC_ML_TASK_COMPARISON_ACTIVE · SCOPED_APPARATUS_VERIFIED · EXPERIMENT_AND_WRITING_NOT_READY**
 갱신: 2026-09-07
 
 ## 1. 두 핵심과 하나의 연구 연쇄
@@ -10,7 +10,7 @@
 
 연쇄는 **문헌·대안 → graph-based 자율연구 → 고정 실험·독립 평가 → 설계 선택 → 연구 완료 → 논문 → 선택 근거를 계승한 ARGO 프로토타입**이다. 이는 내부 연구/제품 계보다. 논문은 검증된 일반적 설계·방법·결과·한계를 다루고 제품명·해커톤 계획·운영 경로를 싣지 않는다. 정확한 학술 논문 제목과 서지는 보존한다.
 
-최근 사용자는 유효한 기존 작업의 보존, 통합 연결 설계의 실험 비교, 연구 완료 뒤 원고 작성, 필요 도구 설치의 재량을 명시했다. 직전 continuity/negative-memory pivot은 비교할 후보이지 최적 설계가 아니다. 설치 허용은 새 유료 실행·계정·native construction 재개 권한이 아니다.
+최근 사용자는 유효한 기존 작업의 보존, 통합 연결 설계의 실험 비교, 연구 완료 뒤 원고 작성, 필요 도구 설치의 재량을 명시했다. 직전 continuity/negative-memory pivot은 비교할 후보이지 최적 설계가 아니다. 초기 설치 허용만으로 새 유료 실행·계정·native 재개 권한이 생기지 않으며, 후속 명시적 범주 승인과 제한은 §6/§10에 별도로 기록한다.
 
 ## 2. 권위와 보존
 
@@ -51,7 +51,7 @@ DiscoveryWorld를 버리지는 않지만 주 논문의 필수 벤치마크나 �
 
 ## 6. 실행·설치·출판
 
-현재 허용: 원문 및 공개 과제 적합성 연구, 설계 명세, 사전 승인 범위의 로컬 정적 검증. 새 모델/compute/World 실행은 task/scorer/environment/command/budget과 immutable review 및 별도 정확한 승인이 필요하다. native runtime construction은 중단 상태다. DeepVoice/LG Aimers 접근, credentials 변경, push·공개·제출은 하지 않는다.
+현재 허용: 원문/공개 과제 연구, 기존 Prime RLM 병렬 감사, 지정 경로의 연구용 apparatus 코드와 로컬 정적/모의 검증(사용자 `c40c59a9`). 실제 모델·학습·평가, 설치·공개는 범주 수준 승인(`dbbd432b`)을 받았지만 구체 task/scorer/environment/command/자원·비용 상한/대상과 검토·승인은 별도로 고정한다. 네이티브 변경은 검증 조건 충족 전 금지(`b33563e4`)이며 예외 해제 질문은 끝났다. Kaggle 토큰은 사용자 제공 뒤 일회성 유효성/파일목록 확인만 완료했다. 이를 credential 저장·약관 동의·다운로드·제출·계정 변경 권한으로 확대하지 않는다. DeepVoice/LG Aimers 비공개 자료는 접근하지 않는다.
 
 필요한 설치는 기존 capability, 측정 병목 또는 재현성 요구, 유일 owner, version/license/security와 rollback을 확인한 후 project-local로 판단한다. 신규 설치를 최신성이나 성과의 대리 지표로 쓰지 않는다. RLM 위임은 등록 provider 모델을 확인하고 model/thinking을 명시한다. 현재 깊은 연구 검토는 `openai-codex/gpt-5.6-sol` / `xhigh`를 사용하며 Astra/max를 자동 상속하지 않는다.
 
@@ -77,4 +77,12 @@ Fable 5.1 재검토 판정은 **READY_FOR_TASK_QUALIFICATION**(조건부)이다.
 
 과제별 P0 명세에는 `re-review-01/integration/task-qualification-requirements.json`의 N1–N10 조건을 반영한다. 모든 단계에서 invalid/missingness/retry/repair 규칙을 고정하고, MUE는 P1 대비를 보기 전에 commit한다. 실행·최종 lock의 신뢰 경계와 자동 R1/R2 분류/lineage는 실제 capability로 검증한다. adapter 밖 우회 탐지나 비차등 scorer 결측을 가정하지 않는다.
 
-연구 apparatus의 정적 fixture를 넘는 코드 작성은 **별도 사용자 범위 결정 전 보류**한다. 제안은 같은 디렉터리 `apparatus-scope-decision.json`이다. 문서 수준 과제 연구는 이 결정과 병행 가능하다. 구현 범위 승인은 P0 실행 승인, native 재개, 설치·원고·push 권한을 포함하지 않는다.
+이 재검토 당시 `apparatus-scope-decision.json`은 보류였지만, 후속 `c40c59a9`가 지정 경로의 apparatus 코드·로컬 모의 검증을 승인했다. 원 proposal의 pending 값은 과거 상태로 보존한다. 현행 권위는 `paper/research/public-ml-programme-qualification/effective-authority-v2.json`이다. 구현 승인은 특정 P0 실행, native 재개 또는 원고 권한을 포함하지 않는다. 설치·공개 범주 승인은 별도 실제 대상/조건을 충족해야 한다.
+
+## 10. 현재 작업 — 과제 비교·정적 장치와 결정 권한
+
+현행 자료는 `paper/research/public-ml-programme-qualification/`에 있다. `effective-authority-v2.json`, `account-and-important-decision-policy-v1.json`, `candidate-disposition-correction-v1.json`과 비밀 없는 `kaggle-readonly-access-receipt-v1.json`을 먼저 읽는다. 계정은 ACCESS_DEPENDENCY이지 자동 제외 조건이 아니다. House Price(`home-data-for-ml-course`)와 Spaceship Titanic을 복원했고, CIFAR-10 및 California Housing과 비교한다. 최종 과제·중요 제외·연구 범위/지표/비교군 변경은 제안 후 사용자 확인을 받는다. 아직 과제를 확정하지 않았다.
+
+기존 Prime daemon/AgentSession/REPL/RLM으로 파일 소유권이 다른 문헌·코드·인터페이스·정적 구현을 병렬 처리했다. 소규모 byte-binding fixture는 로컬 commit `ccdbf3df0a23169637711ea363262ced89aaf2df`이며, clean clone에서 7 tests와 `npm run check`가 통과했다. 이는 process-local lock-ID 및 실제 byte 비교 사양일 뿐 durable/campaign-level lock이나 hidden scorer 격리가 아니다.
+
+원문/코드/인터페이스 fan-in은 `integration/parallel-audit-intake-v1.json`, MLAgentBench 완독은 `mlagentbench-primary-read-v1.json`, 원문 LF 보정은 `recent-source-lf-locator-correction-v1.json`에 있다. 원보고서의 account-free 제외와 LF 표기는 그대로 보존하되 현행 결론으로 채택하지 않는다. 실제 학습·평가·World 실행은 0이고 기존 invalid/소모 run은 재사용하지 않는다. 다음은 네 과제의 과학적 적합성·채점/누설 위험·비용 비교안과 선택 확인이다.
