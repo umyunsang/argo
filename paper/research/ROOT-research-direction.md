@@ -1,133 +1,62 @@
 # 연구 방향과 목적 — ROOT active entrypoint
 
-상태: **AUTHORITATIVE RESEARCH ENTRYPOINT · NATIVE CONSTRUCTION PAUSED**
-갱신: 2026-09-06T13:20:00+09:00
+상태: **FIVE_REVIEW_INTEGRATED · RESEARCH_DESIGN_REVISED · EXPERIMENT_AND_WRITING_NOT_READY**
+갱신: 2026-09-07
 
-이 문서가 현재 연구의 루트다. 하위 가설·방법·지표·판정은 이 문서와 active revision을 따라야 한다.
-원본 PDF는 수정하지 않으며 개인 식별값을 graph나 공개 산출물에 복사하지 않는다.
+## 1. 두 핵심과 하나의 연구 연쇄
 
-## 1. 단일 연구 연쇄
+1. 장기 자율연구를 수행하는 하네스 기반 LLM 에이전트 시스템.
+2. 최근 AI/ML 원문과 공정한 실험으로 근거를 만든 연구 방향과 설계.
 
-> **졸업논문 연구 → 문헌·실험으로 검증한 ARGO 통합 설계 → 허용된 native 구현 → NAIS 프로토타입·시연 → 구현 관측의 연구 계보 환류**
+연쇄는 **문헌·대안 → graph-based 자율연구 → 고정 실험·독립 평가 → 설계 선택 → 연구 완료 → 논문 → 선택 근거를 계승한 ARGO 프로토타입**이다. 이는 내부 연구/제품 계보다. 논문은 검증된 일반적 설계·방법·결과·한계를 다루고 제품명·해커톤 계획·운영 경로를 싣지 않는다. 정확한 학술 논문 제목과 서지는 보존한다.
 
-논문과 NAIS를 독립 트랙으로 나누지 않는다. 졸업논문은 ARGO의 구성·연결·제어 정책을 선택하는 선행 연구다.
-NAIS 프로토타입은 그 선택을 계승해야 한다. 연구 지표, 구현 acceptance, 현장 규칙은 같은 연쇄의 서로 다른 증거층이다.
+최근 사용자는 유효한 기존 작업의 보존, 통합 연결 설계의 실험 비교, 연구 완료 뒤 원고 작성, 필요 도구 설치의 재량을 명시했다. 직전 continuity/negative-memory pivot은 비교할 후보이지 최적 설계가 아니다. 설치 허용은 새 유료 실행·계정·native construction 재개 권한이 아니다.
 
-## 2. 권위 원본
+## 2. 권위와 보존
 
-| ID | 역할 | 경로/범위 | SHA-256 |
-|---|---|---|---|
-| THESIS | 연구 목적·scientific choice | Desktop 졸업논문계획서 p.1 | `d2ab302410321cb43c499a681d289df72d86f889eaf4ca0b58b8e8ad804ea8f5` |
-| APP | 목표 제품 동작·구현 제안·공개 의무 | 현재 사용자 제공 NAIS 신청서 pp.2–4,7 | `a829572375ddca11ec94cbbd48827419564f655fa36aab25e3a9d3fdca8a47e6` |
-| NOTICE | 대회 일정·배점·현장 개발·제출 | 현재 사용자 제공 모집 공고 pp.2,3,5 | `b46c64b79eec2c317017977c6821115f49d02cd16bf481949e91bcd38c92610a` |
+- 현재 사용자 방향/공통 검토 자료: `paper/research/five-reviewer-design-review-20260907/packet/review-brief.md`
+- 다섯 Sol/xhigh 원검토와 수신 기록: `paper/research/five-reviewer-design-review-20260907/integration/five-reviews.json`, `intake.json`
+- 이견 조정: `paper/research/five-reviewer-design-review-20260907/integration/disagreement-resolution.json`
+- Active 설계: `paper/research/integrated-research-design-active.md`
+- 기제–owner/port: `paper/research/material-mechanism-evidence-map.md`
+- 인계와 다음 행동: `paper/research/active-graph-handoff-manifest.json`, `paper/research/next-experiment-manifest.json`
 
-현재 APP는 이전 Downloads 사본 및 구 `ca35…` 참조와 다른 파일이다. 현재 APP에는 36시간 계획이 없다.
-실제 제출 성공 여부는 이 경로만으로 추정하지 않는다.
+서명된 계획서/신청서/공고 원본은 변조하지 않는다. 기존 source SHA는 THESIS `d2ab302410321cb43c499a681d289df72d86f889eaf4ca0b58b8e8ad804ea8f5`, APP `a829572375ddca11ec94cbbd48827419564f655fa36aab25e3a9d3fdca8a47e6`, NOTICE `b46c64b79eec2c317017977c6821115f49d02cd16bf481949e91bcd38c92610a`다. 학과의 제목 변경 승인, 해커톤에서 사전 custom 코드 재사용 허용 여부, 실제 제출 상태는 미확인이다. 웹 행사 소개는 상세 규칙을 대체하지 않는다.
 
-## 3. 연구 목적
+## 3. 선택한 연구 프로그램, 아직 선택하지 않은 승자
 
-1. agent가 연구 문제·가설·대안·구분 예측·조건·방법·지표·중단 규칙을 직접 선택한다.
-2. 모든 선택은 실제 읽은 source bytes/span, 반례, 적용 범위와 연결된다.
-3. 둘 이상의 설계/실험 후보를 같은 비교 조건에서 경쟁시키고 이유 있게 유지·보류·수정·기각한다.
-4. 실행은 사전 고정 protocol/code/environment와 receipt로 재현 가능해야 한다.
-5. 결과가 다음 연구 결정을 바꾸며 실패·무효·기각 방향도 재개 조건과 함께 보존된다.
-6. 다른 agent가 사적 대화 없이 active graph와 receipt로 허용 next action과 금지 이유를 복구한다.
-7. 검증된 최소 구성이 후행 ARGO 계약과 NAIS prototype acceptance를 실제로 바꾼다.
+우선 연구 프로그램은 **graph/evidence-mediated 장기 ML 연구 제어를 강한 원문 기반 반복 연구와 비교하여 최소 유용 설계를 선택하는 것**이다. graph가 우수하다는 결론은 없다. Pi/Prime, 검색, ORX는 서로 다른 계층이므로 하나의 framework 성능순위로 묶지 않는다.
 
-## 4. 현재 연구 질문과 active 설계
+작업용 개발 screen은 B/C/G다. B는 강한 persistent hypothesis/result tree·원문 복구·명시적 advisory 점검을 가진다. C는 같은 사실·기회에 schema-neutral compulsory applicability/revalidation/preservation/capsule 절차를 더한다. G는 C와 같은 의무를 versioned evidence graph 제어에 연결한다. C-B와 G-C를 구분하되, G-C도 순수 topology 효과가 아닌 graph-control package 효과다. 필요성과 비용을 먼저 입증할 때만 passive-graph fourth arm을 추가한다.
 
-전체 질문은 다음과 같다.
+개발 결과로 후보와 최강의 신뢰 가능한 대조군을 선택한 후, 별도 task/source families에서 단일 primary contrast를 동결한다. 아직 task, metric, 표본, power/precision, MUE, budget, command, 승인은 없다. 6/24 family나 고정 지평 숫자는 reviewer 제안이지 검증된 하한이 아니다.
 
-> 장기 자율 R&D에서 근거 기반 scientific choice, 경쟁 실행, 결과 기반 successor, 재현·인계를 제공하는 유용한 최소 ARGO 구성과 native ownership 경계는 무엇인가?
+## 4. 주 outcome과 graph의 세 역할
 
-가장 먼저 검사할 불확실성은 typed evidence dependency/version 정책이 동일 기회의 강한 result-driven experiment-tree
-comparator보다 다음 실험 선택·선택적 재개방·fresh-context 인계를 개선하는지다.
+주 outcome은 고정 전체 예산에서 **hidden scoring 전에 선택한 하나의 최종 artifact의 독립 과제 성과**다. 무효·실패 floor, 선택 규칙, 추정량은 실행 전에 정한다. 모든 launch/실패/사람 개입과 root+descendant 비용을 센다. 유의하지 않음은 동등성/비열등성의 증거가 아니다.
 
-Active 설계: `paper/research/integrated-research-design-active.md`
-기제–native 계약: `paper/research/material-mechanism-evidence-map.md`
-Active graph 인계: `paper/research/active-graph-handoff-manifest.json`
-다음 실험 명세: `paper/research/next-experiment-manifest.json`
+- 연구 관리용 graph: source/hypothesis/experiment/result/decision을 연결해 지금의 연구를 진행한다.
+- 중립 audit graph: 두 조건의 기록을 동일하게 수집하며 실험용 gold를 treatment에 노출하지 않는다.
+- agent-visible active graph: G 조건에서 평가할 후보 제어 기제다. 원문 노출·계약 추출 오류와 비용도 포함한다.
 
-기존 `.planning/.../11-integrated-experiment-design.md`의 G×C×F/L×P/Stage R 설계는 보존된 대안이다. 8-cell factorial,
-16과제, 13개 검정은 더 이상 루트의 불변 조건이 아니다. 첫 주 contrast가 설명을 구분하지 못할 때만 후속으로 연다.
+schema/edge/hash, raw record 복구, 의미 충분성, 현재 조건의 유효성, 실제 task 성공은 별도다. 장기는 시간만이 아니라 앞 관측이 뒤의 과학적 결정을 바꾸는 의존 지평이다.
 
-## 5. 비교·채점·분석 규율
+## 5. 유지할 기존 근거
 
-- 고정 비처리 조건: task/data/split/source/scorer/opportunity/model/tool/budget.
-- 사전 등록된 treatment policy와 condition별 code hash 차이는 허용한다. 미등록 차이만 비교 불가다.
-- primary는 condition-blind rule verifier의 independently checkable decision-contract success다.
-- 규칙 점수는 과학적 진실·보편적 참신성·SOTA를 자동 인증하지 않는다.
-- task/episode가 추론 단위이며 rollout/seed는 nested다.
-- confirmatory 주 가설은 `H0: Δ≤0`; `Δ=+0.10`은 power 설계 시나리오다. CI lower `>+0.10` 구 성공 조건은 폐기한다.
-- best-of-k/seed/checkpoint 선택은 confirmatory estimand가 아니다.
-- fatal protocol/evaluator/agent failure는 intention-to-run 0점이다. infrastructure failure만 blinded 1회 retry한다.
-- hidden scorer/gold 접근은 run 무효다.
+원문/locator/protocol/byte 검사, 실패 회계, B3의 제한된 개발 관측, C64의 semantic conflict 반례, graph/replay fixture, font 호환성 자료를 원래 범위에서 유지한다. C64는 causal invalid다. UI-parity v12는 30/30 pre-observation crash로 INVALID/NOT_ADMITTED이며 영구 재실행 불가다. font qualification은 한 host/runtime의 정확한 다섯 호출만 ADMITTED다. World-init은 static-only이고 integrated efficacy는 0이다.
 
-## 6. 재료와 ownership
+DiscoveryWorld를 버리지는 않지만 주 논문의 필수 벤치마크나 무기한 환경수리 경로로 두지 않는다. 새 여덟 문헌과 더 넓은 기존 corpus를 연결하되 author-reported 수치를 local efficacy나 power prior로 바꾸지 않는다. exact novelty residual과 SOTA는 아직 미확립이다.
 
-- Pi/Prime: daemon, AgentSession, worker, persistent REPL/RLM과 복구의 고정 실행 기질
-- Exa 등: discovery adapter; snippet은 증거가 아님
-- 원문/evidence plane: bytes/hash/span/scope의 append-only 근거
-- research/context graph: versioned dependency projection과 selective recheck 후보
-- ORX: 지정 scientific run authority; ARGO는 receipt link/import만 소유
-- research refine: 가설·방법·다음 결정 successor
-- engine refine: 별도 held-out promotion/rollback 계보
+## 6. 실행·설치·출판
 
-APP의 LangGraph StateGraph/SqliteSaver는 구체적인 graph-plane 구현 **후보**다. native ownership 중복, 정합성·복구 비용과
-대안을 비교하기 전 최선으로 고정하지 않는다. Python validator/fixture는 제품 runtime이 아니다.
+현재 허용: 원문 및 공개 과제 적합성 연구, 설계 명세, 사전 승인 범위의 로컬 정적 검증. 새 모델/compute/World 실행은 task/scorer/environment/command/budget과 immutable review 및 별도 정확한 승인이 필요하다. native runtime construction은 중단 상태다. DeepVoice/LG Aimers 접근, credentials 변경, push·공개·제출은 하지 않는다.
 
-## 7. 현재 증거 상태
+필요한 설치는 기존 capability, 측정 병목 또는 재현성 요구, 유일 owner, version/license/security와 rollback을 확인한 후 project-local로 판단한다. 신규 설치를 최신성이나 성과의 대리 지표로 쓰지 않는다. RLM 위임은 등록 provider 모델을 확인하고 model/thinking을 명시한다. 현재 깊은 연구 검토는 `openai-codex/gpt-5.6-sol` / `xhigh`를 사용하며 Astra/max를 자동 상속하지 않는다.
 
-- Stage 0 scorer: 16개 task, valid/corrupt 각 3회, 총 96 evaluator 실행, 16/16 deterministic PASS
-- 공통 image: Linux arm64 `sha256:026ce848fa7de5d15510192aaeaadfe05cc252364df51ddc292d3655f0cc2060`
-- environment parity: Python distribution 91개, Debian package 95개, PASS
-- actual syscall isolation: runtime policy PASS
-- Opus 4.6 OAuth 개발 파일럿: primary non-stale delta 0; secondary full-resolution BASE 0/6, TARGET 6/6
-- 한계: 여섯 주제는 한 인과 template의 표면 변형, 최종 순서 6/6 TARGET→BASE, TARGET token 1.1007×
-- Confirmatory efficacy result 0; C confirmation은 HOLD
+`ResearchDone` 이후에만 새 원고를 작성한다. 그 후 `PublicationReady`에서 실제 문장·최종 그림·PDF metadata·모든 페이지를 검증한다. 지금 정본 QMD·protected evidence·기존 dated exports는 수정하지 않는다. prototype 구현/시연/재사용 규칙은 별도 gate다. 유효한 null/negative도 연구 완료가 될 수 있지만 invalid-only를 efficacy 완료로 바꾸지 않는다.
 
-Stage 0은 계측기·runtime boundary 결과다. Stage B는 한 template-family의 탐색 행동 결과이며 모집단 효능이 아니다. Study A, T3, T1′, B2와 구 synthetic 결과는 active efficacy
-근거에서 격리·철회한다.
+## 7. Graph 재개 규칙
 
-## 8. Graph authority와 revision
+현재 canonical JSON은 연구 projection이지 native event store가 아니다. 비순환 `next → handoff → graph`를 유지한다. UI-parity 전용 과거 navigation validator는 해당 frozen predecessor에 남기고, 새 연구 navigation은 별도 contract로 검사한다. 전체 graph byte/integrity와 출판 gate는 면제하지 않는다. 과거 experimental cutoff와 현재 literature/design revision date는 분리한다.
 
-`paper/context-graph.json`은 현재 연구의 canonical **research projection**이다. 제품 runtime graph나 append-only event journal은
-아직 구현되지 않았다. 현재 projection은 predecessor commit/SHA를 명시하고, immutable receipt는 자신이 검증한 predecessor
-snapshot에만 효력이 있다. mutable latest status 자체는 과학적 근거가 아니며 source/result/decision receipt가 우선한다.
-
-`active-graph-handoff-manifest.json`의 `active_chain`은 canonical graph에 실제 존재하는 node/edge ID만 참조한다. Binding 순서는
-`next-experiment-manifest.json → active-graph-handoff-manifest.json → context-graph.json`으로 고정해 상호 hash cycle을 피한다.
-구 conceptual chain과 uncommitted Stage-0 문서는 legacy/quarantine로 보존하며 active authority로 소비하지 않는다. 원고의
-`current-evidence-20260905/context-graph.json`은 보호된 local editing map이며 제품/canonical graph가 아니다.
-
-RETRACTED result의 역사 edge는 `historical`/`superseded_by` 표식과 함께 보존할 수 있으나 active support로 소비하지 않는다.
-source 무효화는 영향받는 결정만 `requires_recheck`로 열고 독립 근거와 무관한 결과를 보존한다. 미래 native 단계에서는
-ResearchEvent journal이 projection을 재도출해야 하지만, native construction pause 동안 현재 JSON/validator는 연구 명세와 fixture다.
-
-## 9. NAIS 조건과 clean-room
-
-NOTICE p.3 본선 배점: 적합성 10, 활용성 20, 혁신성 25, 실현가능성 25, 확장성 20. 논문 primary metric과 다르다.
-NOTICE p.5는 실제 개발 전 과정이 본선 기간에 수행되어야 함을 명시한다. 사전 세로 JPG/PNG 포스터와 현장 개발을 구분하고,
-본선 결과물은 prototype, PPT/PDF, GitHub source이며 발표 약 5분·질의응답 약 3분이다.
-
-웹페이지의 17:00–다음 날 12:00은 전체 행사 관측치이며 순수 개발시간으로 확정하지 않는다. 공개 OSS/API, 사전 설계자료,
-custom 코드의 정확한 재사용 범위는 `UNKNOWN`이다. 현재 연구 worktree 반입을 허용 또는 금지로 가정하지 않는다.
-Push·공개·제출 권한도 없다.
-
-NAIS 최소 동작 후보는 source→둘 이상의 실제 실행 설계→동일 기준 비교→이유 있는 접기→관측 기반 successor 1회→graph와
-fresh-context 인계다. 한 번의 실행만으로 병렬 경쟁을 구현했다고 주장하지 않는다. engine self-modification은 MVP 밖이다.
-
-## 10. 현재 중단선과 다음 행동
-
-Native construction은 계속 중단한다. paid episode는 Stage별 exact upper cost와 20% contingency를 숫자로 계산하고 사용자가
-그 금액을 승인하기 전 실행하지 않는다. LG Aimers와 private instance는 접근하지 않는다.
-
-Stage A와 Opus 4.6 개발 파일럿은 완료됐다. 네 비동형 causal family와 fail-closed runner도 무과금으로 검증됐다.
-교정 B2 8개는 실행됐으나 scorer의 stale 정의, action 의미, record 접근 enum 결함 때문에 인과 판정에 사용할 수 없다.
-원 결과는 보존하고 status-only 감도분석만 보고한다. B3 8개는 frozen stratified rule을 통과했다. B3와 비동형인 16개 confirmation task, scorer, 순서, runner도 무과금
-검증을 마쳤다. C64 64개는 완료됐으나 task text–oracle 의미 충돌 1건과 outcome 범위 모호성 때문에 confirmatory 인과 주장을 확립하지
-못했다. 추가 유료 실행은 승인되지 않았다. 답이 나온 C 바이트는 비순환 capsule에 보존됐다. 현재 다음 행동은 강한 result-aware tree와 typed policy를 실제 workflow에서
-비교하는 단일 후속 제안만 유지하고, runner·task·고정 OpenResearch command·비용·승인이 없으면 실행하지 않는 것이다.
-
-
-2026-09-06 현재, 1,000-step/180초 DiscoveryWorld v2 readiness는 clean-clone을 통과했지만 독립 RLM 통계·방법·runtime·graph review에서 BLOCK됐다. 공식 `getAgentObservation()`은 UI JSON뿐 아니라 vision base64와 PNG frame을 생성하며, 기존 두 실행에서 20,003 PNG/675,199,257 bytes의 부작용이 측정됐다. 따라서 봉인된 v2를 실행하지 않는다. 현재 active next action은 pinned official observation과 source-mirrored UI-only adapter를 1,000 steps에서 비교하는 parity instrument의 one-shot marker, hash-chained ledger, raw sidecar, strict cell schema와 fresh-agent handoff를 완성·검증하는 것이다. Adapter parity가 통과해도 두 family·고정 rotate/tick public-UI projection 밖으로 일반화하지 않으며, 실행은 최종 reviewer/immutable validation과 별도 exact approval 뒤에만 가능하다.
+**다음 우선순위:** 공개 ML task programme/neutral scorer 적합성 → B/C/G 차이 명세 → owner/port/uncertain-run capability 확인 → 예산·분산·표본 계획 → 별도 실행 승인. 원고나 native 기능 확장이 다음 단계가 아니다.

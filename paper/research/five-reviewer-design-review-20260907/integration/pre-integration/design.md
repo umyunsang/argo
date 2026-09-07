@@ -1,0 +1,123 @@
+# 졸업논문 연구방향 개정: 장기 자율연구 하네스
+
+상태: **사용자 허용에 따른 연구 방향 선택 · 설계 단계 · 새 실증/실행 권한 없음**
+
+## 1. 유지할 중심과 바꿀 중심
+
+유지하는 대상은 **장기 자율연구를 수행하는 하네스 기반 LLM 에이전트 시스템**이다. 질문은 모델의 단일 답변 정확도가 아니라, 제한된 자원 아래에서 가설–실험–해석–다음 결정이 여러 차례 이어질 때 연구가 유효하게 축적되는지이다.
+
+기존 `typed dependency policy 대 result tree`는 더 이상 필수 주제·주 contrast가 아니다. typed graph, section-level skill 계약, 압축, 재귀 개선은 관측된 병목을 해결하는 선택 가능한 구현 기제다. 해당 기제를 쓰지 않는 더 단순한 구성이 충분하면 그것을 선택한다.
+
+**새 중심:** 장기 연구의 연속성 — 이전의 유효한 결과와 실패 이유를 유지하면서 다음 실험을 선택하고, 중단이나 요구 변경 뒤에도 연구 목적을 잃지 않는가.
+
+## 2. 잠정 제목
+
+**한국어:** 장기 자율연구를 위한 하네스 기반 언어모델 에이전트 시스템의 설계와 평가
+
+**영어:** Design and Evaluation of Harnessed LLM Agents for Long-Horizon Autonomous Research
+
+실증이 미완료인 최종본에서는 제목·초록을 `설계 및 제한된 검증`으로 좁힌다. 제목에 성능 향상이나 자기진화 성공을 미리 넣지 않는다.
+
+## 3. 대안 비교와 선택
+
+| 방향 | 장점 | 지금 주제로 선택하지 않는 이유 |
+|---|---|---|
+| context/skill compression | Scroll·SkillZip과 직접 연결, 비용/구조 보존을 측정 가능 | 연구 전체의 품질보다 저장·노출 문제로 좁아질 수 있고 추출/압축/검색이 동시에 변한다. 병목 진단 뒤 보조 연구로 둔다. |
+| 고차 recursive self-evolution | Metaⁿ·HarnessDev와 연결, 개선 절차 자체가 대상 | depth/search/model/evaluation 분리가 어렵고 비용·전이·안정성 검증이 크다. 현재 졸업논문 주제로 과도하다. |
+| **증거 기반 연구 연속성 하네스** | HoH·RecEvolve·Prime/Scroll의 공통 기제를 자율연구에 연결, 단계별 결과와 실패를 관찰 가능 | 선택. 다만 독창적 기제의 발명으로 주장하지 않고 통합 설계와 제한된 통제 평가를 기여로 삼는다. |
+| 8개 프레임워크 모두 조합 | 많은 기능을 제시할 수 있음 | 귀속 가능한 비교가 사라지고 기존 runtime과 중복. 기각. |
+
+## 4. 연구 질문
+
+**주 RQ:** 동일한 모델·도구·원자료 접근·실험 기회·전체 예산에서, 명시적인 연구 상태와 독립 평가를 연결하는 하네스는 강한 반복 연구 에이전트보다 다단계 연구의 최종 검증 성과를 개선하는가?
+
+**진단 RQ:** 차이가 있다면 그 차이는 (a) 부정 결과의 조건부 재사용, (b) 유효한 결과의 보존, (c) 다음 실험 선택, (d) fresh-context 복구 중 어디에서 발생하는가?
+
+**견고성 RQ:** 같은 과제에서 관측된 이점이 사전 분리된 연구 과제/원자료 계보와 명시적 중단·재개 조건에서도 유지되는가?
+
+기여 수준은 먼저 시스템 패키지의 비교다. 하나의 패키지가 이겼다고 개별 graph·memory·refine 모듈의 인과효과까지 주장하지 않는다. 진단에서 중요한 하나를 선택해 후속 ablation을 한다.
+
+## 5. 최소 시스템 범위
+
+실행 엔진을 새로 만들지 않고 기존 영속 실행 기질을 사용한다. 연구용 제어는 다음으로 제한한다.
+
+1. **Research contract:** 연구 목표, 검증 가능한 terminal criterion, 데이터/split/metric/resource 조건, 사람 승인 경계.
+2. **Research state:** 가설, 근거, 실시한 실험, 실패 이유, 적용 조건, 미해결 의문, 다음 후보. 저장 방식은 파일/표로 시작해도 된다.
+3. **Bounded planner:** 수리만 반복하거나 새 기능만 늘리지 않고 다음 판별 실험 또는 정당한 중단을 선택한다.
+4. **Isolated executor:** 고정 코드/환경과 실제 산출물을 연결한다. 모델이 scorer·예산·승인 정책을 수정하지 못한다.
+5. **Independent assessor:** 개발 중 공개 피드백과 최종 비공개 평가를 분리한다. 역할 분리만으로 의미적 독립성이 생겼다고 주장하지 않는다.
+6. **Continuation capsule:** 다른 세션이 원문 주소, 현재 유효한 결과, 금지 행동, 다음 결정을 복구할 수 있게 한다.
+
+작업 메모리 보존과 과학적 유효성은 다르다. 영속 원자료, 현재 산출물, 검증된 성과, 작업 뷰를 구분한다. 변경된 가설·적용 조건은 successor로 기록하고 실패의 endpoint를 사후 변경하지 않는다.
+
+## 6. 평가 방향: 실제 ML 연구를 주 무대로
+
+초기 실증 후보는 **공개 데이터·고정 평가·현실적인 계산 한도를 가진 작은 ML 실험 프로그램**이다. 한 문제를 한 번 푸는 코딩 task가 아니라 다음을 포함해야 한다.
+
+- baseline을 확립하고 적어도 두 설명/방법을 비교한다.
+- 실제 학습/분석 산출물을 얻고 결과로 다음 실험을 바꾼다.
+- 부정 결과, 상충하는 지표 또는 적용 조건 변경이 생길 수 있다.
+- 최종 선택한 단일 모델/방법과 연구 요약을 외부 평가한다.
+- 별도 진단 조건에서 세션을 중단하고 새 context로 이어간다.
+
+후보 pool은 공개 tabular ML 과제 또는 작은 최적화/수치 실험 중 **하나의 일관된 묶음**에서 먼저 정한다. 데이터·라이선스·원환경·gold·resource를 확인하기 전 benchmark 이름이나 표본 수를 확정하지 않는다. seed·하위 실험·같은 원환경에서 만든 여러 질문을 독립 표본으로 세지 않는다.
+
+DiscoveryWorld는 주 벤치마크 필수가 아니다. 현재 World-init 작업은 선택 가능한 보조 런타임 연구로 보존하며, 이 방향 개정 동안 새 실행기·approval 준비를 더 쌓지 않는다. font 성공과 UI-parity 실패는 해당 호환성 범위 밖으로 옮기지 않는다.
+
+## 7. 강한 대조군과 주 contrast
+
+- **반복 연구 대조군:** 같은 영속 실행 환경, 원문/전체 실험 이력, hypothesis/result tree, 계획·개발·공개 평가 기회, 재시작 기능, validity checklist를 가진 evidence-aware continuation. 단발성 LLM이나 memory 없는 agent가 아니다.
+- **연구 연속성 하네스:** 같은 접근권/기회에서 명시적 연구 상태를 다음 실험 선택·보존 조건·실패 재사용·continuation capsule에 연결하는 제어 패키지.
+
+주 contrast는 `연구 연속성 하네스 − 강한 반복 연구 대조군`이다. HoH/RecEvolve 전체 구현 재현이라 부르지 않는다. 코드와 prompt의 차이, 가능한 action, role 호출 수, 실제 읽은 evidence, 사용한 자원을 모두 기록한다. 비교군에도 직접 점검할 자유를 준다.
+
+고정할 것: task/source lineage, train/dev/test split, 기반 모델/버전, 도구·권한, 공개 피드백, 후보 평가 기회 상한, 총 token·tool·compute·wall-clock 예산, 비공개 scorer, 최종 후보 선택 규칙. planning/critic/refine/복구 비용도 분모에 포함한다. 사용량이 동일하지 않아도 동일 hard ceiling과 비용–성과 곡선을 보고한다. 단순 호출 수 일치를 동일 비용이라 쓰지 않는다.
+
+## 8. 측정과 판정
+
+**주 endpoint 후보:** 고정된 전체 예산 종료 시, 사전 지정한 독립 평가로 측정한 **단일 최종 선택 산출물의 과제 성과**. 한 benchmark 묶음에서 같은 정의를 사용한다. invalid 결과의 숫자 처리와 최소 성공 기준은 실행 전 정한다. 사용한 평가 정의를 결과를 본 뒤 바꾸지 않는다.
+
+**별도 지표:** 유효한 신규 결과 수, 무효 결과의 과대 주장, 이유 없는 실패 반복, 잘못된 영구 억제, 보존 대상의 회귀, 복구 성공/지연/비용, 상태와 보고의 일치. 구조 경로·hash·정적 테스트 통과는 조작 확인이지 주 성과가 아니다.
+
+**장기 지평:** wall time만 늘리지 않는다. 연구 결정의 연쇄 길이, 이전 결과에 의존하는 후속 결정, context 경계, 조건 변경을 따로 기록한다. 모델 실행 시간이 짧은 파일럿은 다일 자율연구로 포장하지 않는다.
+
+**분석:** 과제/원자료 계보 단위 paired comparison. 반복 seed와 run은 nested. 표본 수·power·effect threshold·수치 budget은 아직 미정이다. 파일럿 뒤 사전 분리된 평가 계획을 고정하고 새 승인을 받는다. best checkpoint/과제별 archive maximum은 탐색 진단으로만 둔다. 유효한 산출물 비율과 전체 launch/실패를 같이 보고한다.
+
+## 9. 반증과 중단
+
+- 더 강한 반복 대조군과 같은 예산에서 차이가 없거나 비용만 늘면 해당 패키지의 필요성을 인정하지 않는다.
+- 차이가 context 양·모델·추가 평가 기회로 설명되면 하네스 효과 주장을 보류한다.
+- log는 있지만 실제 다음 결정에 쓰이지 않으면 memory 존재를 성과로 세지 않는다.
+- 중단 후 복구가 무중단보다 느리거나 부정확하면 회복력 주장을 하지 않는다.
+- hidden 평가에 맞춘 선택·scorer 수정·실패 분모 삭제가 있으면 efficacy 분석을 중지하고 원인을 보존한다.
+- 결과가 null이면 더 단순한 설계 선택 또는 제한된 설계 연구라는 결론을 허용한다.
+
+## 10. 기존 성과와 원고의 재배치
+
+문헌·source/claim locator·원문 보존·실패 분류·정적 명세는 재사용한다. C64의 인과 무효와 모든 실패/미확인 상태는 유지한다. typed vs tree는 후보 모듈의 후속 진단으로 내려놓는다. 새 논문 효능 결과는 현재 0이다.
+
+논문 구성: ① 장기 자율연구 문제와 범위 ② 발전 대상/보장 범위 중심 관련 연구 ③ 최소 하네스 설계 ④ task programme·동일 예산·독립 평가 방법 ⑤ 완료된 실증 및 실패 분석 ⑥ 한계. 실증이 아직 없으면 ⑤를 검증 명세/제한적 관찰로 표기하고 성능 개선 결론을 쓰지 않는다.
+
+이 개정은 연구 방향 변경만 반영한다. 정본 QMD/기존 exports/원래 계획서 PDF/소모된 run 바이트를 수정하지 않는다. 공식 계획서 제목 변경에 대한 지도교수·학과 승인 여부는 확인되지 않았다. native construction, private-instance 접근, 새 model/GPU/World 실행, 배포/제출은 허가되지 않았다.
+
+
+## 11. 비교가 흐려지지 않도록 고정할 처리 manifest
+
+두 조건 모두 원자료, 결과 tree, 버전·실패 사실, retrieval/REPL, 같은 시작 baseline과 같은 평가 기회에 접근한다. continuity 패키지의 등록된 차이는 (i) 목표·가설·실험·결론·미해결 상태를 explicit contract로 연결, (ii) 다음 행동에서 preservation/gap/negative-applicability 검토를 필수로 반영, (iii) 같은 정보로 만든 continuation capsule을 업데이트하고 소비하는 절차다. 같은 사실을 대조군에서 숨기지 않는다. 대조군은 free-form 기록/결과 tree를 사용할 수 있고 위 절차를 자발적으로 구현할 수도 있다. 오염/비준수는 로그로 보고하며 baseline을 의도적으로 약화하지 않는다.
+
+주 실험은 패키지 수준의 효과만 측정한다. 상태 형식과 compulsory control의 개별 효과를 알고 싶다면 하나씩 제거한 후속 비교가 필요하다. primary outcome은 package 자체의 산출물 schema 준수 점수가 아니다. 중단/재개는 사전 지정한 별도 스트레스 조건으로 두고, 무중단과 동일 시점의 state bytes·model·resume resource 권리를 맞춘다.
+
+## 12. 근거 locators와 현재 수행 상태
+
+직전 문헌 bundle의 source receipts/claim locators를 사용한다. 이 문서는 저자 reported 수치나 이전 invalid 실험을 새 효능으로 인용하지 않는다.
+
+- Prime Agent §§2.2–2.6: https://www.alphaxiv.org/abs/2608.23552
+- HoH §§3.3–3.4, Table 2, Appendix B.2: https://www.alphaxiv.org/abs/2609.01481
+- HarnessDev §§3.2–3.5, 4.3: https://www.alphaxiv.org/abs/2609.01437
+- Scroll §§2.2–2.4, Table 3: https://www.alphaxiv.org/abs/2608.21690
+- SkillZip Proposition 1, §§4.2–4.4: https://www.alphaxiv.org/abs/2608.05604
+- RecEvolve §§3.2–3.4, 5.2–5.6: https://www.alphaxiv.org/abs/2609.01622
+- Metaⁿ §§2.2–2.4, 3.3: https://www.alphaxiv.org/abs/2608.24735
+- Terminal-Universe §§3.1–3.3, 7: https://www.alphaxiv.org/abs/2609.04148
+
+현재: topic selection only. task suite / independent gold / exact scoring definition / sample size / power / fixed run command / model budget / run authority는 미확정 또는 없음이다. 이를 채우기 전 formal run을 시작하지 않는다. 다음 행동은 후보 과제의 적합성 비교와 논문 outline 작성이지 runtime 기능 추가가 아니다.

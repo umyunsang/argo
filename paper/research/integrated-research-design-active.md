@@ -1,210 +1,89 @@
-# ARGO 통합 연구설계 — active revision
+# 통합 장기 자율연구 설계 — 5인 검토 반영 revision
 
-상태: **ACTIVE DESIGN · NOT PREREGISTERED · NOT AUTHORIZED FOR PAID EXECUTION**
-갱신: 2026-09-05T06:52:41+09:00
-상위 권위: `paper/research/ROOT-research-direction.md`
+상태: **DESIGN_REVISED · NOT_PREREGISTERED · NO_NEW_EXECUTION_AUTHORITY**
+갱신: 2026-09-07
+상위: `paper/research/ROOT-research-direction.md`
 
-이 문서는 `.planning/2026-09-04-argo-paper-research-audit/review-packet/11-integrated-experiment-design.md`의
-G×C×F 전체요인 설계를 삭제하지 않고 **active 연구 선택에서 대체**한다. 기존 문서는 설계 이력이며 실행 권한이 아니다.
+## 1. 연구 목적
 
-## 1. 하나의 연구 프로그램
+장기 자율연구를 수행하는 harnessed LLM agents system을 최신 AI/ML 기제와 연결하고, 통합 제어 설계를 실험으로 비교해 후행 prototype의 최소 유용 구성을 선택한다. 기록용 graph는 자율연구를 지원한다. agent-visible graph 제어가 과제 성과에 필요한지는 별도 실증 질문이다. 도구 제품의 설치/통합 자체를 신규성이나 SOTA로 주장하지 않는다.
 
-본 연구는 서로 독립인 논문 benchmark와 해커톤 demo를 만들지 않는다.
+**주 RQ:** 같은 모델·근거 접근·실험 기회·전체 자원 한도에서 graph/evidence-mediated 제어가 강한 원문 기반 반복 연구보다 최종 검증 성과와 근거 승계에 추가 가치를 주는가?
 
-> 문헌·유사 실험 → 설계 대안 → 구분 가설과 실험 → 관측 → 채택·기각한 ARGO 계약 → 허용된 구현 → NAIS 프로토타입·시연 → 연구 계보 환류
+typed-vs-tree 과거안, negative-result reuse pivot, compression, meta-recursion은 보존된 선택지다. 이번 revision은 graph가 승자라는 결론이 아니라 이 통합 질문을 우선 조사하겠다는 결정이다.
 
-졸업논문은 ARGO의 구성과 연결 방식을 선택하는 선행 연구다. NAIS 프로토타입은 그 결과를 계승해야 한다.
-연구 지표, 구현 acceptance, 현장 개발 규칙은 같은 연쇄의 서로 다른 증거층이다.
+## 2. 정확한 설계 기록
 
-## 2. 연구 질문
+- `paper/research/five-reviewer-design-review-20260907/integration/architecture-selection-record.json`: A–D 연구 후보와 B/C/G 개발 screen, reopen/null 규칙.
+- `paper/research/five-reviewer-design-review-20260907/integration/integrated-study-design.json`: 미확정 값까지 명시한 현재 prospective study.
+- `paper/research/five-reviewer-design-review-20260907/integration/owner-port-contracts.json`: 유일 owner, input/output, 금지 권한, external run reconciliation.
+- `paper/research/five-reviewer-design-review-20260907/integration/research-completion-contract.json`: ResearchDone, PublicationReady, PrototypeReadiness 분리.
+- `paper/research/five-reviewer-design-review-20260907/integration/prior-art-rebinding.json`: 넓은 기존 문헌의 exact locator 재결합.
+- `paper/research/five-reviewer-design-review-20260907/integration/disagreement-resolution.json`: 리뷰 이견과 root 판단.
 
-### 전체 질문
+원검토/이견은 삭제하지 않는다. 설계 문구 수정은 empirical blocker가 닫혔다는 뜻이 아니다.
 
-근거를 읽고 문제·가설·조건·방법·지표·중단 규칙을 선택하며, 경쟁 설계를 실제 결과로 비교하고,
-유효한 연구 상태를 다른 agent에게 넘길 수 있는 **유용한 최소 ARGO 구성과 native ownership 경계**는 무엇인가?
+## 3. 공통 연결과 후보 차이
 
-### 첫 인과 질문
+연구 목표 → discovery candidate → 실제 읽은 source evidence → hypothesis/experiment alternatives → frozen run intent → scientific run authority → immutable artifact → independent assessment → research-state update/refine → successor 또는 정당한 stop의 연결을 명시한다.
 
-동일한 source spans, 후보, 구분 예측, 실행 결과, 검토·수정 기회, 모델 및 예산에서,
-**버전·반증·evidence dependency를 사용해 무효화와 재계획을 제어하는 정책**은 가장 가까운 강한
-result-driven experiment-tree 정책보다 증거에 맞는 다음 실험 선택과 fresh-context 인계를 개선하는가?
+Prime/Pi는 process/session/REPL/RLM/recovery를, DiscoveryPort는 검색 후보를, SourceEvidenceService는 bytes/version/locator를, ORX는 scientific run을 소유한다. 연구 event/audit graph가 process나 외부 run lifecycle을 다시 소유하지 않는다. PaperService는 검색하지 않고 연구 완료 뒤 closed evidence를 소비한다. 이 owner 명세는 현재 native 구현이 아니다.
 
-이 첫 실험은 전체 통합 목적을 graph 실험 하나로 축소하지 않는다. 가장 불확실하고 prototype 구조를 실제로 바꿀
-정책 선택을 먼저 검사한다.
+## 4. 개발 B/C/G screen
 
-## 3. 경쟁 대안과 선택
-
-| 대안 | 지위 | 선택/기각 이유 |
+| 조건 | 공통 기질/사실 | 유일한 후보 차이 |
 |---|---|---|
-| flat ledger + generic iteration | 해석용 baseline | 저비용 기준선이나 강한 선행 comparator가 아니다. |
-| proximity graph + tournament/evolution | 후속 또는 후보 생성 정책 | Co-Scientist의 가까운 기제다. graph+competition+refine 자체의 신규성 주장을 차단한다. |
-| result-driven experiment tree | **주 comparator** | The AI Scientist의 결과 기반 branch/repair/improve 기제와 가장 가까워 ARGO의 다음 실험 선택을 강하게 비교한다. 전체 시스템 재현이 아니라 mechanism-matched comparator다. |
-| typed evidence-dependency/version policy | **주 treatment** | source→claim→decision→action 의존성과 선택적 무효화·재개방·인계를 시험한다. 아직 효능은 미평가다. |
-| 기존 G×C×F 8-cell factorial | 조건부 후속 | graph, 후보 경쟁, refine 중 어떤 요소가 설명하는지 첫 결과가 구분하지 못할 때만 실행한다. |
+| B | persistent source-backed hypothesis/result/failure tree, 원문 복구, 동일 버전·적용 사실, critique/restart/validity 지침 | advisory 연구 계획·점검 |
+| C | B와 동일 | schema-neutral compulsory applicability/revalidation/preservation/capsule 절차 |
+| G | C와 동일한 의무·원자료 권리 | versioned graph/evidence traversal, scoped invalidation, graph-mediated continuation |
 
-주 contrast는 `TYPED_POLICY − RESULT_TREE_POLICY` 하나다. proximity/tournament를 후보 생성에 사용한다면 두 조건에
-같게 고정한다. flat baseline은 개발단계 floor/해석에만 사용하며 강한 comparator를 대체하지 않는다.
+C-B는 compulsory-process package, G-C는 graph-control package의 증분이다. G-B만 보고 graph topology 때문이라 주장하지 않는다. graph만 보이는 passive arm은 실제 의문과 비용이 정당화될 때 추가한다. Reviewer의 2×2 제안은 이 조건부 대안으로 보존하며 필수 전체요인 실험으로 바꾸지 않는다.
 
-## 4. 처리 조건과 비교 가능성
+그래프 관계는 treatment가 허용된 사실에서 생성하며 오류와 비용을 부담한다. 숨겨진 정답 관계를 주입하지 않는다. 사전 추출 관계를 공통 제공하는 control-only 진단은 별도 이름으로 둔다. 대조군이 직접 의존성 검사를 구현해도 금지하지 않으며, 실제 조작 차이와 오염은 로그로 확인한다.
 
-두 조건에서 다음을 고정한다.
+## 5. 실제 연구 캠페인과 독립 평가
 
-- 같은 task/episode, source bytes와 spans, 후보 pool, 구분 예측, 관측 결과
-- 같은 최대 후보 수, review/critique/refine 횟수와 순서
-- 같은 모델/provider revision, tool surface, token·tool·시간·비용 ceiling
-- 같은 condition-blind rule scorer와 실패 처리
-- 같은 실행 substrate와 scientific-run authority
+후보는 하나의 coherent 공개 small-compute ML task/source 묶음이다. license, ancestry, train/dev/final-test, 기제별 competing method, actual training/analysis와 다음 결정, final artifact가 있어야 한다. 기존 coding/retrieval/skill/SFT 점수는 이 연구 캠페인의 직접 대체가 아니다.
 
-허용되는 유일한 차이는 사전 등록된 **research-state control policy와 그 구현 hash**다. 총 코드 hash가 다르다는 이유로
-처리군 비교를 금지하지 않는다. 미등록된 data/scorer/opportunity/budget 차이는 비교 불가로 처리한다.
+주 outcome은 예산 종료 전에 dev evidence로 선택한 **단일 frozen artifact**의 hidden task 성과다. metric/단위/정규화/무산출물 floor/invalid 처리/선택 규칙은 아직 미정이며 task 선정 후 실행 전에 고정한다. archive-best, best seed/checkpoint와 hidden-score 기반 재선택은 primary에서 금지한다.
 
-## 5. episode와 독립 평가
+trusted deterministic scorer는 자신의 격리된 경계에서 hidden data/test를 읽는다. planner/developer/LLM critic은 읽지 못한다. primary scorer는 treatment label과 연구 trace 없이 artifact와 frozen evaluation manifest를 받는다. 모든 final selection lock 뒤 결과를 공개한다. 사람/rubric 검토는 보조 의미 calibration이며 model-role 분리는 오류 독립성이 아니다.
 
-한 episode는 다음 연쇄를 완결한다.
+## 6. 지평·자원·추론
 
-1. 경쟁 가설 또는 설명 두 개 이상
-2. 서로를 구분하는 관측 가능 예측
-3. 고정 자원 안에서 선택한 다음 실험
-4. held-out 관측 또는 재현 가능한 공개 관측
-5. 유지·보류·수정·기각 중 다음 결정
-6. 새 context agent가 복구할 handoff
+장기는 scientific dependency horizon으로 정의한다. 앞 결과가 뒤 행동을 바꾸는지, 원자료를 실제로 사용했는지, context 경계를 넘었는지를 측정한다. 네 결정·두 dependent decision·한 restart·관련/무관한 수정은 개발 stress template 후보이며 universal threshold가 아니다. 실제 ML 과제에 자연스러운 조건을 인증하고 confirmation 전에 고정한다. 스트레스 개입은 주 metric을 사후 바꾸지 않는다.
 
-독립 **task/episode**가 추론 단위다. rollout/API 호출은 task 안 반복이며 독립 표본으로 세지 않는다. 동일 문제의 seed만
-바꾸어 population 크기를 늘리지 않는다. task family별 development/evaluation 분리를 고정한다.
+model/provider/revision/thinking/sampling, source/first-record 권리, task split, candidate/critic/evaluation/recovery opportunity, 모든 descendant 포함 자원 hard ceiling을 일치시킨다. 결과에 따라 선택한 관측은 달라질 수 있지만 획득 권리와 기회는 같다. source extraction, graph build/update, critic, assessor, 실패/retry, cache-aware token, tool/CPU/GPU, worker time/wall time, human adaptation/intervention을 모두 기록한다. 동일 ceiling은 동일 소비가 아니므로 실제 사용량과 quality–cost를 함께 보고한다.
 
-ScienceAgentBench는 주어진 scientific-computing 실행 능력의 보조 endpoint로만 유지한다. 원 논문이 범위 밖으로 둔
-ideation/experimental design을 대신 측정한다고 주장하지 않는다.
+과제/source programme이 추론 단위다. seed/round/candidate/checkpoint와 같은 dataset/repository/generator ancestry는 nested다. 6/24 혹은 2 families를 통계적 하한으로 자동 채택하지 않는다. sample size는 dev-only variance/attrition/MUE 또는 precision/비용 계획으로 산출한다. 유의하지 않음은 equivalent/non-inferior를 뜻하지 않는다. 개발에서 선별한 후보와 최강 대조군을 confirmation 전에 동결한다.
 
-## 6. outcome
+## 7. 실패, 복구와 중단
 
-### Primary: independently checkable decision-contract success
+C64형 released text–gold 불일치는 모델 실행 전에 independent semantic adjudication과 negative controls로 검사한다. 실제 runner의 hidden access 차단, owner 중복, source 승격, changed-version 재사용, external-launch ambiguity를 failing-first fixture로 확인한다. 정적 pass는 해당 contract 구현만 지지한다.
 
-규칙 기반 verifier가 다음을 모두 확인할 때 episode 성공이다.
+외부 run은 `RUN_INTENT_FROZEN → LAUNCH_REQUESTED → RECONCILING → RUN_ID_BOUND → TERMINAL_RECEIPT_IMPORTED`의 제안 상태로 연결하며 UNKNOWN/BLOCKED를 명시한다. ORX의 임의 request-ID lookup과 exactly-once 실행은 검증되지 않았다. at-most-once local binding만으로 외부 중복 실행 방지가 증명됐다고 말하지 않는다. 모호한 결과를 실패나 미실행으로 바꾸고 재시작하지 않는다.
 
-- 선택이 제공된 source span·제약·관측과 모순되지 않는다.
-- 관련 source 무효화 시 그 source에 의존한 결정만 `requires_recheck` 또는 재개방된다.
-- 무관한 edge perturbation은 유효한 결정·실행 결과를 보존한다.
-- 다음 실험은 두 가설을 실제로 구분하며 중복 완료/기각 방향을 이유 없이 반복하지 않는다.
-- handoff가 허용 next action과 금지 이유를 원 대화 없이 복구한다.
+모든 assigned launch/partial/crash/timeout/invalid/사람 개입을 보존한다. 과학 outcome, protocol invalid, infrastructure missingness를 분리하고 treatment-blind 사전 규칙을 사용한다. 소모된 v12/font authority는 재사용하지 않는다. frozen 실험을 outcome 뒤 수정하거나 실패를 post-hoc 제외하지 않는다.
 
-이 점수는 과학적 진실이나 보편적 참신성을 자동 인증하지 않는다.
+## 8. 결과가 설계를 바꾸는 규칙
 
-### 별도 secondary
+- G의 실용적 held-out 이점과 비용/안전 기준이 지지되면 G를 prototype 후보로 승격하되 native 구현 검증은 별도다.
+- 충분한 정밀도에서 G-C 이점이 배제되면 더 단순한 C, B가 기준을 충족하면 B를 선택할 수 있다.
+- 넓은 불확실성은 미결론이고, invalid-only는 efficacy 결과가 아니다. 제한된 feasibility 결론 또는 새 범위 결정을 따른다.
+- compression·meta-depth·학습·환경 합성은 병목의 독립 근거와 별도 설계/예산 뒤에만 추가한다.
 
-- official task execution score
-- invalid/retracted claim reuse 수
-- 불필요한 반복 실행 수
-- handoff contract 충족률
-- token/tool/time/cost 및 fatal reliability
-- evidence-to-decision trace completeness
+통계적 positive만 연구 완료의 조건이 아니다. 사전 규칙을 지킨 null/negative와 실패 분석도 닫힌 연구가 될 수 있다. 단순 시스템을 선택할 가능성을 남기는 것이 prototype 설계 연구의 목적이다.
 
-임의 곱 `S×P³`와 ALL-ON이 일곱 대안을 모두 이겨야 한다는 조건은 primary에서 제거한다.
+## 9. 문헌·기존 실험의 재사용
 
-## 7. 표본·분석·검정력
+최근 여덟 원문과 더 넓은 corpus의 21개 exact locator를 연결했다. EviGraph/Arbor/claim-lineage 등이 이미 유사 기제를 갖기 때문에 broad novelty를 주장하지 않는다. exact residual은 open이다. 새 task/baseline 후보 MLAgentBench/MLE-bench/PaperBench/Agent Laboratory/AI Scientist는 기존 receipts를 먼저 확인하고 필요한 primary source만 root가 회수한다.
 
-현재 task pack과 실제 variance가 없으므로 confirmatory 표본 수는 **미정**이다. 네 개발 과제로 이질성을 확정하지 않는다.
+96 scorer invocations, B3, graph/replay와 정적 witness, font compatibility는 원래 instrument/development/runtime 범위만 유지한다. C64 causal invalid, v12 INVALID/NOT_ADMITTED와 모든 실패는 변하지 않는다. World-init static branch는 보존하되 primary 연구의 무기한 선행 수리 경로가 아니다. integrated long-horizon efficacy는 0이다.
 
-- development에서 manipulation, floor/ceiling, task-family 분리, discordant-pair/분산 시나리오와 episode 비용을 측정한다.
-- confirmatory 주 검정은 하나의 paired task-level contrast에 대해 `H0: Δ ≤ 0`, 설계 대립효과 `Δ = +0.10`으로 둔다.
-- `+0.10`은 power 설계값이며, 유용성은 점추정·구간·비용과 별도로 해석한다.
-- CI lower bound가 `+0.10`을 넘어야 한다는 구 조건은 폐기한다. 최소유용효과 검정을 택하려면 별도 `Δ1>0.10` 근거가 필요하다.
-- binary endpoint면 task-level discordance를 사용하는 paired exact/사전 고정 permutation 계열을 검토하고, graded endpoint면
-  bounded paired mean의 task-cluster randomization/bootstrap을 사전 고정한다.
-- best-of-k, best-seed, best-checkpoint는 confirmatory estimand가 아니다.
+## 10. 연구 후 원고, 증거 후 prototype
 
-Power는 development 결과를 본 뒤 outcome-blind simulation으로 계산한다. 최대 task 수, 중단 기준, exact budget이 없으면
-protocol fingerprint를 만들지 않는다.
+ResearchDone는 task/protocol/개발·확증 분석/실패·비용/ArchitectureSelectionRecord/closed claim evidence가 완결돼야 열린다. 현재 모두 완결되지 않았고 새 본문은 쓰지 않는다. 원고를 만든 뒤 PublicationReady에서 최종 그림·metadata·숫자·원문·전 페이지를 검사한다. 최종 figure bytes를 research-before-writing gate에 넣는 순환을 제거했다.
 
-## 8. 실패·비용·중단
+내부 prototype crosswalk는 유일 owner와 chosen/rejected design에 연결한다. 현장 reuse 규칙과 native construction 재개 승인은 별도다. 정본 QMD·이전 exports·원본 계획서를 수정하지 않는다. 설치는 필요성과 project-local version/license/security/rollback을 확인한 경우만 판단하며 새 paid 실행을 허가하지 않는다.
 
-- fatal protocol/evaluator/agent failure는 intention-to-run에서 0점이다.
-- infrastructure failure만 blinded 1회 retry가 가능하며 원 실행은 reliability 분모에 남긴다.
-- hidden scorer/gold 접근은 run 무효다.
-- 비용·token·tool·시간은 action 전 예약하며 ceiling 초과 action을 시작하지 않는다.
-- paid episode는 Stage 0/R/primary/follow-up의 exact upper envelope와 20% contingency를 숫자로 계산하고 사용자가 그 금액을
-  승인한 뒤에만 시작한다.
-- 현재 exact paid budget과 승인은 `null`이다.
-
-## 9. 결과가 실제 ARGO 선택을 바꾸는 규칙
-
-| 결과 | 다음 설계 결정 |
-|---|---|
-| typed 정책이 주 contrast에서 양수이고 구간·비용이 채택 기준을 충족 | typed dependency/version control을 ARGO research-state plane의 MVP 계약으로 승격 |
-| 유용한 차이를 배제할 만큼 정밀한 null | 더 단순한 result-tree 정책을 채택하고 graph는 audit/export 용도로 축소 |
-| typed 정책이 음수 | control policy를 기각하고 원인 분석 전 구현하지 않음 |
-| manipulation 미발화·ceiling·중복 정보 | 효능 null로 해석하지 않고 task/instrument를 수정, 결과는 효능 분모에서 격리 |
-| 불충분한 precision 또는 비용 초과 | 선택 보류; 기능을 더 쌓지 않고 표본·비용 대안을 다시 비교 |
-
-첫 결과가 graph 표현, candidate competition, bounded refine, retrieval, recovery 중 원인을 구분하지 못할 때만 해당 ablation을
-후속으로 연다. 더 단순한 구성이 이기면 그 구성을 ARGO 후보로 남긴다.
-
-## 10. 논문→native 계약→NAIS
-
-논문에서 채택된 선택은 `material-mechanism-evidence-map.md`의 owner/interface 계약으로 이동한다. 구현 증거가 없으면
-`NOT_IMPLEMENTED`다. Python oracle과 Stage 0 fixture는 제품 runtime이 아니다.
-
-NOTICE p.3의 본선 기준은 적합성 10, 활용성 20, 혁신성 25, 실현가능성 25, 확장성 20이다. 이는 논문의 primary metric이
-아니다. prototype acceptance에서는 최소한 둘 이상의 **실제 실행 후보**, 같은 기준의 비교, 이유 있는 접기, 관측 기반 다음
-결정 1회, fresh-context 인계를 보여야 한다. 한 설계만 실행해 병렬 경쟁을 구현했다고 말하지 않는다.
-
-NOTICE p.5에 따라 실제 개발 전 과정은 본선 기간 안에서 수행되어야 한다. 사전 포스터/기획과 현장 개발을 구분한다.
-현재 연구 코드·graph·custom 구현의 반입 가능성을 가정하지 않는다. 공개 도구/OSS/API/설계자료의 정확한 재사용 범위와 순수
-개발시간은 본선 지침 전까지 미확정이다.
-
-## 11. 근거와 현재 상태
-
-- THESIS p.1, SHA-256 `d2ab302410321cb43c499a681d289df72d86f889eaf4ca0b58b8e8ad804ea8f5`
-- APP pp.2–4,7, SHA-256 `a829572375ddca11ec94cbbd48827419564f655fa36aab25e3a9d3fdca8a47e6`
-- NOTICE pp.2,3,5, SHA-256 `b46c64b79eec2c317017977c6821115f49d02cd16bf481949e91bcd38c92610a`
-- 방향 검토 `review.md`, SHA-256 `b5c39b936cda41164ab4f385c1d31b2bfb2a6a0f239795c368338bec904bc0b8`
-- 직접 문헌 비교 `literature-challenge.md`, SHA-256 `856c7808aff64671a3641efb29b2fa7e5c640aa48d77511b7fd31eccfa95395c`
-- 원본 조정 `source-addendum.md`, SHA-256 `0609708c351bf3fa5b8619400561f8a32cc701817431396df0cb83e045b3e403`
-
-Stage 0에서 scorer 16/16, evaluator 96회, environment parity, 실제 OS runtime policy는 검증됐다. 이는 계측기 결과다.
-`integrated_task_runner_certified=false`, 인정된 효능 결과 0, paid model call 0이다.
-
-## 12. Frontier-model development pilot outcome (2026-09-05)
-
-`anthropic/claude-opus-4-6` under OAuth was tested in a same-two-record verification-budget task. The computed dependency target allocated one slot to the sole support and left one model-selected slot. A thin four-tool mechanism enforced actual reads.
-
-- preregistered primary non-stale decision: BASE 6/6, TARGET 6/6, paired delta 0
-- secondary fully resolved withdrawal: BASE 0/6, TARGET 6/6
-- critical record inspection: BASE 0/6, TARGET 6/6
-- TARGET/BASE tokens: 59,214/53,796 = 1.1007×
-
-The primary null is compatible with a frontier ceiling: the base model already avoided stale action by abstaining. The secondary suggests targeting can convert conservative abstention into a resolved decision, but it is not a causal efficacy result because the six topics share one causal template, realized order was TARGET→BASE in every pair, and treatment content increased tokens. Therefore confirmation C is **HOLD**, not promoted.
-
-## 13. Corrected-B2 protocol-defect outcome
-
-The four-family B2 run completed eight OAuth episodes, but its original causal endpoint is invalid. The scorer labelled any `valid/proceed` output stale even when valid was ground truth; `proceed/recheck` did not specify whether it referred to applying the constraint or advancing the workflow; and the record tool omitted identifiers used by the multi-hop family. The frozen 3-of-4 rule also incorrectly treated unaffected-family ties as failures for a targeted mechanism.
-
-A post-hoc status-only sensitivity found TARGET improved both affected families and harmed neither unaffected family (TARGET status correct 4/4, BASE 2/4). This is diagnostic, not efficacy. Confirmation remains held. A separate B3 proposal keeps model, tasks, budgets and allocation fixed while replacing the outcome with `apply/do_not_apply/undetermined` and exposing all valid record IDs.
-
-## 14. B3 unambiguous four-family result
-
-B3 held model, OAuth path, four graph families, allocation, two-record budget and exact 2:2 order fixed while replacing ambiguous action semantics with `apply/do_not_apply/undetermined` and allowing every valid record id. All eight episodes and their access logs were rederived.
-
-- affected families: TARGET fully-correct wins 2/2, losses 0
-- unaffected families: TARGET no-harm 2/2
-- critical-record inspection wins: 2/2
-- fully correct: TARGET 4/4, BASE 1/4
-- stale: TARGET 0, BASE 1
-- TARGET/BASE tokens: 0.9194
-
-The frozen rule therefore permits **C planning**, not C execution. This remains a one-rollout, four-family development result and is not a population effect.
-
-## 15. Disjoint confirmation plan
-
-Sixteen confirmation structures are graph-isomorphism-distinct from each other and from B3, with eight affected and eight unaffected decisions, balanced valid/withdrawn truths, exact 8:8 condition order, and a reversed replication schedule. Condition pairs share task, index and record bytes; both receive one 768-byte allocation and one remaining record read. The selected allocation is decision-relevant in TARGET and a deterministic decoy in BASE.
-
-Two executable but unauthorized options remain: C32 (one rollout per task-condition) and C64 (C32 plus a separately reported reversed-order reliability repeat). C64 is recommended for thesis credibility, but neither option is authorized.
-
-## 16. C64 confirmation outcome and invalidation
-
-C64 completed 64 OAuth episodes: 32 preregistered first-rollout episodes and a separately reported reversed-order reliability block. All bytes, scores, order and budgets were rederived.
-
-- primary: TARGET wins 6, BASE wins 0, ties 10, exact p=0.03125, mean delta +0.375, token ratio 0.9822
-- replication: TARGET wins 4, BASE wins 0, ties 12, exact p=0.125, mean delta +0.25, token ratio 1.0141
-- task-level full-correct agreement: TARGET 15/16, BASE 13/16
-
-The frozen overall success is **false** because one unaffected TARGET task overreacted in both blocks. Audit showed `u_same_source_paths` had a task–oracle contradiction: the graph removed one S1 edge while record W said S1 support was globally withdrawn, so the model followed the text and the scorer followed the graph. `needs_more_verification` also failed to specify that it referred only to the active constraint. No post-outcome exclusion or endpoint replacement is allowed. Confirmation is therefore invalid for a causal claim. The positive post-hoc sensitivity is retained only as diagnosis.
+현재 next: task/baseline/metric의 구체화와 owner/port capability 검증. manuscript writing이나 새 native runtime 구현이 아니다.
