@@ -1,0 +1,927 @@
+from __future__ import annotations
+
+import json
+import hashlib
+import os
+from dataclasses import replace
+from pathlib import Path
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import threading
+from types import SimpleNamespace
+import time
+import unittest
+from unittest.mock import patch
+
+from controller_process import (
+    KNOWN_SYSTEM_PATH,
+    PathIdentity,
+    RunControllerCaps,
+    capture_interpreter_identity,
+    RunControllerConfig,
+    capture_path_identity,
+    config_to_dict,
+    run_controller,
+    _MonitorState,
+    _ProcessRow,
+)
+from process_exec import PRODUCTION_ENV_KEYS, build_target_argv
+import controller_process
+
+
+HERE = Path(__file__).resolve().parent
+PROCESS_EXEC = HERE / "process_exec.py"
+PYTHON = Path(sys.executable).absolute()
+PYVENV_CFG = PYTHON.parent.parent / "pyvenv.cfg"
+
+FAKE_FRONTEND = r'''
+from __future__ import annotations
+import argparse
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import threading
+
+if "--grandchild" in sys.argv:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    Path(os.environ["ARGO_A2_SYNTHETIC_MARKER"]).write_text(str(os.getpid()), encoding="ascii")
+    threading.Event().wait(60)
+    raise SystemExit(0)
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--deployment", required=True)
+parser.add_argument("--artifact-root", required=True)
+args = parser.parse_args()
+action = os.environ["ARGO_A2_SYNTHETIC_ACTION"]
+root = Path(args.artifact_root)
+
+if action == "exit0":
+    print("final-text", flush=True)
+elif action == "exit7":
+    raise SystemExit(7)
+elif action == "env":
+    print(json.dumps({
+        "worker": os.environ.get("PRIME_AGENT_INTERNAL_OWNED_SESSION_WORKER"),
+        "allowed": os.environ.get("ARGO_A2_SYNTHETIC_VALUE"),
+        "keys": sorted(os.environ),
+    }), flush=True)
+elif action == "ignore-term":
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    print("started", flush=True)
+    threading.Event().wait(60)
+elif action == "cpu":
+    value = 1
+    while True:
+        value = (value * 1103515245 + 12345) & 0x7fffffff
+elif action == "stdout":
+    block = b"x" * 4096
+    for _ in range(64):
+        os.write(1, block)
+elif action == "file":
+    with (root / "oversize.bin").open("wb", buffering=0) as handle:
+        for _ in range(64):
+            handle.write(b"x" * 4096)
+elif action == "rss":
+    held = [bytearray(4 * 1024 * 1024) for _ in range(8)]
+    print(len(held), flush=True)
+    threading.Event().wait(60)
+elif action == "many-files":
+    for index in range(20):
+        (root / f"f-{index:02d}").write_bytes(b"x")
+    threading.Event().wait(60)
+elif action == "aggregate":
+    (root / "aggregate-a.bin").write_bytes(b"a" * 20000)
+    (root / "aggregate-b.bin").write_bytes(b"b" * 20000)
+    threading.Event().wait(60)
+elif action == "symlink":
+    os.symlink(root / "deployment.json", root / "untrusted-link")
+    threading.Event().wait(60)
+elif action == "escaped":
+    marker = root / "grandchild.pid"
+    env = dict(os.environ)
+    env["ARGO_A2_SYNTHETIC_MARKER"] = str(marker)
+    child = subprocess.Popen(
+        [sys.executable, __file__, "--grandchild"],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    print(child.pid, flush=True)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    threading.Event().wait(60)
+else:
+    raise SystemExit(88)
+'''
+
+
+class ControllerProcessTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory(prefix="argo-a2-process-")
+        self.root = Path(self._temp.name).resolve()
+        os.chmod(self.root, 0o700)
+        self.frontend = self.root / "fake_frontend.py"
+        self.frontend.write_text(FAKE_FRONTEND, encoding="utf-8")
+        os.chmod(self.frontend, 0o700)
+        self.deployment = self.root / "deployment.json"
+        self.deployment.write_text('{"synthetic":true}\n', encoding="ascii")
+        os.chmod(self.deployment, 0o600)
+        self.temporary_dir = self.root / "tmp"
+        self.session_dir = self.root / "session"
+        self.profile_dir = self.root / "profile"
+        for directory in (self.temporary_dir, self.session_dir, self.profile_dir):
+            directory.mkdir()
+            os.chmod(directory, 0o700)
+        self.saved_worker = os.environ.get("PRIME_AGENT_INTERNAL_OWNED_SESSION_WORKER")
+        os.environ["PRIME_AGENT_INTERNAL_OWNED_SESSION_WORKER"] = "synthetic-operator-value-must-not-pass"
+
+    def tearDown(self) -> None:
+        if self.saved_worker is None:
+            os.environ.pop("PRIME_AGENT_INTERNAL_OWNED_SESSION_WORKER", None)
+        else:
+            os.environ["PRIME_AGENT_INTERNAL_OWNED_SESSION_WORKER"] = self.saved_worker
+        self._temp.cleanup()
+
+    def caps(
+        self,
+        *,
+        phase_wall_seconds: float = 4.0,
+        cpu_seconds_per_process: int = 2,
+        file_size_bytes: int = 32 * 1024,
+        rss_trigger_bytes: int = 256 * 1024 * 1024,
+        rss_sample_ms: int = 50,
+        artifact_aggregate_bytes: int = 2 * 1024 * 1024,
+        artifact_file_count: int = 64,
+    ) -> RunControllerCaps:
+        return RunControllerCaps(
+            provider_timeout_ms=120000,
+            provider_retries=0,
+            phase_wall_seconds=phase_wall_seconds,
+            campaign_wall_seconds=20.0,
+            cpu_seconds_per_process=cpu_seconds_per_process,
+            file_size_bytes=file_size_bytes,
+            rss_trigger_bytes=rss_trigger_bytes,
+            rss_sample_ms=rss_sample_ms,
+            v8_old_space_mib=1024,
+            model_tokens_between_turns=120000,
+            controller_turn_limit_per_phase=20,
+            source_text_max_bytes=131072,
+            autonomous_gate_retries=20,
+            autonomous_gate_timeout_ms=30000,
+            bridge_close_grace_ms=1000,
+            artifact_aggregate_bytes=artifact_aggregate_bytes,
+            artifact_file_count=artifact_file_count,
+            terminate_grace_seconds=0.2,
+            kill_grace_seconds=1.0,
+            observer_timeout_seconds=1.0,
+            observer_output_bytes=1024 * 1024,
+        )
+
+    def config(self, action: str, *, caps: RunControllerCaps | None = None) -> RunControllerConfig:
+        env = {
+            "PATH": KNOWN_SYSTEM_PATH,
+            "ARGO_A2_SYNTHETIC_ACTION": action,
+            "ARGO_A2_SYNTHETIC_VALUE": "visible",
+        }
+        return RunControllerConfig(
+            python_executable=str(PYTHON),
+            interpreter_identity=capture_interpreter_identity(PYTHON, PYVENV_CFG),
+            process_exec_path=str(PROCESS_EXEC),
+            process_exec_identity=capture_path_identity(PROCESS_EXEC, hash_file=True),
+            node_executable=str(PYTHON.resolve()),
+            node_identity=capture_path_identity(PYTHON.resolve(), hash_file=True),
+            frontend_path=str(self.frontend),
+            frontend_identity=capture_path_identity(self.frontend, hash_file=True),
+            deployment_path=str(self.deployment),
+            deployment_identity=capture_path_identity(self.deployment, hash_file=True),
+            artifact_root=str(self.root),
+            artifact_root_identity=capture_path_identity(self.root, hash_file=False),
+            temporary_dir=str(self.temporary_dir),
+            temporary_dir_identity=capture_path_identity(self.temporary_dir, hash_file=False),
+            session_dir=str(self.session_dir),
+            session_dir_identity=capture_path_identity(self.session_dir, hash_file=False),
+            profile_dir=str(self.profile_dir),
+            profile_dir_identity=capture_path_identity(self.profile_dir, hash_file=False),
+            child_environment=env,
+            caps=caps or self.caps(),
+            campaign_started_monotonic_ns=time.monotonic_ns(),
+            synthetic_test_context=True,
+        )
+
+    def test_exit_zero_retains_private_raw_files_and_typed_handle(self) -> None:
+        receipt = run_controller(self.config("exit0"))
+        self.assertEqual(receipt.status, "succeeded")
+        self.assertEqual(receipt.returncode, 0)
+        self.assertGreater(receipt.handle.pid, 1)
+        self.assertEqual(receipt.handle.root_pgid, receipt.handle.pid)
+        self.assertEqual(receipt.handle.stdin_mode, "DEVNULL")
+        self.assertTrue(receipt.handle.pid_start_identity)
+        self.assertEqual(Path(receipt.handle.stdout_path).read_text(encoding="utf-8"), "final-text\n")
+        self.assertEqual(stat.S_IMODE(Path(receipt.handle.stdout_path).stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(Path(receipt.handle.stderr_path).stat().st_mode), 0o600)
+        self.assertTrue(receipt.cleanup.confirmed_for_tracked_processes)
+        self.assertFalse(receipt.cleanup.claims_all_possible_descendants)
+        self.assertGreaterEqual(receipt.resources.sample_count, 1)
+        self.assertGreaterEqual(receipt.resources.census_file_count_peak, 2)
+
+    def test_environment_is_allowlisted_before_helper_and_worker_flags_are_stripped(self) -> None:
+        receipt = run_controller(self.config("env"))
+        self.assertEqual(receipt.status, "succeeded")
+        payload = json.loads(Path(receipt.handle.stdout_path).read_text(encoding="utf-8"))
+        self.assertIsNone(payload["worker"])
+        self.assertEqual(payload["allowed"], "visible")
+        self.assertNotIn("PRIME_AGENT_INTERNAL_OWNED_SESSION_WORKER", payload["keys"])
+        self.assertEqual(receipt.handle.child_environment_keys, (
+            "ARGO_A2_SYNTHETIC_ACTION",
+            "ARGO_A2_SYNTHETIC_VALUE",
+            "PATH",
+        ))
+
+    def test_nonzero_exit_is_terminal_and_not_retried(self) -> None:
+        receipt = run_controller(self.config("exit7"))
+        self.assertEqual(receipt.status, "process_failed")
+        self.assertEqual(receipt.terminal_reason, "nonzero_exit")
+        self.assertEqual(receipt.returncode, 7)
+        self.assertEqual(receipt.handle.spawn_attempts, 1)
+
+    def test_parent_abort_terminates_and_escalates_when_term_is_ignored(self) -> None:
+        abort = threading.Event()
+        timer = threading.Timer(0.35, abort.set)
+        timer.start()
+        try:
+            receipt = run_controller(self.config("ignore-term"), abort_event=abort)
+        finally:
+            timer.cancel()
+        self.assertEqual(receipt.status, "aborted")
+        self.assertEqual(receipt.terminal_reason, "parent_abort")
+        self.assertIn("SIGTERM", receipt.cleanup.signals_sent)
+        self.assertIn("SIGKILL", receipt.cleanup.signals_sent)
+        self.assertTrue(receipt.cleanup.confirmed_for_tracked_processes)
+
+    def test_nonfinite_and_boolean_caps_fail_before_spawn(self) -> None:
+        config = self.config("exit0")
+        cases = (
+            ("terminate_grace_seconds", float("nan")),
+            ("observer_timeout_seconds", float("inf")),
+            ("phase_wall_seconds", float("-inf")),
+            ("rss_sample_ms", True),
+        )
+        for field_name, value in cases:
+            with self.subTest(field=field_name):
+                changed_caps = replace(config.caps, **{field_name: value})
+                receipt = run_controller(replace(config, caps=changed_caps))
+                self.assertEqual(receipt.status, "preflight_failed")
+                self.assertEqual(receipt.terminal_reason, "invalid_resource_caps")
+                self.assertIsNone(receipt.handle)
+
+    def test_hard_phase_deadline_is_outside_uncooperative_child(self) -> None:
+        caps = self.caps(phase_wall_seconds=0.3)
+        receipt = run_controller(self.config("ignore-term", caps=caps))
+        self.assertEqual(receipt.status, "resource_invalid")
+        self.assertEqual(receipt.terminal_reason, "phase_wall_deadline")
+        self.assertLess(receipt.elapsed_seconds, 3.0)
+        self.assertIn("SIGKILL", receipt.cleanup.signals_sent)
+
+    @unittest.skipUnless(hasattr(signal, "SIGXFSZ"), "POSIX SIGXFSZ is required")
+    def test_stdout_is_hard_capped_by_actual_rlimit_fsize(self) -> None:
+        cap = 32 * 1024
+        receipt = run_controller(self.config("stdout", caps=self.caps(file_size_bytes=cap)))
+        stdout = Path(receipt.handle.stdout_path)
+        self.assertLessEqual(stdout.stat().st_size, cap)
+        self.assertEqual(receipt.status, "resource_invalid")
+        self.assertEqual(receipt.terminal_reason, "file_size_rlimit")
+
+    @unittest.skipUnless(hasattr(signal, "SIGXFSZ"), "POSIX SIGXFSZ is required")
+    def test_created_regular_file_is_hard_capped_by_actual_rlimit_fsize(self) -> None:
+        cap = 32 * 1024
+        receipt = run_controller(self.config("file", caps=self.caps(file_size_bytes=cap)))
+        written = self.root / "oversize.bin"
+        self.assertTrue(written.is_file())
+        self.assertLessEqual(written.stat().st_size, cap)
+        self.assertEqual(receipt.status, "resource_invalid")
+        self.assertEqual(receipt.terminal_reason, "file_size_rlimit")
+
+    @unittest.skipUnless(hasattr(signal, "SIGXCPU"), "POSIX SIGXCPU is required")
+    def test_cpu_rlimit_is_actual_posix_behavior(self) -> None:
+        started = time.monotonic()
+        receipt = run_controller(self.config(
+            "cpu",
+            caps=self.caps(phase_wall_seconds=6.0, cpu_seconds_per_process=1),
+        ))
+        self.assertLess(time.monotonic() - started, 5.0)
+        self.assertEqual(receipt.status, "resource_invalid")
+        self.assertEqual(receipt.terminal_reason, "cpu_rlimit")
+
+    def test_sampled_rss_trigger_records_overshoot_and_coverage(self) -> None:
+        receipt = run_controller(self.config(
+            "rss",
+            caps=self.caps(rss_trigger_bytes=24 * 1024 * 1024, rss_sample_ms=25),
+        ))
+        self.assertEqual(receipt.status, "resource_invalid")
+        self.assertEqual(receipt.terminal_reason, "rss_sampled_trigger")
+        self.assertGreater(receipt.resources.peak_sampled_rss_bytes, 24 * 1024 * 1024)
+        self.assertEqual(
+            receipt.resources.rss_overshoot_bytes,
+            receipt.resources.peak_sampled_rss_bytes - 24 * 1024 * 1024,
+        )
+        self.assertIsNotNone(receipt.resources.rss_trigger_monotonic_ns)
+        self.assertIsNotNone(receipt.resources.rss_trigger_elapsed_from_first_sample_seconds)
+        self.assertEqual(receipt.resources.rss_sampling_semantics, "sampled_trigger_not_hard_limit")
+        self.assertGreater(receipt.resources.observed_seconds, 0)
+
+    def test_monitored_aggregate_trigger_records_sampled_overshoot(self) -> None:
+        receipt = run_controller(self.config(
+            "aggregate",
+            caps=self.caps(
+                file_size_bytes=32 * 1024,
+                artifact_aggregate_bytes=32 * 1024,
+            ),
+        ))
+        self.assertEqual(receipt.status, "resource_invalid")
+        self.assertEqual(receipt.terminal_reason, "artifact_aggregate_bytes_trigger")
+        self.assertGreater(receipt.resources.census_aggregate_bytes_peak, 32 * 1024)
+        self.assertGreater(receipt.resources.aggregate_bytes_overshoot, 0)
+
+    def test_monitored_file_count_trigger_records_overshoot(self) -> None:
+        receipt = run_controller(self.config(
+            "many-files",
+            caps=self.caps(artifact_file_count=8),
+        ))
+        self.assertEqual(receipt.status, "resource_invalid")
+        self.assertEqual(receipt.terminal_reason, "artifact_file_count_trigger")
+        self.assertGreater(receipt.resources.census_file_count_peak, 8)
+        self.assertGreater(receipt.resources.file_count_overshoot, 0)
+
+    def test_escaped_setsid_descendant_is_ancestry_tracked_and_individually_cleaned(self) -> None:
+        abort = threading.Event()
+        timer = threading.Timer(0.65, abort.set)
+        timer.start()
+        try:
+            receipt = run_controller(self.config(
+                "escaped",
+                caps=self.caps(rss_sample_ms=25),
+            ), abort_event=abort)
+        finally:
+            timer.cancel()
+        escaped = [item for item in receipt.cleanup.tracked_processes if item.pid != receipt.handle.pid]
+        self.assertTrue(escaped, receipt.to_dict())
+        self.assertTrue(any(receipt.handle.root_pgid not in item.observed_pgids for item in escaped))
+        self.assertTrue(receipt.cleanup.confirmed_for_tracked_processes)
+        self.assertEqual(receipt.cleanup.alive_tracked_after_cleanup, ())
+
+    def test_extra_environment_keys_fail_before_spawn(self) -> None:
+        config = self.config("exit0")
+        cases = (
+            ("PRIME_AGENT_INTERNAL_OWNED_SESSION_WORKER", "synthetic-only", "forbidden_environment_key"),
+            ("__CF_USER_TEXT_ENCODING", "0x0:0:0", "environment_key_set_mismatch"),
+        )
+        for key, value, reason in cases:
+            with self.subTest(key=key):
+                changed = replace(config, child_environment={
+                    **config.child_environment,
+                    key: value,
+                })
+                receipt = run_controller(changed)
+                self.assertEqual(receipt.status, "preflight_failed")
+                self.assertEqual(receipt.terminal_reason, reason)
+                self.assertIsNone(receipt.handle)
+
+    def test_interpreter_chain_identity_change_fails_before_spawn(self) -> None:
+        config = self.config("exit0")
+        changed_file = replace(
+            config.interpreter_identity.pyvenv_cfg,
+            sha256="0" * 64,
+        )
+        changed_interpreter = replace(
+            config.interpreter_identity,
+            pyvenv_cfg=changed_file,
+        )
+        receipt = run_controller(replace(config, interpreter_identity=changed_interpreter))
+        self.assertEqual(receipt.status, "preflight_failed")
+        self.assertEqual(receipt.terminal_reason, "path_identity_mismatch")
+        self.assertIsNone(receipt.handle)
+
+    def test_artifact_symlink_census_fails_closed(self) -> None:
+        receipt = run_controller(self.config("symlink"))
+        self.assertEqual(receipt.status, "resource_invalid")
+        self.assertEqual(receipt.terminal_reason, "artifact_census_failed")
+        self.assertIn("artifact_symlink_rejected", receipt.resources.census_errors)
+
+    def test_root_pid_identity_is_latched_and_reused_pid_is_not_adopted(self) -> None:
+        class FakeProcess:
+            pid = 424242
+            returncode: int | None = None
+
+            def poll(self) -> int | None:
+                return self.returncode
+
+        process = FakeProcess()
+        monitor = _MonitorState(self.config("exit0"), process, process.pid)
+        original = _ProcessRow(
+            pid=process.pid,
+            ppid=1,
+            pgid=process.pid,
+            rss_bytes=1000,
+            state="S",
+            start_identity="original-start",
+        )
+        reused = _ProcessRow(
+            pid=process.pid,
+            ppid=1,
+            pgid=process.pid,
+            rss_bytes=2000,
+            state="S",
+            start_identity="original-start",
+        )
+        unrelated = _ProcessRow(
+            pid=434343,
+            ppid=1,
+            pgid=process.pid,
+            rss_bytes=3000,
+            state="S",
+            start_identity="unrelated-start",
+        )
+        with patch("controller_process._snapshot_processes", return_value={process.pid: original}):
+            self.assertIsNone(monitor.sample())
+        process.returncode = 0
+        with patch(
+            "controller_process._snapshot_processes",
+            return_value={process.pid: reused, unrelated.pid: unrelated},
+        ):
+            self.assertIsNone(monitor.sample())
+        self.assertEqual(monitor.root_start_identity(), "original-start")
+        self.assertEqual(set(monitor.tracked), {(process.pid, "original-start")})
+        self.assertEqual(monitor.alive_tracked(), [])
+
+    def test_frozen_production_target_argv_and_environment_names(self) -> None:
+        node = Path("/fixed/node")
+        frontend = Path("/fixed/controller-main.ts")
+        deployment = Path("/fixed/deployment.json")
+        artifact_root = Path("/fixed/artifacts")
+        self.assertEqual(build_target_argv(
+            node,
+            frontend,
+            deployment,
+            artifact_root,
+            1024,
+            False,
+        ), [
+            "/fixed/node",
+            "--max-old-space-size=1024",
+            "/fixed/controller-main.ts",
+            "--deployment",
+            "/fixed/deployment.json",
+            "--artifact-root",
+            "/fixed/artifacts",
+        ])
+        self.assertEqual(PRODUCTION_ENV_KEYS, frozenset({
+            "PRIME_AGENT_CODING_AGENT_DIR",
+            "PRIME_AGENT_KERNEL_PYTHON",
+            "PRIME_AGENT_TELEMETRY",
+            "PATH",
+            "TMPDIR",
+            "LANG",
+            "LC_ALL",
+            "TZ",
+        }))
+
+    def test_path_identity_change_fails_closed_without_spawn(self) -> None:
+        config = self.config("exit0")
+        self.deployment.write_text('{"changed":true}\n', encoding="ascii")
+        receipt = run_controller(config)
+        self.assertEqual(receipt.status, "preflight_failed")
+        self.assertEqual(receipt.terminal_reason, "path_identity_mismatch")
+        self.assertIsNone(receipt.handle)
+
+    def test_cli_sigterm_handler_preserves_receipt_and_cleans_child(self) -> None:
+        config = self.config("ignore-term", caps=self.caps(phase_wall_seconds=8.0))
+        config_path = self.root.parent / f"{self.root.name}-config.json"
+        receipt_path = self.root.parent / f"{self.root.name}-receipt.json"
+        config_path.write_text(json.dumps(config_to_dict(config)), encoding="utf-8")
+        os.chmod(config_path, 0o600)
+        cli_stdout = self.root.parent / f"{self.root.name}-cli.stdout"
+        cli_stderr = self.root.parent / f"{self.root.name}-cli.stderr"
+        with cli_stdout.open("xb") as stdout, cli_stderr.open("xb") as stderr:
+            process = subprocess.Popen(
+                [str(PYTHON), str(HERE / "controller_process.py"),
+                 "--config", str(config_path), "--receipt", str(receipt_path)],
+                stdin=subprocess.DEVNULL,
+                stdout=stdout,
+                stderr=stderr,
+                env={"PATH": KNOWN_SYSTEM_PATH},
+                start_new_session=True,
+            )
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                if any(self.root.glob("controller-*.stdout")):
+                    break
+                threading.Event().wait(0.02)
+            else:
+                process.kill()
+                process.wait(timeout=2.0)
+                self.fail("controller child did not start")
+            process.terminate()
+            process.wait(timeout=4.0)
+        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["status"], "aborted")
+        self.assertEqual(payload["terminal_reason"], "signal_SIGTERM")
+        self.assertTrue(payload["cleanup"]["confirmed_for_tracked_processes"])
+        config_path.unlink(missing_ok=True)
+        receipt_path.unlink(missing_ok=True)
+        cli_stdout.unlink(missing_ok=True)
+        cli_stderr.unlink(missing_ok=True)
+
+
+class MockOnlyRepairTests(unittest.TestCase):
+    class FakeProcess:
+        def __init__(self, pid: int, returncode: int | None) -> None:
+            self.pid = pid
+            self.returncode = returncode
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int | None:
+            return self.returncode
+
+    def monitor_config(self, root: Path) -> SimpleNamespace:
+        root_identity = capture_path_identity(root, hash_file=False)
+        caps = SimpleNamespace(
+            observer_timeout_seconds=0.001,
+            observer_output_bytes=4096,
+            terminate_grace_seconds=0.001,
+            kill_grace_seconds=0.001,
+            rss_sample_ms=1,
+            artifact_file_count=128,
+            artifact_aggregate_bytes=1024 * 1024,
+            file_size_bytes=512 * 1024,
+        )
+        return SimpleNamespace(
+            caps=caps,
+            artifact_root=str(root),
+            artifact_root_identity=root_identity,
+        )
+
+    def test_observer_failure_never_authorizes_stale_group_or_pid_signal(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="argo-a2-mock-observer-") as raw_root:
+            root = Path(raw_root).resolve()
+            process = self.FakeProcess(424242, 0)
+            monitor = _MonitorState(self.monitor_config(root), process, process.pid)
+            start = "ps-lstart:Sun Sep  7 11:22:00 2026"
+            child = _ProcessRow(424243, process.pid, process.pid, 1024, "S", start)
+            monitor.tracked[(child.pid, start)] = controller_process._Tracked(
+                pid=child.pid,
+                initial_ppid=process.pid,
+                start_identity=start,
+                first_ns=1,
+                last_ns=1,
+                pgids={process.pid},
+            )
+            monitor.last_rows = {child.pid: child}
+            with patch("controller_process._snapshot_processes", side_effect=RuntimeError("mock-only")), \
+                    patch("controller_process.os.killpg") as killpg, \
+                    patch("controller_process.os.kill") as kill:
+                cleanup = controller_process._bounded_cleanup(monitor, process, True)
+            killpg.assert_not_called()
+            kill.assert_not_called()
+            self.assertFalse(cleanup.confirmed_for_tracked_processes)
+            self.assertEqual(monitor.last_rows, {})
+
+    def test_ambiguous_same_second_escaped_pid_is_never_signaled(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="argo-a2-mock-identity-") as raw_root:
+            root = Path(raw_root).resolve()
+            process = self.FakeProcess(424242, 0)
+            monitor = _MonitorState(self.monitor_config(root), process, process.pid)
+            start = "ps-lstart:Sun Sep  7 11:22:00 2026"
+            escaped = _ProcessRow(515152, 1, 616161, 1024, "S", start)
+            monitor.tracked[(escaped.pid, start)] = controller_process._Tracked(
+                pid=escaped.pid,
+                initial_ppid=process.pid,
+                start_identity=start,
+                first_ns=1,
+                last_ns=1,
+                pgids={515151},
+            )
+            with patch("controller_process._snapshot_processes", return_value={escaped.pid: escaped}), \
+                    patch("controller_process.os.killpg") as killpg, \
+                    patch("controller_process.os.kill") as kill:
+                errors: list[str] = []
+                sent = controller_process._signal_tracked(monitor, process, signal.SIGTERM, errors)
+            self.assertFalse(sent)
+            killpg.assert_not_called()
+            kill.assert_not_called()
+            self.assertIn("tracked_pid_identity_ambiguous", errors)
+
+    def test_final_census_failure_cannot_classify_success(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="argo-a2-mock-census-") as raw_root:
+            root = Path(raw_root).resolve()
+            process = self.FakeProcess(424242, 0)
+            monitor = _MonitorState(self.monitor_config(root), process, process.pid)
+            row = _ProcessRow(999999, 1, 999999, 1, "S", "coarse")
+            failed_census = controller_process._Census(
+                0, 0, 0, False, ("artifact_root_stat_missing",)
+            )
+            with patch("controller_process._snapshot_processes", return_value={row.pid: row}), \
+                    patch("controller_process._census_artifacts", return_value=failed_census), \
+                    patch("controller_process.os.killpg") as killpg, \
+                    patch("controller_process.os.kill") as kill:
+                cleanup = controller_process._bounded_cleanup(monitor, process, False)
+            killpg.assert_not_called()
+            kill.assert_not_called()
+            self.assertFalse(cleanup.confirmed_for_tracked_processes)
+            status, reason = controller_process._classify_terminal_status(
+                prior_reason=None,
+                returncode=0,
+                cleanup=cleanup,
+                resources=None,
+                monitor=monitor,
+            )
+            self.assertEqual((status, reason), ("resource_invalid", "artifact_census_failed"))
+
+    def test_file_swap_during_descriptor_hash_is_rejected(self) -> None:
+        import process_exec as process_exec_module
+
+        with tempfile.TemporaryDirectory(prefix="argo-a2-mock-file-") as raw_root:
+            root = Path(raw_root).resolve()
+            victim = root / "frontend.py"
+            replacement = root / "replacement.py"
+            trusted = b"trusted-content\n"
+            changed = b"changed-content\n"
+            victim.write_bytes(trusted)
+            replacement.write_bytes(changed)
+            info = victim.stat()
+            expected_hash = hashlib.sha256(trusted).hexdigest()
+            original_hash = process_exec_module._sha256
+
+            def hash_then_swap(source: object, max_bytes: int | None = None) -> str:
+                observed = original_hash(source, max_bytes)
+                os.replace(replacement, victim)
+                return observed
+
+            with patch.object(process_exec_module, "_sha256", side_effect=hash_then_swap):
+                with self.assertRaises(ValueError):
+                    process_exec_module._verify_file(
+                        str(victim),
+                        info.st_dev,
+                        info.st_ino,
+                        info.st_size,
+                        expected_hash,
+                        executable=False,
+                    )
+
+    def test_config_read_is_descriptor_bounded_and_detects_path_swap(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="argo-a2-mock-config-") as raw_root:
+            root = Path(raw_root).resolve()
+            config_path = root / "config.json"
+            replacement = root / "replacement.json"
+            config_path.write_text("{}", encoding="ascii")
+            replacement.write_text(json.dumps({"padding": "x" * (1024 * 1024 + 256)}), encoding="utf-8")
+            real_open = os.open
+
+            def open_then_swap(path: object, flags: int, mode: int = 0o777, **kwargs: object) -> int:
+                descriptor = real_open(path, flags, mode, **kwargs)
+                if Path(path) == config_path:
+                    os.replace(replacement, config_path)
+                return descriptor
+
+            with patch("controller_process.os.open", side_effect=open_then_swap), \
+                    patch.object(RunControllerConfig, "from_dict", return_value="must-not-return"):
+                with self.assertRaises(ValueError):
+                    controller_process._read_config(str(config_path))
+
+            config_path.write_text("{}", encoding="ascii")
+            replacement.write_text(json.dumps({"padding": "x" * (1024 * 1024 + 256)}), encoding="utf-8")
+
+            def swap_then_open(path: object, flags: int, mode: int = 0o777, **kwargs: object) -> int:
+                if Path(path) == config_path:
+                    os.replace(replacement, config_path)
+                return real_open(path, flags, mode, **kwargs)
+
+            with patch("controller_process.os.open", side_effect=swap_then_open), \
+                    patch("controller_process.os.read", wraps=os.read) as bounded_read:
+                with self.assertRaises(ValueError):
+                    controller_process._read_config(str(config_path))
+            bounded_read.assert_not_called()
+
+    def test_darwin_libproc_identity_validates_struct_and_short_return(self) -> None:
+        class FakeProcPidInfo:
+            argtypes: object = None
+            restype: object = None
+
+            def __init__(self, returned_size: int) -> None:
+                self.returned_size = returned_size
+
+            def __call__(
+                self,
+                pid: int,
+                flavor: int,
+                arg: int,
+                buffer: object,
+                size: int,
+            ) -> int:
+                self.test_case.assertEqual(flavor, 3)
+                self.test_case.assertEqual(size, 136)
+                info = controller_process.ctypes.cast(
+                    buffer,
+                    controller_process.ctypes.POINTER(controller_process._DarwinProcBsdInfo),
+                ).contents
+                info.pbi_pid = pid
+                info.pbi_ppid = 77
+                info.pbi_pgid = 88
+                info.pbi_start_tvsec = 123456
+                info.pbi_start_tvusec = 789012
+                return self.returned_size
+
+        full = FakeProcPidInfo(136)
+        full.test_case = self
+        short = FakeProcPidInfo(135)
+        short.test_case = self
+        with patch.object(controller_process.sys, "platform", "darwin"),                 patch.object(
+                    controller_process.ctypes,
+                    "CDLL",
+                    return_value=SimpleNamespace(proc_pidinfo=full),
+                ):
+            self.assertEqual(
+                controller_process._darwin_process_identity(99),
+                ("darwin_proc_bsdinfo_usec:123456:789012", 77, 88),
+            )
+        with patch.object(controller_process.sys, "platform", "darwin"),                 patch.object(
+                    controller_process.ctypes,
+                    "CDLL",
+                    return_value=SimpleNamespace(proc_pidinfo=short),
+                ):
+            self.assertIsNone(controller_process._darwin_process_identity(99))
+
+    def test_receipt_short_writes_complete_and_sync_file_and_parent(self) -> None:
+        class FakeReceipt:
+            def to_dict(self) -> dict[str, str]:
+                return {"status": "succeeded", "terminal_reason": "completed"}
+
+        with tempfile.TemporaryDirectory(prefix="argo-a2-mock-receipt-") as raw_root:
+            root = Path(raw_root).resolve()
+            receipt_path = root / "receipt.json"
+            real_write = os.write
+            real_fsync = os.fsync
+            fsync_kinds: list[str] = []
+
+            def short_write(descriptor: int, data: bytes | memoryview) -> int:
+                return real_write(descriptor, bytes(data[:1]))
+
+            def record_fsync(descriptor: int) -> None:
+                mode = os.fstat(descriptor).st_mode
+                fsync_kinds.append("directory" if stat.S_ISDIR(mode) else "regular_file")
+                real_fsync(descriptor)
+
+            with patch("controller_process.os.write", side_effect=short_write), \
+                    patch("controller_process.os.fsync", side_effect=record_fsync):
+                controller_process._write_receipt(str(receipt_path), FakeReceipt())
+            payload = receipt_path.read_bytes()
+            self.assertTrue(payload.endswith(b"\n"))
+            self.assertEqual(json.loads(payload), FakeReceipt().to_dict())
+            self.assertIn("regular_file", fsync_kinds)
+            self.assertIn("directory", fsync_kinds)
+            self.assertFalse(any(root.glob("*.incomplete-*")))
+
+
+class CampaignGuardMockTests(unittest.TestCase):
+    def test_guard_accepts_only_exact_reasons_and_maps_failures_unknown(self) -> None:
+        self.assertIsNone(controller_process._evaluate_campaign_guard(lambda: None))
+        self.assertEqual(
+            controller_process._evaluate_campaign_guard(lambda: "CAMPAIGN_TOKEN_TRIGGER"),
+            "CAMPAIGN_TOKEN_TRIGGER",
+        )
+        self.assertEqual(
+            controller_process._evaluate_campaign_guard(lambda: "CAMPAIGN_USAGE_UNKNOWN"),
+            "CAMPAIGN_USAGE_UNKNOWN",
+        )
+        invalid_returns = (["bad"], {"bad": True}, True, float("nan"), object(), "unexpected")
+        for invalid in invalid_returns:
+            with self.subTest(invalid_type=type(invalid).__name__):
+                self.assertEqual(
+                    controller_process._evaluate_campaign_guard(lambda invalid=invalid: invalid),
+                    "CAMPAIGN_USAGE_UNKNOWN",
+                )
+
+        def raises() -> str | None:
+            raise RuntimeError("mock-only")
+
+        self.assertEqual(
+            controller_process._evaluate_campaign_guard(raises),
+            "CAMPAIGN_USAGE_UNKNOWN",
+        )
+
+    def test_stopped_campaign_returns_before_output_creation_or_spawn(self) -> None:
+        helper = ControllerProcessTests("test_exit_zero_retains_private_raw_files_and_typed_handle")
+        helper.setUp()
+        try:
+            config = helper.config("exit0")
+            with patch("controller_process._open_private_output", side_effect=AssertionError("must not open")), \
+                    patch("controller_process.subprocess.Popen", side_effect=AssertionError("must not spawn")):
+                receipt = run_controller(
+                    config,
+                    campaign_guard=lambda: "CAMPAIGN_TOKEN_TRIGGER",
+                )
+        finally:
+            helper.tearDown()
+        self.assertEqual(receipt.status, "resource_invalid")
+        self.assertEqual(receipt.terminal_reason, "CAMPAIGN_TOKEN_TRIGGER")
+        self.assertIsNone(receipt.handle)
+
+    def test_guard_runs_before_each_process_sample(self) -> None:
+        order: list[str] = []
+
+        class FakeMonitor:
+            sample_terminal_reasons: list[str] = []
+
+            def sample(self) -> str | None:
+                order.append("sample")
+                return None
+
+        def guard() -> str | None:
+            order.append("guard")
+            return None
+
+        self.assertIsNone(controller_process._guarded_process_sample(FakeMonitor(), guard))
+        self.assertEqual(order, ["guard", "sample"])
+
+    def test_late_final_unknown_and_budget_reasons_prevent_success(self) -> None:
+        monitor = SimpleNamespace(census_errors=[], sample_terminal_reasons=[])
+        reason = controller_process._final_campaign_reason(
+            prior_reason=None,
+            monitor=monitor,
+            campaign_guard=lambda: "CAMPAIGN_USAGE_UNKNOWN",
+        )
+        self.assertEqual(reason, "CAMPAIGN_USAGE_UNKNOWN")
+        status = controller_process._classify_terminal_status(
+            prior_reason=reason,
+            returncode=0,
+            cleanup=controller_process._empty_cleanup(),
+            resources=None,
+            monitor=monitor,
+        )
+        self.assertEqual(status, ("resource_invalid", "CAMPAIGN_USAGE_UNKNOWN"))
+
+        monitor.sample_terminal_reasons.append("CAMPAIGN_TOKEN_TRIGGER")
+        reason = controller_process._final_campaign_reason(
+            prior_reason=None,
+            monitor=monitor,
+            campaign_guard=lambda: None,
+        )
+        self.assertEqual(reason, "CAMPAIGN_TOKEN_TRIGGER")
+
+
+class CampaignGuardTinyProcessTest(unittest.TestCase):
+    def test_guard_trigger_stops_one_tiny_fake_child_with_reviewed_cleanup(self) -> None:
+        helper = ControllerProcessTests("test_exit_zero_retains_private_raw_files_and_typed_handle")
+        helper.setUp()
+        calls = 0
+
+        def guard() -> str | None:
+            nonlocal calls
+            calls += 1
+            return "CAMPAIGN_TOKEN_TRIGGER" if calls >= 3 else None
+
+        try:
+            receipt = run_controller(
+                helper.config(
+                    "ignore-term",
+                    caps=helper.caps(phase_wall_seconds=2.5, rss_sample_ms=25),
+                ),
+                campaign_guard=guard,
+            )
+        finally:
+            helper.tearDown()
+        self.assertEqual(receipt.status, "resource_invalid")
+        self.assertEqual(receipt.terminal_reason, "CAMPAIGN_TOKEN_TRIGGER")
+        self.assertLess(receipt.elapsed_seconds, 3.0)
+        self.assertGreaterEqual(calls, 3)
+        self.assertEqual(receipt.handle.spawn_attempts, 1)
+        self.assertTrue(receipt.cleanup.confirmed_for_tracked_processes)
+        self.assertEqual(
+            set(receipt.to_dict()),
+            {
+                "schema_version",
+                "authority_contract_sha256",
+                "status",
+                "terminal_reason",
+                "returncode",
+                "started_monotonic_ns",
+                "ended_monotonic_ns",
+                "elapsed_seconds",
+                "handle",
+                "resources",
+                "cleanup",
+                "limitations",
+            },
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
