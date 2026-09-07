@@ -1,0 +1,2180 @@
+#!/usr/bin/env python3
+"""Fixed six-action HousePrice A2 bridge.
+
+This is a one-shot CLI. The controller supplies a deployment file through fixed argv,
+and the model supplies only one bounded JSON request on stdin. ORX remains lifecycle
+authority; local files retain only attempt, identity, receipt, and final-lock facts.
+"""
+from __future__ import annotations
+
+import csv
+from dataclasses import asdict, dataclass
+from decimal import Decimal, InvalidOperation
+from enum import Enum
+import hashlib
+import http.client
+import io
+import json
+import os
+from pathlib import Path
+import re
+import selectors
+import signal
+import stat
+import subprocess
+import sys
+import tarfile
+import time
+from typing import Mapping, Protocol, Sequence
+
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.campaign_usage import (
+    UsageError,
+    parse_session_usage,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.grading import (
+    FileBinding,
+    GradingError,
+    grade_files,
+    read_bound,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.intent import (
+    Intent,
+    IntentError,
+    parse_intent,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.orx_text import (
+    ParseError,
+    parse_cancel_ack,
+    parse_created_experiment,
+    parse_experiment_status,
+    parse_local_launch,
+    parse_run_rows,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.receipt_store import (
+    ExpectedDevExecution,
+    ReceiptError,
+    VerifiedDevReceipt,
+    verify_dev_receipt,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.run_entry import (
+    FIXED_LIMITS,
+    PREFIX,
+    REQUIRED_RUNTIME_PATHS,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.staging import (
+    DirectoryIdentity,
+    read_selected_code,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.trusted_io import (
+    FinalArtifactBinding,
+    FinalRefitIdentity,
+    FinalRefitPhase,
+    FinalSelectionBinding,
+    Snapshot,
+    TrustedIo,
+    TrustedIoError,
+    TrustedIoErrorCode,
+    TrustedIoLimits,
+)
+
+HEX64 = re.compile(r"[0-9a-f]{64}")
+HEX40 = re.compile(r"[0-9a-f]{40}")
+UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+BRANCH = re.compile(r"orx/[a-z0-9]+(?:-[a-z0-9]+)*")
+ACTIONS = frozenset({
+    "read_solution", "write_solution", "request_R1_run", "read_public_result",
+    "read_dev_result", "lock_final_artifact",
+})
+MAX_REQUEST = 262_144
+MAX_RESPONSE = 262_144
+MAX_STATE_FILE = 16_384
+MAX_STATE_RECORDS = 5
+MAX_NATIVE_JSON = 131_072
+MAX_ARCHIVE = 16_777_216
+FIXED_COMMAND = "/usr/bin/python3 -m experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.run_entry"
+KNOWN_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
+DEPLOYMENT_SCHEMA = "argo-house-price-a2-bridge-deployment/v1"
+ATTEMPT_SCHEMA = "argo-house-price-a2-attempt-fence/v1"
+BINDING_SCHEMA = "argo-house-price-a2-run-binding/v1"
+DEV_RECEIPT_SCHEMA = "argo-house-price-dev-receipt/v1"
+RUNNER_RECEIPT_SCHEMA = "argo-house-price-runner-receipt/v1"
+REPAIR_STATUSES = frozenset({"DOCKER_ERROR"})
+RUNNER_FAILURE_STATUSES = frozenset({
+    "INVALID_INPUT", "INVALID_OUTPUT", "TIMEOUT", "CANCELLED", "EXECUTION_FAILED",
+    "DOCKER_ERROR", "INTERNAL_ERROR", "LOG_LIMIT_EXCEEDED", "CLEANUP_UNCONFIRMED",
+    "SCORER_ERROR",
+})
+
+
+class SafeError(str, Enum):
+    INVALID_ARGUMENT = "INVALID_ARGUMENT"
+    TOOL_SURFACE = "TOOL_SURFACE"
+    PATH_DENIED = "PATH_DENIED"
+    SOURCE_LIMIT = "SOURCE_LIMIT"
+    HASH_MISMATCH = "HASH_MISMATCH"
+    SOURCE_LOCKED = "SOURCE_LOCKED"
+    CONFLICT = "CONFLICT"
+    INTENT_INVALID = "INTENT_INVALID"
+    BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
+    UNCERTAIN_NO_AUTOMATIC_RETRY = "UNCERTAIN_NO_AUTOMATIC_RETRY"
+    RESULT_NOT_READY = "RESULT_NOT_READY"
+    RESULT_INVALID = "RESULT_INVALID"
+    FINAL_SELECTION_REQUIRED = "FINAL_SELECTION_REQUIRED"
+    FINAL_LOCKED = "FINAL_LOCKED"
+    BRIDGE_TIMEOUT = "BRIDGE_TIMEOUT"
+    BRIDGE_OUTPUT = "BRIDGE_OUTPUT"
+    INTERNAL_ERROR = "INTERNAL_ERROR"
+
+
+class BridgeError(ValueError):
+    def __init__(self, code: SafeError):
+        self.code = code
+        super().__init__(code.value)
+
+
+class ExecutorError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class NativeObservation:
+    run_id: str
+    experiment_id: str
+    native_commit: str
+    native_source_digest: str
+    native_source_size: int
+    status: str
+    cancel_requested: bool
+
+
+@dataclass(frozen=True)
+class Attempt:
+    schema_version: str
+    ordinal: int
+    intent_sha256: str
+    closure_sha256: str
+    solution_sha256: str
+    phase: str
+
+
+@dataclass(frozen=True)
+class Binding:
+    schema_version: str
+    attempt_ordinal: int
+    intent_sha256: str
+    closure_sha256: str
+    solution_sha256: str
+    phase: str
+    run_id: str
+    experiment_id: str
+    title: str
+    branch: str
+    native_commit: str
+    native_source_digest: str
+    execution_config_sha256: str
+    task_sha256: str
+    environment_sha256: str
+    protocol_sha256: str
+
+
+@dataclass(frozen=True)
+class LaunchPlan:
+    ordinal: int
+    phase: str
+    intent_sha256: str
+    closure_sha256: str
+    solution_sha256: str
+    solution_bytes: bytes
+    parent_experiment_id: str | None
+    parent_commit: str | None
+
+
+@dataclass(frozen=True)
+class PreparedLaunch:
+    plan: LaunchPlan
+    experiment_id: str
+    title: str
+    branch: str
+    native_commit: str
+    execution_config_sha256: str
+    execution_config_bytes: bytes
+
+
+class CommandPort(Protocol):
+    def prepare(self, plan: LaunchPlan) -> PreparedLaunch: ...
+    def start(self, prepared: PreparedLaunch) -> NativeObservation: ...
+    def observe(self, binding: Binding) -> NativeObservation: ...
+    def verified_dev(self, binding: Binding, observation: NativeObservation) -> VerifiedDevReceipt: ...
+    def final_artifact_binding(self, binding: Binding, observation: NativeObservation) -> FileBinding: ...
+    def infrastructure_failure(self, binding: Binding, observation: NativeObservation) -> bool: ...
+    def cancel(self, binding: Binding) -> NativeObservation: ...
+
+
+@dataclass(frozen=True)
+class FixedPortConfig:
+    orx_executable: FileBinding
+    git_executable: FileBinding
+    repository_root: DirectoryIdentity
+    local_runs_root: DirectoryIdentity
+    source_snapshots_root: DirectoryIdentity
+    output_root: DirectoryIdentity
+    project_id: str
+    root_experiment_id: str
+    root_branch: str
+    root_title: str
+    base_commit: str
+    fixed_command: str
+    loopback_port: int
+    environment: Mapping[str, str]
+    runtime_hashes: Mapping[str, str]
+    dev_inputs: Mapping[str, FileBinding]
+    final_inputs: Mapping[str, FileBinding]
+    dev_rows: int
+    final_rows: int
+
+    def __post_init__(self) -> None:
+        if any(not isinstance(value, DirectoryIdentity) for value in (
+            self.repository_root, self.local_runs_root, self.source_snapshots_root, self.output_root
+        )):
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        if any(not isinstance(value, FileBinding) for value in (self.orx_executable, self.git_executable)):
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        if any(UUID.fullmatch(value) is None for value in (self.project_id, self.root_experiment_id)):
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        if BRANCH.fullmatch(self.root_branch) is None or not _safe_title(self.root_title):
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        if HEX40.fullmatch(self.base_commit) is None or self.fixed_command != FIXED_COMMAND:
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        if type(self.loopback_port) is not int or not 1 <= self.loopback_port <= 65535:
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        if set(self.runtime_hashes) != set(REQUIRED_RUNTIME_PATHS):
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        if any(not isinstance(value, str) or HEX64.fullmatch(value) is None for value in self.runtime_hashes.values()):
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        if set(self.dev_inputs) != {"train", "features", "ids", "targets"} or set(self.final_inputs) != {"train", "features", "ids"}:
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        if any(not isinstance(value, FileBinding) for value in (*self.dev_inputs.values(), *self.final_inputs.values())):
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        if type(self.dev_rows) is not int or type(self.final_rows) is not int or not 1 <= self.dev_rows <= 292 or not 1 <= self.final_rows <= 292:
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        _validate_environment(self.environment)
+
+
+@dataclass(frozen=True)
+class ContextRights:
+    schema_version: str
+    controller_context_id: str
+    context: str
+    initial_context_id: str
+    checkpoint: FileBinding | None
+
+    def __post_init__(self) -> None:
+        if (self.schema_version != "argo-house-price-a2-context-rights/v1" or
+                self.context not in {"initial", "continuation"} or
+                any(not isinstance(value, str) or HEX64.fullmatch(value) is None
+                    for value in (self.controller_context_id, self.initial_context_id)) or
+                (self.context == "initial" and (self.controller_context_id != self.initial_context_id or self.checkpoint is not None)) or
+                (self.context == "continuation" and
+                 (self.controller_context_id == self.initial_context_id or not isinstance(self.checkpoint, FileBinding)))):
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+
+
+@dataclass(frozen=True)
+class BridgeConfig:
+    trusted_io: TrustedIo
+    state_root: DirectoryIdentity
+    task_sha256: str
+    environment_sha256: str
+    protocol_sha256: str
+    outer_training_manifest_sha256: str
+    hidden_features_manifest_sha256: str
+    max_dev_opportunities: int
+    max_repair_attempts: int
+    max_final_attempts: int
+    max_total_requests: int
+    selected_state_root: DirectoryIdentity
+    context_rights: ContextRights
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.trusted_io, TrustedIo) or not isinstance(self.state_root, DirectoryIdentity) or
+                not isinstance(self.selected_state_root, DirectoryIdentity) or not isinstance(self.context_rights, ContextRights)):
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        if (self.max_dev_opportunities, self.max_repair_attempts, self.max_final_attempts, self.max_total_requests) != (3, 1, 1, 5):
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        for value in (
+            self.task_sha256, self.environment_sha256, self.protocol_sha256,
+            self.outer_training_manifest_sha256, self.hidden_features_manifest_sha256,
+        ):
+            if not isinstance(value, str) or HEX64.fullmatch(value) is None:
+                raise BridgeError(SafeError.INVALID_ARGUMENT)
+
+
+class BoundedSubprocessExecutor:
+    """Concrete bounded shell-free executor with separate stdout/stderr capture."""
+
+    def __init__(self, environment: Mapping[str, str]):
+        _validate_environment(environment)
+        self._environment = dict(environment)
+
+    def run(self, argv: tuple[str, ...], *, cwd: Path, timeout_seconds: int, output_limit: int) -> bytes:
+        if (not isinstance(argv, tuple) or not argv or len(argv) > 32 or
+                any(not isinstance(item, str) or not item or "\x00" in item or len(item.encode("utf-8")) > 4096 for item in argv) or
+                not isinstance(cwd, Path) or not cwd.is_absolute() or timeout_seconds != 3 or output_limit != MAX_NATIVE_JSON):
+            raise ExecutorError()
+        process: subprocess.Popen[bytes] | None = None
+        selector = selectors.DefaultSelector()
+        outputs = {"stdout": bytearray(), "stderr": bytearray()}
+        streams: dict[int, tuple[object, str]] = {}
+        try:
+            process = subprocess.Popen(
+                list(argv), cwd=cwd, env=self._environment, shell=False,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                close_fds=True, start_new_session=True,
+            )
+            if process.stdout is None or process.stderr is None:
+                raise ExecutorError()
+            for stream, label in ((process.stdout, "stdout"), (process.stderr, "stderr")):
+                selector.register(stream, selectors.EVENT_READ)
+                streams[stream.fileno()] = (stream, label)
+            deadline = time.monotonic() + timeout_seconds
+            total = 0
+            while streams:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError()
+                events = selector.select(remaining)
+                if not events:
+                    raise TimeoutError()
+                for key, _ in events:
+                    stream, label = streams[key.fd]
+                    chunk = os.read(key.fd, min(65_536, output_limit + 1 - total))
+                    if not chunk:
+                        selector.unregister(stream)
+                        streams.pop(key.fd, None)
+                        stream.close()
+                        continue
+                    outputs[label].extend(chunk)
+                    total += len(chunk)
+                    if total > output_limit:
+                        raise ExecutorError()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError()
+            code = process.wait(timeout=remaining)
+            if code != 0:
+                raise ExecutorError()
+            return bytes(outputs["stdout"])
+        except (OSError, subprocess.SubprocessError, TimeoutError, ValueError):
+            if process is not None and process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except OSError:
+                    process.kill()
+                try:
+                    process.wait(timeout=1)
+                except subprocess.SubprocessError:
+                    pass
+            raise ExecutorError() from None
+        finally:
+            selector.close()
+            for stream, _ in streams.values():
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+
+class StrictNativeGetter:
+    """Loopback-only GET with no redirect, proxy, credential, or auth behavior."""
+
+    def get(self, port: int, path: str) -> bytes:
+        if type(port) is not int or not 1 <= port <= 65535 or re.fullmatch(r"/api/projects/[0-9a-f-]{36}/runs", path) is None:
+            raise ExecutorError()
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+        try:
+            connection.request("GET", path, headers={"Accept": "application/json", "Connection": "close"})
+            response = connection.getresponse()
+            if response.status != 200:
+                raise ExecutorError()
+            declared = response.getheader("Content-Length")
+            if declared is not None:
+                if not declared.isascii() or not declared.isdecimal() or int(declared) > MAX_NATIVE_JSON:
+                    raise ExecutorError()
+            data = response.read(MAX_NATIVE_JSON + 1)
+            if len(data) > MAX_NATIVE_JSON or response.read(1):
+                raise ExecutorError()
+            return data
+        except (OSError, http.client.HTTPException, ValueError):
+            raise ExecutorError() from None
+        finally:
+            connection.close()
+
+
+class _StateStore:
+    def __init__(self, identity: DirectoryIdentity):
+        _check_directory(identity)
+        self.identity = identity
+        self.root = identity.path
+        with self._root_fd() as root_fd:
+            for name in ("attempts", "bindings", "receipts", "contexts"):
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+                try:
+                    info = os.fstat(child)
+                    if not stat.S_ISDIR(info.st_mode):
+                        raise BridgeError(SafeError.CONFLICT)
+                finally:
+                    os.close(child)
+
+    def _root_fd(self) -> "_Fd":
+        return _Fd(self.identity)
+
+    def read_attempts(self) -> list[Attempt]:
+        records = self._records("attempts", re.compile(r"[0-9]{2}-[0-9a-f]{64}\.json"), MAX_STATE_RECORDS)
+        result: list[Attempt] = []
+        for name, data in records:
+            try:
+                value = json.loads(data.decode("ascii"), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+                attempt = Attempt(**value)
+                _validate_attempt(attempt)
+            except (ValueError, TypeError, UnicodeError, KeyError):
+                raise BridgeError(SafeError.CONFLICT) from None
+            if name != f"{attempt.ordinal:02d}-{attempt.intent_sha256}.json":
+                raise BridgeError(SafeError.CONFLICT)
+            result.append(attempt)
+        result.sort(key=lambda item: item.ordinal)
+        if [item.ordinal for item in result] != list(range(1, len(result) + 1)):
+            raise BridgeError(SafeError.CONFLICT)
+        if len({item.intent_sha256 for item in result}) != len(result):
+            raise BridgeError(SafeError.CONFLICT)
+        return result
+
+    def read_bindings(self) -> list[Binding]:
+        records = self._records("bindings", re.compile(r"[0-9]{2}-[0-9a-f]{64}\.json"), MAX_STATE_RECORDS)
+        result: list[Binding] = []
+        for name, data in records:
+            try:
+                value = json.loads(data.decode("ascii"), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+                binding = Binding(**value)
+                _validate_binding(binding)
+            except (ValueError, TypeError, UnicodeError, KeyError):
+                raise BridgeError(SafeError.CONFLICT) from None
+            if name != f"{binding.attempt_ordinal:02d}-{binding.intent_sha256}.json":
+                raise BridgeError(SafeError.CONFLICT)
+            result.append(binding)
+        result.sort(key=lambda item: item.attempt_ordinal)
+        if len({item.run_id for item in result}) != len(result) or len({item.experiment_id for item in result}) != len(result):
+            raise BridgeError(SafeError.CONFLICT)
+        return result
+
+    def write_attempt(self, attempt: Attempt) -> None:
+        _validate_attempt(attempt)
+        self._write_record("attempts", f"{attempt.ordinal:02d}-{attempt.intent_sha256}.json", _canonical(asdict(attempt)))
+
+    def write_binding(self, binding: Binding) -> None:
+        _validate_binding(binding)
+        self._write_record("bindings", f"{binding.attempt_ordinal:02d}-{binding.intent_sha256}.json", _canonical(asdict(binding)))
+
+    def publish_receipt(self, run_id: str, data: bytes) -> FileBinding:
+        if UUID.fullmatch(run_id) is None or not isinstance(data, bytes) or not 0 < len(data) <= 8192:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        name = run_id + ".json"
+        try:
+            self._write_record("receipts", name, data)
+        except BridgeError as error:
+            if error.code is not SafeError.CONFLICT:
+                raise
+            existing = self.read_receipt(run_id)
+            if read_bound(existing, 8192) != data:
+                raise BridgeError(SafeError.RESULT_INVALID) from None
+            return existing
+        return self.read_receipt(run_id)
+
+    def read_receipt(self, run_id: str) -> FileBinding:
+        if UUID.fullmatch(run_id) is None:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        with self._root_fd() as root_fd:
+            directory_fd = os.open("receipts", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+            try:
+                return _binding_at(directory_fd, run_id + ".json", self.root / "receipts" / (run_id + ".json"), 8192)
+            except OSError:
+                raise BridgeError(SafeError.RESULT_INVALID) from None
+            finally:
+                os.close(directory_fd)
+
+    def read_final_lock_bytes(self) -> bytes | None:
+        with self._root_fd() as root_fd:
+            try:
+                binding = _binding_at(root_fd, "final-artifact-lock.json", self.root / "final-artifact-lock.json", MAX_STATE_FILE)
+            except FileNotFoundError:
+                return None
+            except OSError:
+                raise BridgeError(SafeError.CONFLICT) from None
+        try:
+            return read_bound(binding, MAX_STATE_FILE)
+        except GradingError:
+            raise BridgeError(SafeError.CONFLICT) from None
+
+    def publish_final_lock(self, data: bytes) -> None:
+        self._write_record(None, "final-artifact-lock.json", data)
+
+    def read_context_admission(self, context_id: str) -> dict[str, object] | None:
+        if not isinstance(context_id, str) or HEX64.fullmatch(context_id) is None:
+            raise BridgeError(SafeError.CONFLICT)
+        with self._root_fd() as root_fd:
+            directory_fd = os.open("contexts", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+            try:
+                try:
+                    binding = _binding_at(directory_fd, context_id + ".json", self.root / "contexts" / (context_id + ".json"), MAX_STATE_FILE)
+                except FileNotFoundError:
+                    return None
+                data = read_bound(binding, MAX_STATE_FILE)
+            except (OSError, GradingError):
+                raise BridgeError(SafeError.CONFLICT) from None
+            finally:
+                os.close(directory_fd)
+        try:
+            value = json.loads(data.decode("ascii"), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+        except (ValueError, UnicodeError):
+            raise BridgeError(SafeError.CONFLICT) from None
+        return value
+
+    def write_context_admission(self, context_id: str, value: dict[str, object]) -> None:
+        if not isinstance(context_id, str) or HEX64.fullmatch(context_id) is None:
+            raise BridgeError(SafeError.CONFLICT)
+        self._write_record("contexts", context_id + ".json", _canonical(value))
+
+    def operation(self) -> "_Operation":
+        return _Operation(self.identity)
+
+    def _records(self, directory: str, pattern: re.Pattern[str], maximum: int) -> list[tuple[str, bytes]]:
+        names: list[str] = []
+        with self._root_fd() as root_fd:
+            directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+            try:
+                with os.scandir(directory_fd) as entries:
+                    for entry in entries:
+                        if len(names) >= maximum:
+                            raise BridgeError(SafeError.BUDGET_EXHAUSTED)
+                        if not pattern.fullmatch(entry.name) or entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                            raise BridgeError(SafeError.CONFLICT)
+                        names.append(entry.name)
+                names.sort()
+                result = []
+                for name in names:
+                    binding = _binding_at(directory_fd, name, self.root / directory / name, MAX_STATE_FILE)
+                    result.append((name, read_bound(binding, MAX_STATE_FILE)))
+                return result
+            except OSError:
+                raise BridgeError(SafeError.CONFLICT) from None
+            finally:
+                os.close(directory_fd)
+
+    def _write_record(self, directory: str | None, name: str, data: bytes) -> None:
+        if not isinstance(data, bytes) or not 0 < len(data) <= MAX_STATE_FILE:
+            raise BridgeError(SafeError.CONFLICT)
+        descriptor: int | None = None
+        with self._root_fd() as root_fd:
+            directory_fd = root_fd
+            opened_child: int | None = None
+            if directory is not None:
+                opened_child = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+                directory_fd = opened_child
+            try:
+                descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory_fd)
+                _write_all(descriptor, data)
+                os.fsync(descriptor)
+                info = os.fstat(descriptor)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != len(data):
+                    raise OSError()
+                os.close(descriptor)
+                descriptor = None
+                os.fsync(directory_fd)
+            except FileExistsError:
+                raise BridgeError(SafeError.CONFLICT) from None
+            except OSError:
+                raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY) from None
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+                if opened_child is not None:
+                    os.close(opened_child)
+
+
+class FixedNativePort:
+    """Actual fixed ORX/git/native-GET adapter used by the production CLI."""
+
+    def __init__(self, config: FixedPortConfig, store: _StateStore, executor: BoundedSubprocessExecutor | None = None,
+                 getter: StrictNativeGetter | None = None):
+        self.config = config
+        self.store = store
+        self.executor = executor if executor is not None else BoundedSubprocessExecutor(config.environment)
+        self.getter = getter if getter is not None else StrictNativeGetter()
+        self._verify_deployment()
+
+    def prepare(self, plan: LaunchPlan) -> PreparedLaunch:
+        _validate_launch_plan(plan)
+        self._verify_deployment()
+        expected_parent_commit = self.config.base_commit if plan.parent_experiment_id is None else plan.parent_commit
+        if expected_parent_commit is None or HEX40.fullmatch(expected_parent_commit) is None:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        if plan.parent_experiment_id is None:
+            experiment_id = self.config.root_experiment_id
+            title = self.config.root_title
+            branch = self.config.root_branch
+        else:
+            title = f"house-price-{plan.phase.replace('_', '-')}-{plan.ordinal:02d}"
+            description = f"house-price fixed provenance {plan.phase} {plan.ordinal:02d}"
+            created = self._orx((
+                str(self.config.orx_executable.path), "create-experiment", self.config.project_id,
+                "--parent", plan.parent_experiment_id, "--title", title,
+                "--description", description, "--no-telemetry",
+            ))
+            try:
+                parsed = parse_created_experiment(created, title, self.config.fixed_command)
+            except ParseError:
+                raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY) from None
+            experiment_id, branch = parsed.experiment_id, parsed.branch
+        status, rows = self._cli_state(experiment_id, title)
+        branch_commit = self._git(("rev-parse", "refs/heads/" + branch)).decode("ascii").strip()
+        if status.branch != branch or status.run_id is not None or rows or branch_commit != expected_parent_commit:
+            raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+        self._git(("checkout", branch))
+        if self._git(("rev-parse", "HEAD")).decode("ascii").strip() != expected_parent_commit:
+            raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+        if self._git(("status", "--porcelain=v1", "--untracked-files=all")):
+            raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+        self._verify_runtime_files()
+        config_bytes = self._execution_config(plan, experiment_id)
+        config_hash = hashlib.sha256(config_bytes).hexdigest()
+        _replace_flat_regular(self.config.repository_root, "house-price-execution.json", config_bytes)
+        _replace_flat_regular(self.config.repository_root, "house-price-solution.py", plan.solution_bytes)
+        self._git(("add", "--", "house-price-execution.json", "house-price-solution.py"))
+        self._git(("commit", "-m", f"house-price fixed staged snapshot {plan.ordinal:02d}"))
+        commit = self._git(("rev-parse", "HEAD")).decode("ascii").strip()
+        current_branch = self._git(("rev-parse", "--abbrev-ref", "HEAD")).decode("ascii").strip()
+        if HEX40.fullmatch(commit) is None or current_branch != branch:
+            raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+        if self._git(("status", "--porcelain=v1", "--untracked-files=all")):
+            raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+        self._verify_commit_files(commit, config_hash, plan.solution_sha256)
+        prepared = PreparedLaunch(plan, experiment_id, title, branch, commit, config_hash, config_bytes)
+        self._preflight(prepared, require_never_run=True)
+        return prepared
+
+    def start(self, prepared: PreparedLaunch) -> NativeObservation:
+        if not isinstance(prepared, PreparedLaunch):
+            raise BridgeError(SafeError.RESULT_INVALID)
+        self._preflight(prepared, require_never_run=True)
+        try:
+            launch = parse_local_launch(self._orx((
+                str(self.config.orx_executable.path), "exp", "run", prepared.experiment_id,
+                "--backend", "local", "--no-telemetry",
+            )), prepared.experiment_id)
+        except ParseError:
+            raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY) from None
+        if launch.run_directory != str(self.config.local_runs_root.path / launch.run_id):
+            raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+        observation = self._observe_expected(
+            launch.run_id, prepared.experiment_id, prepared.title, prepared.branch,
+            prepared.native_commit, prepared.execution_config_sha256, prepared.plan.solution_sha256,
+            prepared.plan,
+        )
+        return observation
+
+    def observe(self, binding: Binding) -> NativeObservation:
+        _validate_binding(binding)
+        plan = LaunchPlan(
+            binding.attempt_ordinal, binding.phase, binding.intent_sha256, binding.closure_sha256,
+            binding.solution_sha256, b"", None, None,
+        )
+        observation = self._observe_expected(
+            binding.run_id, binding.experiment_id, binding.title, binding.branch,
+            binding.native_commit, binding.execution_config_sha256, binding.solution_sha256, plan,
+        )
+        if observation.native_source_digest != binding.native_source_digest:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        return observation
+
+    def verified_dev(self, binding: Binding, observation: NativeObservation) -> VerifiedDevReceipt:
+        if binding.phase != "dev" or observation.status != "DONE":
+            raise BridgeError(SafeError.RESULT_INVALID)
+        receipt, predictions = self._runner_receipt(binding, observation, require_success=True)
+        inputs = self.config.dev_inputs
+        expected = ExpectedDevExecution(
+            binding.run_id, binding.experiment_id, binding.native_commit, binding.native_source_digest,
+            binding.closure_sha256, binding.solution_sha256, binding.intent_sha256,
+            binding.task_sha256, binding.environment_sha256, binding.protocol_sha256,
+            self.config.runtime_hashes[PREFIX + "house_price_runtime/container_runner.py"],
+            "DONE", self.config.dev_rows,
+        )
+        score = grade_files(predictions, inputs["ids"], inputs["targets"], max_rows=self.config.dev_rows)
+        metric = receipt["metric"]
+        if (not isinstance(metric, dict) or
+                metric != {"numerator": str(score.mae.numerator), "denominator": str(score.mae.denominator),
+                           "mae_decimal": score.public_metric()["mae"]}):
+            raise BridgeError(SafeError.RESULT_INVALID)
+        payload = {
+            "schema_version": DEV_RECEIPT_SCHEMA, "phase": "dev",
+            "run_id": expected.run_id, "experiment_id": expected.experiment_id,
+            "native_commit": expected.native_commit, "native_source_digest": expected.native_source_digest,
+            "closure_sha256": expected.closure_sha256, "solution_sha256": expected.solution_sha256,
+            "intent_sha256": expected.intent_sha256, "task_sha256": expected.task_sha256,
+            "environment_sha256": expected.environment_sha256, "protocol_sha256": expected.protocol_sha256,
+            "runner_sha256": expected.runner_sha256, "rows": expected.rows,
+            "prediction_sha256": predictions.sha256, "prediction_bytes": predictions.bytes,
+            "prediction_mtime_ns_max": predictions.mtime_ns_max,
+            "ids_sha256": inputs["ids"].sha256, "targets_sha256": inputs["targets"].sha256,
+            "mae_numerator": str(score.mae.numerator), "mae_denominator": str(score.mae.denominator),
+        }
+        receipt_binding = self.store.publish_receipt(binding.run_id, _canonical(payload))
+        try:
+            return verify_dev_receipt(receipt_binding, expected, predictions, inputs["ids"], inputs["targets"])
+        except ReceiptError:
+            raise BridgeError(SafeError.RESULT_INVALID) from None
+
+    def final_artifact_binding(self, binding: Binding, observation: NativeObservation) -> FileBinding:
+        if binding.phase != "final_refit" or observation.status != "DONE":
+            raise BridgeError(SafeError.RESULT_INVALID)
+        receipt, predictions = self._runner_receipt(binding, observation, require_success=True)
+        if receipt["metric"] is not None or receipt["rows"] != self.config.final_rows:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        _validate_prediction_ids(predictions, self.config.final_inputs["ids"], self.config.final_rows)
+        return predictions
+
+    def infrastructure_failure(self, binding: Binding, observation: NativeObservation) -> bool:
+        if binding.phase != "dev" or observation.status != "FAILED":
+            return False
+        try:
+            receipt, _ = self._runner_receipt(binding, observation, require_success=False)
+        except BridgeError:
+            return False
+        return receipt["status"] in REPAIR_STATUSES
+
+    def cancel(self, binding: Binding) -> NativeObservation:
+        before = self.observe(binding)
+        if before.status not in {"QUEUED", "RUNNING"} or before.cancel_requested:
+            raise BridgeError(SafeError.CONFLICT)
+        status, rows = self._cli_state(binding.experiment_id, binding.title)
+        matches = [row for row in rows if row.run_id == binding.run_id]
+        if status.run_id != binding.run_id or len(matches) != 1:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        try:
+            acknowledged = parse_cancel_ack(self._orx((
+                str(self.config.orx_executable.path), "exp", "cancel", binding.experiment_id, "--no-telemetry",
+            )), binding.run_id)
+        except ParseError:
+            raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY) from None
+        if acknowledged != binding.run_id:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        after = self.observe(binding)
+        if not after.cancel_requested and after.status != "CANCELLED":
+            raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+        return after
+
+    def _verify_deployment(self) -> None:
+        _check_directory(self.config.repository_root)
+        _check_directory(self.config.local_runs_root)
+        _check_directory(self.config.source_snapshots_root)
+        _check_directory(self.config.output_root)
+        for executable in (self.config.orx_executable, self.config.git_executable):
+            _verify_file_binding(executable, 268_435_456)
+            if not os.access(executable.path, os.X_OK):
+                raise BridgeError(SafeError.PATH_DENIED)
+        self._verify_runtime_files()
+
+    def _verify_runtime_files(self) -> None:
+        for relative, expected in self.config.runtime_hashes.items():
+            path = self.config.repository_root.path / relative
+            binding = _binding_from_path(path, 1_048_576)
+            if binding.sha256 != expected:
+                raise BridgeError(SafeError.HASH_MISMATCH)
+            read_bound(binding, 1_048_576)
+
+    def _execution_config(self, plan: LaunchPlan, experiment_id: str) -> bytes:
+        inputs = self.config.dev_inputs if plan.phase == "dev" else self.config.final_inputs
+        rows = self.config.dev_rows if plan.phase == "dev" else self.config.final_rows
+        for name, binding in inputs.items():
+            read_bound(binding, 1_048_576 if name in {"train", "features"} else 262_144)
+        bridge = getattr(self, "bridge_identity", None)
+        if bridge is None:
+            raise BridgeError(SafeError.INTERNAL_ERROR)
+        value = {
+            "schema_version": "argo-house-price-execution/v1", "phase": plan.phase,
+            "project_id": self.config.project_id, "experiment_id": experiment_id,
+            "closure_sha256": plan.closure_sha256, "solution_sha256": plan.solution_sha256,
+            "intent_sha256": plan.intent_sha256,
+            "task_sha256": bridge[0], "environment_sha256": bridge[1], "protocol_sha256": bridge[2],
+            "local_runs_root": str(self.config.local_runs_root.path), "output_root": str(self.config.output_root.path),
+            "runtime_hashes": dict(self.config.runtime_hashes),
+            "inputs": {name: _file_binding_dict(binding) for name, binding in inputs.items()},
+            "rows": rows, "limits": dict(FIXED_LIMITS),
+        }
+        data = _canonical(value)
+        if len(data) > 16_384:
+            raise BridgeError(SafeError.SOURCE_LIMIT)
+        return data
+
+    def bind_bridge_identity(self, task: str, environment: str, protocol: str) -> None:
+        if hasattr(self, "bridge_identity"):
+            raise BridgeError(SafeError.CONFLICT)
+        if any(HEX64.fullmatch(value) is None for value in (task, environment, protocol)):
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        self.bridge_identity = (task, environment, protocol)
+
+    def _preflight(self, prepared: PreparedLaunch, require_never_run: bool) -> None:
+        status, rows = self._cli_state(prepared.experiment_id, prepared.title)
+        if status.branch != prepared.branch:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        if require_never_run and (status.run_id is not None or rows):
+            raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+        branch_commit = self._git(("rev-parse", "refs/heads/" + prepared.branch)).decode("ascii").strip()
+        if branch_commit != prepared.native_commit:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        self._verify_commit_files(prepared.native_commit, prepared.execution_config_sha256, prepared.plan.solution_sha256)
+
+    def _cli_state(self, experiment_id: str, title: str):
+        try:
+            status = parse_experiment_status(self._orx((
+                str(self.config.orx_executable.path), "exp", "status", experiment_id, "--no-telemetry",
+            )), experiment_id, title, self.config.fixed_command)
+            rows = parse_run_rows(self._orx((
+                str(self.config.orx_executable.path), "runs", self.config.project_id,
+                "--experiment", experiment_id, "--no-telemetry",
+            )), title)
+        except ParseError:
+            raise BridgeError(SafeError.RESULT_INVALID) from None
+        return status, rows
+
+    def _observe_expected(self, run_id: str, experiment_id: str, title: str, branch: str, commit: str,
+                          config_hash: str, solution_hash: str, plan: LaunchPlan) -> NativeObservation:
+        data = self.getter.get(self.config.loopback_port, f"/api/projects/{self.config.project_id}/runs")
+        observation = parse_native_run_json(
+            data, project_id=self.config.project_id, run_id=run_id, experiment_id=experiment_id,
+            commit_sha=commit, command=self.config.fixed_command,
+            local_runs_root=self.config.local_runs_root.path, source_root=self.config.source_snapshots_root.path,
+        )
+        status, rows = self._cli_state(experiment_id, title)
+        matches = [row for row in rows if row.run_id == run_id]
+        if (status.branch != branch or status.run_id != run_id or status.commit_sha != commit or
+                status.status != observation.status or len(matches) != 1 or
+                matches[0].status != observation.status or not commit.startswith(matches[0].commit_prefix)):
+            raise BridgeError(SafeError.RESULT_INVALID)
+        branch_commit = self._git(("rev-parse", "refs/heads/" + branch)).decode("ascii").strip()
+        if branch_commit != commit:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        self._verify_commit_files(commit, config_hash, solution_hash)
+        self._verify_source_archive(observation, config_hash, solution_hash, experiment_id, plan)
+        return observation
+
+    def _verify_commit_files(self, commit: str, config_hash: str, solution_hash: str) -> None:
+        config_bytes = self._git(("show", f"{commit}:house-price-execution.json"))
+        solution_bytes = self._git(("show", f"{commit}:house-price-solution.py"))
+        if hashlib.sha256(config_bytes).hexdigest() != config_hash or hashlib.sha256(solution_bytes).hexdigest() != solution_hash:
+            raise BridgeError(SafeError.RESULT_INVALID)
+
+    def _verify_source_archive(self, observation: NativeObservation, config_hash: str, solution_hash: str,
+                               experiment_id: str, plan: LaunchPlan) -> None:
+        path = self.config.source_snapshots_root.path / (observation.native_source_digest + ".tar")
+        binding = _binding_from_path(path, MAX_ARCHIVE)
+        if binding.bytes != observation.native_source_size or binding.sha256 != observation.native_source_digest:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        data = _read_file_binding(binding, MAX_ARCHIVE)
+        wanted = {"house-price-execution.json": config_hash, "house-price-solution.py": solution_hash, **self.config.runtime_hashes}
+        found: dict[str, str] = {}
+        try:
+            with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as archive:
+                members = archive.getmembers()
+                if len(members) > 128 or len({member.name for member in members}) != len(members):
+                    raise BridgeError(SafeError.RESULT_INVALID)
+                for member in members:
+                    if member.issym() or member.islnk() or member.isdev() or member.name.startswith("/") or ".." in Path(member.name).parts:
+                        raise BridgeError(SafeError.RESULT_INVALID)
+                    if not member.isfile():
+                        continue
+                    if member.size < 0 or member.size > MAX_ARCHIVE:
+                        raise BridgeError(SafeError.RESULT_INVALID)
+                    if member.name in wanted:
+                        stream = archive.extractfile(member)
+                        if stream is None:
+                            raise BridgeError(SafeError.RESULT_INVALID)
+                        payload = stream.read(member.size + 1)
+                        if len(payload) != member.size:
+                            raise BridgeError(SafeError.RESULT_INVALID)
+                        found[member.name] = hashlib.sha256(payload).hexdigest()
+                        if member.name == "house-price-execution.json":
+                            identity = getattr(self, "bridge_identity", None)
+                            if identity is None:
+                                raise BridgeError(SafeError.INTERNAL_ERROR)
+                            _validate_execution_config(payload, self.config, experiment_id, plan, identity)
+            if found != wanted:
+                raise BridgeError(SafeError.RESULT_INVALID)
+        except (tarfile.TarError, OSError, ValueError):
+            raise BridgeError(SafeError.RESULT_INVALID) from None
+
+    def _runner_receipt(self, binding: Binding, observation: NativeObservation,
+                        require_success: bool) -> tuple[dict[str, object], FileBinding | None]:
+        if observation.run_id != binding.run_id or observation.experiment_id != binding.experiment_id:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        receipt_path = self.config.output_root.path / binding.run_id / "runner-receipt.json"
+        receipt_binding = _binding_from_path(receipt_path, 8192)
+        try:
+            data = read_bound(receipt_binding, 8192)
+            value = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+        except (GradingError, ValueError, UnicodeError, TypeError):
+            raise BridgeError(SafeError.RESULT_INVALID) from None
+        expected_keys = {
+            "schema_version", "phase", "run_id", "project_id", "experiment_id",
+            "closure_sha256", "solution_sha256", "intent_sha256", "task_sha256",
+            "environment_sha256", "protocol_sha256", "execution_config_sha256", "runner_sha256",
+            "status", "predictions", "rows", "metric", "stdout_bytes", "stderr_bytes", "logs_truncated",
+        }
+        if not isinstance(value, dict) or set(value) != expected_keys:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        fixed = {
+            "schema_version": RUNNER_RECEIPT_SCHEMA, "phase": binding.phase, "run_id": binding.run_id,
+            "project_id": self.config.project_id, "experiment_id": binding.experiment_id,
+            "closure_sha256": binding.closure_sha256, "solution_sha256": binding.solution_sha256,
+            "intent_sha256": binding.intent_sha256, "task_sha256": binding.task_sha256,
+            "environment_sha256": binding.environment_sha256, "protocol_sha256": binding.protocol_sha256,
+            "execution_config_sha256": binding.execution_config_sha256,
+            "runner_sha256": self.config.runtime_hashes[PREFIX + "house_price_runtime/container_runner.py"],
+        }
+        if any(type(value[key]) is not type(expected) or value[key] != expected for key, expected in fixed.items()):
+            raise BridgeError(SafeError.RESULT_INVALID)
+        status_value = value["status"]
+        if not isinstance(status_value, str) or status_value not in {"SUCCESS", *RUNNER_FAILURE_STATUSES}:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        for key in ("stdout_bytes", "stderr_bytes"):
+            if type(value[key]) is not int or not 0 <= value[key] <= FIXED_LIMITS["log_quarantine_bytes"] + 2048:
+                raise BridgeError(SafeError.RESULT_INVALID)
+        if value["stdout_bytes"] + value["stderr_bytes"] > FIXED_LIMITS["log_quarantine_bytes"] + 2048 or type(value["logs_truncated"]) is not bool:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        if (status_value == "SUCCESS" and observation.status != "DONE") or (
+                status_value != "SUCCESS" and observation.status not in {"FAILED", "CANCELLED"}):
+            raise BridgeError(SafeError.RESULT_INVALID)
+        if status_value != "SUCCESS":
+            if any(value[key] is not None for key in ("predictions", "rows", "metric")):
+                raise BridgeError(SafeError.RESULT_INVALID)
+            if require_success:
+                raise BridgeError(SafeError.RESULT_INVALID)
+            return value, None
+        if value["logs_truncated"] is not False:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        rows = self.config.dev_rows if binding.phase == "dev" else self.config.final_rows
+        prediction = value["predictions"]
+        if (not isinstance(prediction, dict) or set(prediction) != {"sha256", "bytes", "mtime_ns_max"} or
+                not isinstance(prediction["sha256"], str) or HEX64.fullmatch(prediction["sha256"]) is None or
+                type(prediction["bytes"]) is not int or type(prediction["mtime_ns_max"]) is not int or
+                not 0 < prediction["bytes"] <= 1_048_576 or prediction["mtime_ns_max"] < 0 or value["rows"] != rows):
+            raise BridgeError(SafeError.RESULT_INVALID)
+        predictions = FileBinding(
+            self.config.output_root.path / binding.run_id / "predictions.csv",
+            prediction["sha256"], prediction["bytes"], prediction["mtime_ns_max"],
+        )
+        read_bound(predictions, 1_048_576)
+        if binding.phase == "dev":
+            metric = value["metric"]
+            if (not isinstance(metric, dict) or set(metric) != {"numerator", "denominator", "mae_decimal"} or
+                    any(not isinstance(metric[key], str) for key in metric) or
+                    re.fullmatch(r"(?:0|[1-9][0-9]{0,255})", metric["numerator"]) is None or
+                    re.fullmatch(r"[1-9][0-9]{0,255}", metric["denominator"]) is None or
+                    re.fullmatch(r"(?:0|[1-9][0-9]{0,12})\.[0-9]{6}", metric["mae_decimal"]) is None):
+                raise BridgeError(SafeError.RESULT_INVALID)
+        elif value["metric"] is not None:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        return value, predictions
+
+    def _orx(self, argv: tuple[str, ...]) -> str:
+        output = self._exec(argv)
+        try:
+            return output.decode("utf-8")
+        except UnicodeError:
+            raise BridgeError(SafeError.RESULT_INVALID) from None
+
+    def _git(self, suffix: tuple[str, ...]) -> bytes:
+        return self._exec((str(self.config.git_executable.path), "-C", str(self.config.repository_root.path), *suffix))
+
+    def _exec(self, argv: tuple[str, ...]) -> bytes:
+        try:
+            return self.executor.run(argv, cwd=self.config.repository_root.path, timeout_seconds=3, output_limit=MAX_NATIVE_JSON)
+        except ExecutorError:
+            raise BridgeError(SafeError.BRIDGE_TIMEOUT) from None
+
+
+class Bridge:
+    def __init__(self, config: BridgeConfig, *, port: CommandPort):
+        if not isinstance(config, BridgeConfig) or port is None:
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        self.config = config
+        self.port = port
+        self.store = _StateStore(config.state_root)
+        if isinstance(port, FixedNativePort):
+            if port.store.identity != self.store.identity:
+                raise BridgeError(SafeError.INVALID_ARGUMENT)
+            port.bind_bridge_identity(config.task_sha256, config.environment_sha256, config.protocol_sha256)
+
+    def handle_bytes(self, request: bytes) -> bytes:
+        action: str | None = None
+        try:
+            if not isinstance(request, bytes) or len(request) > MAX_REQUEST:
+                raise BridgeError(SafeError.INVALID_ARGUMENT)
+            value = json.loads(request.decode("utf-8"), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+            if isinstance(value, dict) and isinstance(value.get("action"), str):
+                action = value["action"]
+            response = self.handle(value)
+        except (BridgeError, UnicodeError, ValueError, TypeError, KeyError, AttributeError, OSError, RecursionError):
+            response = {"ok": False, "error": SafeError.INVALID_ARGUMENT.value}
+        try:
+            encoded = _wire_response(action, response)
+        except (ValueError, TypeError, KeyError, AttributeError):
+            encoded = b'{"error":"BRIDGE_OUTPUT","ok":false}'
+        return encoded if len(encoded) <= MAX_RESPONSE else b'{"error":"BRIDGE_OUTPUT","ok":false}'
+
+    def handle(self, request: object) -> dict[str, object]:
+        try:
+            action, arguments = self._envelope(request)
+            if action == "read_solution":
+                result = self._read_solution(arguments)
+            elif action == "write_solution":
+                with self.store.operation():
+                    result = self._write_solution(arguments)
+            elif action == "request_R1_run":
+                with self.store.operation():
+                    result = self._request_run(arguments)
+            elif action == "read_public_result":
+                result = self._public_result(arguments)
+            elif action == "read_dev_result":
+                result = self._dev_result(arguments)
+            else:
+                with self.store.operation():
+                    result = self._lock_final(arguments)
+            return {"ok": True, "result": result}
+        except BridgeError as error:
+            return {"ok": False, "error": error.code.value}
+        except (ValueError, TypeError, KeyError, AttributeError, OSError, UnicodeError, RecursionError):
+            return {"ok": False, "error": SafeError.INTERNAL_ERROR.value}
+
+    @staticmethod
+    def _envelope(request: object) -> tuple[str, dict[str, object]]:
+        if not isinstance(request, dict) or set(request) != {"action", "arguments"}:
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        action, arguments = request["action"], request["arguments"]
+        if not isinstance(action, str) or action not in ACTIONS or not isinstance(arguments, dict):
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        return action, arguments
+
+    def _read_solution(self, arguments: dict[str, object]) -> dict[str, object]:
+        if set(arguments) != {"path"} or not isinstance(arguments["path"], str):
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        try:
+            item = self.config.trusted_io.read_solution(arguments["path"])
+        except TrustedIoError as error:
+            raise self._map_io(error) from None
+        return {"path": item.name.value, "content": item.content, "sha256": item.sha256}
+
+    def _write_solution(self, arguments: dict[str, object]) -> dict[str, object]:
+        if set(arguments) - {"path", "content", "expected_sha256"} or not {"path", "content"} <= set(arguments):
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        path, content, expected = arguments["path"], arguments["content"], arguments.get("expected_sha256")
+        if not isinstance(path, str) or not isinstance(content, str) or (expected is not None and (not isinstance(expected, str) or HEX64.fullmatch(expected) is None)):
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        try:
+            encoded = content.encode("utf-8")
+            digest = self.config.trusted_io.write_solution(path, content, expected)
+        except UnicodeError:
+            raise BridgeError(SafeError.INVALID_ARGUMENT) from None
+        except TrustedIoError as error:
+            raise self._map_io(error) from None
+        return {"path": path, "sha256": digest, "bytes": len(encoded)}
+
+    def _request_run(self, arguments: dict[str, object]) -> dict[str, object]:
+        if arguments:
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        attempts, bindings = self._state()
+        observations = self._assert_new_r1_safe(attempts, bindings)
+        observed_dev = frozenset(item.run_id for item in bindings if item.phase == "dev")
+        try:
+            snapshot = self.config.trusted_io.snapshot()
+            intent = parse_intent(snapshot.intent_bytes, snapshot.solution_sha256, observed_dev)
+        except (TrustedIoError, IntentError):
+            raise BridgeError(SafeError.INTENT_INVALID) from None
+        self._assert_context_permission(intent, bindings, observations)
+        if any(item.intent_sha256 == intent.intent_sha256 for item in attempts):
+            raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+        if len(attempts) >= self.config.max_total_requests:
+            raise BridgeError(SafeError.BUDGET_EXHAUSTED)
+        if intent.phase == "dev":
+            return self._request_dev(snapshot, intent, attempts, bindings, observations)
+        return self._request_final(snapshot, intent, attempts, bindings)
+
+    def _request_dev(self, snapshot: Snapshot, intent: Intent, attempts: list[Attempt], bindings: list[Binding],
+                     observations: Mapping[str, NativeObservation]) -> dict[str, object]:
+        metric_used, repair_used = self._dev_budget(bindings, observations)
+        if metric_used >= self.config.max_dev_opportunities:
+            raise BridgeError(SafeError.BUDGET_EXHAUSTED)
+        if len([item for item in attempts if item.phase == "dev"]) >= self.config.max_dev_opportunities + self.config.max_repair_attempts:
+            raise BridgeError(SafeError.BUDGET_EXHAUSTED)
+        parent_binding = None
+        if intent.parent_run_id is not None:
+            parent_binding = next((item for item in bindings if item.phase == "dev" and item.run_id == intent.parent_run_id), None)
+            if parent_binding is None:
+                raise BridgeError(SafeError.INTENT_INVALID)
+        attempt = Attempt(ATTEMPT_SCHEMA, len(attempts) + 1, intent.intent_sha256, snapshot.closure_sha256, snapshot.solution_sha256, "dev")
+        self.store.write_attempt(attempt)
+        try:
+            self.config.trusted_io.admit_intent(snapshot)
+            plan = LaunchPlan(
+                attempt.ordinal, "dev", intent.intent_sha256, snapshot.closure_sha256,
+                snapshot.solution_sha256, snapshot.solution_bytes,
+                None if parent_binding is None else parent_binding.experiment_id,
+                None if parent_binding is None else parent_binding.native_commit,
+            )
+            prepared = self.port.prepare(plan)
+            observation = self.port.start(prepared)
+            _validate_observation(observation)
+            self.config.trusted_io.bind_admission(snapshot, observation.run_id)
+            binding = self._make_binding(attempt, prepared, observation)
+            self.store.write_binding(binding)
+            return self._run_result(binding)
+        except Exception:
+            raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY) from None
+
+    def _request_final(self, snapshot: Snapshot, intent: Intent, attempts: list[Attempt], bindings: list[Binding]) -> dict[str, object]:
+        if any(item.phase == "final_refit" for item in attempts):
+            raise BridgeError(SafeError.BUDGET_EXHAUSTED)
+        selected = next((item for item in bindings if item.phase == "dev" and item.run_id == intent.selected_run_id), None)
+        if selected is None:
+            raise BridgeError(SafeError.FINAL_SELECTION_REQUIRED)
+        if intent.solution_sha256 != selected.solution_sha256:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        observation = self._observe(selected)
+        if observation.status != "DONE":
+            raise BridgeError(SafeError.RESULT_NOT_READY)
+        verified = self._verified_dev(selected, observation)
+        attempt = Attempt(ATTEMPT_SCHEMA, len(attempts) + 1, intent.intent_sha256, selected.closure_sha256, selected.solution_sha256, "final_refit")
+        self.store.write_attempt(attempt)
+        try:
+            selection_binding = FinalSelectionBinding(
+                verified.eligibility.receipt_sha256, self.config.task_sha256,
+                self.config.environment_sha256, self.config.protocol_sha256,
+            )
+            self.config.trusted_io.select_final_method(
+                selected.closure_sha256, selected.solution_sha256, [verified.eligibility], selection_binding,
+            )
+            final_selection = self.config.trusted_io.final_selection()
+            selected_code = read_selected_code(self.config.selected_state_root, final_selection)
+            if hashlib.sha256(selected_code).hexdigest() != selected.solution_sha256:
+                raise BridgeError(SafeError.RESULT_INVALID)
+            plan = LaunchPlan(
+                attempt.ordinal, "final_refit", intent.intent_sha256, selected.closure_sha256,
+                selected.solution_sha256, selected_code, selected.experiment_id, selected.native_commit,
+            )
+            prepared = self.port.prepare(plan)
+            self.config.trusted_io.admit_final_refit(FinalRefitIdentity(
+                FinalRefitPhase.FINAL_REFIT, verified.eligibility.receipt_sha256,
+                prepared.execution_config_sha256, self.config.outer_training_manifest_sha256,
+                self.config.hidden_features_manifest_sha256,
+            ))
+            final_observation = self.port.start(prepared)
+            _validate_observation(final_observation)
+            self.config.trusted_io.bind_final_refit(final_observation.run_id)
+            binding = self._make_binding(attempt, prepared, final_observation)
+            self.store.write_binding(binding)
+            return self._run_result(binding)
+        except Exception:
+            raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY) from None
+
+    def _public_result(self, arguments: dict[str, object]) -> dict[str, object]:
+        if arguments:
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        attempts, bindings = self._state()
+        runs: list[dict[str, object]] = []
+        observations: dict[str, NativeObservation] = {}
+        for binding in bindings:
+            try:
+                observation = self._observe(binding)
+                status = observation.status
+                observations[binding.run_id] = observation
+            except BridgeError:
+                status = "UNKNOWN"
+                observation = None
+            item = self._run_result(binding)
+            item["status"] = status
+            if binding.phase == "final_refit" and status == "DONE" and observation is not None:
+                artifact = self._final_artifact(binding, observation)
+                item["artifact_sha256"] = artifact.sha256
+            runs.append(item)
+        try:
+            stored_lock = self.config.trusted_io.final_artifact_lock()
+            published_lock = self.store.read_final_lock_bytes()
+            if published_lock is None:
+                phase = "final_selected"
+            elif published_lock != _canonical(asdict(stored_lock)):
+                raise BridgeError(SafeError.RESULT_INVALID)
+            else:
+                phase = "final_locked"
+        except TrustedIoError as error:
+            if error.code is not TrustedIoErrorCode.SELECTION_NOT_FOUND:
+                raise self._map_io(error) from None
+            try:
+                self.config.trusted_io.final_selection()
+                phase = "final_selected"
+            except TrustedIoError as selection_error:
+                if selection_error.code is not TrustedIoErrorCode.SELECTION_NOT_FOUND:
+                    raise self._map_io(selection_error) from None
+                phase = "development"
+        metric_used, _ = self._dev_budget(bindings, observations, conservative=True)
+        return {
+            "phase": phase,
+            "dev_attempts": len([item for item in attempts if item.phase == "dev"]),
+            "final_attempts": len([item for item in attempts if item.phase == "final_refit"]),
+            "remaining_dev_opportunities": max(0, self.config.max_dev_opportunities - metric_used),
+            "runs": runs,
+        }
+
+    def _dev_result(self, arguments: dict[str, object]) -> dict[str, object]:
+        if arguments:
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        _, bindings = self._state()
+        results = []
+        for binding in bindings:
+            if binding.phase != "dev":
+                continue
+            observation = self._observe(binding)
+            if observation.status == "DONE":
+                results.append(self._verified_dev(binding, observation).public_result())
+            elif observation.status in {"QUEUED", "RUNNING", "FAILED", "CANCELLED"}:
+                continue
+            else:
+                raise BridgeError(SafeError.RESULT_INVALID)
+        return {"results": results}
+
+    def _lock_final(self, arguments: dict[str, object]) -> dict[str, object]:
+        if (set(arguments) != {"run_id", "artifact_sha256"} or not isinstance(arguments["run_id"], str) or
+                not isinstance(arguments["artifact_sha256"], str) or UUID.fullmatch(arguments["run_id"]) is None or
+                HEX64.fullmatch(arguments["artifact_sha256"]) is None):
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        _, bindings = self._state()
+        final = next((item for item in bindings if item.phase == "final_refit"), None)
+        if final is None:
+            raise BridgeError(SafeError.FINAL_SELECTION_REQUIRED)
+        observation = self._observe(final)
+        if observation.status != "DONE":
+            raise BridgeError(SafeError.RESULT_NOT_READY)
+        artifact = self._final_artifact(final, observation)
+        if arguments["run_id"] != final.run_id or arguments["artifact_sha256"] != artifact.sha256:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        existing_bytes = self.store.read_final_lock_bytes()
+        try:
+            existing_lock = self.config.trusted_io.final_artifact_lock()
+        except TrustedIoError as error:
+            if error.code is not TrustedIoErrorCode.SELECTION_NOT_FOUND:
+                raise self._map_io(error) from None
+            existing_lock = None
+        if existing_lock is not None:
+            expected_bytes = _canonical(asdict(existing_lock))
+            if (existing_lock.run_id != final.run_id or existing_lock.artifact_sha256 != artifact.sha256 or
+                    existing_bytes is not None):
+                raise BridgeError(SafeError.FINAL_LOCKED)
+            self.store.publish_final_lock(expected_bytes)
+            return self._lock_result(existing_lock, expected_bytes)
+        if existing_bytes is not None:
+            raise BridgeError(SafeError.CONFLICT)
+        try:
+            lock = self.config.trusted_io.lock_final_artifact(FinalArtifactBinding(
+                final.run_id, artifact.sha256, self.config.task_sha256,
+                self.config.environment_sha256, self.config.protocol_sha256,
+            ))
+        except TrustedIoError as error:
+            raise self._map_io(error) from None
+        lock_bytes = _canonical(asdict(lock))
+        self.store.publish_final_lock(lock_bytes)
+        reopened = self.store.read_final_lock_bytes()
+        if reopened != lock_bytes:
+            raise BridgeError(SafeError.CONFLICT)
+        return self._lock_result(lock, lock_bytes)
+
+    @staticmethod
+    def _lock_result(lock: object, lock_bytes: bytes) -> dict[str, object]:
+        return {
+            "run_id": getattr(lock, "run_id"), "artifact_sha256": getattr(lock, "artifact_sha256"),
+            "lock_sha256": hashlib.sha256(lock_bytes).hexdigest(), "solution_sha256": getattr(lock, "code_sha256"),
+        }
+
+    def _state(self) -> tuple[list[Attempt], list[Binding]]:
+        attempts = self.store.read_attempts()
+        bindings = self.store.read_bindings()
+        by_ordinal = {item.attempt_ordinal: item for item in bindings}
+        for binding in bindings:
+            if binding.attempt_ordinal > len(attempts):
+                raise BridgeError(SafeError.CONFLICT)
+            attempt = attempts[binding.attempt_ordinal - 1]
+            if (attempt.intent_sha256, attempt.closure_sha256, attempt.solution_sha256, attempt.phase) != (
+                    binding.intent_sha256, binding.closure_sha256, binding.solution_sha256, binding.phase):
+                raise BridgeError(SafeError.CONFLICT)
+        if (len(by_ordinal) != len(bindings) or
+                len([item for item in attempts if item.phase == "dev"]) > 4 or
+                len([item for item in attempts if item.phase == "final_refit"]) > 1):
+            raise BridgeError(SafeError.CONFLICT)
+        final_ordinals = [item.ordinal for item in attempts if item.phase == "final_refit"]
+        if final_ordinals and final_ordinals[0] != len(attempts):
+            raise BridgeError(SafeError.CONFLICT)
+        return attempts, bindings
+
+    def _assert_new_r1_safe(self, attempts: list[Attempt], bindings: list[Binding]) -> dict[str, NativeObservation]:
+        bound_ordinals = {item.attempt_ordinal for item in bindings}
+        if any(item.ordinal not in bound_ordinals for item in attempts):
+            raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+        observations = {}
+        for binding in bindings:
+            observation = self._observe(binding)
+            observations[binding.run_id] = observation
+            if observation.status in {"QUEUED", "RUNNING", "UNKNOWN"}:
+                raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+        return observations
+
+    def _assert_context_permission(self, intent: Intent, bindings: list[Binding],
+                                   observations: Mapping[str, NativeObservation]) -> None:
+        rights = self.config.context_rights
+        if rights.context == "initial":
+            if intent.phase == "final_refit":
+                raise BridgeError(SafeError.BUDGET_EXHAUSTED)
+            eligible = 0
+            for binding in bindings:
+                observation = observations.get(binding.run_id)
+                if binding.phase == "dev" and observation is not None and observation.status == "DONE":
+                    self._verified_dev(binding, observation)
+                    eligible += 1
+            if eligible >= 2:
+                raise BridgeError(SafeError.BUDGET_EXHAUSTED)
+            return
+        existing = self.store.read_context_admission(rights.controller_context_id)
+        if existing is not None:
+            _validate_context_admission(existing, rights)
+            return
+        checkpoint = _verify_context_checkpoint(rights)
+        current_research = self.config.trusted_io.read_solution("research.md")
+        if not current_research.content.strip() or current_research.sha256 != checkpoint[1]:
+            raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+        eligible_runs: list[str] = []
+        for binding in bindings:
+            observation = observations.get(binding.run_id)
+            if binding.phase == "dev" and observation is not None and observation.status == "DONE":
+                self._verified_dev(binding, observation)
+                eligible_runs.append(binding.run_id)
+        if tuple(eligible_runs) != checkpoint[0]:
+            raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+        admission = {
+            "schema_version": "argo-house-price-a2-context-admission/v1",
+            "controller_context_id": rights.controller_context_id,
+            "initial_context_id": rights.initial_context_id,
+            "checkpoint_sha256": rights.checkpoint.sha256 if rights.checkpoint is not None else "",
+            "verified_dev_run_ids": list(checkpoint[0]),
+            "campaign_used_tokens": checkpoint[2],
+        }
+        self.store.write_context_admission(rights.controller_context_id, admission)
+
+    def _dev_budget(self, bindings: list[Binding], observations: Mapping[str, NativeObservation],
+                    conservative: bool = False) -> tuple[int, int]:
+        metric_used = 0
+        repair_used = 0
+        valid_metric_seen = False
+        for binding in sorted((item for item in bindings if item.phase == "dev"), key=lambda item: item.attempt_ordinal):
+            observation = observations.get(binding.run_id)
+            repair = False
+            if observation is not None and not valid_metric_seen and repair_used < self.config.max_repair_attempts:
+                try:
+                    repair = self.port.infrastructure_failure(binding, observation)
+                except Exception:
+                    repair = False
+            if repair:
+                repair_used += 1
+                continue
+            metric_used += 1
+            if observation is not None and observation.status == "DONE":
+                valid_metric_seen = True
+        return metric_used, repair_used
+
+    def _observe(self, binding: Binding) -> NativeObservation:
+        try:
+            observation = self.port.observe(binding)
+            _validate_observation(observation)
+        except BridgeError:
+            raise
+        except Exception:
+            raise BridgeError(SafeError.RESULT_INVALID) from None
+        if (observation.run_id != binding.run_id or observation.experiment_id != binding.experiment_id or
+                observation.native_commit != binding.native_commit or
+                observation.native_source_digest != binding.native_source_digest):
+            raise BridgeError(SafeError.RESULT_INVALID)
+        return observation
+
+    def _verified_dev(self, binding: Binding, observation: NativeObservation) -> VerifiedDevReceipt:
+        try:
+            verified = self.port.verified_dev(binding, observation)
+        except BridgeError:
+            raise
+        except Exception:
+            raise BridgeError(SafeError.RESULT_INVALID) from None
+        if (not isinstance(verified, VerifiedDevReceipt) or verified.run_id != binding.run_id or
+                verified.eligibility.closure_sha256 != binding.closure_sha256 or
+                verified.eligibility.code_sha256 != binding.solution_sha256):
+            raise BridgeError(SafeError.RESULT_INVALID)
+        return verified
+
+    def _final_artifact(self, binding: Binding, observation: NativeObservation) -> FileBinding:
+        try:
+            artifact = self.port.final_artifact_binding(binding, observation)
+            data = read_bound(artifact, 1_048_576)
+        except (BridgeError, GradingError):
+            raise BridgeError(SafeError.RESULT_INVALID) from None
+        except Exception:
+            raise BridgeError(SafeError.RESULT_INVALID) from None
+        if hashlib.sha256(data).hexdigest() != artifact.sha256:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        return artifact
+
+    def _make_binding(self, attempt: Attempt, prepared: PreparedLaunch, observation: NativeObservation) -> Binding:
+        if (prepared.plan.ordinal != attempt.ordinal or prepared.plan.intent_sha256 != attempt.intent_sha256 or
+                observation.experiment_id != prepared.experiment_id or observation.native_commit != prepared.native_commit):
+            raise BridgeError(SafeError.RESULT_INVALID)
+        return Binding(
+            BINDING_SCHEMA, attempt.ordinal, attempt.intent_sha256, attempt.closure_sha256,
+            attempt.solution_sha256, attempt.phase, observation.run_id, observation.experiment_id,
+            prepared.title, prepared.branch, observation.native_commit, observation.native_source_digest,
+            prepared.execution_config_sha256, self.config.task_sha256,
+            self.config.environment_sha256, self.config.protocol_sha256,
+        )
+
+    @staticmethod
+    def _run_result(binding: Binding) -> dict[str, object]:
+        return {
+            "intent_sha256": binding.intent_sha256, "run_id": binding.run_id,
+            "experiment_id": binding.experiment_id, "solution_sha256": binding.solution_sha256,
+            "phase": binding.phase,
+        }
+
+    @staticmethod
+    def _map_io(error: TrustedIoError) -> BridgeError:
+        mapping = {
+            TrustedIoErrorCode.INVALID_NAME: SafeError.PATH_DENIED,
+            TrustedIoErrorCode.INVALID_VALUE: SafeError.INVALID_ARGUMENT,
+            TrustedIoErrorCode.NOT_FOUND: SafeError.PATH_DENIED,
+            TrustedIoErrorCode.UNSAFE_FILE: SafeError.PATH_DENIED,
+            TrustedIoErrorCode.LIMIT_EXCEEDED: SafeError.SOURCE_LIMIT,
+            TrustedIoErrorCode.HASH_MISMATCH: SafeError.HASH_MISMATCH,
+            TrustedIoErrorCode.SNAPSHOT_CHANGED: SafeError.CONFLICT,
+            TrustedIoErrorCode.LOCK_UNAVAILABLE: SafeError.CONFLICT,
+            TrustedIoErrorCode.STATE_CORRUPT: SafeError.CONFLICT,
+            TrustedIoErrorCode.ADMISSION_EXISTS: SafeError.CONFLICT,
+            TrustedIoErrorCode.ADMISSION_UNCERTAIN: SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY,
+            TrustedIoErrorCode.FINALIZED: SafeError.SOURCE_LOCKED,
+            TrustedIoErrorCode.RECEIPT_NOT_PERMITTED: SafeError.RESULT_INVALID,
+            TrustedIoErrorCode.SELECTION_NOT_FOUND: SafeError.FINAL_SELECTION_REQUIRED,
+            TrustedIoErrorCode.FINAL_REFIT_EXISTS: SafeError.CONFLICT,
+            TrustedIoErrorCode.FINAL_REFIT_UNCERTAIN: SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY,
+        }
+        return BridgeError(mapping.get(error.code, SafeError.INTERNAL_ERROR))
+
+
+def parse_native_run_json(data: bytes, *, project_id: str, run_id: str, experiment_id: str,
+                          commit_sha: str, command: str, local_runs_root: Path,
+                          source_root: Path) -> NativeObservation:
+    if (not isinstance(data, bytes) or not 0 < len(data) <= MAX_NATIVE_JSON or
+            any(not isinstance(value, str) or UUID.fullmatch(value) is None for value in (project_id, run_id, experiment_id)) or
+            not isinstance(commit_sha, str) or HEX40.fullmatch(commit_sha) is None or command != FIXED_COMMAND):
+        raise BridgeError(SafeError.RESULT_INVALID)
+    try:
+        envelope = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+    except (ValueError, UnicodeError, RecursionError):
+        raise BridgeError(SafeError.RESULT_INVALID) from None
+    if not isinstance(envelope, dict) or set(envelope) != {"runs"} or not isinstance(envelope["runs"], list) or len(envelope["runs"]) > 5:
+        raise BridgeError(SafeError.RESULT_INVALID)
+    records: dict[str, dict[str, object]] = {}
+    allowed_base = {"id", "projectId", "experimentId", "commitSha", "command", "status", "cancelRequested", "createdAt", "updatedAt", "backend"}
+    for raw in envelope["runs"]:
+        if not isinstance(raw, dict) or not allowed_base <= set(raw) or not set(raw) - allowed_base <= {"endedAt", "resultMarkdown"}:
+            raise BridgeError(SafeError.RESULT_INVALID)
+        identity = raw.get("id")
+        backend = raw.get("backend")
+        if (not isinstance(identity, str) or UUID.fullmatch(identity) is None or identity in records or
+                not isinstance(raw.get("projectId"), str) or raw["projectId"] != project_id or
+                not isinstance(raw.get("experimentId"), str) or UUID.fullmatch(raw["experimentId"]) is None or
+                not isinstance(raw.get("commitSha"), str) or HEX40.fullmatch(raw["commitSha"]) is None or
+                raw.get("command") != command or raw.get("status") not in {"starting", "running", "done", "failed", "cancelled"} or
+                type(raw.get("cancelRequested")) is not bool or type(raw.get("createdAt")) is not int or
+                type(raw.get("updatedAt")) is not int or raw["createdAt"] < 0 or raw["updatedAt"] < raw["createdAt"] or
+                not isinstance(backend, dict) or set(backend) != {"kind", "jobId", "sourceDigest", "sourcePath", "sourceSize"} or
+                backend.get("kind") != "local_job" or not isinstance(backend.get("sourceDigest"), str) or
+                HEX64.fullmatch(backend["sourceDigest"]) is None or type(backend.get("sourceSize")) is not int or
+                not 0 < backend["sourceSize"] <= MAX_ARCHIVE):
+            raise BridgeError(SafeError.RESULT_INVALID)
+        terminal = raw["status"] in {"done", "failed", "cancelled"}
+        if terminal != ("endedAt" in raw):
+            raise BridgeError(SafeError.RESULT_INVALID)
+        if "endedAt" in raw and (type(raw["endedAt"]) is not int or not raw["createdAt"] <= raw["endedAt"] <= raw["updatedAt"]):
+            raise BridgeError(SafeError.RESULT_INVALID)
+        if "resultMarkdown" in raw:
+            text = raw["resultMarkdown"]
+            if raw["status"] != "failed" or not isinstance(text, str) or "\x00" in text or len(text.encode("utf-8")) > 4096:
+                raise BridgeError(SafeError.RESULT_INVALID)
+        expected_job = local_runs_root / identity
+        expected_source = source_root / (backend["sourceDigest"] + ".tar")
+        if backend.get("jobId") != str(expected_job) or backend.get("sourcePath") != str(expected_source):
+            raise BridgeError(SafeError.RESULT_INVALID)
+        records[identity] = raw
+    if run_id not in records:
+        raise BridgeError(SafeError.RESULT_INVALID)
+    record = records[run_id]
+    backend = record["backend"]
+    if record["experimentId"] != experiment_id or record["commitSha"] != commit_sha:
+        raise BridgeError(SafeError.RESULT_INVALID)
+    return NativeObservation(
+        run_id, experiment_id, commit_sha, backend["sourceDigest"], backend["sourceSize"],
+        {"starting": "QUEUED", "running": "RUNNING", "done": "DONE", "failed": "FAILED", "cancelled": "CANCELLED"}[record["status"]],
+        record["cancelRequested"],
+    )
+
+
+def load_deployment(path: Path, expected_sha256: str) -> tuple[BridgeConfig, FixedNativePort]:
+    if not isinstance(path, Path) or not path.is_absolute() or not isinstance(expected_sha256, str) or HEX64.fullmatch(expected_sha256) is None:
+        raise BridgeError(SafeError.INVALID_ARGUMENT)
+    data = _read_absolute_bounded(path, 65_536)
+    if hashlib.sha256(data).hexdigest() != expected_sha256:
+        raise BridgeError(SafeError.HASH_MISMATCH)
+    try:
+        value = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+    except (ValueError, UnicodeError, RecursionError):
+        raise BridgeError(SafeError.INVALID_ARGUMENT) from None
+    top = {"schema_version", "production_enabled", "files", "directories", "project", "identities", "runtime_hashes", "inputs", "rows", "environment", "context_rights"}
+    if not isinstance(value, dict) or set(value) != top or value["schema_version"] != DEPLOYMENT_SCHEMA or value["production_enabled"] is not True:
+        raise BridgeError(SafeError.INVALID_ARGUMENT)
+    files = _exact_mapping(value["files"], {"bridge", "python", "orx", "git"})
+    directories = _exact_mapping(value["directories"], {"source", "trusted_state", "bridge_state", "repository", "local_runs", "source_snapshots", "output"})
+    project = _exact_mapping(value["project"], {"project_id", "root_experiment_id", "root_branch", "root_title", "base_commit", "fixed_command", "loopback_port"})
+    identities = _exact_mapping(value["identities"], {"task_sha256", "environment_sha256", "protocol_sha256", "outer_training_manifest_sha256", "hidden_features_manifest_sha256"})
+    inputs = _exact_mapping(value["inputs"], {"dev", "final_refit"})
+    rows = _exact_mapping(value["rows"], {"dev", "final_refit"})
+    context_value = _exact_mapping(value["context_rights"], {"schema_version", "controller_context_id", "context", "initial_context_id", "checkpoint"})
+    checkpoint_value = context_value["checkpoint"]
+    checkpoint = None if checkpoint_value is None else _file_binding_from_json(checkpoint_value)
+    context_rights = ContextRights(
+        context_value["schema_version"], context_value["controller_context_id"],
+        context_value["context"], context_value["initial_context_id"], checkpoint,
+    )
+    file_bindings = {name: _file_binding_from_json(item) for name, item in files.items()}
+    directory_ids = {name: _directory_from_json(item) for name, item in directories.items()}
+    for identity in directory_ids.values():
+        _check_directory(identity)
+    if file_bindings["bridge"].path != Path(__file__).resolve():
+        raise BridgeError(SafeError.HASH_MISMATCH)
+    _verify_file_binding(file_bindings["bridge"], 1_048_576)
+    if Path(sys.executable).resolve() != file_bindings["python"].path:
+        raise BridgeError(SafeError.PATH_DENIED)
+    _verify_file_binding(file_bindings["python"], 268_435_456)
+    _verify_file_binding(file_bindings["orx"], 268_435_456)
+    _verify_file_binding(file_bindings["git"], 268_435_456)
+    runtime_hashes = _exact_mapping(value["runtime_hashes"], set(REQUIRED_RUNTIME_PATHS))
+    dev_inputs = _input_map(inputs["dev"], {"train", "features", "ids", "targets"})
+    final_inputs = _input_map(inputs["final_refit"], {"train", "features", "ids"})
+    if rows["dev"] != 292 or rows["final_refit"] != 292:
+        raise BridgeError(SafeError.INVALID_ARGUMENT)
+    if not isinstance(value["environment"], dict):
+        raise BridgeError(SafeError.INVALID_ARGUMENT)
+    environment = value["environment"]
+    trusted = TrustedIo(
+        directory_ids["source"].path, directory_ids["trusted_state"].path,
+        TrustedIoLimits(64, 131072, 393216, 131072, 16384, 5, 2097152),
+    )
+    bridge_config = BridgeConfig(
+        trusted, directory_ids["bridge_state"], identities["task_sha256"], identities["environment_sha256"],
+        identities["protocol_sha256"], identities["outer_training_manifest_sha256"],
+        identities["hidden_features_manifest_sha256"], 3, 1, 1, 5, directory_ids["trusted_state"], context_rights,
+    )
+    store = _StateStore(directory_ids["bridge_state"])
+    port_config = FixedPortConfig(
+        file_bindings["orx"], file_bindings["git"], directory_ids["repository"], directory_ids["local_runs"],
+        directory_ids["source_snapshots"], directory_ids["output"], project["project_id"], project["root_experiment_id"],
+        project["root_branch"], project["root_title"], project["base_commit"], project["fixed_command"],
+        project["loopback_port"], environment, runtime_hashes, dev_inputs, final_inputs, rows["dev"], rows["final_refit"],
+    )
+    port = FixedNativePort(port_config, store)
+    return bridge_config, port
+
+
+def load_bridge_from_config(path: Path, expected_sha256: str) -> Bridge:
+    config, port = load_deployment(path, expected_sha256)
+    return Bridge(config, port=port)
+
+
+def _validate_execution_config(data: bytes, config: FixedPortConfig, experiment_id: str, plan: LaunchPlan,
+                               identity: tuple[str, str, str]) -> None:
+    try:
+        value = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+    except (ValueError, UnicodeError):
+        raise BridgeError(SafeError.RESULT_INVALID) from None
+    inputs = config.dev_inputs if plan.phase == "dev" else config.final_inputs
+    rows = config.dev_rows if plan.phase == "dev" else config.final_rows
+    expected_keys = {"schema_version", "phase", "project_id", "experiment_id", "closure_sha256", "solution_sha256", "intent_sha256", "task_sha256", "environment_sha256", "protocol_sha256", "local_runs_root", "output_root", "runtime_hashes", "inputs", "rows", "limits"}
+    if not isinstance(value, dict) or set(value) != expected_keys:
+        raise BridgeError(SafeError.RESULT_INVALID)
+    fixed = {
+        "schema_version": "argo-house-price-execution/v1", "phase": plan.phase,
+        "project_id": config.project_id, "experiment_id": experiment_id,
+        "closure_sha256": plan.closure_sha256, "solution_sha256": plan.solution_sha256,
+        "intent_sha256": plan.intent_sha256, "local_runs_root": str(config.local_runs_root.path),
+        "output_root": str(config.output_root.path), "runtime_hashes": dict(config.runtime_hashes),
+        "inputs": {name: _file_binding_dict(binding) for name, binding in inputs.items()},
+        "rows": rows, "limits": dict(FIXED_LIMITS),
+    }
+    if any(value[key] != expected for key, expected in fixed.items()):
+        raise BridgeError(SafeError.RESULT_INVALID)
+    for key, expected in zip(("task_sha256", "environment_sha256", "protocol_sha256"), identity):
+        if value[key] != expected:
+            raise BridgeError(SafeError.RESULT_INVALID)
+
+
+def _validate_prediction_ids(predictions: FileBinding, ids_binding: FileBinding, rows: int) -> None:
+    try:
+        ids = json.loads(read_bound(ids_binding, 262_144).decode("utf-8"), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+        records = list(csv.reader(io.StringIO(read_bound(predictions, 1_048_576).decode("utf-8"), newline=""), strict=True))
+        if (not isinstance(ids, list) or len(ids) != rows or any(not isinstance(item, str) for item in ids) or
+                not records or records[0] != ["Id", "SalePrice"] or len(records) != rows + 1 or
+                any(len(record) != 2 for record in records[1:]) or [record[0] for record in records[1:]] != ids):
+            raise BridgeError(SafeError.RESULT_INVALID)
+        for record in records[1:]:
+            if len(record[1].encode("utf-8")) > 128:
+                raise BridgeError(SafeError.RESULT_INVALID)
+            number = Decimal(record[1])
+            if not number.is_finite():
+                raise BridgeError(SafeError.RESULT_INVALID)
+    except (ValueError, UnicodeError, csv.Error, InvalidOperation, GradingError):
+        raise BridgeError(SafeError.RESULT_INVALID) from None
+
+
+def _verify_context_checkpoint(rights: ContextRights) -> tuple[tuple[str, str], str, int]:
+    if rights.context != "continuation" or rights.checkpoint is None:
+        raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+    try:
+        data = _read_file_binding(rights.checkpoint, MAX_STATE_FILE)
+        value = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+    except (GradingError, ValueError, UnicodeError, TypeError):
+        raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY) from None
+    keys = {
+        "schema_version", "initial_context_id", "next_context_id", "verified_dev_run_ids",
+        "research_sha256", "prior_process_receipt", "prior_session", "prior_session_id",
+        "prior_cwd", "provider", "model", "campaign_token_budget", "campaign_used_tokens",
+    }
+    if (not isinstance(value, dict) or set(value) != keys or
+            value["schema_version"] != "argo-house-price-a2-handoff/v1" or
+            value["initial_context_id"] != rights.initial_context_id or
+            value["next_context_id"] != rights.controller_context_id or
+            value["provider"] != "openai-codex" or value["model"] != "gpt-5.6-sol" or
+            value["campaign_token_budget"] != 120000 or type(value["campaign_used_tokens"]) is not int or
+            not 0 <= value["campaign_used_tokens"] < 120000 or
+            not isinstance(value["research_sha256"], str) or HEX64.fullmatch(value["research_sha256"]) is None or
+            not isinstance(value["verified_dev_run_ids"], list) or len(value["verified_dev_run_ids"]) != 2 or
+            len(set(value["verified_dev_run_ids"])) != 2 or
+            any(not isinstance(run_id, str) or UUID.fullmatch(run_id) is None for run_id in value["verified_dev_run_ids"]) or
+            not isinstance(value["prior_session_id"], str) or UUID.fullmatch(value["prior_session_id"]) is None or
+            not isinstance(value["prior_cwd"], str) or not _canonical_absolute_directory_text(value["prior_cwd"])):
+        raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+    process_binding = _file_binding_from_json(value["prior_process_receipt"])
+    session_binding = _file_binding_from_json(value["prior_session"])
+    if session_binding.path.name != value["prior_session_id"] + ".jsonl":
+        raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+    process_data = _read_file_binding(process_binding, 1_048_576)
+    session_data = _read_file_binding(session_binding, 8_388_608)
+    try:
+        process = json.loads(process_data.decode("utf-8"), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+    except (ValueError, UnicodeError, RecursionError):
+        raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY) from None
+    if not _valid_prior_process_receipt(process, session_binding.path):
+        raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+    try:
+        usage = parse_session_usage(
+            session_data, value["prior_session_id"], value["prior_cwd"], value["provider"], value["model"],
+        )
+    except UsageError:
+        raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY) from None
+    if not usage.complete or usage.total_tokens != value["campaign_used_tokens"] or usage.total_tokens >= 120000:
+        raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+    return (value["verified_dev_run_ids"][0], value["verified_dev_run_ids"][1]), value["research_sha256"], usage.total_tokens
+
+
+def _valid_prior_process_receipt(value: object, session_path: Path) -> bool:
+    if not isinstance(value, dict):
+        return False
+    required = {
+        "schema_version", "authority_contract_sha256", "status", "terminal_reason", "returncode",
+        "started_monotonic_ns", "ended_monotonic_ns", "elapsed_seconds", "handle", "resources",
+        "cleanup", "limitations",
+    }
+    handle_keys = {
+        "pid", "root_pgid", "pid_start_identity", "stdout_path", "stderr_path", "spawn_attempts",
+        "process_exec_path", "frontend_path", "deployment_path", "artifact_root", "session_dir",
+        "child_environment_keys", "stdin_mode",
+    }
+    resource_keys = {
+        "provider_timeout_ms", "provider_retries", "model_tokens_between_turns", "controller_turn_limit_per_phase",
+        "source_text_max_bytes", "autonomous_gate_retries", "autonomous_gate_timeout_ms", "bridge_close_grace_ms",
+        "rss_sampling_semantics", "rss_trigger_bytes", "rss_sample_interval_ms", "peak_sampled_rss_bytes",
+        "rss_overshoot_bytes", "rss_trigger_monotonic_ns", "rss_trigger_elapsed_from_first_sample_seconds",
+        "sample_count", "first_sample_monotonic_ns", "last_sample_monotonic_ns", "max_sample_gap_ms",
+        "observed_seconds", "coverage_complete_for_observed_tree", "observer_errors", "census_errors",
+        "census_file_count_peak", "census_aggregate_bytes_peak", "census_largest_file_bytes",
+        "file_count_overshoot", "aggregate_bytes_overshoot", "artifact_file_count_trigger",
+        "artifact_aggregate_bytes_trigger", "regular_file_rlimit_bytes", "cpu_rlimit_seconds_per_process",
+        "phase_wall_seconds", "campaign_wall_seconds", "observer_output_limit_bytes",
+        "native_usage_missing_or_inflight_semantics",
+    }
+    cleanup_keys = {
+        "confirmed_for_tracked_processes", "claims_all_possible_descendants", "unobserved_escape_possible",
+        "root_process_reaped", "signals_sent", "tracked_processes", "observed_process_groups",
+        "escaped_observed_process_groups", "alive_tracked_after_cleanup", "cleanup_errors",
+    }
+    if (set(value) != required or value.get("schema_version") != "argo-house-price-a2-controller-process-receipt/v1" or
+            value.get("authority_contract_sha256") != "0cfaeb57c18662f428cdb9fbdef842d55782624b9baaf9bbbbe98ebeb4412c20" or
+            value.get("status") != "succeeded" or value.get("terminal_reason") != "completed" or
+            value.get("returncode") != 0 or type(value.get("started_monotonic_ns")) is not int or
+            type(value.get("ended_monotonic_ns")) is not int or value["ended_monotonic_ns"] < value["started_monotonic_ns"] or
+            isinstance(value.get("elapsed_seconds"), bool) or not isinstance(value.get("elapsed_seconds"), (int, float)) or
+            not isinstance(value.get("handle"), dict) or not isinstance(value.get("resources"), dict) or
+            not isinstance(value.get("cleanup"), dict) or not isinstance(value.get("limitations"), list)):
+        return False
+    handle, resources, cleanup = value["handle"], value["resources"], value["cleanup"]
+    if set(handle) != handle_keys or set(resources) != resource_keys or set(cleanup) != cleanup_keys:
+        return False
+    session_dir = handle.get("session_dir")
+    if (type(handle.get("pid")) is not int or handle["pid"] <= 1 or type(handle.get("root_pgid")) is not int or
+            handle["root_pgid"] <= 1 or handle.get("spawn_attempts") != 1 or handle.get("stdin_mode") != "DEVNULL" or
+            not isinstance(handle.get("pid_start_identity"), str) or not handle["pid_start_identity"] or
+            not isinstance(session_dir, str) or not _canonical_absolute_directory_text(session_dir) or
+            not isinstance(handle.get("child_environment_keys"), list) or
+            any(not isinstance(item, str) for item in handle["child_environment_keys"])):
+        return False
+    for key in ("stdout_path", "stderr_path", "process_exec_path", "frontend_path", "deployment_path", "artifact_root"):
+        item = handle.get(key)
+        if not isinstance(item, str) or not Path(item).is_absolute() or ".." in Path(item).parts:
+            return False
+    try:
+        session_path.relative_to(Path(session_dir))
+    except ValueError:
+        return False
+    return (
+        cleanup.get("root_process_reaped") is True and
+        cleanup.get("confirmed_for_tracked_processes") is True and
+        cleanup.get("alive_tracked_after_cleanup") == [] and
+        cleanup.get("cleanup_errors") == [] and
+        resources.get("observer_errors") == [] and
+        resources.get("census_errors") == [] and
+        resources.get("coverage_complete_for_observed_tree") is True and
+        resources.get("native_usage_missing_or_inflight_semantics") == "unknown_not_zero"
+    )
+
+
+def _validate_context_admission(value: object, rights: ContextRights) -> None:
+    keys = {"schema_version", "controller_context_id", "initial_context_id", "checkpoint_sha256", "verified_dev_run_ids", "campaign_used_tokens"}
+    if (not isinstance(value, dict) or set(value) != keys or
+            value["schema_version"] != "argo-house-price-a2-context-admission/v1" or
+            value["controller_context_id"] != rights.controller_context_id or
+            value["initial_context_id"] != rights.initial_context_id or rights.checkpoint is None or
+            value["checkpoint_sha256"] != rights.checkpoint.sha256 or
+            not isinstance(value["verified_dev_run_ids"], list) or len(value["verified_dev_run_ids"]) != 2 or
+            any(not isinstance(run_id, str) or UUID.fullmatch(run_id) is None for run_id in value["verified_dev_run_ids"]) or
+            type(value["campaign_used_tokens"]) is not int or not 0 <= value["campaign_used_tokens"] < 120000):
+        raise BridgeError(SafeError.CONFLICT)
+
+
+def _canonical_absolute_directory_text(value: str) -> bool:
+    try:
+        path = Path(value)
+        return (path.is_absolute() and ".." not in path.parts and path.resolve(strict=True) == path and
+                stat.S_ISDIR(path.lstat().st_mode) and not stat.S_ISLNK(path.lstat().st_mode))
+    except (OSError, RuntimeError):
+        return False
+
+
+def _validate_attempt(value: Attempt) -> None:
+    if (not isinstance(value, Attempt) or value.schema_version != ATTEMPT_SCHEMA or type(value.ordinal) is not int or
+            not 1 <= value.ordinal <= 5 or value.phase not in {"dev", "final_refit"} or
+            any(not isinstance(item, str) or HEX64.fullmatch(item) is None for item in (value.intent_sha256, value.closure_sha256, value.solution_sha256))):
+        raise BridgeError(SafeError.CONFLICT)
+
+
+def _validate_binding(value: Binding) -> None:
+    if (not isinstance(value, Binding) or value.schema_version != BINDING_SCHEMA or type(value.attempt_ordinal) is not int or
+            not 1 <= value.attempt_ordinal <= 5 or value.phase not in {"dev", "final_refit"} or
+            any(not isinstance(item, str) or HEX64.fullmatch(item) is None for item in (
+                value.intent_sha256, value.closure_sha256, value.solution_sha256,
+                value.native_source_digest, value.execution_config_sha256,
+                value.task_sha256, value.environment_sha256, value.protocol_sha256,
+            )) or any(not isinstance(item, str) or UUID.fullmatch(item) is None for item in (value.run_id, value.experiment_id)) or
+            not _safe_title(value.title) or not isinstance(value.branch, str) or BRANCH.fullmatch(value.branch) is None or
+            not isinstance(value.native_commit, str) or HEX40.fullmatch(value.native_commit) is None):
+        raise BridgeError(SafeError.CONFLICT)
+
+
+def _validate_launch_plan(plan: LaunchPlan) -> None:
+    if (not isinstance(plan, LaunchPlan) or type(plan.ordinal) is not int or not 1 <= plan.ordinal <= 5 or
+            plan.phase not in {"dev", "final_refit"} or not isinstance(plan.solution_bytes, bytes) or
+            not 0 < len(plan.solution_bytes) <= 131_072 or hashlib.sha256(plan.solution_bytes).hexdigest() != plan.solution_sha256 or
+            any(not isinstance(item, str) or HEX64.fullmatch(item) is None for item in (plan.intent_sha256, plan.closure_sha256, plan.solution_sha256)) or
+            (plan.parent_experiment_id is None) != (plan.parent_commit is None) or
+            (plan.parent_experiment_id is not None and UUID.fullmatch(plan.parent_experiment_id) is None) or
+            (plan.parent_commit is not None and HEX40.fullmatch(plan.parent_commit) is None)):
+        raise BridgeError(SafeError.RESULT_INVALID)
+
+
+def _validate_observation(value: NativeObservation) -> None:
+    if (not isinstance(value, NativeObservation) or UUID.fullmatch(value.run_id) is None or UUID.fullmatch(value.experiment_id) is None or
+            HEX40.fullmatch(value.native_commit) is None or HEX64.fullmatch(value.native_source_digest) is None or
+            type(value.native_source_size) is not int or not 0 < value.native_source_size <= MAX_ARCHIVE or
+            value.status not in {"QUEUED", "RUNNING", "DONE", "FAILED", "CANCELLED", "UNKNOWN"} or
+            type(value.cancel_requested) is not bool):
+        raise BridgeError(SafeError.RESULT_INVALID)
+
+
+def _validate_environment(value: Mapping[str, str]) -> None:
+    allowed = {"PATH", "LANG", "LC_ALL", "TZ", "HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "TMPDIR"}
+    if not isinstance(value, Mapping) or not {"PATH", "LANG", "LC_ALL", "TZ"} <= set(value) or set(value) - allowed:
+        raise BridgeError(SafeError.INVALID_ARGUMENT)
+    fixed = {"PATH": KNOWN_PATH, "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TZ": "UTC"}
+    if any(value.get(key) != expected for key, expected in fixed.items()):
+        raise BridgeError(SafeError.INVALID_ARGUMENT)
+    for key, item in value.items():
+        if not isinstance(key, str) or not isinstance(item, str) or "\x00" in item or len(item.encode("utf-8")) > 4096:
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        if key not in fixed and (not Path(item).is_absolute() or ".." in Path(item).parts):
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+
+
+def _check_directory(identity: DirectoryIdentity) -> None:
+    if (not isinstance(identity, DirectoryIdentity) or not isinstance(identity.path, Path) or not identity.path.is_absolute() or
+            type(identity.device) is not int or type(identity.inode) is not int or identity.device < 0 or identity.inode <= 0):
+        raise BridgeError(SafeError.PATH_DENIED)
+    try:
+        if identity.path.resolve(strict=True) != identity.path:
+            raise BridgeError(SafeError.PATH_DENIED)
+        info = identity.path.lstat()
+        if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or (info.st_dev, info.st_ino) != (identity.device, identity.inode):
+            raise BridgeError(SafeError.PATH_DENIED)
+        descriptor = os.open(identity.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            opened = os.fstat(descriptor)
+            if (opened.st_dev, opened.st_ino) != (identity.device, identity.inode):
+                raise BridgeError(SafeError.PATH_DENIED)
+        finally:
+            os.close(descriptor)
+    except (OSError, RuntimeError):
+        raise BridgeError(SafeError.PATH_DENIED) from None
+
+
+class _Fd:
+    def __init__(self, identity: DirectoryIdentity):
+        self.identity = identity
+        self.fd: int | None = None
+
+    def __enter__(self) -> int:
+        _check_directory(self.identity)
+        self.fd = os.open(self.identity.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        info = os.fstat(self.fd)
+        if (info.st_dev, info.st_ino) != (self.identity.device, self.identity.inode):
+            os.close(self.fd)
+            self.fd = None
+            raise BridgeError(SafeError.PATH_DENIED)
+        return self.fd
+
+    def __exit__(self, *_: object) -> None:
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+
+class _Operation:
+    def __init__(self, identity: DirectoryIdentity):
+        self.identity = identity
+        self.fd: int | None = None
+        self.file_identity: tuple[int, int] | None = None
+        self.root: _Fd | None = None
+
+    def __enter__(self) -> "_Operation":
+        self.root = _Fd(self.identity)
+        root_fd = self.root.__enter__()
+        try:
+            self.fd = os.open(".bridge-operation.lock", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=root_fd)
+            _write_all(self.fd, b"argo-house-price-bridge-operation/v1\n")
+            os.fsync(self.fd)
+            info = os.fstat(self.fd)
+            self.file_identity = (info.st_dev, info.st_ino)
+            os.fsync(root_fd)
+            return self
+        except FileExistsError:
+            self.root.__exit__()
+            self.root = None
+            raise BridgeError(SafeError.CONFLICT) from None
+        except OSError:
+            self.root.__exit__()
+            self.root = None
+            raise BridgeError(SafeError.INTERNAL_ERROR) from None
+
+    def __exit__(self, *_: object) -> None:
+        if self.root is None:
+            return
+        root_fd = self.root.fd
+        try:
+            if self.fd is not None:
+                os.close(self.fd)
+                self.fd = None
+            if root_fd is not None and self.file_identity is not None:
+                info = os.stat(".bridge-operation.lock", dir_fd=root_fd, follow_symlinks=False)
+                if (info.st_dev, info.st_ino) != self.file_identity:
+                    raise BridgeError(SafeError.CONFLICT)
+                os.unlink(".bridge-operation.lock", dir_fd=root_fd)
+                os.fsync(root_fd)
+        except FileNotFoundError:
+            raise BridgeError(SafeError.CONFLICT) from None
+        finally:
+            self.root.__exit__()
+            self.root = None
+
+
+def _binding_at(directory_fd: int, name: str, absolute: Path, cap: int) -> FileBinding:
+    descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or not 0 < before.st_size <= cap:
+            raise OSError()
+        remaining = before.st_size
+        digest = hashlib.sha256()
+        while remaining:
+            chunk = os.read(descriptor, min(65_536, remaining))
+            if not chunk:
+                raise OSError()
+            digest.update(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(descriptor)
+        if _stat_identity(before) != _stat_identity(after):
+            raise OSError()
+        return FileBinding(absolute, digest.hexdigest(), before.st_size, before.st_mtime_ns)
+    finally:
+        os.close(descriptor)
+
+
+def _binding_from_path(path: Path, cap: int) -> FileBinding:
+    data = _read_absolute_bounded(path, cap)
+    info = path.lstat()
+    return FileBinding(path, hashlib.sha256(data).hexdigest(), len(data), info.st_mtime_ns)
+
+
+def _verify_file_binding(binding: FileBinding, cap: int) -> None:
+    _read_file_binding(binding, cap, retain=False)
+
+
+def _read_file_binding(binding: FileBinding, cap: int, retain: bool = True) -> bytes:
+    if (not isinstance(binding, FileBinding) or not isinstance(binding.path, Path) or
+            not isinstance(binding.sha256, str) or HEX64.fullmatch(binding.sha256) is None or
+            type(binding.bytes) is not int or type(binding.mtime_ns_max) is not int or
+            not 0 < binding.bytes <= cap or binding.mtime_ns_max < 0):
+        raise BridgeError(SafeError.PATH_DENIED)
+    return _read_absolute_bounded(
+        binding.path, cap, expected_size=binding.bytes, expected_hash=binding.sha256,
+        mtime_ns_max=binding.mtime_ns_max, retain=retain,
+    )
+
+
+def _read_absolute_bounded(path: Path, cap: int, *, expected_size: int | None = None,
+                           expected_hash: str | None = None, mtime_ns_max: int | None = None,
+                           retain: bool = True) -> bytes:
+    if (not isinstance(path, Path) or not path.is_absolute() or ".." in path.parts or type(cap) is not int or cap <= 0 or
+            (expected_size is not None and type(expected_size) is not int) or
+            (expected_hash is not None and (not isinstance(expected_hash, str) or HEX64.fullmatch(expected_hash) is None)) or
+            (mtime_ns_max is not None and type(mtime_ns_max) is not int)):
+        raise BridgeError(SafeError.PATH_DENIED)
+    descriptors: list[int] = []
+    file_descriptor: int | None = None
+    try:
+        parent = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        descriptors.append(parent)
+        for part in path.parts[1:-1]:
+            parent = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            descriptors.append(parent)
+        file_descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        before = os.fstat(file_descriptor)
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or not 0 < before.st_size <= cap or
+                (expected_size is not None and before.st_size != expected_size) or
+                (mtime_ns_max is not None and before.st_mtime_ns > mtime_ns_max)):
+            raise BridgeError(SafeError.PATH_DENIED)
+        chunks: list[bytes] = []
+        digest = hashlib.sha256()
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(file_descriptor, min(65_536, remaining))
+            if not chunk:
+                raise BridgeError(SafeError.PATH_DENIED)
+            digest.update(chunk)
+            if retain:
+                chunks.append(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(file_descriptor)
+        current = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+        if (_stat_identity(before) != _stat_identity(after) or _stat_identity(after) != _stat_identity(current) or
+                (expected_hash is not None and digest.hexdigest() != expected_hash)):
+            raise BridgeError(SafeError.PATH_DENIED)
+        os.close(file_descriptor)
+        file_descriptor = None
+        return b"".join(chunks) if retain else b""
+    except BridgeError:
+        raise
+    except (OSError, RuntimeError):
+        raise BridgeError(SafeError.PATH_DENIED) from None
+    finally:
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _replace_flat_regular(root: DirectoryIdentity, name: str, data: bytes) -> None:
+    if name not in {"house-price-execution.json", "house-price-solution.py"} or not isinstance(data, bytes):
+        raise BridgeError(SafeError.RESULT_INVALID)
+    temporary = f".bridge-stage-{name}-{os.getpid()}"
+    descriptor: int | None = None
+    with _Fd(root) as root_fd:
+        try:
+            try:
+                existing = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                if not stat.S_ISREG(existing.st_mode) or existing.st_nlink != 1 or existing.st_size > 131_072:
+                    raise OSError()
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=root_fd)
+            _write_all(descriptor, data)
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = None
+            os.replace(temporary, name, src_dir_fd=root_fd, dst_dir_fd=root_fd)
+            os.fsync(root_fd)
+        except OSError:
+            raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY) from None
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            try:
+                os.unlink(temporary, dir_fd=root_fd)
+            except FileNotFoundError:
+                pass
+
+
+def _file_binding_from_json(value: object) -> FileBinding:
+    mapping = _exact_mapping(value, {"path", "sha256", "bytes", "mtime_ns_max"})
+    if (not isinstance(mapping["path"], str) or not isinstance(mapping["sha256"], str) or
+            HEX64.fullmatch(mapping["sha256"]) is None or type(mapping["bytes"]) is not int or
+            type(mapping["mtime_ns_max"]) is not int or not 0 < mapping["bytes"] <= 268_435_456 or
+            mapping["mtime_ns_max"] < 0):
+        raise BridgeError(SafeError.INVALID_ARGUMENT)
+    path = Path(mapping["path"])
+    if not path.is_absolute() or ".." in path.parts:
+        raise BridgeError(SafeError.INVALID_ARGUMENT)
+    return FileBinding(path, mapping["sha256"], mapping["bytes"], mapping["mtime_ns_max"])
+
+
+def _directory_from_json(value: object) -> DirectoryIdentity:
+    mapping = _exact_mapping(value, {"path", "device", "inode"})
+    if not isinstance(mapping["path"], str):
+        raise BridgeError(SafeError.INVALID_ARGUMENT)
+    identity = DirectoryIdentity(Path(mapping["path"]), mapping["device"], mapping["inode"])
+    _check_directory(identity)
+    return identity
+
+
+def _input_map(value: object, keys: set[str]) -> dict[str, FileBinding]:
+    mapping = _exact_mapping(value, keys)
+    return {name: _file_binding_from_json(item) for name, item in mapping.items()}
+
+
+def _exact_mapping(value: object, keys: set[str]) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise BridgeError(SafeError.INVALID_ARGUMENT)
+    return value
+
+
+def _file_binding_dict(binding: FileBinding) -> dict[str, object]:
+    return {"path": str(binding.path), "sha256": binding.sha256, "bytes": binding.bytes, "mtime_ns_max": binding.mtime_ns_max}
+
+
+def _safe_title(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 -]{0,127}", value) is not None
+
+
+def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+    return value.st_dev, value.st_ino, value.st_mode, value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns
+
+
+def _write_all(descriptor: int, data: bytes) -> None:
+    offset = 0
+    while offset < len(data):
+        written = os.write(descriptor, data[offset:])
+        if written <= 0:
+            raise OSError()
+        offset += written
+
+
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError()
+        result[key] = value
+    return result
+
+
+def _reject_constant(_: str):
+    raise ValueError()
+
+
+def _canonical(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("ascii")
+
+
+def _wire_response(action: str | None, response: dict[str, object]) -> bytes:
+    if action != "read_dev_result" or response.get("ok") is not True:
+        return _canonical(response)
+    result = response.get("result")
+    if not isinstance(result, dict) or set(result) != {"results"} or not isinstance(result["results"], list):
+        raise ValueError()
+    encoded = []
+    for item in result["results"]:
+        if (not isinstance(item, dict) or set(item) != {"run_id", "solution_sha256", "valid", "mae", "rows"} or
+                item["valid"] is not True or not isinstance(item["run_id"], str) or UUID.fullmatch(item["run_id"]) is None or
+                not isinstance(item["solution_sha256"], str) or HEX64.fullmatch(item["solution_sha256"]) is None or
+                not isinstance(item["mae"], str) or re.fullmatch(r"(?:0|[1-9][0-9]{0,12})\.[0-9]{6}", item["mae"]) is None or
+                type(item["rows"]) is not int or not 1 <= item["rows"] <= 292):
+            raise ValueError()
+        encoded.append(
+            b'{"mae":' + item["mae"].encode("ascii") +
+            b',"rows":' + str(item["rows"]).encode("ascii") +
+            b',"run_id":' + _canonical(item["run_id"]) +
+            b',"solution_sha256":' + _canonical(item["solution_sha256"]) + b',"valid":true}'
+        )
+    return b'{"ok":true,"result":{"results":[' + b",".join(encoded) + b']}}'
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    values = list(sys.argv[1:] if argv is None else argv)
+    try:
+        if len(values) != 4 or values[0] != "--config" or values[2] != "--config-sha256":
+            raise BridgeError(SafeError.INVALID_ARGUMENT)
+        bridge = load_bridge_from_config(Path(values[1]), values[3])
+        request = sys.stdin.buffer.read(MAX_REQUEST + 1)
+        response = bridge.handle_bytes(request)
+    except Exception:
+        response = b'{"error":"INTERNAL_ERROR","ok":false}'
+    sys.stdout.buffer.write(response)
+    sys.stdout.buffer.flush()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

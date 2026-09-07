@@ -1,0 +1,55 @@
+--- v1/campaign_usage.py
+
++++ v2/campaign_usage.py
+
+@@ -75,6 +75,20 @@
+
+         raise UsageError() from None
+ 
+ 
++
++
++def _contains_usage_attribution(value, depth=0) -> bool:
++    if depth > 32:
++        raise UsageError()
++    if isinstance(value, dict):
++        keys = {str(key).replace("_", "").lower() for key in value}
++        if keys & {"usage", "aggregateusage", "childusage", "totaltokens"}:
++            return True
++        return any(_contains_usage_attribution(child, depth+1) for child in value.values())
++    if isinstance(value, list):
++        return any(_contains_usage_attribution(child, depth+1) for child in value)
++    return False
++
+ def parse_session_usage(data: bytes, session_id: str, cwd: str,
+                         provider: str, model: str) -> SessionUsage:
+     if (not isinstance(data, bytes) or not 0 < len(data) <= MAX_SESSION_BYTES or
+@@ -110,11 +124,15 @@
+
+         entries.add(entry["id"])
+         leaf = entry["id"]
+         if entry["type"] != "message":
++            if entry["type"] == "child_usage_attributed" or _contains_usage_attribution(entry):
++                unknown.append("UNSUPPORTED_USAGE_ATTRIBUTION")
+             continue
+         message = entry.get("message")
+         if not isinstance(message,dict) or not isinstance(message.get("role"),str):
+             raise UsageError()
+         if message["role"] != "assistant":
++            if _contains_usage_attribution(message):
++                unknown.append("UNSUPPORTED_USAGE_ATTRIBUTION")
+             continue
+         assistants += 1
+         if message.get("provider") != provider or message.get("model") != model:
+@@ -125,7 +143,9 @@
+
+         if stop in {"error","aborted"}:
+             unknown.append("FAILED_OR_ABORTED_RESPONSE")
+         response_id = message.get("responseId")
+-        if response_id is not None:
++        if response_id is None or response_id == "":
++            unknown.append("MISSING_RESPONSE_ID")
++        else:
+             if (not isinstance(response_id,str) or not response_id or len(response_id.encode("utf-8")) > 256 or
+                     response_id in responses):
+                 raise UsageError()

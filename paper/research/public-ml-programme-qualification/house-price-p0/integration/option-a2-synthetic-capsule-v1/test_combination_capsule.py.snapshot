@@ -1,0 +1,90 @@
+"""Synthetic capsule exact membership and closed-file checks, never code execution."""
+from __future__ import annotations
+from dataclasses import replace
+import hashlib
+import json
+import os
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.combination_capsule import SyntheticCapsuleError, materialize_synthetic_capsule
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.deployment_assets import NamespaceMember, DeploymentError, materialize_namespace
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.grading import FileBinding, read_bound
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.source_closure import ClosureLimits, verify_tree
+
+ROOT=Path(__file__).resolve().parents[4]
+CONTRACT=ROOT/"paper/research/public-ml-programme-qualification/house-price-p0/option-a2-synthetic-capsule-contract-v1.json"
+
+def binding(path):
+    data=path.read_bytes();return FileBinding(path,hashlib.sha256(data).hexdigest(),len(data),path.stat().st_mtime_ns)
+
+class SyntheticCapsuleTest(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory(prefix="hp-capsule-mock-")
+        self.root=Path(self.temp.name).resolve();self.root.chmod(0o700)
+        self.destination=self.root/"synthetic-namespace"
+        self.expected=json.loads(CONTRACT.read_bytes())["exact_members"]
+        self.members=[]
+        for index,relative in enumerate(self.expected):
+            source=self.root/("source-"+str(index)+".py")
+            source.write_bytes(("VALUE = "+repr(relative)+"\n").encode())
+            self.members.append(NamespaceMember(relative,binding(source)))
+        self.members=tuple(self.members)
+    def tearDown(self):self.temp.cleanup()
+
+    def test_exact_capsule_has_twenty_five_sources_and_four_empty_initializers(self):
+        tree=materialize_synthetic_capsule(self.destination,self.members)
+        self.assertEqual(tree.file_count,29);self.assertEqual(tree.directory_count,4);self.assertEqual(tree.symlink_count,0)
+        for member in self.members:
+            self.assertEqual((self.destination/member.relative_path).read_bytes(),member.source.path.read_bytes())
+        for path in self.destination.rglob("__init__.py"):self.assertEqual(path.read_bytes(),b"")
+        self.assertEqual(verify_tree(self.destination,tree,ClosureLimits(160,8388608,1048576,8,4096)),tree)
+        with self.assertRaises(SyntheticCapsuleError):materialize_synthetic_capsule(self.destination,self.members)
+
+    def test_missing_extra_duplicate_and_hash_tampered_sources_fail_before_destination(self):
+        invalids=[self.members[:-1],self.members+(self.members[0],),
+            (replace(self.members[0],relative_path="experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/test_other.py"),)+self.members[1:],
+            (replace(self.members[0],source=replace(self.members[0].source,sha256="0"*64)),)+self.members[1:]]
+        for index,members in enumerate(invalids):
+            output=self.root/("denied-"+str(index))
+            with self.subTest(index=index),self.assertRaises(SyntheticCapsuleError):materialize_synthetic_capsule(output,members)
+            self.assertFalse(output.exists())
+
+    def test_production_allowlist_is_not_broadened_by_synthetic_copy(self):
+        materialize_synthetic_capsule(self.destination,self.members)
+        member=next(item for item in self.members if item.relative_path.endswith("/test_bridge.py"))
+        with self.assertRaises(DeploymentError):materialize_namespace(self.root/"production",(member,))
+        self.assertFalse((self.root/"production").exists())
+
+    def test_symlink_source_is_rejected_and_partial_copy_cannot_be_reused(self):
+        member=self.members[0];link=self.root/"source-link.py";link.symlink_to(member.source.path)
+        linked=(replace(member,source=replace(member.source,path=link)),)+self.members[1:]
+        with self.assertRaises(SyntheticCapsuleError):materialize_synthetic_capsule(self.destination,linked)
+        self.assertFalse(self.destination.exists())
+        native_write=os.write;calls=0
+        def interrupted(fd,data):
+            nonlocal calls
+            calls+=1
+            if calls>1:raise OSError("synthetic copy failure")
+            return native_write(fd,data[:7])
+        with patch("os.write",side_effect=interrupted),self.assertRaises(SyntheticCapsuleError):
+            materialize_synthetic_capsule(self.destination,self.members)
+        self.assertTrue(self.destination.exists())
+        with self.assertRaises(SyntheticCapsuleError):materialize_synthetic_capsule(self.destination,self.members)
+
+    def test_destination_is_private_outside_git_and_copied_bytes_are_reopened(self):
+        gitparent=self.root/"worktree";gitparent.mkdir(mode=0o700);(gitparent/".git").mkdir()
+        with self.assertRaises(SyntheticCapsuleError):materialize_synthetic_capsule(gitparent/"denied",self.members)
+        import_target="experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.combination_capsule.read_bound"
+        from_source_reads=[]
+        def seen(item,cap):
+            from_source_reads.append(item.path)
+            return read_bound(item,cap)
+        with patch(import_target,side_effect=seen):
+            materialize_synthetic_capsule(self.destination,self.members)
+        copied=[self.destination/item.relative_path for item in self.members]
+        self.assertTrue(all(path in from_source_reads for path in copied))
+
+if __name__=="__main__":unittest.main(verbosity=2)

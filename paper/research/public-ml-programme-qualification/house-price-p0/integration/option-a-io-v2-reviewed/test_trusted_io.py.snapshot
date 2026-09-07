@@ -1,0 +1,558 @@
+"""Failure-first synthetic controls for trusted_io; no ORX process is launched."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import multiprocessing
+import os
+from pathlib import Path
+import tempfile
+import unittest
+from unittest import mock
+import uuid
+
+from trusted_io import (
+    AdmissionState,
+    DevResultReceipt,
+    FinalArtifactBinding,
+    FinalRefitIdentity,
+    FinalRefitPhase,
+    FinalSelectionBinding,
+    Snapshot,
+    SolutionName,
+    TrustedIo,
+    TrustedIoError,
+    TrustedIoErrorCode,
+    TrustedIoLimits,
+)
+
+
+def _limits() -> TrustedIoLimits:
+    return TrustedIoLimits(
+        max_name_bytes=64,
+        max_file_bytes=1024,
+        max_closure_bytes=2048,
+        max_write_bytes=1024,
+        max_state_bytes=16384,
+    )
+
+
+def _write_fixture(source: Path, solution: str = "print('safe')\n", intent: str = '{"kind":"dev"}\n') -> None:
+    source.mkdir()
+    (source / "solution.py").write_text(solution)
+    (source / "research.md").write_text("synthetic research\n")
+    (source / "intent.json").write_text(intent)
+
+
+def _digest(label: str) -> str:
+    return hashlib.sha256(label.encode("ascii")).hexdigest()
+
+
+def _selection_binding(receipt_sha256: str) -> FinalSelectionBinding:
+    return FinalSelectionBinding(
+        selection_receipt_sha256=receipt_sha256,
+        task_sha256=_digest("task"),
+        environment_sha256=_digest("environment"),
+        protocol_sha256=_digest("protocol"),
+    )
+
+
+def _final_identity(receipt_sha256: str) -> FinalRefitIdentity:
+    return FinalRefitIdentity(
+        phase=FinalRefitPhase.FINAL_REFIT,
+        selection_receipt_sha256=receipt_sha256,
+        execution_config_sha256=_digest("frozen-final-execution"),
+        outer_training_manifest_sha256=_digest("outer-training-manifest"),
+        hidden_features_manifest_sha256=_digest("hidden-features-manifest"),
+    )
+
+
+def _admission_worker(source: str, state: str, event: object, queue: object) -> None:
+    # Spawned independent interpreter: this is a restart/process admission control.
+    io = TrustedIo(source, state, _limits())
+    snapshot = io.snapshot()
+    event.wait(10)  # type: ignore[union-attr]
+    try:
+        admission = io.admit_intent(snapshot)
+    except TrustedIoError as exc:
+        queue.put(("admit-error", exc.code.value))  # type: ignore[union-attr]
+    else:
+        queue.put(("admit-ok", admission.state.value))  # type: ignore[union-attr]
+
+
+def _select_worker(source: str, state: str, snapshot: object, event: object, queue: object) -> None:
+    io = TrustedIo(source, state, _limits())
+    event.wait(10)  # type: ignore[union-attr]
+    receipt = DevResultReceipt(_digest("race-receipt"), snapshot.closure_sha256, snapshot.solution_sha256)  # type: ignore[union-attr]
+    try:
+        io.select_final_method(snapshot.closure_sha256, snapshot.solution_sha256, [receipt], _selection_binding(receipt.receipt_sha256))  # type: ignore[union-attr]
+    except TrustedIoError as exc:
+        queue.put(("select-error", exc.code.value))  # type: ignore[union-attr]
+    else:
+        queue.put(("select-ok", ""))  # type: ignore[union-attr]
+
+
+def _write_worker(source: str, state: str, event: object, queue: object) -> None:
+    io = TrustedIo(source, state, _limits())
+    event.wait(10)  # type: ignore[union-attr]
+    try:
+        io.write_solution(SolutionName.SOLUTION, "print('raced write')\n")
+    except TrustedIoError as exc:
+        queue.put(("write-error", exc.code.value))  # type: ignore[union-attr]
+    else:
+        queue.put(("write-ok", ""))  # type: ignore[union-attr]
+
+
+def _final_refit_worker(source: str, state: str, selection_receipt_sha256: str, event: object, queue: object) -> None:
+    io = TrustedIo(source, state, _limits())
+    event.wait(10)  # type: ignore[union-attr]
+    try:
+        admission = io.admit_final_refit(_final_identity(selection_receipt_sha256))
+    except TrustedIoError as exc:
+        queue.put(("final-error", exc.code.value))  # type: ignore[union-attr]
+    else:
+        queue.put(("final-ok", admission.state.value))  # type: ignore[union-attr]
+
+
+class TrustedIoTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.source = base / "source"
+        self.state = base / "state"
+        _write_fixture(self.source)
+        self.io = TrustedIo(self.source, self.state, _limits())
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def assert_code(self, code: TrustedIoErrorCode, call: object) -> None:
+        with self.assertRaises(TrustedIoError) as caught:
+            call()  # type: ignore[operator]
+        self.assertEqual(caught.exception.code, code)
+
+    def permitted_receipt(self, snapshot: object) -> DevResultReceipt:
+        return DevResultReceipt(
+            receipt_sha256=_digest("trusted-dev-receipt"),
+            closure_sha256=snapshot.closure_sha256,  # type: ignore[union-attr]
+            code_sha256=snapshot.solution_sha256,  # type: ignore[union-attr]
+        )
+
+    def selection_binding(self, snapshot: object) -> FinalSelectionBinding:
+        return _selection_binding(self.permitted_receipt(snapshot).receipt_sha256)
+
+    def select(self) -> object:
+        snapshot = self.io.snapshot()
+        self.io.admit_intent(snapshot)
+        receipt = self.permitted_receipt(snapshot)
+        return self.io.select_final_method(snapshot.closure_sha256, snapshot.solution_sha256, [receipt], _selection_binding(receipt.receipt_sha256))
+
+    def admit_and_bind_final_refit(self, snapshot: object, run_id: str) -> None:
+        receipt = self.permitted_receipt(snapshot)
+        self.io.admit_final_refit(_final_identity(receipt.receipt_sha256))
+        self.io.bind_final_refit(run_id)
+
+    def test_t07_naive_prefix_control_and_flat_name_rejection(self) -> None:
+        # Failing-first control: lexical prefix checking accepts an escaped sibling.
+        escaped = self.source.parent / "source-escape" / "canary.txt"
+        escaped.parent.mkdir()
+        escaped.write_text("canary")
+        naive_root = self.source.resolve()
+        naive_candidate = (self.source / "../source-escape/canary.txt").resolve()
+        self.assertTrue(str(naive_candidate).startswith(str(naive_root)))
+        for value in ("../source-escape/canary.txt", "/tmp/canary", "solution.py\x00x", "soluti\u0456on.py", "other.py"):
+            self.assert_code(TrustedIoErrorCode.INVALID_NAME, lambda value=value: self.io.read_solution(value))
+        self.assertEqual(escaped.read_text(), "canary")
+
+    def test_t07_symlink_hardlink_and_fifo_controls(self) -> None:
+        outside = self.source.parent / "outside.txt"
+        outside.write_text("host-sentinel")
+        target = self.source / "solution.py"
+        target.unlink()
+        target.symlink_to(outside)
+        self.assertEqual(target.read_text(), "host-sentinel")  # naive read control
+        self.assert_code(TrustedIoErrorCode.UNSAFE_FILE, lambda: self.io.read_solution(SolutionName.SOLUTION))
+        target.unlink()
+        os.link(outside, target)
+        self.assert_code(TrustedIoErrorCode.UNSAFE_FILE, lambda: self.io.read_solution(SolutionName.SOLUTION))
+        target.unlink()
+        os.mkfifo(target)
+        self.assert_code(TrustedIoErrorCode.UNSAFE_FILE, lambda: self.io.read_solution(SolutionName.SOLUTION))
+
+    def test_t07_descriptor_identity_detects_fixture_swap_during_read(self) -> None:
+        original_read = os.read
+        changed = False
+
+        def mutate_after_open(fd: int, size: int) -> bytes:
+            nonlocal changed
+            if not changed:
+                changed = True
+                (self.source / "solution.py").write_text("fixture mutation after descriptor open\n")
+            return original_read(fd, size)
+
+        with mock.patch("trusted_io.os.read", side_effect=mutate_after_open):
+            self.assert_code(TrustedIoErrorCode.UNSAFE_FILE, lambda: self.io.read_solution(SolutionName.SOLUTION))
+
+    def test_t07_size_and_expected_hash_controls(self) -> None:
+        self.io.write_solution(SolutionName.SOLUTION, "first\n")
+        expected = self.io.read_solution(SolutionName.SOLUTION).sha256
+        self.io.write_solution(SolutionName.SOLUTION, "second\n", expected)
+        self.assert_code(
+            TrustedIoErrorCode.HASH_MISMATCH,
+            lambda: self.io.write_solution(SolutionName.SOLUTION, "third\n", expected),
+        )
+        self.assert_code(
+            TrustedIoErrorCode.LIMIT_EXCEEDED,
+            lambda: self.io.write_solution(SolutionName.SOLUTION, "x" * 1025),
+        )
+        small = TrustedIoLimits(64, 20, 30, 20, 4096)
+        limited_state = self.source.parent / "limited-state"
+        limited = TrustedIo(self.source, limited_state, small)
+        self.assert_code(TrustedIoErrorCode.LIMIT_EXCEEDED, limited.snapshot)
+
+    def test_t07_write_rejects_existing_unsafe_target(self) -> None:
+        outside = self.source.parent / "outside.txt"
+        outside.write_text("host-sentinel")
+        target = self.source / "solution.py"
+        target.unlink()
+        target.symlink_to(outside)
+        self.assert_code(
+            TrustedIoErrorCode.UNSAFE_FILE,
+            lambda: self.io.write_solution(SolutionName.SOLUTION, "replacement\n"),
+        )
+        self.assertEqual(outside.read_text(), "host-sentinel")
+
+    def test_t09_parallel_processes_admit_one_and_only_one(self) -> None:
+        context = multiprocessing.get_context("spawn")
+        event = context.Event()
+        queue = context.Queue()
+        processes = [
+            context.Process(target=_admission_worker, args=(str(self.source), str(self.state), event, queue))
+            for _ in range(2)
+        ]
+        for process in processes:
+            process.start()
+        event.set()
+        results = [queue.get(timeout=15) for _ in processes]
+        for process in processes:
+            process.join(15)
+            self.assertEqual(process.exitcode, 0)
+        self.assertEqual(results.count(("admit-ok", AdmissionState.PENDING.value)), 1)
+        errors = [result for result in results if result[0] == "admit-error"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn(errors[0][1], {TrustedIoErrorCode.ADMISSION_UNCERTAIN.value, TrustedIoErrorCode.LOCK_UNAVAILABLE.value})
+
+    def test_t09_reload_pending_admission_is_uncertain_not_retried(self) -> None:
+        snapshot = self.io.snapshot()
+        self.assertEqual(self.io.admit_intent(snapshot).state, AdmissionState.PENDING)
+        reloaded = TrustedIo(self.source, self.state, _limits())
+        self.assert_code(TrustedIoErrorCode.ADMISSION_UNCERTAIN, lambda: reloaded.admit_intent(reloaded.snapshot()))
+        self.assertEqual(reloaded.admission(snapshot).state, AdmissionState.PENDING)
+        self.assertEqual(reloaded.bind_admission(snapshot, str(uuid.uuid4())).state, AdmissionState.BOUND)
+        self.assert_code(TrustedIoErrorCode.ADMISSION_EXISTS, lambda: reloaded.admit_intent(reloaded.snapshot()))
+
+    def test_t09_distinct_immutable_closures_can_be_admitted(self) -> None:
+        first = self.io.snapshot()
+        self.io.admit_intent(first)
+        self.io.write_solution(SolutionName.INTENT, '{"kind":"different-dev"}\n')
+        second = self.io.snapshot()
+        self.assertNotEqual(first.closure_sha256, second.closure_sha256)
+        self.assertEqual(self.io.admit_intent(second).closure_sha256, second.closure_sha256)
+
+    def test_t09_crash_stale_transaction_lock_fails_closed(self) -> None:
+        lock = self.state / ".trusted-io.transaction.lock"
+        lock.write_text("synthetic stale lock")
+        self.assert_code(
+            TrustedIoErrorCode.LOCK_UNAVAILABLE,
+            lambda: self.io.write_solution(SolutionName.RESEARCH, "should not write\n"),
+        )
+        self.assertTrue(lock.exists())
+        self.assertEqual(self.io.read_solution(SolutionName.RESEARCH).content, "synthetic research\n")
+
+    def test_hpio001_historical_snapshot_is_private_and_selectable_after_final_intent(self) -> None:
+        first = self.io.snapshot()
+        self.io.admit_intent(first)
+        self.io.write_solution(SolutionName.SOLUTION, "print('later candidate')\n")
+        self.io.write_solution(SolutionName.INTENT, '{"kind":"later-dev"}\n')
+        second = self.io.snapshot()
+        self.io.admit_intent(second)
+        self.io.write_solution(SolutionName.INTENT, '{"phase":"final_refit"}\n')
+        receipt = self.permitted_receipt(first)
+        selection = self.io.select_final_method(
+            first.closure_sha256,
+            first.solution_sha256,
+            [receipt],
+            _selection_binding(receipt.receipt_sha256),
+        )
+        self.assertNotEqual(first.closure_sha256, second.closure_sha256)
+        self.assertEqual(selection.code_sha256, first.solution_sha256)
+        self.assertEqual((self.state / "final-solution.py").read_bytes(), first.solution_bytes)
+        stored = self.state / "snapshots" / first.closure_sha256
+        self.assertEqual((stored / "solution.py").read_bytes(), first.solution_bytes)
+        self.assertEqual((stored / "research.md").read_bytes(), first.research_bytes)
+        self.assertEqual((stored / "intent.json").read_bytes(), first.intent_bytes)
+
+    def test_hpio001_tampered_private_snapshot_cannot_be_selected(self) -> None:
+        snapshot = self.io.snapshot()
+        self.io.admit_intent(snapshot)
+        receipt = self.permitted_receipt(snapshot)
+        (self.state / "snapshots" / snapshot.closure_sha256 / "solution.py").write_text("tampered")
+        self.assert_code(
+            TrustedIoErrorCode.STATE_CORRUPT,
+            lambda: self.io.select_final_method(
+                snapshot.closure_sha256,
+                snapshot.solution_sha256,
+                [receipt],
+                _selection_binding(receipt.receipt_sha256),
+            ),
+        )
+
+    def test_hpio001_incomplete_private_snapshot_fails_closed_and_remains(self) -> None:
+        snapshot = self.io.snapshot()
+        incomplete = self.state / "snapshots" / snapshot.closure_sha256
+        incomplete.mkdir(parents=True)
+        (incomplete / "solution.py").write_bytes(snapshot.solution_bytes)
+        self.assert_code(TrustedIoErrorCode.STATE_CORRUPT, lambda: self.io.admit_intent(snapshot))
+        self.assertTrue(incomplete.exists())
+
+
+    def test_t14_selection_requires_matching_permitted_receipt_and_freezes_writes(self) -> None:
+        snapshot = self.io.snapshot()
+        self.io.admit_intent(snapshot)
+        wrong = DevResultReceipt(_digest("wrong"), snapshot.closure_sha256, _digest("different-code"))
+        self.assert_code(
+            TrustedIoErrorCode.RECEIPT_NOT_PERMITTED,
+            lambda: self.io.select_final_method(snapshot.closure_sha256, snapshot.solution_sha256, [wrong], _selection_binding(wrong.receipt_sha256)),
+        )
+        selection = self.io.select_final_method(
+            snapshot.closure_sha256,
+            snapshot.solution_sha256,
+            [self.permitted_receipt(snapshot)],
+            self.selection_binding(snapshot),
+        )
+        self.assertEqual(selection.code_sha256, snapshot.solution_sha256)
+        self.assertEqual(selection.task_sha256, _digest("task"))
+        self.assertEqual(selection.environment_sha256, _digest("environment"))
+        self.assertEqual(selection.protocol_sha256, _digest("protocol"))
+        self.assert_code(
+            TrustedIoErrorCode.FINALIZED,
+            lambda: self.io.write_solution(SolutionName.SOLUTION, "print('post-lock')\n"),
+        )
+        self.assert_code(TrustedIoErrorCode.FINALIZED, lambda: self.io.admit_intent(snapshot))
+        final_code = (self.state / "final-solution.py").read_bytes()
+        self.assertEqual(hashlib.sha256(final_code).hexdigest(), snapshot.solution_sha256)
+        self.assertEqual(final_code, snapshot.solution_bytes)
+
+    def test_t14_parallel_select_write_cannot_mutate_selected_code(self) -> None:
+        snapshot = self.io.snapshot()
+        self.io.admit_intent(snapshot)
+        context = multiprocessing.get_context("spawn")
+        event = context.Event()
+        queue = context.Queue()
+        select = context.Process(target=_select_worker, args=(str(self.source), str(self.state), snapshot, event, queue))
+        write = context.Process(target=_write_worker, args=(str(self.source), str(self.state), event, queue))
+        select.start()
+        write.start()
+        event.set()
+        results = [queue.get(timeout=15) for _ in range(2)]
+        for process in (select, write):
+            process.join(15)
+            self.assertEqual(process.exitcode, 0)
+        self.assertFalse(any(kind == "select-ok" for kind, _ in results) and any(kind == "write-ok" for kind, _ in results))
+        if any(kind == "select-ok" for kind, _ in results):
+            self.assertEqual(self.io.final_selection().code_sha256, snapshot.solution_sha256)
+            self.assertEqual(self.io.read_solution(SolutionName.SOLUTION).sha256, snapshot.solution_sha256)
+        else:
+            self.assert_code(TrustedIoErrorCode.SELECTION_NOT_FOUND, self.io.final_selection)
+
+    def test_t09_final_refit_is_one_fence_across_processes_and_restart(self) -> None:
+        snapshot = self.io.snapshot()
+        selection = self.select()
+        context = multiprocessing.get_context("spawn")
+        event = context.Event()
+        queue = context.Queue()
+        processes = [
+            context.Process(
+                target=_final_refit_worker,
+                args=(str(self.source), str(self.state), selection.selection_receipt_sha256, event, queue),
+            )
+            for _ in range(2)
+        ]
+        for process in processes:
+            process.start()
+        event.set()
+        results = [queue.get(timeout=15) for _ in processes]
+        for process in processes:
+            process.join(15)
+            self.assertEqual(process.exitcode, 0)
+        self.assertEqual(results.count(("final-ok", AdmissionState.PENDING.value)), 1)
+        errors = [result for result in results if result[0] == "final-error"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn(errors[0][1], {TrustedIoErrorCode.FINAL_REFIT_UNCERTAIN.value, TrustedIoErrorCode.LOCK_UNAVAILABLE.value})
+        reloaded = TrustedIo(self.source, self.state, _limits())
+        self.assertEqual(reloaded.final_refit_admission().state, AdmissionState.PENDING)
+        self.assert_code(
+            TrustedIoErrorCode.FINAL_REFIT_UNCERTAIN,
+            lambda: reloaded.admit_final_refit(_final_identity(selection.selection_receipt_sha256)),
+        )
+        run_id = str(uuid.uuid4())
+        self.assertEqual(reloaded.bind_final_refit(run_id).state, AdmissionState.BOUND)
+        self.assert_code(
+            TrustedIoErrorCode.FINAL_REFIT_EXISTS,
+            lambda: reloaded.admit_final_refit(_final_identity(selection.selection_receipt_sha256)),
+        )
+
+    def test_t14_final_refit_requires_selection_binding_and_bound_run(self) -> None:
+        snapshot = self.io.snapshot()
+        selection = self.select()
+        wrong_identity = _final_identity(_digest("wrong-selection-receipt"))
+        self.assert_code(TrustedIoErrorCode.RECEIPT_NOT_PERMITTED, lambda: self.io.admit_final_refit(wrong_identity))
+        invalid_phase = FinalRefitIdentity(
+            phase="development",  # type: ignore[arg-type]
+            selection_receipt_sha256=selection.selection_receipt_sha256,
+            execution_config_sha256=_digest("frozen-final-execution"),
+            outer_training_manifest_sha256=_digest("outer-training-manifest"),
+            hidden_features_manifest_sha256=_digest("hidden-features-manifest"),
+        )
+        self.assert_code(TrustedIoErrorCode.INVALID_VALUE, lambda: self.io.admit_final_refit(invalid_phase))
+        identity = _final_identity(selection.selection_receipt_sha256)
+        self.assertEqual(self.io.admit_final_refit(identity).state, AdmissionState.PENDING)
+        binding = FinalArtifactBinding(
+            str(uuid.uuid4()), _digest("artifact"), _digest("task"), _digest("environment"), _digest("protocol")
+        )
+        self.assert_code(TrustedIoErrorCode.FINAL_REFIT_UNCERTAIN, lambda: self.io.lock_final_artifact(binding))
+        run_id = str(uuid.uuid4())
+        self.io.bind_final_refit(run_id)
+        wrong_protocol = FinalArtifactBinding(run_id, _digest("artifact"), _digest("task"), _digest("environment"), _digest("other-protocol"))
+        self.assert_code(TrustedIoErrorCode.RECEIPT_NOT_PERMITTED, lambda: self.io.lock_final_artifact(wrong_protocol))
+
+    def test_t14_final_lock_binds_trusted_inputs_and_is_single_use(self) -> None:
+        snapshot = self.io.snapshot()
+        self.io.admit_intent(snapshot)
+        self.io.select_final_method(
+            snapshot.closure_sha256,
+            snapshot.solution_sha256,
+            [self.permitted_receipt(snapshot)],
+            self.selection_binding(snapshot),
+        )
+        run_id = str(uuid.uuid4())
+        self.admit_and_bind_final_refit(snapshot, run_id)
+        binding = FinalArtifactBinding(
+            run_id=run_id,
+            artifact_sha256=_digest("artifact"),
+            task_sha256=_digest("task"),
+            environment_sha256=_digest("environment"),
+            protocol_sha256=_digest("protocol"),
+        )
+        locked = self.io.lock_final_artifact(binding)
+        self.assertEqual(locked.run_id, binding.run_id)
+        self.assertEqual(locked.code_sha256, snapshot.solution_sha256)
+        self.assertEqual(locked.outer_training_manifest_sha256, _digest("outer-training-manifest"))
+        self.assertEqual(locked.hidden_features_manifest_sha256, _digest("hidden-features-manifest"))
+        self.assertEqual(self.io.final_artifact_lock(), locked)
+        self.assert_code(TrustedIoErrorCode.FINALIZED, lambda: self.io.lock_final_artifact(binding))
+        self.assert_code(
+            TrustedIoErrorCode.FINALIZED,
+            lambda: self.io.write_solution(SolutionName.INTENT, '{"post":"lock"}'),
+        )
+
+    def test_t14_final_lock_detects_final_code_fixture_mutation(self) -> None:
+        snapshot = self.io.snapshot()
+        self.select()
+        run_id = str(uuid.uuid4())
+        self.admit_and_bind_final_refit(snapshot, run_id)
+        (self.state / "final-solution.py").write_text("tampered")
+        binding = FinalArtifactBinding(
+            run_id, _digest("artifact"), _digest("task"), _digest("environment"), _digest("protocol")
+        )
+        self.assert_code(TrustedIoErrorCode.STATE_CORRUPT, lambda: self.io.lock_final_artifact(binding))
+
+    def test_snapshot_identity_is_opened_bytes_not_intent_self_attestation(self) -> None:
+        first = self.io.snapshot()
+        declared = json.loads((self.source / "intent.json").read_text())
+        declared["claimed_solution_hash"] = "0" * 64
+        self.io.write_solution(SolutionName.INTENT, json.dumps(declared))
+        second = self.io.snapshot()
+        self.assertNotEqual(first.closure_sha256, second.closure_sha256)
+        self.assertEqual(first.solution_sha256, second.solution_sha256)
+        self.assertNotEqual(first.intent_sha256, second.intent_sha256)
+
+
+    def test_hpio002_aggregate_cap_rejects_before_second_descriptor_read(self) -> None:
+        source = self.source.parent / "aggregate-source"
+        _write_fixture(source, solution="12345678", intent="12345678")
+        (source / "research.md").write_text("12345678")
+        limited = TrustedIo(source, self.source.parent / "aggregate-state", TrustedIoLimits(64, 10, 15, 10, 4096))
+        original_read = os.read
+        calls: list[int] = []
+
+        def counted_read(fd: int, size: int) -> bytes:
+            value = original_read(fd, size)
+            calls.append(len(value))
+            return value
+
+        with mock.patch("trusted_io.os.read", side_effect=counted_read):
+            self.assert_code(TrustedIoErrorCode.LIMIT_EXCEEDED, limited.snapshot)
+        self.assertEqual(calls, [8])
+
+    def test_hpio005_forged_snapshot_fields_are_rederived_and_rejected(self) -> None:
+        snapshot = self.io.snapshot()
+        forged = Snapshot(
+            closure_sha256=snapshot.closure_sha256,
+            solution_sha256="0" * 64,
+            research_sha256=snapshot.research_sha256,
+            intent_sha256=snapshot.intent_sha256,
+            solution_bytes=b"forged",
+            research_bytes=snapshot.research_bytes,
+            intent_bytes=snapshot.intent_bytes,
+        )
+        self.assert_code(TrustedIoErrorCode.INVALID_VALUE, lambda: self.io.admit_intent(forged))
+
+    def test_hpio006_anchored_source_and_state_root_replacement_fail_closed(self) -> None:
+        moved_source = self.source.parent / "moved-source"
+        self.source.rename(moved_source)
+        _write_fixture(self.source)
+        self.assert_code(TrustedIoErrorCode.UNSAFE_FILE, self.io.snapshot)
+
+        replacement_source = self.source.parent / "replacement-source"
+        _write_fixture(replacement_source)
+        replacement_state = self.source.parent / "replacement-state"
+        stable = TrustedIo(replacement_source, replacement_state, _limits())
+        stable_snapshot = stable.snapshot()
+        moved_state = self.source.parent / "moved-state"
+        replacement_state.rename(moved_state)
+        replacement_state.mkdir()
+        self.assert_code(TrustedIoErrorCode.UNSAFE_FILE, lambda: stable.admit_intent(stable_snapshot))
+
+    def test_hpio004_final_identity_changes_with_stored_code_and_task(self) -> None:
+        def admitted_identity(label: str) -> str:
+            source = self.source.parent / f"identity-source-{label}"
+            state = self.source.parent / f"identity-state-{label}"
+            _write_fixture(source, solution=f"print('{label}')\n")
+            io = TrustedIo(source, state, _limits())
+            snapshot = io.snapshot()
+            io.admit_intent(snapshot)
+            receipt = DevResultReceipt(_digest("shared-receipt"), snapshot.closure_sha256, snapshot.solution_sha256)
+            binding = FinalSelectionBinding(
+                receipt.receipt_sha256,
+                _digest(f"task-{label}"),
+                _digest("environment"),
+                _digest("protocol"),
+            )
+            io.select_final_method(snapshot.closure_sha256, snapshot.solution_sha256, [receipt], binding)
+            identity = FinalRefitIdentity(
+                FinalRefitPhase.FINAL_REFIT,
+                receipt.receipt_sha256,
+                _digest("execution"),
+                _digest("outer"),
+                _digest("hidden-features"),
+            )
+            return io.admit_final_refit(identity).execution_identity_sha256
+
+        self.assertNotEqual(admitted_identity("a"), admitted_identity("b"))
+
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

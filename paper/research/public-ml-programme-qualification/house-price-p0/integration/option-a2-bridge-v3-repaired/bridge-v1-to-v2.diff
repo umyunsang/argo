@@ -1,0 +1,642 @@
+--- bridge.py.old
++++ bridge.py.new
+@@ -11,16 +11,17 @@
+ from dataclasses import asdict, dataclass
+ from decimal import Decimal, InvalidOperation
+ from enum import Enum
+ import hashlib
+-import http.client
++import math
+ import io
+ import json
+ import os
+ from pathlib import Path
+ import re
+ import selectors
+ import signal
++import socket
+ import stat
+ import subprocess
+ import sys
+ import tarfile
+@@ -65,8 +66,9 @@
+     DirectoryIdentity,
+     read_selected_code,
+ )
+ from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.trusted_io import (
++    DevResultReceipt,
+     FinalArtifactBinding,
+     FinalRefitIdentity,
+     FinalRefitPhase,
+     FinalSelectionBinding,
+@@ -90,8 +92,9 @@
+ MAX_STATE_FILE = 16_384
+ MAX_STATE_RECORDS = 5
+ MAX_NATIVE_JSON = 131_072
+ MAX_ARCHIVE = 16_777_216
++MAX_JSON_SAFE_INTEGER = 2 ** 53 - 1
+ FIXED_COMMAND = "/usr/bin/python3 -m experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.run_entry"
+ KNOWN_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
+ DEPLOYMENT_SCHEMA = "argo-house-price-a2-bridge-deployment/v1"
+ ATTEMPT_SCHEMA = "argo-house-price-a2-attempt-fence/v1"
+@@ -199,13 +202,31 @@
+     execution_config_sha256: str
+     execution_config_bytes: bytes
+ 
+ 
++@dataclass(frozen=True)
++class DevVerification:
++    verified: VerifiedDevReceipt
++    receipt_bytes: bytes
++    expected: ExpectedDevExecution
++    predictions: FileBinding
++    ids: FileBinding
++    targets: FileBinding
++
++
++@dataclass(frozen=True)
++class ContextAdmissionPlan:
++    admission: Mapping[str, object]
++    verified_runs: tuple[tuple[Binding, NativeObservation, str], ...]
++
++
+ class CommandPort(Protocol):
+     def prepare(self, plan: LaunchPlan) -> PreparedLaunch: ...
+     def start(self, prepared: PreparedLaunch) -> NativeObservation: ...
+     def observe(self, binding: Binding) -> NativeObservation: ...
+     def verified_dev(self, binding: Binding, observation: NativeObservation) -> VerifiedDevReceipt: ...
++    def publish_verified_dev(self, binding: Binding, observation: NativeObservation,
++                             receipt_sha256: str) -> VerifiedDevReceipt: ...
+     def final_artifact_binding(self, binding: Binding, observation: NativeObservation) -> FileBinding: ...
+     def infrastructure_failure(self, binding: Binding, observation: NativeObservation) -> bool: ...
+     def cancel(self, binding: Binding) -> NativeObservation: ...
+ 
+@@ -309,9 +330,9 @@
+                 raise BridgeError(SafeError.INVALID_ARGUMENT)
+ 
+ 
+ class BoundedSubprocessExecutor:
+-    """Concrete bounded shell-free executor with separate stdout/stderr capture."""
++    """Concrete bounded shell-free executor with one cleanup/reap path."""
+ 
+     def __init__(self, environment: Mapping[str, str]):
+         _validate_environment(environment)
+         self._environment = dict(environment)
+@@ -363,52 +384,156 @@
+             code = process.wait(timeout=remaining)
+             if code != 0:
+                 raise ExecutorError()
+             return bytes(outputs["stdout"])
+-        except (OSError, subprocess.SubprocessError, TimeoutError, ValueError):
+-            if process is not None and process.poll() is None:
++        except Exception:
++            if process is not None:
++                _terminate_and_reap(process)
++            raise ExecutorError() from None
++        finally:
++            try:
++                selector.close()
++            except Exception:
++                pass
++            for stream, _ in streams.values():
+                 try:
+-                    os.killpg(process.pid, signal.SIGKILL)
+-                except OSError:
+-                    process.kill()
+-                try:
+-                    process.wait(timeout=1)
+-                except subprocess.SubprocessError:
++                    stream.close()
++                except Exception:
+                     pass
++
++
++def _terminate_and_reap(process: subprocess.Popen[bytes]) -> None:
++    try:
++        alive = process.poll() is None
++    except Exception:
++        alive = True
++    if alive:
++        try:
++            os.killpg(process.pid, signal.SIGKILL)
++        except Exception:
++            try:
++                process.kill()
++            except Exception:
++                pass
++    try:
++        process.wait(timeout=1)
++    except subprocess.TimeoutExpired:
++        try:
++            process.kill()
++        except Exception:
++            pass
++        try:
++            process.wait(timeout=1)
++        except Exception:
++            pass
++    except Exception:
++        pass
++
++
++class StrictNativeGetter:
++    """Loopback-only HTTP/1.x GET under one monotonic three-second deadline."""
++
++    def get(self, port: int, path: str) -> bytes:
++        if type(port) is not int or not 1 <= port <= 65535 or re.fullmatch(r"/api/projects/[0-9a-f-]{36}/runs", path) is None:
++            raise ExecutorError()
++        deadline = time.monotonic() + 3
++        connection: socket.socket | None = None
++        selector = selectors.DefaultSelector()
++        try:
++            connection = socket.create_connection(("127.0.0.1", port), timeout=_remaining(deadline))
++            connection.setblocking(False)
++            selector.register(connection, selectors.EVENT_WRITE)
++            request = (
++                f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
++                "Accept: application/json\r\nConnection: close\r\n\r\n"
++            ).encode("ascii")
++            sent = 0
++            while sent < len(request):
++                _wait_socket(selector, deadline)
++                written = connection.send(request[sent:])
++                if written <= 0:
++                    raise ExecutorError()
++                sent += written
++            selector.modify(connection, selectors.EVENT_READ)
++            received = bytearray()
++            header_end: int | None = None
++            content_length: int | None = None
++            while True:
++                _wait_socket(selector, deadline)
++                chunk = connection.recv(65_536)
++                if not chunk:
++                    break
++                received.extend(chunk)
++                if header_end is None:
++                    marker = received.find(b"\r\n\r\n")
++                    if marker < 0:
++                        if len(received) > 16_384:
++                            raise ExecutorError()
++                        continue
++                    header_end = marker + 4
++                    content_length = _parse_http_headers(bytes(received[:marker]))
++                body_size = len(received) - header_end
++                if body_size > MAX_NATIVE_JSON:
++                    raise ExecutorError()
++                if content_length is not None and body_size >= content_length:
++                    if body_size != content_length:
++                        raise ExecutorError()
++                    return bytes(received[header_end:])
++            if header_end is None:
++                raise ExecutorError()
++            body = bytes(received[header_end:])
++            if content_length is not None and len(body) != content_length:
++                raise ExecutorError()
++            if len(body) > MAX_NATIVE_JSON:
++                raise ExecutorError()
++            return body
++        except Exception:
+             raise ExecutorError() from None
+         finally:
+             selector.close()
+-            for stream, _ in streams.values():
++            if connection is not None:
+                 try:
+-                    stream.close()
++                    connection.close()
+                 except OSError:
+                     pass
+ 
+ 
+-class StrictNativeGetter:
+-    """Loopback-only GET with no redirect, proxy, credential, or auth behavior."""
+-
+-    def get(self, port: int, path: str) -> bytes:
+-        if type(port) is not int or not 1 <= port <= 65535 or re.fullmatch(r"/api/projects/[0-9a-f-]{36}/runs", path) is None:
++def _remaining(deadline: float) -> float:
++    remaining = deadline - time.monotonic()
++    if remaining <= 0:
++        raise ExecutorError()
++    return remaining
++
++
++def _wait_socket(selector: selectors.BaseSelector, deadline: float) -> None:
++    if not selector.select(_remaining(deadline)):
++        raise ExecutorError()
++
++
++def _parse_http_headers(data: bytes) -> int | None:
++    try:
++        lines = data.decode("ascii").split("\r\n")
++    except UnicodeError:
++        raise ExecutorError() from None
++    if not lines or re.fullmatch(r"HTTP/1\.[01] 200 [\x20-\x7e]+", lines[0]) is None:
++        raise ExecutorError()
++    headers: dict[str, str] = {}
++    for line in lines[1:]:
++        match = re.fullmatch(r"([!#$%&'*+.^_`|~0-9A-Za-z-]+):[ \t]*([\x20-\x7e]*)", line)
++        if match is None:
+             raise ExecutorError()
+-        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+-        try:
+-            connection.request("GET", path, headers={"Accept": "application/json", "Connection": "close"})
+-            response = connection.getresponse()
+-            if response.status != 200:
+-                raise ExecutorError()
+-            declared = response.getheader("Content-Length")
+-            if declared is not None:
+-                if not declared.isascii() or not declared.isdecimal() or int(declared) > MAX_NATIVE_JSON:
+-                    raise ExecutorError()
+-            data = response.read(MAX_NATIVE_JSON + 1)
+-            if len(data) > MAX_NATIVE_JSON or response.read(1):
+-                raise ExecutorError()
+-            return data
+-        except (OSError, http.client.HTTPException, ValueError):
+-            raise ExecutorError() from None
+-        finally:
+-            connection.close()
++        name = match[1].lower()
++        if name in headers:
++            raise ExecutorError()
++        headers[name] = match[2]
++    if "transfer-encoding" in headers or "content-encoding" in headers:
++        raise ExecutorError()
++    declared = headers.get("content-length")
++    if declared is None:
++        return None
++    if not declared.isdecimal() or not declared.isascii() or int(declared) > MAX_NATIVE_JSON:
++        raise ExecutorError()
++    return int(declared)
+ 
+ 
+ class _StateStore:
+     def __init__(self, identity: DirectoryIdentity):
+@@ -695,11 +820,31 @@
+             raise BridgeError(SafeError.RESULT_INVALID)
+         return observation
+ 
+     def verified_dev(self, binding: Binding, observation: NativeObservation) -> VerifiedDevReceipt:
++        return self._dev_verification(binding, observation).verified
++
++    def publish_verified_dev(self, binding: Binding, observation: NativeObservation,
++                             receipt_sha256: str) -> VerifiedDevReceipt:
++        verification = self._dev_verification(binding, observation)
++        if (not isinstance(receipt_sha256, str) or HEX64.fullmatch(receipt_sha256) is None or
++                verification.verified.eligibility.receipt_sha256 != receipt_sha256):
++            raise BridgeError(SafeError.RESULT_INVALID)
++        receipt_binding = self.store.publish_receipt(binding.run_id, verification.receipt_bytes)
++        try:
++            return verify_dev_receipt(
++                receipt_binding, verification.expected, verification.predictions,
++                verification.ids, verification.targets,
++            )
++        except ReceiptError:
++            raise BridgeError(SafeError.RESULT_INVALID) from None
++
++    def _dev_verification(self, binding: Binding, observation: NativeObservation) -> DevVerification:
+         if binding.phase != "dev" or observation.status != "DONE":
+             raise BridgeError(SafeError.RESULT_INVALID)
+         receipt, predictions = self._runner_receipt(binding, observation, require_success=True)
++        if predictions is None:
++            raise BridgeError(SafeError.RESULT_INVALID)
+         inputs = self.config.dev_inputs
+         expected = ExpectedDevExecution(
+             binding.run_id, binding.experiment_id, binding.native_commit, binding.native_source_digest,
+             binding.closure_sha256, binding.solution_sha256, binding.intent_sha256,
+@@ -725,13 +870,15 @@
+             "prediction_mtime_ns_max": predictions.mtime_ns_max,
+             "ids_sha256": inputs["ids"].sha256, "targets_sha256": inputs["targets"].sha256,
+             "mae_numerator": str(score.mae.numerator), "mae_denominator": str(score.mae.denominator),
+         }
+-        receipt_binding = self.store.publish_receipt(binding.run_id, _canonical(payload))
+-        try:
+-            return verify_dev_receipt(receipt_binding, expected, predictions, inputs["ids"], inputs["targets"])
+-        except ReceiptError:
+-            raise BridgeError(SafeError.RESULT_INVALID) from None
++        receipt_bytes = _canonical(payload)
++        verified = VerifiedDevReceipt(
++            DevResultReceipt(hashlib.sha256(receipt_bytes).hexdigest(), binding.closure_sha256,
++                             binding.solution_sha256),
++            score, binding.run_id,
++        )
++        return DevVerification(verified, receipt_bytes, expected, predictions, inputs["ids"], inputs["targets"])
+ 
+     def final_artifact_binding(self, binding: Binding, observation: NativeObservation) -> FileBinding:
+         if binding.phase != "final_refit" or observation.status != "DONE":
+             raise BridgeError(SafeError.RESULT_INVALID)
+@@ -1007,8 +1154,9 @@
+             raise BridgeError(SafeError.INVALID_ARGUMENT)
+         self.config = config
+         self.port = port
+         self.store = _StateStore(config.state_root)
++        self._request_fenced = False
+         if isinstance(port, FixedNativePort):
+             if port.store.identity != self.store.identity:
+                 raise BridgeError(SafeError.INVALID_ARGUMENT)
+             port.bind_bridge_identity(config.task_sha256, config.environment_sha256, config.protocol_sha256)
+@@ -1021,17 +1169,23 @@
+             value = json.loads(request.decode("utf-8"), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+             if isinstance(value, dict) and isinstance(value.get("action"), str):
+                 action = value["action"]
+             response = self.handle(value)
+-        except (BridgeError, UnicodeError, ValueError, TypeError, KeyError, AttributeError, OSError, RecursionError):
++        except BridgeError as error:
++            response = {"ok": False, "error": error.code.value}
++        except (UnicodeError, ValueError, TypeError, RecursionError):
+             response = {"ok": False, "error": SafeError.INVALID_ARGUMENT.value}
++        except Exception:
++            response = {"ok": False, "error": SafeError.INTERNAL_ERROR.value}
+         try:
+             encoded = _wire_response(action, response)
+-        except (ValueError, TypeError, KeyError, AttributeError):
++        except Exception:
+             encoded = b'{"error":"BRIDGE_OUTPUT","ok":false}'
+         return encoded if len(encoded) <= MAX_RESPONSE else b'{"error":"BRIDGE_OUTPUT","ok":false}'
+ 
+     def handle(self, request: object) -> dict[str, object]:
++        action: str | None = None
++        self._request_fenced = False
+         try:
+             action, arguments = self._envelope(request)
+             if action == "read_solution":
+                 result = self._read_solution(arguments)
+@@ -1047,13 +1201,19 @@
+                 result = self._dev_result(arguments)
+             else:
+                 with self.store.operation():
+                     result = self._lock_final(arguments)
+-            return {"ok": True, "result": result}
++            response: dict[str, object] = {"ok": True, "result": result}
+         except BridgeError as error:
+-            return {"ok": False, "error": error.code.value}
+-        except (ValueError, TypeError, KeyError, AttributeError, OSError, UnicodeError, RecursionError):
+-            return {"ok": False, "error": SafeError.INTERNAL_ERROR.value}
++            code = (SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY
++                    if action == "request_R1_run" and self._request_fenced else error.code)
++            response = {"ok": False, "error": code.value}
++        except Exception:
++            code = (SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY
++                    if action == "request_R1_run" and self._request_fenced else SafeError.INTERNAL_ERROR)
++            response = {"ok": False, "error": code.value}
++        self._request_fenced = False
++        return response
+ 
+     @staticmethod
+     def _envelope(request: object) -> tuple[str, dict[str, object]]:
+         if not isinstance(request, dict) or set(request) != {"action", "arguments"}:
+@@ -1097,19 +1257,20 @@
+             snapshot = self.config.trusted_io.snapshot()
+             intent = parse_intent(snapshot.intent_bytes, snapshot.solution_sha256, observed_dev)
+         except (TrustedIoError, IntentError):
+             raise BridgeError(SafeError.INTENT_INVALID) from None
+-        self._assert_context_permission(intent, bindings, observations)
++        context_plan = self._context_permission(intent, bindings, observations)
+         if any(item.intent_sha256 == intent.intent_sha256 for item in attempts):
+             raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+         if len(attempts) >= self.config.max_total_requests:
+             raise BridgeError(SafeError.BUDGET_EXHAUSTED)
+         if intent.phase == "dev":
+-            return self._request_dev(snapshot, intent, attempts, bindings, observations)
+-        return self._request_final(snapshot, intent, attempts, bindings)
++            return self._request_dev(snapshot, intent, attempts, bindings, observations, context_plan)
++        return self._request_final(snapshot, intent, attempts, bindings, context_plan)
+ 
+     def _request_dev(self, snapshot: Snapshot, intent: Intent, attempts: list[Attempt], bindings: list[Binding],
+-                     observations: Mapping[str, NativeObservation]) -> dict[str, object]:
++                     observations: Mapping[str, NativeObservation],
++                     context_plan: ContextAdmissionPlan | None) -> dict[str, object]:
+         metric_used, repair_used = self._dev_budget(bindings, observations)
+         if metric_used >= self.config.max_dev_opportunities:
+             raise BridgeError(SafeError.BUDGET_EXHAUSTED)
+         if len([item for item in attempts if item.phase == "dev"]) >= self.config.max_dev_opportunities + self.config.max_repair_attempts:
+@@ -1120,9 +1281,11 @@
+             if parent_binding is None:
+                 raise BridgeError(SafeError.INTENT_INVALID)
+         attempt = Attempt(ATTEMPT_SCHEMA, len(attempts) + 1, intent.intent_sha256, snapshot.closure_sha256, snapshot.solution_sha256, "dev")
+         self.store.write_attempt(attempt)
+-        try:
++        self._request_fenced = True
++        try:
++            self._publish_context_permission(context_plan)
+             self.config.trusted_io.admit_intent(snapshot)
+             plan = LaunchPlan(
+                 attempt.ordinal, "dev", intent.intent_sha256, snapshot.closure_sha256,
+                 snapshot.solution_sha256, snapshot.solution_bytes,
+@@ -1138,9 +1301,10 @@
+             return self._run_result(binding)
+         except Exception:
+             raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY) from None
+ 
+-    def _request_final(self, snapshot: Snapshot, intent: Intent, attempts: list[Attempt], bindings: list[Binding]) -> dict[str, object]:
++    def _request_final(self, snapshot: Snapshot, intent: Intent, attempts: list[Attempt], bindings: list[Binding],
++                       context_plan: ContextAdmissionPlan | None) -> dict[str, object]:
+         if any(item.phase == "final_refit" for item in attempts):
+             raise BridgeError(SafeError.BUDGET_EXHAUSTED)
+         selected = next((item for item in bindings if item.phase == "dev" and item.run_id == intent.selected_run_id), None)
+         if selected is None:
+@@ -1152,9 +1316,12 @@
+             raise BridgeError(SafeError.RESULT_NOT_READY)
+         verified = self._verified_dev(selected, observation)
+         attempt = Attempt(ATTEMPT_SCHEMA, len(attempts) + 1, intent.intent_sha256, selected.closure_sha256, selected.solution_sha256, "final_refit")
+         self.store.write_attempt(attempt)
+-        try:
++        self._request_fenced = True
++        try:
++            self._publish_context_permission(context_plan)
++            verified = self._publish_verified_dev(selected, observation, verified.eligibility.receipt_sha256)
+             selection_binding = FinalSelectionBinding(
+                 verified.eligibility.receipt_sha256, self.config.task_sha256,
+                 self.config.environment_sha256, self.config.protocol_sha256,
+             )
+@@ -1332,10 +1499,10 @@
+             if observation.status in {"QUEUED", "RUNNING", "UNKNOWN"}:
+                 raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+         return observations
+ 
+-    def _assert_context_permission(self, intent: Intent, bindings: list[Binding],
+-                                   observations: Mapping[str, NativeObservation]) -> None:
++    def _context_permission(self, intent: Intent, bindings: list[Binding],
++                            observations: Mapping[str, NativeObservation]) -> ContextAdmissionPlan | None:
+         rights = self.config.context_rights
+         if rights.context == "initial":
+             if intent.phase == "final_refit":
+                 raise BridgeError(SafeError.BUDGET_EXHAUSTED)
+@@ -1346,23 +1513,25 @@
+                     self._verified_dev(binding, observation)
+                     eligible += 1
+             if eligible >= 2:
+                 raise BridgeError(SafeError.BUDGET_EXHAUSTED)
+-            return
++            return None
+         existing = self.store.read_context_admission(rights.controller_context_id)
+         if existing is not None:
+             _validate_context_admission(existing, rights)
+-            return
++            return None
+         checkpoint = _verify_context_checkpoint(rights)
+         current_research = self.config.trusted_io.read_solution("research.md")
+         if not current_research.content.strip() or current_research.sha256 != checkpoint[1]:
+             raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
++        verified_runs: list[tuple[Binding, NativeObservation, str]] = []
+         eligible_runs: list[str] = []
+         for binding in bindings:
+             observation = observations.get(binding.run_id)
+             if binding.phase == "dev" and observation is not None and observation.status == "DONE":
+-                self._verified_dev(binding, observation)
++                verified = self._verified_dev(binding, observation)
+                 eligible_runs.append(binding.run_id)
++                verified_runs.append((binding, observation, verified.eligibility.receipt_sha256))
+         if tuple(eligible_runs) != checkpoint[0]:
+             raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+         admission = {
+             "schema_version": "argo-house-price-a2-context-admission/v1",
+@@ -1371,9 +1540,21 @@
+             "checkpoint_sha256": rights.checkpoint.sha256 if rights.checkpoint is not None else "",
+             "verified_dev_run_ids": list(checkpoint[0]),
+             "campaign_used_tokens": checkpoint[2],
+         }
+-        self.store.write_context_admission(rights.controller_context_id, admission)
++        return ContextAdmissionPlan(admission, tuple(verified_runs))
++
++    def _publish_context_permission(self, plan: ContextAdmissionPlan | None) -> None:
++        if plan is None:
++            return
++        for binding, observation, receipt_sha256 in plan.verified_runs:
++            self._publish_verified_dev(binding, observation, receipt_sha256)
++        rights = self.config.context_rights
++        existing = self.store.read_context_admission(rights.controller_context_id)
++        if existing is None:
++            self.store.write_context_admission(rights.controller_context_id, dict(plan.admission))
++        elif existing != dict(plan.admission):
++            raise BridgeError(SafeError.CONFLICT)
+ 
+     def _dev_budget(self, bindings: list[Binding], observations: Mapping[str, NativeObservation],
+                     conservative: bool = False) -> tuple[int, int]:
+         metric_used = 0
+@@ -1416,8 +1597,23 @@
+             raise
+         except Exception:
+             raise BridgeError(SafeError.RESULT_INVALID) from None
+         if (not isinstance(verified, VerifiedDevReceipt) or verified.run_id != binding.run_id or
++                verified.eligibility.closure_sha256 != binding.closure_sha256 or
++                verified.eligibility.code_sha256 != binding.solution_sha256):
++            raise BridgeError(SafeError.RESULT_INVALID)
++        return verified
++
++    def _publish_verified_dev(self, binding: Binding, observation: NativeObservation,
++                              receipt_sha256: str) -> VerifiedDevReceipt:
++        try:
++            verified = self.port.publish_verified_dev(binding, observation, receipt_sha256)
++        except BridgeError:
++            raise
++        except Exception:
++            raise BridgeError(SafeError.RESULT_INVALID) from None
++        if (not isinstance(verified, VerifiedDevReceipt) or verified.run_id != binding.run_id or
++                verified.eligibility.receipt_sha256 != receipt_sha256 or
+                 verified.eligibility.closure_sha256 != binding.closure_sha256 or
+                 verified.eligibility.code_sha256 != binding.solution_sha256):
+             raise BridgeError(SafeError.RESULT_INVALID)
+         return verified
+@@ -1502,18 +1698,20 @@
+                 not isinstance(raw.get("experimentId"), str) or UUID.fullmatch(raw["experimentId"]) is None or
+                 not isinstance(raw.get("commitSha"), str) or HEX40.fullmatch(raw["commitSha"]) is None or
+                 raw.get("command") != command or raw.get("status") not in {"starting", "running", "done", "failed", "cancelled"} or
+                 type(raw.get("cancelRequested")) is not bool or type(raw.get("createdAt")) is not int or
+-                type(raw.get("updatedAt")) is not int or raw["createdAt"] < 0 or raw["updatedAt"] < raw["createdAt"] or
++                type(raw.get("updatedAt")) is not int or not 0 <= raw["createdAt"] <= MAX_JSON_SAFE_INTEGER or
++                not raw["createdAt"] <= raw["updatedAt"] <= MAX_JSON_SAFE_INTEGER or
+                 not isinstance(backend, dict) or set(backend) != {"kind", "jobId", "sourceDigest", "sourcePath", "sourceSize"} or
+                 backend.get("kind") != "local_job" or not isinstance(backend.get("sourceDigest"), str) or
+                 HEX64.fullmatch(backend["sourceDigest"]) is None or type(backend.get("sourceSize")) is not int or
+                 not 0 < backend["sourceSize"] <= MAX_ARCHIVE):
+             raise BridgeError(SafeError.RESULT_INVALID)
+         terminal = raw["status"] in {"done", "failed", "cancelled"}
+         if terminal != ("endedAt" in raw):
+             raise BridgeError(SafeError.RESULT_INVALID)
+-        if "endedAt" in raw and (type(raw["endedAt"]) is not int or not raw["createdAt"] <= raw["endedAt"] <= raw["updatedAt"]):
++        if "endedAt" in raw and (type(raw["endedAt"]) is not int or
++                not raw["createdAt"] <= raw["endedAt"] <= raw["updatedAt"] or raw["endedAt"] > MAX_JSON_SAFE_INTEGER):
+             raise BridgeError(SafeError.RESULT_INVALID)
+         if "resultMarkdown" in raw:
+             text = raw["resultMarkdown"]
+             if raw["status"] != "failed" or not isinstance(text, str) or "\x00" in text or len(text.encode("utf-8")) > 4096:
+@@ -1701,8 +1899,25 @@
+         raise BridgeError(SafeError.UNCERTAIN_NO_AUTOMATIC_RETRY)
+     return (value["verified_dev_run_ids"][0], value["verified_dev_run_ids"][1]), value["research_sha256"], usage.total_tokens
+ 
+ 
++def _finite_nonnegative(value: object) -> bool:
++    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
++        return False
++    try:
++        return math.isfinite(float(value))
++    except (OverflowError, TypeError, ValueError):
++        return False
++
++
++def _valid_optional_nonnegative(value: object, *, integer: bool) -> bool:
++    if value is None:
++        return True
++    if integer:
++        return type(value) is int and 0 <= value <= 2 ** 63 - 1
++    return _finite_nonnegative(value)
++
++
+ def _valid_prior_process_receipt(value: object, session_path: Path) -> bool:
+     if not isinstance(value, dict):
+         return False
+     required = {
+@@ -1736,16 +1951,50 @@
+     if (set(value) != required or value.get("schema_version") != "argo-house-price-a2-controller-process-receipt/v1" or
+             value.get("authority_contract_sha256") != "0cfaeb57c18662f428cdb9fbdef842d55782624b9baaf9bbbbe98ebeb4412c20" or
+             value.get("status") != "succeeded" or value.get("terminal_reason") != "completed" or
+             value.get("returncode") != 0 or type(value.get("started_monotonic_ns")) is not int or
+-            type(value.get("ended_monotonic_ns")) is not int or value["ended_monotonic_ns"] < value["started_monotonic_ns"] or
+-            isinstance(value.get("elapsed_seconds"), bool) or not isinstance(value.get("elapsed_seconds"), (int, float)) or
++            type(value.get("ended_monotonic_ns")) is not int or not 0 <= value["started_monotonic_ns"] <= 2 ** 63 - 1 or
++            not value["started_monotonic_ns"] <= value["ended_monotonic_ns"] <= 2 ** 63 - 1 or
++            not _finite_nonnegative(value.get("elapsed_seconds")) or
++            not math.isclose(value["elapsed_seconds"],
++                             (value["ended_monotonic_ns"] - value["started_monotonic_ns"]) / 1_000_000_000,
++                             rel_tol=1e-12, abs_tol=1e-9) or
+             not isinstance(value.get("handle"), dict) or not isinstance(value.get("resources"), dict) or
+             not isinstance(value.get("cleanup"), dict) or not isinstance(value.get("limitations"), list)):
+         return False
+     handle, resources, cleanup = value["handle"], value["resources"], value["cleanup"]
+     if set(handle) != handle_keys or set(resources) != resource_keys or set(cleanup) != cleanup_keys:
+         return False
++    resource_integers = {
++        "provider_timeout_ms", "provider_retries", "model_tokens_between_turns", "controller_turn_limit_per_phase",
++        "source_text_max_bytes", "autonomous_gate_retries", "autonomous_gate_timeout_ms", "bridge_close_grace_ms",
++        "rss_trigger_bytes", "rss_sample_interval_ms", "peak_sampled_rss_bytes", "rss_overshoot_bytes",
++        "sample_count", "census_file_count_peak", "census_aggregate_bytes_peak", "census_largest_file_bytes",
++        "file_count_overshoot", "aggregate_bytes_overshoot", "artifact_file_count_trigger",
++        "artifact_aggregate_bytes_trigger", "regular_file_rlimit_bytes", "cpu_rlimit_seconds_per_process",
++        "observer_output_limit_bytes",
++    }
++    resource_numbers = {"max_sample_gap_ms", "observed_seconds", "phase_wall_seconds", "campaign_wall_seconds"}
++    if (any(type(resources.get(key)) is not int or not 0 <= resources[key] <= 2 ** 63 - 1 for key in resource_integers) or
++            any(not _finite_nonnegative(resources.get(key)) for key in resource_numbers) or
++            not _valid_optional_nonnegative(resources.get("rss_trigger_monotonic_ns"), integer=True) or
++            not _valid_optional_nonnegative(resources.get("rss_trigger_elapsed_from_first_sample_seconds"), integer=False) or
++            not _valid_optional_nonnegative(resources.get("first_sample_monotonic_ns"), integer=True) or
++            not _valid_optional_nonnegative(resources.get("last_sample_monotonic_ns"), integer=True)):
++        return False
++    sample_count = resources["sample_count"]
++    first_sample = resources["first_sample_monotonic_ns"]
++    last_sample = resources["last_sample_monotonic_ns"]
++    if ((sample_count == 0) != (first_sample is None and last_sample is None) or
++            (sample_count > 0 and (first_sample is None or last_sample is None or last_sample < first_sample)) or
++            resources["rss_overshoot_bytes"] != max(0, resources["peak_sampled_rss_bytes"] - resources["rss_trigger_bytes"]) or
++            resources["file_count_overshoot"] != max(0, resources["census_file_count_peak"] - resources["artifact_file_count_trigger"]) or
++            resources["aggregate_bytes_overshoot"] != max(0, resources["census_aggregate_bytes_peak"] - resources["artifact_aggregate_bytes_trigger"])):
++        return False
++    if sample_count > 0:
++        expected_observed = (last_sample - first_sample) / 1_000_000_000
++        if not math.isclose(resources["observed_seconds"], expected_observed, rel_tol=1e-12, abs_tol=1e-9):
++            return False
+     session_dir = handle.get("session_dir")
+     if (type(handle.get("pid")) is not int or handle["pid"] <= 1 or type(handle.get("root_pgid")) is not int or
+             handle["root_pgid"] <= 1 or handle.get("spawn_attempts") != 1 or handle.get("stdin_mode") != "DEVNULL" or
+             not isinstance(handle.get("pid_start_identity"), str) or not handle["pid_start_identity"] or

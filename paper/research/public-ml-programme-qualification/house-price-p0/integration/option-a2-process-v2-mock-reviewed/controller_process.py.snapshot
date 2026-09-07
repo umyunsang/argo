@@ -1,0 +1,1979 @@
+#!/usr/bin/env python3
+"""One-shot POSIX process boundary for the approved A2 validation controller."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+import ctypes
+import argparse
+import hashlib
+import json
+import math
+import os
+import selectors
+from pathlib import Path
+import signal
+import stat
+import subprocess
+import sys
+import threading
+import time
+from typing import Mapping, Sequence
+import uuid
+
+KNOWN_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
+ENVIRONMENT_CONTRACT_SHA256 = "0cfaeb57c18662f428cdb9fbdef842d55782624b9baaf9bbbbe98ebeb4412c20"
+PRODUCTION_ENV_KEYS = frozenset({
+    "PRIME_AGENT_CODING_AGENT_DIR",
+    "PRIME_AGENT_KERNEL_PYTHON",
+    "PRIME_AGENT_TELEMETRY",
+    "PATH",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "TZ",
+})
+PRODUCTION_FIXED_ENV = {
+    "PRIME_AGENT_TELEMETRY": "0",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "TZ": "UTC",
+    "PATH": KNOWN_SYSTEM_PATH,
+}
+SYNTHETIC_ENV_KEYS = frozenset({
+    "PATH",
+    "ARGO_A2_SYNTHETIC_ACTION",
+    "ARGO_A2_SYNTHETIC_VALUE",
+})
+FROZEN_PRODUCTION_CAPS = {
+    "provider_timeout_ms": 120000,
+    "provider_retries": 0,
+    "phase_wall_seconds": 3600,
+    "campaign_wall_seconds": 10800,
+    "cpu_seconds_per_process": 600,
+    "file_size_bytes": 8 * 1024 * 1024,
+    "rss_trigger_bytes": 2 * 1024 * 1024 * 1024,
+    "rss_sample_ms": 250,
+    "v8_old_space_mib": 1024,
+    "model_tokens_between_turns": 120000,
+    "controller_turn_limit_per_phase": 20,
+    "source_text_max_bytes": 131072,
+    "autonomous_gate_retries": 20,
+    "autonomous_gate_timeout_ms": 30000,
+    "bridge_close_grace_ms": 1000,
+    "artifact_aggregate_bytes": 64 * 1024 * 1024,
+    "artifact_file_count": 128,
+    "observer_output_bytes": 8 * 1024 * 1024,
+}
+
+
+@dataclass(frozen=True)
+class PathIdentity:
+    resolved_path: str
+    path_kind: str
+    device: int
+    inode: int
+    mode: int
+    uid: int
+    size: int
+    mtime_ns_max: int
+    sha256: str | None
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "PathIdentity":
+        _require_keys(value, {item.name for item in field_list(cls)}, "path_identity")
+        return cls(
+            resolved_path=_string(value["resolved_path"], "resolved_path"),
+            path_kind=_string(value["path_kind"], "path_kind"),
+            device=_integer(value["device"], "device"),
+            inode=_integer(value["inode"], "inode"),
+            mode=_integer(value["mode"], "mode"),
+            uid=_integer(value["uid"], "uid"),
+            size=_integer(value["size"], "size"),
+            mtime_ns_max=_integer(value["mtime_ns_max"], "mtime_ns_max"),
+            sha256=_optional_string(value["sha256"], "sha256"),
+        )
+
+
+@dataclass(frozen=True)
+class SymlinkIdentity:
+    path: str
+    device: int
+    inode: int
+    mode: int
+    uid: int
+    link_target: str
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "SymlinkIdentity":
+        _require_keys(value, {item.name for item in field_list(cls)}, "symlink_identity")
+        return cls(
+            path=_string(value["path"], "path"),
+            device=_integer(value["device"], "device"),
+            inode=_integer(value["inode"], "inode"),
+            mode=_integer(value["mode"], "mode"),
+            uid=_integer(value["uid"], "uid"),
+            link_target=_string(value["link_target"], "link_target"),
+        )
+
+
+@dataclass(frozen=True)
+class InterpreterIdentity:
+    invocation_path: str
+    symlink_chain: tuple[SymlinkIdentity, ...]
+    resolved_target: PathIdentity
+    pyvenv_cfg_path: str
+    pyvenv_cfg: PathIdentity
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "InterpreterIdentity":
+        _require_keys(value, {item.name for item in field_list(cls)}, "interpreter_identity")
+        chain_value = value["symlink_chain"]
+        if not isinstance(chain_value, list):
+            raise ValueError("symlink_chain must be an array")
+        return cls(
+            invocation_path=_string(value["invocation_path"], "invocation_path"),
+            symlink_chain=tuple(
+                SymlinkIdentity.from_dict(_mapping(item, "symlink_identity"))
+                for item in chain_value
+            ),
+            resolved_target=PathIdentity.from_dict(_mapping(value["resolved_target"], "resolved_target")),
+            pyvenv_cfg_path=_string(value["pyvenv_cfg_path"], "pyvenv_cfg_path"),
+            pyvenv_cfg=PathIdentity.from_dict(_mapping(value["pyvenv_cfg"], "pyvenv_cfg")),
+        )
+
+
+@dataclass(frozen=True)
+class RunControllerCaps:
+    provider_timeout_ms: int
+    provider_retries: int
+    phase_wall_seconds: float
+    campaign_wall_seconds: float
+    cpu_seconds_per_process: int
+    file_size_bytes: int
+    rss_trigger_bytes: int
+    rss_sample_ms: int
+    v8_old_space_mib: int
+    model_tokens_between_turns: int
+    controller_turn_limit_per_phase: int
+    source_text_max_bytes: int
+    autonomous_gate_retries: int
+    autonomous_gate_timeout_ms: int
+    bridge_close_grace_ms: int
+    artifact_aggregate_bytes: int
+    artifact_file_count: int
+    terminate_grace_seconds: float
+    kill_grace_seconds: float
+    observer_timeout_seconds: float
+    observer_output_bytes: int
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "RunControllerCaps":
+        _require_keys(value, {item.name for item in field_list(cls)}, "caps")
+        return cls(
+            provider_timeout_ms=_integer(value["provider_timeout_ms"], "provider_timeout_ms"),
+            provider_retries=_integer(value["provider_retries"], "provider_retries"),
+            phase_wall_seconds=_number(value["phase_wall_seconds"], "phase_wall_seconds"),
+            campaign_wall_seconds=_number(value["campaign_wall_seconds"], "campaign_wall_seconds"),
+            cpu_seconds_per_process=_integer(value["cpu_seconds_per_process"], "cpu_seconds_per_process"),
+            file_size_bytes=_integer(value["file_size_bytes"], "file_size_bytes"),
+            rss_trigger_bytes=_integer(value["rss_trigger_bytes"], "rss_trigger_bytes"),
+            rss_sample_ms=_integer(value["rss_sample_ms"], "rss_sample_ms"),
+            v8_old_space_mib=_integer(value["v8_old_space_mib"], "v8_old_space_mib"),
+            model_tokens_between_turns=_integer(value["model_tokens_between_turns"], "model_tokens_between_turns"),
+            controller_turn_limit_per_phase=_integer(value["controller_turn_limit_per_phase"], "controller_turn_limit_per_phase"),
+            source_text_max_bytes=_integer(value["source_text_max_bytes"], "source_text_max_bytes"),
+            autonomous_gate_retries=_integer(value["autonomous_gate_retries"], "autonomous_gate_retries"),
+            autonomous_gate_timeout_ms=_integer(value["autonomous_gate_timeout_ms"], "autonomous_gate_timeout_ms"),
+            bridge_close_grace_ms=_integer(value["bridge_close_grace_ms"], "bridge_close_grace_ms"),
+            artifact_aggregate_bytes=_integer(value["artifact_aggregate_bytes"], "artifact_aggregate_bytes"),
+            artifact_file_count=_integer(value["artifact_file_count"], "artifact_file_count"),
+            terminate_grace_seconds=_number(value["terminate_grace_seconds"], "terminate_grace_seconds"),
+            kill_grace_seconds=_number(value["kill_grace_seconds"], "kill_grace_seconds"),
+            observer_timeout_seconds=_number(value["observer_timeout_seconds"], "observer_timeout_seconds"),
+            observer_output_bytes=_integer(value["observer_output_bytes"], "observer_output_bytes"),
+        )
+
+
+@dataclass(frozen=True)
+class RunControllerConfig:
+    python_executable: str
+    interpreter_identity: InterpreterIdentity
+    process_exec_path: str
+    process_exec_identity: PathIdentity
+    node_executable: str
+    node_identity: PathIdentity
+    frontend_path: str
+    frontend_identity: PathIdentity
+    deployment_path: str
+    deployment_identity: PathIdentity
+    artifact_root: str
+    artifact_root_identity: PathIdentity
+    temporary_dir: str
+    temporary_dir_identity: PathIdentity
+    session_dir: str
+    session_dir_identity: PathIdentity
+    profile_dir: str
+    profile_dir_identity: PathIdentity
+    child_environment: Mapping[str, str]
+    caps: RunControllerCaps
+    campaign_started_monotonic_ns: int
+    synthetic_test_context: bool
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "RunControllerConfig":
+        _require_keys(value, {item.name for item in field_list(cls)}, "config")
+        environment_value = value["child_environment"]
+        if not isinstance(environment_value, dict):
+            raise ValueError("child_environment must be an object")
+        environment: dict[str, str] = {}
+        for key, item in environment_value.items():
+            if not isinstance(key, str) or not isinstance(item, str):
+                raise ValueError("child_environment must contain strings")
+            environment[key] = item
+        return cls(
+            python_executable=_string(value["python_executable"], "python_executable"),
+            interpreter_identity=InterpreterIdentity.from_dict(_mapping(value["interpreter_identity"], "interpreter_identity")),
+            process_exec_path=_string(value["process_exec_path"], "process_exec_path"),
+            process_exec_identity=PathIdentity.from_dict(_mapping(value["process_exec_identity"], "process_exec_identity")),
+            node_executable=_string(value["node_executable"], "node_executable"),
+            node_identity=PathIdentity.from_dict(_mapping(value["node_identity"], "node_identity")),
+            frontend_path=_string(value["frontend_path"], "frontend_path"),
+            frontend_identity=PathIdentity.from_dict(_mapping(value["frontend_identity"], "frontend_identity")),
+            deployment_path=_string(value["deployment_path"], "deployment_path"),
+            deployment_identity=PathIdentity.from_dict(_mapping(value["deployment_identity"], "deployment_identity")),
+            artifact_root=_string(value["artifact_root"], "artifact_root"),
+            artifact_root_identity=PathIdentity.from_dict(_mapping(value["artifact_root_identity"], "artifact_root_identity")),
+            temporary_dir=_string(value["temporary_dir"], "temporary_dir"),
+            temporary_dir_identity=PathIdentity.from_dict(_mapping(value["temporary_dir_identity"], "temporary_dir_identity")),
+            session_dir=_string(value["session_dir"], "session_dir"),
+            session_dir_identity=PathIdentity.from_dict(_mapping(value["session_dir_identity"], "session_dir_identity")),
+            profile_dir=_string(value["profile_dir"], "profile_dir"),
+            profile_dir_identity=PathIdentity.from_dict(_mapping(value["profile_dir_identity"], "profile_dir_identity")),
+            child_environment=environment,
+            caps=RunControllerCaps.from_dict(_mapping(value["caps"], "caps")),
+            campaign_started_monotonic_ns=_integer(value["campaign_started_monotonic_ns"], "campaign_started_monotonic_ns"),
+            synthetic_test_context=_boolean(value["synthetic_test_context"], "synthetic_test_context"),
+        )
+
+
+@dataclass(frozen=True)
+class TrackedProcessReceipt:
+    pid: int
+    initial_ppid: int
+    observed_pgids: tuple[int, ...]
+    start_identity: str
+    identity_resolution: str
+    first_observed_monotonic_ns: int
+    last_observed_monotonic_ns: int
+
+
+@dataclass(frozen=True)
+class ProcessHandleReceipt:
+    pid: int
+    root_pgid: int
+    pid_start_identity: str | None
+    stdout_path: str
+    stderr_path: str
+    spawn_attempts: int
+    process_exec_path: str
+    frontend_path: str
+    deployment_path: str
+    artifact_root: str
+    session_dir: str
+    child_environment_keys: tuple[str, ...]
+    stdin_mode: str
+
+
+@dataclass(frozen=True)
+class ResourceObservationReceipt:
+    provider_timeout_ms: int
+    provider_retries: int
+    model_tokens_between_turns: int
+    controller_turn_limit_per_phase: int
+    source_text_max_bytes: int
+    autonomous_gate_retries: int
+    autonomous_gate_timeout_ms: int
+    bridge_close_grace_ms: int
+    rss_sampling_semantics: str
+    rss_trigger_bytes: int
+    rss_sample_interval_ms: int
+    peak_sampled_rss_bytes: int
+    rss_overshoot_bytes: int
+    rss_trigger_monotonic_ns: int | None
+    rss_trigger_elapsed_from_first_sample_seconds: float | None
+    sample_count: int
+    first_sample_monotonic_ns: int | None
+    last_sample_monotonic_ns: int | None
+    max_sample_gap_ms: float
+    observed_seconds: float
+    coverage_complete_for_observed_tree: bool
+    observer_errors: tuple[str, ...]
+    census_errors: tuple[str, ...]
+    census_file_count_peak: int
+    census_aggregate_bytes_peak: int
+    census_largest_file_bytes: int
+    file_count_overshoot: int
+    aggregate_bytes_overshoot: int
+    artifact_file_count_trigger: int
+    artifact_aggregate_bytes_trigger: int
+    regular_file_rlimit_bytes: int
+    cpu_rlimit_seconds_per_process: int
+    phase_wall_seconds: float
+    campaign_wall_seconds: float
+    observer_output_limit_bytes: int
+    native_usage_missing_or_inflight_semantics: str
+
+
+@dataclass(frozen=True)
+class CleanupReceipt:
+    confirmed_for_tracked_processes: bool
+    claims_all_possible_descendants: bool
+    unobserved_escape_possible: bool
+    root_process_reaped: bool
+    signals_sent: tuple[str, ...]
+    tracked_processes: tuple[TrackedProcessReceipt, ...]
+    observed_process_groups: tuple[int, ...]
+    escaped_observed_process_groups: tuple[int, ...]
+    alive_tracked_after_cleanup: tuple[int, ...]
+    cleanup_errors: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ControllerRunReceipt:
+    schema_version: str
+    authority_contract_sha256: str
+    status: str
+    terminal_reason: str
+    returncode: int | None
+    started_monotonic_ns: int
+    ended_monotonic_ns: int
+    elapsed_seconds: float
+    handle: ProcessHandleReceipt | None
+    resources: ResourceObservationReceipt
+    cleanup: CleanupReceipt
+    limitations: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+class _DarwinProcBsdInfo(ctypes.Structure):
+    _fields_ = [
+        ("pbi_flags", ctypes.c_uint32),
+        ("pbi_status", ctypes.c_uint32),
+        ("pbi_xstatus", ctypes.c_uint32),
+        ("pbi_pid", ctypes.c_uint32),
+        ("pbi_ppid", ctypes.c_uint32),
+        ("pbi_uid", ctypes.c_uint32),
+        ("pbi_gid", ctypes.c_uint32),
+        ("pbi_ruid", ctypes.c_uint32),
+        ("pbi_rgid", ctypes.c_uint32),
+        ("pbi_svuid", ctypes.c_uint32),
+        ("pbi_svgid", ctypes.c_uint32),
+        ("rfu_1", ctypes.c_uint32),
+        ("pbi_comm", ctypes.c_char * 16),
+        ("pbi_name", ctypes.c_char * 32),
+        ("pbi_nfiles", ctypes.c_uint32),
+        ("pbi_pgid", ctypes.c_uint32),
+        ("pbi_pjobc", ctypes.c_uint32),
+        ("e_tdev", ctypes.c_uint32),
+        ("e_tpgid", ctypes.c_uint32),
+        ("pbi_nice", ctypes.c_int32),
+        ("pbi_start_tvsec", ctypes.c_uint64),
+        ("pbi_start_tvusec", ctypes.c_uint64),
+    ]
+
+
+@dataclass(frozen=True)
+class _ProcessRow:
+    pid: int
+    ppid: int
+    pgid: int
+    rss_bytes: int
+    state: str
+    start_identity: str
+    identity_resolution: str = "coarse_ps_lstart"
+
+    @property
+    def alive(self) -> bool:
+        return not self.state.startswith("Z")
+
+
+@dataclass
+class _Tracked:
+    pid: int
+    initial_ppid: int
+    start_identity: str
+    first_ns: int
+    last_ns: int
+    pgids: set[int] = field(default_factory=set)
+    identity_resolution: str = "coarse_ps_lstart"
+
+
+@dataclass(frozen=True)
+class _Census:
+    file_count: int
+    aggregate_bytes: int
+    largest_file_bytes: int
+    file_size_exceeded: bool
+    errors: tuple[str, ...]
+
+
+def _darwin_process_identity(pid: int) -> tuple[str, int, int] | None:
+    if sys.platform != "darwin" or ctypes.sizeof(_DarwinProcBsdInfo) != 136:
+        return None
+    try:
+        library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        function = library.proc_pidinfo
+        function.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        function.restype = ctypes.c_int
+        info = _DarwinProcBsdInfo()
+        size = ctypes.sizeof(info)
+        returned = function(pid, 3, 0, ctypes.byref(info), size)
+    except (AttributeError, OSError):
+        return None
+    if (
+        returned != size
+        or info.pbi_pid != pid
+        or info.pbi_start_tvsec <= 0
+        or info.pbi_start_tvusec >= 1_000_000
+    ):
+        return None
+    identity = f"darwin_proc_bsdinfo_usec:{info.pbi_start_tvsec}:{info.pbi_start_tvusec}"
+    return identity, int(info.pbi_ppid), int(info.pbi_pgid)
+
+
+def _strengthen_process_row(row: _ProcessRow) -> _ProcessRow:
+    measured = _darwin_process_identity(row.pid)
+    if measured is None:
+        return row
+    identity, ppid, pgid = measured
+    if ppid != row.ppid or pgid != row.pgid:
+        return row
+    return _ProcessRow(
+        pid=row.pid,
+        ppid=row.ppid,
+        pgid=row.pgid,
+        rss_bytes=row.rss_bytes,
+        state=row.state,
+        start_identity=identity,
+        identity_resolution="darwin_proc_bsdinfo_microseconds",
+    )
+
+
+def _is_strong_process_identity(row: _ProcessRow | _Tracked) -> bool:
+    return row.identity_resolution == "darwin_proc_bsdinfo_microseconds"
+
+
+class _MonitorState:
+    def __init__(
+        self,
+        config: RunControllerConfig,
+        process: subprocess.Popen[bytes],
+        root_pgid: int,
+    ) -> None:
+        self.config = config
+        self.process = process
+        self.root_pgid = root_pgid
+        self.owned_setsid_established = root_pgid == process.pid
+        self.latched_root_start_identity: str | None = None
+        self.tracked: dict[tuple[int, str], _Tracked] = {}
+        self.observed_pgids: set[int] = {root_pgid}
+        self.sample_times: list[int] = []
+        self.peak_rss = 0
+        self.rss_trigger_ns: int | None = None
+        self.file_count_peak = 0
+        self.aggregate_peak = 0
+        self.largest_file = 0
+        self.observer_errors: list[str] = []
+        self.census_errors: list[str] = []
+        self.last_rows: dict[int, _ProcessRow] = {}
+        self.last_snapshot_monotonic_ns: int | None = None
+        self.sample_terminal_reasons: list[str] = []
+
+    def invalidate_process_snapshot(self) -> None:
+        self.last_rows = {}
+        self.last_snapshot_monotonic_ns = None
+
+    def sample(self) -> str | None:
+        reason = self._sample()
+        if reason is not None:
+            self.sample_terminal_reasons.append(reason)
+        return reason
+
+    def _sample(self) -> str | None:
+        now_ns = time.monotonic_ns()
+        try:
+            rows = _snapshot_processes(
+                self.config.caps.observer_timeout_seconds,
+                self.config.caps.observer_output_bytes,
+            )
+        except Exception:
+            self.invalidate_process_snapshot()
+            self.observer_errors.append("process_table_unavailable")
+            self.sample_times.append(now_ns)
+            return "process_observer_failed"
+
+        strengthen_pids = {self.process.pid, *(pid for pid, _ in self.tracked)}
+        for pid in strengthen_pids:
+            row = rows.get(pid)
+            if row is not None and row.alive:
+                rows[pid] = _strengthen_process_row(row)
+        root_row = rows.get(self.process.pid)
+        root_handle_alive = self.process.poll() is None
+        if self.latched_root_start_identity is None:
+            if root_handle_alive and root_row is not None and root_row.alive:
+                self.latched_root_start_identity = root_row.start_identity
+                self._track(root_row, now_ns)
+            elif root_handle_alive:
+                self.invalidate_process_snapshot()
+                self.observer_errors.append("live_root_missing_from_process_table")
+                self.sample_times.append(now_ns)
+                return "process_observer_failed"
+        elif (
+            root_handle_alive
+            and root_row is not None
+            and root_row.alive
+            and root_row.start_identity == self.latched_root_start_identity
+        ):
+            self._track(root_row, now_ns)
+        elif root_handle_alive:
+            self.invalidate_process_snapshot()
+            self.observer_errors.append("live_root_identity_changed")
+            self.sample_times.append(now_ns)
+            return "process_observer_failed"
+
+        current_keys = {
+            (row.pid, row.start_identity)
+            for row in rows.values()
+            if (
+                row.alive
+                and (row.pid, row.start_identity) in self.tracked
+                and (row.pid != self.process.pid or root_handle_alive)
+            )
+        }
+        selected_pids = {pid for pid, _ in current_keys}
+        root_identity_current = (
+            root_handle_alive
+            and root_row is not None
+            and root_row.alive
+            and root_row.start_identity == self.latched_root_start_identity
+        )
+        allow_root_group_discovery = root_identity_current or any(
+            rows[pid].pgid == self.root_pgid for pid in selected_pids
+        )
+        changed = True
+        while changed:
+            changed = False
+            for candidate in tuple(rows.values()):
+                if not candidate.alive or candidate.pid == os.getpid():
+                    continue
+                belongs = (
+                    candidate.ppid in selected_pids
+                    or (allow_root_group_discovery and candidate.pgid == self.root_pgid)
+                )
+                if not belongs:
+                    continue
+                row = _strengthen_process_row(candidate)
+                rows[row.pid] = row
+                if (
+                    row.pid == self.process.pid
+                    and row.start_identity != self.latched_root_start_identity
+                ):
+                    continue
+                key = (row.pid, row.start_identity)
+                if key not in current_keys:
+                    current_keys.add(key)
+                    selected_pids.add(row.pid)
+                    self._track(row, now_ns)
+                    changed = True
+        for key in current_keys:
+            row = rows[key[0]]
+            tracked = self.tracked[key]
+            tracked.last_ns = now_ns
+            tracked.pgids.add(row.pgid)
+            self.observed_pgids.add(row.pgid)
+
+        self.last_rows = rows
+        self.last_snapshot_monotonic_ns = now_ns
+        rss = sum(rows[pid].rss_bytes for pid in selected_pids)
+        self.peak_rss = max(self.peak_rss, rss)
+        self.sample_times.append(now_ns)
+
+        census = _census_artifacts(
+            self.config.artifact_root,
+            self.config.artifact_root_identity,
+            self.config.caps.artifact_file_count,
+            self.config.caps.artifact_aggregate_bytes,
+            self.config.caps.file_size_bytes,
+        )
+        self.file_count_peak = max(self.file_count_peak, census.file_count)
+        self.aggregate_peak = max(self.aggregate_peak, census.aggregate_bytes)
+        self.largest_file = max(self.largest_file, census.largest_file_bytes)
+        if census.errors:
+            self.census_errors.extend(census.errors)
+            return "artifact_census_failed"
+        if census.file_size_exceeded:
+            return "artifact_file_size_trigger"
+        if census.file_count > self.config.caps.artifact_file_count:
+            return "artifact_file_count_trigger"
+        if census.aggregate_bytes > self.config.caps.artifact_aggregate_bytes:
+            return "artifact_aggregate_bytes_trigger"
+        if rss > self.config.caps.rss_trigger_bytes:
+            if self.rss_trigger_ns is None:
+                self.rss_trigger_ns = now_ns
+            return "rss_sampled_trigger"
+        return None
+
+    def _track(self, row: _ProcessRow, now_ns: int) -> None:
+        key = (row.pid, row.start_identity)
+        tracked = self.tracked.get(key)
+        if tracked is None:
+            tracked = _Tracked(
+                pid=row.pid,
+                initial_ppid=row.ppid,
+                start_identity=row.start_identity,
+                first_ns=now_ns,
+                last_ns=now_ns,
+                identity_resolution=row.identity_resolution,
+            )
+            self.tracked[key] = tracked
+        tracked.last_ns = now_ns
+        tracked.pgids.add(row.pgid)
+        self.observed_pgids.add(row.pgid)
+
+    def alive_tracked(self) -> list[_ProcessRow]:
+        alive: list[_ProcessRow] = []
+        root_handle_alive = self.process.poll() is None
+        for key in self.tracked:
+            row = self.last_rows.get(key[0])
+            if (
+                row is not None
+                and row.alive
+                and row.start_identity == key[1]
+                and (row.pid != self.process.pid or root_handle_alive)
+            ):
+                alive.append(row)
+        return alive
+
+    def root_start_identity(self) -> str | None:
+        return self.latched_root_start_identity
+
+    def tracked_receipts(self) -> tuple[TrackedProcessReceipt, ...]:
+        return tuple(
+            TrackedProcessReceipt(
+                pid=item.pid,
+                initial_ppid=item.initial_ppid,
+                observed_pgids=tuple(sorted(item.pgids)),
+                start_identity=item.start_identity,
+                identity_resolution=item.identity_resolution,
+                first_observed_monotonic_ns=item.first_ns,
+                last_observed_monotonic_ns=item.last_ns,
+            )
+            for item in sorted(self.tracked.values(), key=lambda item: (item.first_ns, item.pid))
+        )
+
+
+class _SignalAbortScope:
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.reason: str | None = None
+        self._previous: dict[int, object] = {}
+
+    def __enter__(self) -> "_SignalAbortScope":
+        if threading.current_thread() is not threading.main_thread():
+            return self
+        for current in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            self._previous[current] = signal.getsignal(current)
+            signal.signal(current, self._handler)
+        return self
+
+    def _handler(self, signum: int, _frame: object) -> None:
+        try:
+            name = signal.Signals(signum).name
+        except ValueError:
+            name = str(signum)
+        if self.reason is None:
+            self.reason = f"signal_{name}"
+        self.event.set()
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+        if threading.current_thread() is not threading.main_thread():
+            return
+        for current, previous in self._previous.items():
+            signal.signal(current, previous)
+
+
+def field_list(cls: type[object]) -> Sequence[object]:
+    return tuple(cls.__dataclass_fields__.values())  # type: ignore[attr-defined]
+
+
+def _require_keys(value: Mapping[str, object], expected: set[str], label: str) -> None:
+    if set(value) != expected:
+        raise ValueError(f"{label} key set mismatch")
+
+
+def _mapping(value: object, label: str) -> Mapping[str, object]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be an object")
+    return value
+
+
+def _string(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a string")
+    return value
+
+
+def _optional_string(value: object, label: str) -> str | None:
+    if value is not None and not isinstance(value, str):
+        raise ValueError(f"{label} must be a string or null")
+    return value
+
+
+def _integer(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{label} must be an integer")
+    return value
+
+
+def _number(value: object, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{label} must be a number")
+    return float(value)
+
+
+def _boolean(value: object, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{label} must be a boolean")
+    return value
+
+
+def _sha256_descriptor(descriptor: int, max_bytes: int) -> str:
+    digest = hashlib.sha256()
+    total = 0
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    while total <= max_bytes:
+        block = os.read(descriptor, min(1024 * 1024, max_bytes + 1 - total))
+        if not block:
+            return digest.hexdigest()
+        total += len(block)
+        if total > max_bytes:
+            raise ValueError("path hash bound exceeded")
+        digest.update(block)
+    raise ValueError("path hash bound exceeded")
+
+
+def capture_path_identity(
+    path: str | Path,
+    *,
+    hash_file: bool,
+    max_file_bytes: int = 256 * 1024 * 1024,
+) -> PathIdentity:
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = candidate.absolute()
+    resolved = candidate.resolve(strict=True)
+    path_info = os.stat(resolved, follow_symlinks=False)
+    if stat.S_ISREG(path_info.st_mode):
+        if not hash_file:
+            raise ValueError("regular files require a content hash")
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(resolved, flags)
+        try:
+            before = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_nlink != 1
+                or before.st_size > max_file_bytes
+            ):
+                raise ValueError("invalid bounded regular file")
+            digest: str | None = _sha256_descriptor(descriptor, max_file_bytes)
+            after = os.fstat(descriptor)
+            path_after = os.stat(resolved, follow_symlinks=False)
+            if (
+                _stat_identity(after) != _stat_identity(before)
+                or _stat_identity(path_after) != _stat_identity(before)
+                or resolved.resolve(strict=True) != resolved
+            ):
+                raise ValueError("path changed during identity capture")
+            info = before
+        finally:
+            os.close(descriptor)
+        kind = "regular_file"
+    elif stat.S_ISDIR(path_info.st_mode):
+        if hash_file:
+            raise ValueError("directories cannot be content hashed")
+        info = path_info
+        digest = None
+        kind = "directory"
+    else:
+        raise ValueError("path must be a regular file or directory")
+    return PathIdentity(
+        resolved_path=str(resolved),
+        path_kind=kind,
+        device=info.st_dev,
+        inode=info.st_ino,
+        mode=stat.S_IMODE(info.st_mode),
+        uid=info.st_uid,
+        size=info.st_size,
+        mtime_ns_max=info.st_mtime_ns,
+        sha256=digest,
+    )
+
+
+def _capture_symlink_chain(invocation_path: str | Path) -> tuple[SymlinkIdentity, ...]:
+    candidate = Path(invocation_path)
+    if not candidate.is_absolute() or "\x00" in str(candidate):
+        raise ValueError("interpreter invocation must be absolute")
+    current = candidate
+    chain: list[SymlinkIdentity] = []
+    seen: set[tuple[int, int]] = set()
+    for _ in range(40):
+        parts = current.parts
+        prefix = Path(parts[0])
+        followed = False
+        for index, component in enumerate(parts[1:], start=1):
+            prefix = prefix / component
+            info = os.lstat(prefix)
+            if not stat.S_ISLNK(info.st_mode):
+                continue
+            identity_key = (info.st_dev, info.st_ino)
+            if identity_key in seen:
+                raise ValueError("interpreter symlink loop")
+            seen.add(identity_key)
+            link_target = os.readlink(prefix)
+            chain.append(SymlinkIdentity(
+                path=str(prefix),
+                device=info.st_dev,
+                inode=info.st_ino,
+                mode=stat.S_IMODE(info.st_mode),
+                uid=info.st_uid,
+                link_target=link_target,
+            ))
+            target = Path(link_target)
+            if not target.is_absolute():
+                target = prefix.parent / target
+            remaining = parts[index + 1:]
+            current = Path(os.path.normpath(str(target.joinpath(*remaining))))
+            followed = True
+            break
+        if not followed:
+            return tuple(chain)
+    raise ValueError("interpreter symlink depth exceeded")
+
+
+def capture_interpreter_identity(
+    invocation_path: str | Path,
+    pyvenv_cfg_path: str | Path,
+) -> InterpreterIdentity:
+    invocation = Path(invocation_path)
+    if not invocation.is_absolute():
+        invocation = invocation.absolute()
+    chain = _capture_symlink_chain(invocation)
+    resolved = invocation.resolve(strict=True)
+    target_identity = capture_path_identity(resolved, hash_file=True)
+    config_path = Path(pyvenv_cfg_path)
+    if not config_path.is_absolute():
+        config_path = config_path.absolute()
+    config_path = config_path.resolve(strict=True)
+    config_identity = capture_path_identity(config_path, hash_file=True, max_file_bytes=65536)
+    return InterpreterIdentity(
+        invocation_path=str(invocation),
+        symlink_chain=chain,
+        resolved_target=target_identity,
+        pyvenv_cfg_path=str(config_path),
+        pyvenv_cfg=config_identity,
+    )
+
+
+def config_to_dict(config: RunControllerConfig) -> dict[str, object]:
+    return asdict(config)
+
+
+def _validate_identity(
+    raw_path: str,
+    expected: PathIdentity,
+    *,
+    executable: bool,
+    max_file_bytes: int,
+) -> None:
+    if "\x00" in raw_path or not Path(raw_path).is_absolute():
+        raise ValueError("path_identity_mismatch")
+    try:
+        actual = capture_path_identity(
+            raw_path,
+            hash_file=expected.path_kind == "regular_file",
+            max_file_bytes=max_file_bytes,
+        )
+    except (OSError, ValueError):
+        raise ValueError("path_identity_mismatch") from None
+    if actual.resolved_path != raw_path:
+        raise ValueError("path_identity_mismatch")
+    comparisons = (
+        actual.resolved_path == expected.resolved_path,
+        actual.path_kind == expected.path_kind,
+        actual.device == expected.device,
+        actual.inode == expected.inode,
+        actual.mode == expected.mode,
+        actual.uid == expected.uid,
+        actual.size == expected.size,
+        actual.mtime_ns_max <= expected.mtime_ns_max,
+        actual.sha256 == expected.sha256,
+    )
+    if not all(comparisons):
+        raise ValueError("path_identity_mismatch")
+    if executable and not os.access(actual.resolved_path, os.X_OK):
+        raise ValueError("path_identity_mismatch")
+
+
+def _directory_is_empty(path: str) -> bool:
+    with os.scandir(path) as entries:
+        return next(entries, None) is None
+
+
+def _validate_config(config: RunControllerConfig) -> None:
+    try:
+        actual_interpreter = capture_interpreter_identity(
+            config.python_executable,
+            config.interpreter_identity.pyvenv_cfg_path,
+        )
+    except (OSError, ValueError):
+        raise ValueError("path_identity_mismatch") from None
+    if actual_interpreter != config.interpreter_identity:
+        raise ValueError("path_identity_mismatch")
+    pairs = (
+        (config.process_exec_path, config.process_exec_identity, False, 1024 * 1024),
+        (config.node_executable, config.node_identity, True, 256 * 1024 * 1024),
+        (config.frontend_path, config.frontend_identity, False, 1024 * 1024),
+        (config.deployment_path, config.deployment_identity, False, 65536),
+        (config.artifact_root, config.artifact_root_identity, False, 0),
+        (config.temporary_dir, config.temporary_dir_identity, False, 0),
+        (config.session_dir, config.session_dir_identity, False, 0),
+        (config.profile_dir, config.profile_dir_identity, False, 0),
+    )
+    for raw_path, identity, executable, max_file_bytes in pairs:
+        _validate_identity(
+            raw_path,
+            identity,
+            executable=executable,
+            max_file_bytes=max_file_bytes,
+        )
+    directory_identities = (
+        config.artifact_root_identity,
+        config.temporary_dir_identity,
+        config.session_dir_identity,
+        config.profile_dir_identity,
+    )
+    if any(identity.path_kind != "directory" for identity in directory_identities):
+        raise ValueError("path_identity_mismatch")
+    for directory in (config.artifact_root, config.temporary_dir, config.session_dir, config.profile_dir):
+        info = os.stat(directory, follow_symlinks=False)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise ValueError("artifact_root_not_private")
+    artifact_root = Path(config.artifact_root)
+    if Path(config.temporary_dir) != artifact_root / "tmp":
+        raise ValueError("directory_binding_mismatch")
+    try:
+        Path(config.session_dir).relative_to(artifact_root)
+    except ValueError:
+        raise ValueError("directory_binding_mismatch") from None
+    if Path(config.session_dir) in (artifact_root, Path(config.temporary_dir)):
+        raise ValueError("directory_binding_mismatch")
+    if not config.synthetic_test_context:
+        try:
+            Path(config.profile_dir).relative_to(artifact_root)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("directory_binding_mismatch")
+    if not _directory_is_empty(config.temporary_dir) or not _directory_is_empty(config.session_dir):
+        raise ValueError("fresh_directory_not_empty")
+    caps = config.caps
+    integer_caps = (
+        caps.provider_timeout_ms,
+        caps.cpu_seconds_per_process,
+        caps.file_size_bytes,
+        caps.rss_trigger_bytes,
+        caps.rss_sample_ms,
+        caps.v8_old_space_mib,
+        caps.model_tokens_between_turns,
+        caps.controller_turn_limit_per_phase,
+        caps.source_text_max_bytes,
+        caps.autonomous_gate_retries,
+        caps.autonomous_gate_timeout_ms,
+        caps.bridge_close_grace_ms,
+        caps.artifact_aggregate_bytes,
+        caps.artifact_file_count,
+        caps.observer_output_bytes,
+    )
+    real_caps = (
+        caps.phase_wall_seconds,
+        caps.campaign_wall_seconds,
+        caps.terminate_grace_seconds,
+        caps.kill_grace_seconds,
+        caps.observer_timeout_seconds,
+    )
+    if (
+        any(type(value) is not int or value <= 0 for value in integer_caps)
+        or type(caps.provider_retries) is not int
+        or caps.provider_retries != 0
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or value <= 0
+            for value in real_caps
+        )
+    ):
+        raise ValueError("invalid_resource_caps")
+    if caps.terminate_grace_seconds > 30 or caps.kill_grace_seconds > 30:
+        raise ValueError("invalid_resource_caps")
+    if caps.observer_timeout_seconds > 5:
+        raise ValueError("invalid_resource_caps")
+    if caps.artifact_aggregate_bytes < caps.file_size_bytes:
+        raise ValueError("invalid_resource_caps")
+    if type(config.synthetic_test_context) is not bool:
+        raise ValueError("invalid_config")
+    if (
+        type(config.campaign_started_monotonic_ns) is not int
+        or config.campaign_started_monotonic_ns <= 0
+        or config.campaign_started_monotonic_ns > time.monotonic_ns()
+    ):
+        raise ValueError("invalid_campaign_start")
+    environment = dict(config.child_environment)
+    if any(not isinstance(key, str) or not isinstance(value, str) for key, value in environment.items()):
+        raise ValueError("environment_key_set_mismatch")
+    forbidden_fragments = (
+        "AUTH", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "COOKIE",
+        "OWNED", "WORKER", "RECOVERY", "LEASE", "ORPHAN", "SESSION", "DAEMON",
+    )
+    if any(any(fragment in key.upper() for fragment in forbidden_fragments) for key in environment):
+        raise ValueError("forbidden_environment_key")
+    if config.synthetic_test_context:
+        if not set(environment).issubset(SYNTHETIC_ENV_KEYS):
+            raise ValueError("environment_key_set_mismatch")
+        if set(environment) not in (
+            {"PATH", "ARGO_A2_SYNTHETIC_ACTION"},
+            set(SYNTHETIC_ENV_KEYS),
+        ):
+            raise ValueError("environment_key_set_mismatch")
+        if environment.get("PATH") != KNOWN_SYSTEM_PATH:
+            raise ValueError("environment_value_mismatch")
+        if caps.phase_wall_seconds > 20 or caps.campaign_wall_seconds > 60:
+            raise ValueError("synthetic_test_cap_too_large")
+        if caps.file_size_bytes > 1024 * 1024:
+            raise ValueError("synthetic_test_cap_too_large")
+    else:
+        if config.python_executable != "/Users/um-yunsang/.prime/agent/kernel-venv/bin/python":
+            raise ValueError("kernel_interpreter_mismatch")
+        if config.python_executable != environment.get("PRIME_AGENT_KERNEL_PYTHON"):
+            raise ValueError("kernel_interpreter_mismatch")
+        if set(environment) != PRODUCTION_ENV_KEYS:
+            raise ValueError("environment_key_set_mismatch")
+        if any(environment.get(key) != value for key, value in PRODUCTION_FIXED_ENV.items()):
+            raise ValueError("environment_value_mismatch")
+        expected_dynamic = {
+            "PRIME_AGENT_CODING_AGENT_DIR": config.profile_dir,
+            "PRIME_AGENT_KERNEL_PYTHON": config.python_executable,
+            "TMPDIR": f"{config.temporary_dir}/",
+        }
+        if any(environment.get(key) != value for key, value in expected_dynamic.items()):
+            raise ValueError("environment_value_mismatch")
+        for value in expected_dynamic.values():
+            if not Path(value.rstrip("/")).is_absolute() or "\x00" in value:
+                raise ValueError("environment_value_mismatch")
+        for key, value in FROZEN_PRODUCTION_CAPS.items():
+            if getattr(caps, key) != value:
+                raise ValueError("production_cap_mismatch")
+
+
+def _snapshot_processes(timeout_seconds: float, output_limit_bytes: int) -> dict[int, _ProcessRow]:
+    process = subprocess.Popen(
+        ["/bin/ps", "-axo", "pid=,ppid=,pgid=,rss=,state=,lstart="],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
+        close_fds=True,
+    )
+    if process.stdout is None:
+        process.kill()
+        process.wait(timeout=timeout_seconds)
+        raise RuntimeError("process table pipe unavailable")
+    output = bytearray()
+    deadline = time.monotonic() + timeout_seconds
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    try:
+        reached_eof = False
+        while not reached_eof:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("process table timeout")
+            events = selector.select(remaining)
+            if not events:
+                raise TimeoutError("process table timeout")
+            chunk = os.read(process.stdout.fileno(), min(65536, output_limit_bytes + 1 - len(output)))
+            if not chunk:
+                reached_eof = True
+                continue
+            output.extend(chunk)
+            if len(output) > output_limit_bytes:
+                raise RuntimeError("process table output limit")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("process table timeout")
+        returncode = process.wait(timeout=remaining)
+        if returncode != 0:
+            raise RuntimeError("process table command failed")
+    except Exception:
+        if process.poll() is None:
+            process.kill()
+        try:
+            process.wait(timeout=max(0.01, timeout_seconds))
+        except subprocess.TimeoutExpired:
+            pass
+        raise
+    finally:
+        selector.close()
+        process.stdout.close()
+    rows: dict[int, _ProcessRow] = {}
+    for line in output.decode("utf-8", errors="replace").splitlines():
+        fields = line.split(maxsplit=5)
+        if len(fields) != 6:
+            continue
+        try:
+            pid, ppid, pgid, rss_kib = map(int, fields[:4])
+        except ValueError:
+            continue
+        rows[pid] = _ProcessRow(
+            pid=pid,
+            ppid=ppid,
+            pgid=pgid,
+            rss_bytes=max(0, rss_kib) * 1024,
+            state=fields[4],
+            start_identity=fields[5],
+        )
+    if not rows:
+        raise RuntimeError("empty process table")
+    return rows
+
+def _census_artifacts(
+    root_path: str,
+    expected_root: PathIdentity,
+    file_limit: int,
+    aggregate_limit: int,
+    per_file_limit: int,
+) -> _Census:
+    errors: list[str] = []
+    file_count = 0
+    aggregate = 0
+    largest = 0
+    file_size_exceeded = False
+    try:
+        root_info = os.stat(root_path, follow_symlinks=False)
+        if not stat.S_ISDIR(root_info.st_mode):
+            return _Census(0, 0, 0, False, ("artifact_root_not_directory",))
+        if (root_info.st_dev, root_info.st_ino, str(Path(root_path).resolve(strict=True))) != (
+            expected_root.device,
+            expected_root.inode,
+            expected_root.resolved_path,
+        ):
+            return _Census(0, 0, 0, False, ("artifact_root_identity_changed",))
+        pending = [Path(root_path)]
+        directory_count = 0
+        stop = False
+        while pending and not stop:
+            current = pending.pop()
+            directory_count += 1
+            if directory_count > file_limit + 1:
+                errors.append("artifact_directory_count_unbounded")
+                break
+            try:
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        try:
+                            info = entry.stat(follow_symlinks=False)
+                        except OSError:
+                            errors.append("artifact_entry_stat_missing")
+                            stop = True
+                            break
+                        if stat.S_ISLNK(info.st_mode):
+                            errors.append("artifact_symlink_rejected")
+                            stop = True
+                            break
+                        if stat.S_ISDIR(info.st_mode):
+                            pending.append(Path(entry.path))
+                            continue
+                        if not stat.S_ISREG(info.st_mode):
+                            errors.append("artifact_special_file_rejected")
+                            stop = True
+                            break
+                        file_count += 1
+                        aggregate += info.st_size
+                        largest = max(largest, info.st_size)
+                        file_size_exceeded = file_size_exceeded or info.st_size > per_file_limit
+                        if (
+                            file_size_exceeded
+                            or file_count > file_limit
+                            or aggregate > aggregate_limit
+                        ):
+                            stop = True
+                            break
+            except OSError:
+                errors.append("artifact_directory_unreadable")
+                break
+    except OSError:
+        errors.append("artifact_root_stat_missing")
+    return _Census(file_count, aggregate, largest, file_size_exceeded, tuple(errors))
+
+
+def _identity_args(prefix: str, identity: PathIdentity) -> list[str]:
+    if identity.sha256 is None:
+        raise ValueError("file identity missing sha256")
+    return [
+        f"--{prefix}-device", str(identity.device),
+        f"--{prefix}-inode", str(identity.inode),
+        f"--{prefix}-size", str(identity.size),
+        f"--{prefix}-mode", str(identity.mode),
+        f"--{prefix}-uid", str(identity.uid),
+        f"--{prefix}-mtime-ns-max", str(identity.mtime_ns_max),
+        f"--{prefix}-sha256", identity.sha256,
+    ]
+
+
+def _build_exec_argv(config: RunControllerConfig) -> list[str]:
+    argv = [
+        config.python_executable,
+        config.process_exec_path,
+        "--interpreter-identity-json", json.dumps(
+            asdict(config.interpreter_identity),
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "--process-exec-identity-json", json.dumps(
+            asdict(config.process_exec_identity),
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "--cpu-seconds", str(config.caps.cpu_seconds_per_process),
+        "--file-size-bytes", str(config.caps.file_size_bytes),
+        "--v8-old-space-mib", str(config.caps.v8_old_space_mib),
+        "--node-path", config.node_executable,
+        *_identity_args("node", config.node_identity),
+        "--frontend-path", config.frontend_path,
+        *_identity_args("frontend", config.frontend_identity),
+        "--deployment-path", config.deployment_path,
+        *_identity_args("deployment", config.deployment_identity),
+        "--artifact-root", config.artifact_root,
+        "--artifact-root-device", str(config.artifact_root_identity.device),
+        "--artifact-root-inode", str(config.artifact_root_identity.inode),
+    ]
+    if config.synthetic_test_context:
+        argv.append("--synthetic-test-context")
+    return argv
+
+
+def _open_private_output(root: str, suffix: str) -> tuple[int, str]:
+    token = uuid.uuid4().hex
+    basename = f"controller-{token}.{suffix}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    directory_fd = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        descriptor = os.open(basename, flags, 0o600, dir_fd=directory_fd)
+    finally:
+        os.close(directory_fd)
+    info = os.fstat(descriptor)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600:
+        os.close(descriptor)
+        raise ValueError("private_output_creation_failed")
+    return descriptor, str(Path(root) / basename)
+
+
+def _signal_tracked(
+    monitor: _MonitorState,
+    process: subprocess.Popen[bytes],
+    current_signal: signal.Signals,
+    errors: list[str],
+) -> bool:
+    sent = False
+    root_group_signaled = False
+    root_handle_alive = process.poll() is None
+    if (
+        root_handle_alive
+        and monitor.owned_setsid_established
+        and monitor.root_pgid == process.pid
+        and monitor.root_pgid > 1
+    ):
+        try:
+            os.killpg(monitor.root_pgid, current_signal)
+            sent = True
+            root_group_signaled = True
+        except ProcessLookupError:
+            pass
+        except OSError:
+            errors.append(f"{current_signal.name}_root_group_failed")
+
+    nonroot_tracked = [
+        tracked for tracked in monitor.tracked.values()
+        if tracked.pid != process.pid
+    ]
+    if not nonroot_tracked:
+        return sent
+    try:
+        rows = _snapshot_processes(
+            monitor.config.caps.observer_timeout_seconds,
+            monitor.config.caps.observer_output_bytes,
+        )
+    except Exception:
+        monitor.invalidate_process_snapshot()
+        monitor.observer_errors.append("process_table_unavailable_during_signal")
+        errors.append("fresh_process_snapshot_unavailable")
+        return sent
+
+    now_ns = time.monotonic_ns()
+    for tracked in nonroot_tracked:
+        candidate = rows.get(tracked.pid)
+        if candidate is not None and candidate.alive:
+            rows[tracked.pid] = _strengthen_process_row(candidate)
+    monitor.last_rows = rows
+    monitor.last_snapshot_monotonic_ns = now_ns
+
+    for tracked in nonroot_tracked:
+        row = rows.get(tracked.pid)
+        if row is None or not row.alive:
+            continue
+        if not _is_strong_process_identity(tracked) or not _is_strong_process_identity(row):
+            errors.append("tracked_pid_identity_ambiguous")
+            continue
+        if row.start_identity != tracked.start_identity:
+            errors.append("tracked_pid_identity_changed")
+            continue
+        if root_group_signaled and row.pgid == monitor.root_pgid:
+            continue
+        immediate = _darwin_process_identity(row.pid)
+        if immediate is None:
+            errors.append("tracked_pid_identity_immediate_check_failed")
+            continue
+        immediate_identity, immediate_ppid, immediate_pgid = immediate
+        if (
+            immediate_identity != tracked.start_identity
+            or immediate_ppid != row.ppid
+            or immediate_pgid != row.pgid
+        ):
+            errors.append("tracked_pid_identity_immediate_check_changed")
+            continue
+        if row.pid <= 1 or row.pid == os.getpid():
+            errors.append("tracked_pid_identity_forbidden")
+            continue
+        try:
+            os.kill(row.pid, current_signal)
+            sent = True
+        except ProcessLookupError:
+            pass
+        except OSError:
+            errors.append(f"{current_signal.name}_tracked_pid_failed")
+    return sent
+
+
+def _bounded_cleanup(
+    monitor: _MonitorState,
+    process: subprocess.Popen[bytes],
+    force_cleanup: bool,
+) -> CleanupReceipt:
+    errors: list[str] = []
+    signals_sent: list[str] = []
+    monitor.sample()
+    alive = monitor.alive_tracked()
+    if force_cleanup or process.poll() is None or alive:
+        if _signal_tracked(monitor, process, signal.SIGTERM, errors):
+            signals_sent.append("SIGTERM")
+        deadline = time.monotonic() + monitor.config.caps.terminate_grace_seconds
+        while time.monotonic() < deadline:
+            monitor.sample()
+            if process.poll() is not None and not monitor.alive_tracked():
+                break
+            threading.Event().wait(min(
+                monitor.config.caps.rss_sample_ms / 1000,
+                max(0.0, deadline - time.monotonic()),
+            ))
+        monitor.sample()
+        if process.poll() is None or monitor.alive_tracked():
+            if _signal_tracked(monitor, process, signal.SIGKILL, errors):
+                signals_sent.append("SIGKILL")
+            deadline = time.monotonic() + monitor.config.caps.kill_grace_seconds
+            while time.monotonic() < deadline:
+                monitor.sample()
+                if process.poll() is not None and not monitor.alive_tracked():
+                    break
+                threading.Event().wait(min(
+                    monitor.config.caps.rss_sample_ms / 1000,
+                    max(0.0, deadline - time.monotonic()),
+                ))
+    try:
+        process.wait(timeout=max(0.01, monitor.config.caps.kill_grace_seconds))
+    except subprocess.TimeoutExpired:
+        errors.append("root_reap_timeout")
+    monitor.sample()
+    alive_after = tuple(sorted(row.pid for row in monitor.alive_tracked()))
+    root_reaped = process.poll() is not None
+    confirmed = (
+        root_reaped
+        and not alive_after
+        and not errors
+        and not monitor.observer_errors
+        and not monitor.census_errors
+    )
+    tracked = monitor.tracked_receipts()
+    escaped = sorted({
+        pgid
+        for item in tracked
+        for pgid in item.observed_pgids
+        if pgid != monitor.root_pgid
+    })
+    return CleanupReceipt(
+        confirmed_for_tracked_processes=confirmed,
+        claims_all_possible_descendants=False,
+        unobserved_escape_possible=True,
+        root_process_reaped=root_reaped,
+        signals_sent=tuple(signals_sent),
+        tracked_processes=tracked,
+        observed_process_groups=tuple(sorted(monitor.observed_pgids)),
+        escaped_observed_process_groups=tuple(escaped),
+        alive_tracked_after_cleanup=alive_after,
+        cleanup_errors=tuple(errors),
+    )
+
+
+def _resource_receipt(config: RunControllerConfig, monitor: _MonitorState | None) -> ResourceObservationReceipt:
+    if monitor is None:
+        sample_times: list[int] = []
+        peak_rss = 0
+        rss_trigger_ns = None
+        file_count_peak = 0
+        aggregate_peak = 0
+        largest_file = 0
+        observer_errors: tuple[str, ...] = ()
+        census_errors: tuple[str, ...] = ()
+    else:
+        sample_times = monitor.sample_times
+        peak_rss = monitor.peak_rss
+        rss_trigger_ns = monitor.rss_trigger_ns
+        file_count_peak = monitor.file_count_peak
+        aggregate_peak = monitor.aggregate_peak
+        largest_file = monitor.largest_file
+        observer_errors = tuple(monitor.observer_errors)
+        census_errors = tuple(monitor.census_errors)
+    gaps = [
+        (later - earlier) / 1_000_000
+        for earlier, later in zip(sample_times, sample_times[1:])
+    ]
+    observed_seconds = 0.0
+    if len(sample_times) >= 2:
+        observed_seconds = (sample_times[-1] - sample_times[0]) / 1_000_000_000
+    max_gap = max(gaps, default=0.0)
+    expected_gap = config.caps.rss_sample_ms + config.caps.observer_timeout_seconds * 1000
+    coverage = not observer_errors and not census_errors and max_gap <= expected_gap
+    rss_trigger_elapsed: float | None = None
+    if rss_trigger_ns is not None and sample_times:
+        rss_trigger_elapsed = (rss_trigger_ns - sample_times[0]) / 1_000_000_000
+    return ResourceObservationReceipt(
+        provider_timeout_ms=config.caps.provider_timeout_ms,
+        provider_retries=config.caps.provider_retries,
+        model_tokens_between_turns=config.caps.model_tokens_between_turns,
+        controller_turn_limit_per_phase=config.caps.controller_turn_limit_per_phase,
+        source_text_max_bytes=config.caps.source_text_max_bytes,
+        autonomous_gate_retries=config.caps.autonomous_gate_retries,
+        autonomous_gate_timeout_ms=config.caps.autonomous_gate_timeout_ms,
+        bridge_close_grace_ms=config.caps.bridge_close_grace_ms,
+        rss_sampling_semantics="sampled_trigger_not_hard_limit",
+        rss_trigger_bytes=config.caps.rss_trigger_bytes,
+        rss_sample_interval_ms=config.caps.rss_sample_ms,
+        peak_sampled_rss_bytes=peak_rss,
+        rss_overshoot_bytes=max(0, peak_rss - config.caps.rss_trigger_bytes),
+        rss_trigger_monotonic_ns=rss_trigger_ns,
+        rss_trigger_elapsed_from_first_sample_seconds=rss_trigger_elapsed,
+        sample_count=len(sample_times),
+        first_sample_monotonic_ns=sample_times[0] if sample_times else None,
+        last_sample_monotonic_ns=sample_times[-1] if sample_times else None,
+        max_sample_gap_ms=max_gap,
+        observed_seconds=observed_seconds,
+        coverage_complete_for_observed_tree=coverage,
+        observer_errors=observer_errors,
+        census_errors=census_errors,
+        census_file_count_peak=file_count_peak,
+        census_aggregate_bytes_peak=aggregate_peak,
+        census_largest_file_bytes=largest_file,
+        file_count_overshoot=max(0, file_count_peak - config.caps.artifact_file_count),
+        aggregate_bytes_overshoot=max(0, aggregate_peak - config.caps.artifact_aggregate_bytes),
+        artifact_file_count_trigger=config.caps.artifact_file_count,
+        artifact_aggregate_bytes_trigger=config.caps.artifact_aggregate_bytes,
+        regular_file_rlimit_bytes=config.caps.file_size_bytes,
+        cpu_rlimit_seconds_per_process=config.caps.cpu_seconds_per_process,
+        phase_wall_seconds=config.caps.phase_wall_seconds,
+        campaign_wall_seconds=config.caps.campaign_wall_seconds,
+        observer_output_limit_bytes=config.caps.observer_output_bytes,
+        native_usage_missing_or_inflight_semantics="unknown_not_zero",
+    )
+
+
+def _empty_cleanup() -> CleanupReceipt:
+    return CleanupReceipt(
+        confirmed_for_tracked_processes=True,
+        claims_all_possible_descendants=False,
+        unobserved_escape_possible=True,
+        root_process_reaped=True,
+        signals_sent=(),
+        tracked_processes=(),
+        observed_process_groups=(),
+        escaped_observed_process_groups=(),
+        alive_tracked_after_cleanup=(),
+        cleanup_errors=(),
+    )
+
+
+def _preflight_receipt(
+    config: RunControllerConfig,
+    started_ns: int,
+    reason: str,
+    status: str = "preflight_failed",
+) -> ControllerRunReceipt:
+    ended_ns = time.monotonic_ns()
+    return ControllerRunReceipt(
+        schema_version="argo-house-price-a2-controller-process-receipt/v1",
+        authority_contract_sha256=ENVIRONMENT_CONTRACT_SHA256,
+        status=status,
+        terminal_reason=reason,
+        returncode=None,
+        started_monotonic_ns=started_ns,
+        ended_monotonic_ns=ended_ns,
+        elapsed_seconds=(ended_ns - started_ns) / 1_000_000_000,
+        handle=None,
+        resources=_resource_receipt(config, None),
+        cleanup=_empty_cleanup(),
+        limitations=(
+            "RSS is sampled and can overshoot; it is not a kernel hard limit.",
+            "Cleanup is confirmed only for observed identities and the directly owned process group.",
+            "Missing or in-flight native usage is unknown, never zero; root accounting owns session-record parsing.",
+        ),
+    )
+
+
+def _classify_terminal_status(
+    prior_reason: str | None,
+    returncode: int | None,
+    cleanup: CleanupReceipt,
+    resources: ResourceObservationReceipt | None,
+    monitor: _MonitorState | None,
+) -> tuple[str, str]:
+    if monitor is not None and monitor.census_errors:
+        return "resource_invalid", "artifact_census_failed"
+    cleanup_artifact_reasons = {
+        "artifact_census_failed",
+        "artifact_file_size_trigger",
+        "artifact_file_count_trigger",
+        "artifact_aggregate_bytes_trigger",
+    }
+    if prior_reason is None and monitor is not None:
+        prior_reason = next(
+            (
+                reason for reason in monitor.sample_terminal_reasons
+                if reason in cleanup_artifact_reasons
+            ),
+            None,
+        )
+    if not cleanup.confirmed_for_tracked_processes:
+        return "cleanup_unconfirmed", "cleanup_unconfirmed"
+    if prior_reason in ("parent_abort", "parent_signal") or (prior_reason or "").startswith("signal_"):
+        return "aborted", prior_reason or "parent_abort"
+    if prior_reason is not None:
+        return "resource_invalid", prior_reason
+    if returncode == 0:
+        return "succeeded", "completed"
+    if returncode == -getattr(signal, "SIGXFSZ", signal.SIGTERM) or (
+        returncode not in (None, 0)
+        and resources is not None
+        and resources.census_largest_file_bytes >= resources.regular_file_rlimit_bytes
+    ):
+        return "resource_invalid", "file_size_rlimit"
+    if returncode == -getattr(signal, "SIGXCPU", signal.SIGTERM):
+        return "resource_invalid", "cpu_rlimit"
+    return "process_failed", "nonzero_exit"
+
+
+def run_controller(
+    config: RunControllerConfig,
+    *,
+    abort_event: threading.Event | None = None,
+) -> ControllerRunReceipt:
+    started_ns = time.monotonic_ns()
+    with _SignalAbortScope() as signal_scope:
+        try:
+            _validate_config(config)
+        except ValueError as error:
+            reason = str(error)
+            if reason not in {
+                "path_identity_mismatch",
+                "artifact_root_not_private",
+                "directory_binding_mismatch",
+                "fresh_directory_not_empty",
+                "invalid_resource_caps",
+                "invalid_campaign_start",
+                "environment_key_set_mismatch",
+                "environment_value_mismatch",
+                "forbidden_environment_key",
+                "kernel_interpreter_mismatch",
+                "production_cap_mismatch",
+                "synthetic_test_cap_too_large",
+            }:
+                reason = "invalid_config"
+            return _preflight_receipt(config, started_ns, reason)
+
+        campaign_deadline_ns = (
+            config.campaign_started_monotonic_ns
+            + int(config.caps.campaign_wall_seconds * 1_000_000_000)
+        )
+        phase_deadline_ns = started_ns + int(config.caps.phase_wall_seconds * 1_000_000_000)
+        if started_ns >= campaign_deadline_ns:
+            return _preflight_receipt(
+                config,
+                started_ns,
+                "campaign_wall_deadline",
+                status="resource_invalid",
+            )
+        if abort_event is not None and abort_event.is_set():
+            return _preflight_receipt(config, started_ns, "parent_abort", status="aborted")
+
+        stdout_fd: int | None = None
+        stderr_fd: int | None = None
+        process: subprocess.Popen[bytes] | None = None
+        monitor: _MonitorState | None = None
+        handle: ProcessHandleReceipt | None = None
+        reason: str | None = None
+        cleanup = _empty_cleanup()
+        try:
+            stdout_fd, stdout_path = _open_private_output(config.artifact_root, "stdout")
+            stderr_fd, stderr_path = _open_private_output(config.artifact_root, "stderr")
+            process = subprocess.Popen(
+                _build_exec_argv(config),
+                stdin=subprocess.DEVNULL,
+                stdout=stdout_fd,
+                stderr=stderr_fd,
+                cwd=config.artifact_root,
+                env=dict(config.child_environment),
+                close_fds=True,
+                start_new_session=True,
+            )
+            os.close(stdout_fd)
+            stdout_fd = None
+            os.close(stderr_fd)
+            stderr_fd = None
+            try:
+                root_pgid = os.getpgid(process.pid)
+            except ProcessLookupError:
+                root_pgid = process.pid
+            if root_pgid != process.pid:
+                reason = "setsid_not_established"
+            monitor = _MonitorState(config, process, root_pgid)
+            initial_reason = monitor.sample()
+            if reason is None:
+                reason = initial_reason
+            handle = ProcessHandleReceipt(
+                pid=process.pid,
+                root_pgid=root_pgid,
+                pid_start_identity=monitor.root_start_identity(),
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                spawn_attempts=1,
+                process_exec_path=config.process_exec_path,
+                frontend_path=config.frontend_path,
+                deployment_path=config.deployment_path,
+                artifact_root=config.artifact_root,
+                session_dir=config.session_dir,
+                child_environment_keys=tuple(sorted(config.child_environment)),
+                stdin_mode="DEVNULL",
+            )
+            while reason is None and process.poll() is None:
+                if signal_scope.event.is_set():
+                    reason = signal_scope.reason or "parent_signal"
+                    break
+                if abort_event is not None and abort_event.is_set():
+                    reason = "parent_abort"
+                    break
+                now_ns = time.monotonic_ns()
+                if now_ns >= campaign_deadline_ns:
+                    reason = "campaign_wall_deadline"
+                    break
+                if now_ns >= phase_deadline_ns:
+                    reason = "phase_wall_deadline"
+                    break
+                wait_seconds = min(
+                    config.caps.rss_sample_ms / 1000,
+                    (campaign_deadline_ns - now_ns) / 1_000_000_000,
+                    (phase_deadline_ns - now_ns) / 1_000_000_000,
+                )
+                signal_scope.event.wait(max(0.0, wait_seconds))
+                sampled_reason = monitor.sample()
+                if sampled_reason is not None:
+                    reason = sampled_reason
+            force_cleanup = reason is not None
+            cleanup = _bounded_cleanup(monitor, process, force_cleanup)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            reason = reason or "spawn_or_monitor_failed"
+            if process is not None and monitor is not None:
+                cleanup = _bounded_cleanup(monitor, process, True)
+        finally:
+            if stdout_fd is not None:
+                os.close(stdout_fd)
+            if stderr_fd is not None:
+                os.close(stderr_fd)
+
+        if process is None:
+            ended_ns = time.monotonic_ns()
+            return ControllerRunReceipt(
+                schema_version="argo-house-price-a2-controller-process-receipt/v1",
+                authority_contract_sha256=ENVIRONMENT_CONTRACT_SHA256,
+                status="spawn_failed",
+                terminal_reason=reason or "spawn_failed",
+                returncode=None,
+                started_monotonic_ns=started_ns,
+                ended_monotonic_ns=ended_ns,
+                elapsed_seconds=(ended_ns - started_ns) / 1_000_000_000,
+                handle=handle,
+                resources=_resource_receipt(config, monitor),
+                cleanup=cleanup,
+                limitations=(
+                    "RSS is sampled and can overshoot; it is not a kernel hard limit.",
+                    "Cleanup is confirmed only for observed identities and the directly owned process group.",
+                "Missing or in-flight native usage is unknown, never zero; root accounting owns session-record parsing.",
+            "Missing or in-flight native usage is unknown, never zero; root accounting owns session-record parsing.",
+                ),
+            )
+
+        returncode = process.poll()
+        resources = _resource_receipt(config, monitor)
+        if handle is not None and handle.pid_start_identity is None and monitor is not None:
+            handle = ProcessHandleReceipt(
+                pid=handle.pid,
+                root_pgid=handle.root_pgid,
+                pid_start_identity=monitor.root_start_identity(),
+                stdout_path=handle.stdout_path,
+                stderr_path=handle.stderr_path,
+                spawn_attempts=handle.spawn_attempts,
+                process_exec_path=handle.process_exec_path,
+                frontend_path=handle.frontend_path,
+                deployment_path=handle.deployment_path,
+                artifact_root=handle.artifact_root,
+                session_dir=handle.session_dir,
+                child_environment_keys=handle.child_environment_keys,
+                stdin_mode=handle.stdin_mode,
+            )
+        status, terminal_reason = _classify_terminal_status(
+            prior_reason=reason,
+            returncode=returncode,
+            cleanup=cleanup,
+            resources=resources,
+            monitor=monitor,
+        )
+        ended_ns = time.monotonic_ns()
+        return ControllerRunReceipt(
+            schema_version="argo-house-price-a2-controller-process-receipt/v1",
+            authority_contract_sha256=ENVIRONMENT_CONTRACT_SHA256,
+            status=status,
+            terminal_reason=terminal_reason,
+            returncode=returncode,
+            started_monotonic_ns=started_ns,
+            ended_monotonic_ns=ended_ns,
+            elapsed_seconds=(ended_ns - started_ns) / 1_000_000_000,
+            handle=handle,
+            resources=resources,
+            cleanup=cleanup,
+            limitations=(
+                "RSS is sampled and can overshoot; it is not a kernel hard limit.",
+                "Per-process CPU and per-file size RLIMITs are not aggregate tree hard limits.",
+                "Cleanup is confirmed only for observed identities and the directly owned process group; a hostile trusted child could escape between samples.",
+                "Missing or in-flight native usage is unknown, never zero; root accounting owns session-record parsing via the bounded observation queue.",
+            ),
+        )
+
+
+def _stat_identity(info: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        stat.S_IMODE(info.st_mode),
+        info.st_uid,
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+    )
+
+
+def _read_descriptor_bounded(descriptor: int, max_bytes: int) -> bytes:
+    output = bytearray()
+    while len(output) <= max_bytes:
+        try:
+            chunk = os.read(descriptor, min(65536, max_bytes + 1 - len(output)))
+        except InterruptedError:
+            continue
+        if not chunk:
+            return bytes(output)
+        output.extend(chunk)
+    raise ValueError("bounded read exceeded")
+
+
+def _read_config(path: str) -> RunControllerConfig:
+    candidate = Path(path)
+    if not candidate.is_absolute() or candidate.resolve(strict=True) != candidate:
+        raise ValueError("config path must be canonical and absolute")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(candidate, flags)
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size > 1024 * 1024
+        ):
+            raise ValueError("invalid config file")
+        payload = _read_descriptor_bounded(descriptor, 1024 * 1024)
+        after = os.fstat(descriptor)
+        if _stat_identity(after) != _stat_identity(before) or len(payload) != before.st_size:
+            raise ValueError("config descriptor changed during read")
+        path_after = os.stat(candidate, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(path_after.st_mode)
+            or _stat_identity(path_after) != _stat_identity(after)
+            or candidate.resolve(strict=True) != candidate
+        ):
+            raise ValueError("config path changed during read")
+    finally:
+        os.close(descriptor)
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ValueError("invalid config JSON") from None
+    return RunControllerConfig.from_dict(_mapping(value, "config"))
+
+
+def _write_all(descriptor: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    written = 0
+    while written < len(view):
+        try:
+            count = os.write(descriptor, view[written:])
+        except InterruptedError:
+            continue
+        if count <= 0:
+            raise OSError("receipt write made no progress")
+        written += count
+
+
+def _write_receipt(path: str, receipt: ControllerRunReceipt) -> None:
+    candidate = Path(path)
+    parent = candidate.parent
+    if (
+        not candidate.is_absolute()
+        or parent.resolve(strict=True) != parent
+        or candidate.name in ("", ".", "..")
+    ):
+        raise ValueError("receipt path must have canonical absolute parent")
+    payload = (
+        json.dumps(
+            receipt.to_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        + b"\n"
+    )
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    directory_descriptor = os.open(parent, directory_flags)
+    temporary_name = f"{candidate.name}.incomplete-{uuid.uuid4().hex}"
+    temporary_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        temporary_flags |= os.O_NOFOLLOW
+    descriptor: int | None = None
+    published = False
+    try:
+        descriptor = os.open(
+            temporary_name,
+            temporary_flags,
+            0o600,
+            dir_fd=directory_descriptor,
+        )
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_uid != os.getuid()
+        ):
+            raise OSError("receipt temporary file is not private regular file")
+        _write_all(descriptor, payload)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        os.link(
+            temporary_name,
+            candidate.name,
+            src_dir_fd=directory_descriptor,
+            dst_dir_fd=directory_descriptor,
+            follow_symlinks=False,
+        )
+        published = True
+        os.fsync(directory_descriptor)
+        os.unlink(temporary_name, dir_fd=directory_descriptor)
+        os.fsync(directory_descriptor)
+    except Exception:
+        if descriptor is not None:
+            os.close(descriptor)
+        if published:
+            try:
+                os.unlink(candidate.name, dir_fd=directory_descriptor)
+            except OSError:
+                pass
+        try:
+            os.unlink(temporary_name, dir_fd=directory_descriptor)
+        except OSError:
+            pass
+        try:
+            os.fsync(directory_descriptor)
+        except OSError:
+            pass
+        raise
+    finally:
+        os.close(directory_descriptor)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(allow_abbrev=False)
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--receipt", required=True)
+    args = parser.parse_args(argv)
+    try:
+        config = _read_config(args.config)
+        receipt = run_controller(config)
+        _write_receipt(args.receipt, receipt)
+    except Exception:
+        os.write(2, b"A2_CONTROLLER_CONFIG_OR_RECEIPT_FAILED\n")
+        return 2
+    return 0 if receipt.status == "succeeded" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

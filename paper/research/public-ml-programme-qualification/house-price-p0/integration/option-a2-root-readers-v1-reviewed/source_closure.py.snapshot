@@ -1,0 +1,139 @@
+"""Re-derive a bounded closed source-tree digest without importing its code.
+
+This verifies bytes under one canonical root. OS libraries and separately bound
+executables remain outside the tree. It is not an OS access-control mechanism.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+import hashlib
+import json
+import os
+from pathlib import Path
+import stat
+
+
+class ClosureError(ValueError):
+    def __init__(self):
+        super().__init__("SOURCE_CLOSURE_INVALID")
+
+
+@dataclass(frozen=True)
+class ClosureLimits:
+    max_entries: int
+    max_total_bytes: int
+    max_file_bytes: int
+    max_depth: int
+    max_path_bytes: int
+
+
+@dataclass(frozen=True)
+class SourceTree:
+    root: str
+    root_device: int
+    root_inode: int
+    tree_sha256: str
+    file_count: int
+    directory_count: int
+    symlink_count: int
+    total_file_bytes: int
+    maximum_mtime_ns: int
+
+
+def _identity(info):
+    return (info.st_dev,info.st_ino,info.st_mode,info.st_nlink,info.st_size,
+            info.st_mtime_ns,info.st_ctime_ns)
+
+
+def _validate_limits(limits):
+    if not isinstance(limits,ClosureLimits):raise ClosureError()
+    values=(limits.max_entries,limits.max_total_bytes,limits.max_file_bytes,
+            limits.max_depth,limits.max_path_bytes)
+    if any(type(value) is not int or value<=0 for value in values):raise ClosureError()
+    if (limits.max_entries>30000 or limits.max_total_bytes>268435456 or
+            limits.max_file_bytes>67108864 or limits.max_depth>32 or limits.max_path_bytes>4096):
+        raise ClosureError()
+
+
+def capture_tree(root: Path, limits: ClosureLimits) -> SourceTree:
+    _validate_limits(limits)
+    if not isinstance(root,Path) or not root.is_absolute() or ".." in root.parts:
+        raise ClosureError()
+    try:
+        if root.resolve(strict=True)!=root:raise ClosureError()
+        root_before=root.lstat()
+        if not stat.S_ISDIR(root_before.st_mode):raise ClosureError()
+        counts={"files":0,"dirs":0,"links":0,"entries":0,"bytes":0,"mtime":root_before.st_mtime_ns}
+        aggregate=hashlib.sha256(b"argo-source-tree/v1\x00")
+
+        def record(relative,kind,info,content):
+            payload=json.dumps([relative,kind,stat.S_IMODE(info.st_mode),content],
+                               ensure_ascii=True,separators=(",",":")).encode()
+            aggregate.update(len(payload).to_bytes(8,"big"));aggregate.update(payload)
+            counts["mtime"]=max(counts["mtime"],info.st_mtime_ns)
+
+        def scan(directory_fd,relative,depth):
+            if depth>limits.max_depth:raise ClosureError()
+            before_dir=os.fstat(directory_fd)
+            names=[]
+            with os.scandir(directory_fd) as entries:
+                for entry in entries:
+                    names.append(entry.name)
+                    if len(names)+counts["entries"]>limits.max_entries:raise ClosureError()
+            for name in sorted(names):
+                counts["entries"]+=1
+                if counts["entries"]>limits.max_entries:raise ClosureError()
+                rel=name if not relative else relative+"/"+name
+                if len(rel.encode("utf-8"))>limits.max_path_bytes or "\x00" in rel:raise ClosureError()
+                info=os.stat(name,dir_fd=directory_fd,follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode):
+                    counts["dirs"]+=1;record(rel,"directory",info,None)
+                    child=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=directory_fd)
+                    try:
+                        if _identity(os.fstat(child))!=_identity(info):raise ClosureError()
+                        scan(child,rel,depth+1)
+                    finally:os.close(child)
+                    if _identity(os.stat(name,dir_fd=directory_fd,follow_symlinks=False))!=_identity(info):raise ClosureError()
+                elif stat.S_ISLNK(info.st_mode):
+                    target=os.readlink(name,dir_fd=directory_fd)
+                    path=root/rel
+                    resolved=path.resolve(strict=True)
+                    if resolved!=root and root not in resolved.parents:raise ClosureError()
+                    if _identity(os.stat(name,dir_fd=directory_fd,follow_symlinks=False))!=_identity(info):raise ClosureError()
+                    counts["links"]+=1;record(rel,"symlink",info,target)
+                elif stat.S_ISREG(info.st_mode):
+                    if info.st_nlink!=1 or info.st_size>limits.max_file_bytes or counts["bytes"]+info.st_size>limits.max_total_bytes:
+                        raise ClosureError()
+                    descriptor=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=directory_fd)
+                    try:
+                        if _identity(os.fstat(descriptor))!=_identity(info):raise ClosureError()
+                        digest=hashlib.sha256();read=0
+                        while read<info.st_size:
+                            data=os.read(descriptor,min(65536,info.st_size-read))
+                            if not data:raise ClosureError()
+                            read+=len(data);digest.update(data)
+                        if os.read(descriptor,1) or _identity(os.fstat(descriptor))!=_identity(info):raise ClosureError()
+                    finally:os.close(descriptor)
+                    if _identity(os.stat(name,dir_fd=directory_fd,follow_symlinks=False))!=_identity(info):raise ClosureError()
+                    counts["files"]+=1;counts["bytes"]+=info.st_size
+                    record(rel,"file",info,[info.st_size,digest.hexdigest()])
+                else:raise ClosureError()
+            if _identity(os.fstat(directory_fd))!=_identity(before_dir):raise ClosureError()
+
+        root_fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:
+            if _identity(os.fstat(root_fd))!=_identity(root_before):raise ClosureError()
+            scan(root_fd,"",0)
+        finally:os.close(root_fd)
+        if _identity(root.lstat())!=_identity(root_before):raise ClosureError()
+        return SourceTree(str(root),root_before.st_dev,root_before.st_ino,aggregate.hexdigest(),
+                          counts["files"],counts["dirs"],counts["links"],counts["bytes"],counts["mtime"])
+    except (OSError,ValueError,RuntimeError,UnicodeError):
+        raise ClosureError() from None
+
+
+def verify_tree(root: Path, expected: SourceTree, limits: ClosureLimits) -> SourceTree:
+    if not isinstance(expected,SourceTree):raise ClosureError()
+    actual=capture_tree(root,limits)
+    if actual!=expected:raise ClosureError()
+    return actual

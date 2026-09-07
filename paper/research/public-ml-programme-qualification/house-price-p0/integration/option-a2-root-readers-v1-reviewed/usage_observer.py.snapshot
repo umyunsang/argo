@@ -1,0 +1,171 @@
+"""Observe one root-selected native session directory with bounded file reads.
+
+Stops are sticky. Unknown usage is never a grant of free model calls. This observer
+is sampled; it does not impose provider backpressure or a current-response cap.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.campaign_usage import (
+    MAX_SESSION_BYTES, SessionUsage, UsageError, combine_usage, parse_session_usage,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.staging import DirectoryIdentity
+
+
+class UsageObservationError(ValueError):
+    def __init__(self):
+        super().__init__("USAGE_OBSERVATION_INVALID")
+
+
+@dataclass(frozen=True)
+class UsageObserverConfig:
+    session_directory: DirectoryIdentity
+    cwd: str
+    provider: str
+    model: str
+    budget: int
+    prior_sessions: tuple[SessionUsage, ...]
+
+
+@dataclass(frozen=True)
+class UsageObservation:
+    state: str
+    stop_reason: str | None
+    complete: bool
+    current_tokens: int | None
+    total_tokens: int | None
+    session_id: str | None
+    session_sha256: str | None
+    observed_bytes: int
+
+
+def _file_identity(info: os.stat_result) -> tuple[int,...]:
+    return info.st_dev,info.st_ino,info.st_mode,info.st_nlink,info.st_size,info.st_mtime_ns,info.st_ctime_ns
+
+
+class UsageObserver:
+    def __init__(self,config: UsageObserverConfig):
+        if (not isinstance(config,UsageObserverConfig) or
+                not isinstance(config.session_directory,DirectoryIdentity) or
+                not isinstance(config.session_directory.path,Path) or
+                type(config.budget) is not int or not 0<config.budget<=120000 or
+                any(not isinstance(value,str) or not value for value in (config.cwd,config.provider,config.model)) or
+                not isinstance(config.prior_sessions,tuple) or len(config.prior_sessions)>1):
+            raise UsageObservationError()
+        identity=config.session_directory
+        if type(identity.device) is not int or identity.device<0 or type(identity.inode) is not int or identity.inode<=0:
+            raise UsageObservationError()
+        if config.prior_sessions:
+            try:
+                prior=combine_usage(config.prior_sessions,config.budget)
+            except UsageError:
+                raise UsageObservationError() from None
+            if not prior.complete or prior.total_tokens>=config.budget:
+                raise UsageObservationError()
+        self.config=config
+        self._last: UsageObservation | None=None
+        self._seen_session: str | None=None
+        self._file: tuple[str,int,int] | None=None
+        self._counts: tuple[int,int,int,int] | None=None
+        self._previous_bytes: bytes | None=None
+
+    def _unknown(self) -> UsageObservation:
+        prior=self._last
+        result=UsageObservation("USAGE_UNKNOWN","CAMPAIGN_USAGE_UNKNOWN",False,
+            prior.current_tokens if prior else None,prior.total_tokens if prior else None,
+            prior.session_id if prior else None,prior.session_sha256 if prior else None,
+            prior.observed_bytes if prior else 0)
+        self._last=result
+        return result
+
+    def _read_current(self) -> tuple[bytes,tuple[str,int,int]] | None:
+        identity=self.config.session_directory
+        path=identity.path
+        if not path.is_absolute() or ".." in path.parts or path.resolve(strict=True)!=path:
+            raise UsageObservationError()
+        directory=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:
+            root=os.fstat(directory)
+            if not stat.S_ISDIR(root.st_mode) or (root.st_dev,root.st_ino)!=(identity.device,identity.inode):
+                raise UsageObservationError()
+            names=[]
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    names.append(entry.name)
+                    if len(names)>1:raise UsageObservationError()
+            if not names:return None
+            name=names[0]
+            if re.fullmatch(r"[A-Za-z0-9_.-]{1,124}\.jsonl",name) is None:
+                raise UsageObservationError()
+            descriptor=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=directory)
+            with os.fdopen(descriptor,"rb") as stream:
+                before=os.fstat(stream.fileno())
+                if (not stat.S_ISREG(before.st_mode) or before.st_nlink!=1 or
+                        not 0<before.st_size<=MAX_SESSION_BYTES):
+                    raise UsageObservationError()
+                data=stream.read(MAX_SESSION_BYTES+1)
+                after=os.fstat(stream.fileno())
+                current=os.stat(name,dir_fd=directory,follow_symlinks=False)
+                if _file_identity(before)!=_file_identity(after) or _file_identity(after)!=_file_identity(current) or len(data)!=before.st_size:
+                    raise UsageObservationError()
+            root_after=path.lstat()
+            if (root_after.st_dev,root_after.st_ino)!=(identity.device,identity.inode):
+                raise UsageObservationError()
+            return data,(name,before.st_dev,before.st_ino)
+        finally:
+            os.close(directory)
+
+    def observe(self) -> UsageObservation:
+        if self._last is not None and self._last.stop_reason is not None:
+            return self._last
+        try:
+            current=self._read_current()
+            if current is None:
+                if self._seen_session is not None or self._counts is not None:
+                    return self._unknown()
+                result=UsageObservation("WAITING_FIRST_USAGE",None,False,None,None,None,None,0)
+                self._last=result
+                return result
+            data,file_identity=current
+            first_line=data.split(b"\n",1)[0]
+            header=json.loads(first_line)
+            if not isinstance(header,dict) or not isinstance(header.get("id"),str):
+                return self._unknown()
+            session_id=header["id"]
+            if file_identity[0] != session_id+".jsonl":
+                return self._unknown()
+            if self._seen_session is not None and session_id!=self._seen_session:
+                return self._unknown()
+            if self._file is not None and file_identity!=self._file:
+                return self._unknown()
+            if self._previous_bytes is not None and not data.startswith(self._previous_bytes):
+                return self._unknown()
+            usage=parse_session_usage(data,session_id,self.config.cwd,self.config.provider,self.config.model)
+            self._seen_session=session_id
+            self._file=file_identity
+            if usage.assistant_messages==0 and usage.unknown_reasons==("NO_COMPLETED_ASSISTANT_USAGE",) and self._counts is None:
+                result=UsageObservation("WAITING_FIRST_USAGE",None,False,None,None,session_id,hashlib.sha256(data).hexdigest(),len(data))
+                self._last=result
+                return result
+            combined=combine_usage(self.config.prior_sessions+(usage,),self.config.budget)
+            counts=(usage.input,usage.output,usage.cache_read,usage.cache_write)
+            if self._counts is not None and any(new<old for new,old in zip(counts,self._counts)):
+                return self._unknown()
+            if not combined.complete:
+                return self._unknown()
+            self._counts=counts
+            self._previous_bytes=data
+            trigger="CAMPAIGN_TOKEN_TRIGGER" if combined.total_tokens>=self.config.budget else None
+            result=UsageObservation("BUDGET_EXHAUSTED" if trigger else "WITHIN_BUDGET",trigger,True,
+                usage.total_tokens,combined.total_tokens,session_id,hashlib.sha256(data).hexdigest(),len(data))
+            self._last=result
+            return result
+        except (OSError,ValueError,TypeError,RuntimeError,UnicodeError,KeyError):
+            return self._unknown()

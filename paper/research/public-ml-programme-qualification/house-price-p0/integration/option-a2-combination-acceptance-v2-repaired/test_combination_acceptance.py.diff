@@ -1,0 +1,167 @@
+--- v1/test_combination_acceptance.py
+
++++ v2/test_combination_acceptance.py
+
+@@ -71,9 +71,19 @@
+
+         self.process_exec.write_bytes(Path(__file__).with_name("process_exec.py").read_bytes())
+         os.chmod(self.process_exec, 0o600)
+         self.node = self.file("node", b"node", 0o700)
+-        self.deployment = self.file("deployment.json", b"{}", 0o600)
+         self.kernel_target = self.file("kernel-target", b"python", 0o700)
+         self.pyvenv = self.file("pyvenv.cfg", b"home = synthetic\n", 0o600)
++        self.task_prompt_text = "Use read_public_result once, then stop.\n"
++        self.task_prompt = self.file(
++            "frontend/task.md",
++            self.task_prompt_text.encode("utf-8"),
++            0o600,
++        )
++        self.deployment = self.file(
++            "deployment.json",
++            self.canonical(self.deployment_value()),
++            0o600,
++        )
+         self.bridge_config = self.bound_data("bridge-config.json", self.bridge_config_value())
+         self.normal_config = self.process_config(self.normal_frontend, NORMAL_SHA)
+         self.synthetic_config = self.process_config(self.synthetic_frontend_path, FAUX_SHA)
+@@ -83,7 +93,7 @@
+
+         self.session_binding = self.write_session(self.session_records())
+         self.process_receipt = self.write_process_receipt(0)
+         self.metadata = self.write_metadata()
+-        self.gate_config = self.bound_data("gate-config.json", self.gate_config_value())
++        self.gate_config = self.bound_data("frontend/gate-config.json", self.gate_config_value())
+         self.latest_binding, self.latest, self.checkpoint = self.make_latest_gate()
+         self.expectation = CombinationExpectation(
+             controller_context_id=CONTEXT,
+@@ -165,6 +175,86 @@
+
+             observer_timeout_seconds=3, observer_output_bytes=8388608,
+         )
+ 
++    def file_seal(self, path: Path) -> dict[str, object]:
++        binding = self.binding(path)
++        return {
++            "path": str(path),
++            "sha256": binding.sha256,
++            "bytes": binding.bytes,
++            "mtime_ns_max": str(binding.mtime_ns_max),
++        }
++
++    def directory_seal(self, path: Path, empty: bool) -> dict[str, object]:
++        info = path.stat()
++        return {
++            "path": str(path),
++            "realpath": str(path),
++            "device": str(info.st_dev),
++            "inode": str(info.st_ino),
++            "mtime_ns_max": str(info.st_mtime_ns),
++            "mode_octal": "0700",
++            "must_be_empty": empty,
++        }
++
++    def deployment_value(self) -> dict[str, object]:
++        generic = self.file_seal(self.normal_frontend)
++        assets = {
++            "prime_entry": generic,
++            "prime_closure_manifest": generic,
++            "controller_main": self.file_seal(self.normal_frontend),
++            "frontend_closure_manifest": generic,
++            "extension": generic,
++            "binding": generic,
++            "settings": generic,
++            "system_prompt": generic,
++            "task_prompt": self.file_seal(self.task_prompt),
++            "autonomous_gate": generic,
++            "node_executable": self.file_seal(self.node),
++            "kernel_interpreter": {
++                "invocation_path": "/Users/um-yunsang/.prime/agent/kernel-venv/bin/python",
++                "invocation_link": {"device": "1", "inode": "1", "mtime_ns_max": "1", "link_target": "python"},
++                "resolved_target": self.file_seal(self.kernel_target),
++                "pyvenv_cfg": self.file_seal(self.pyvenv),
++            },
++        }
++        environment = {
++            "PRIME_AGENT_CODING_AGENT_DIR": str(self.profile),
++            "PRIME_AGENT_KERNEL_PYTHON": "/Users/um-yunsang/.prime/agent/kernel-venv/bin/python",
++            "PRIME_AGENT_TELEMETRY": "0",
++            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
++            "TMPDIR": str(self.tmp) + "/",
++            "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TZ": "UTC",
++        }
++        limits = {
++            "provider_timeout_ms": 120000, "provider_retries": 0,
++            "phase_wall_seconds": 3600, "campaign_wall_seconds": 10800,
++            "cpu_seconds_per_process": 600, "file_size_bytes": 8388608,
++            "rss_trigger_bytes": 2147483648, "rss_sample_ms": 250,
++            "v8_old_space_mib": 1024, "model_tokens_between_turns": 120000,
++            "controller_turn_limit_per_phase": 20, "source_text_max_bytes": 131072,
++            "bridge_close_grace_ms": 1000, "autonomous_max_continuations": 20,
++            "autonomous_gate_retries": 20, "autonomous_gate_timeout_ms": 30000,
++        }
++        return {
++            "schema_version": "argo-house-price-a2-controller-main-deployment/v1",
++            "status": "TRUSTED_FIXED_DEPLOYMENT",
++            "assets": assets,
++            "directories": {
++                "artifact_root": self.directory_seal(self.artifact, False),
++                "cwd": self.directory_seal(self.cwd, False),
++                "profile": self.directory_seal(self.profile, False),
++                "session_dir": self.directory_seal(self.session, True),
++                "temporary_dir": self.directory_seal(self.tmp, True),
++            },
++            "runtime": {
++                "phase": "dev", "model": "openai-codex/gpt-5.6-sol", "thinking": "xhigh",
++                "mode": "text", "print": True, "offline": True, "fresh_session": True,
++                "tools": ["read_solution", "write_solution", "request_R1_run", "read_public_result", "read_dev_result", "lock_final_artifact"],
++            },
++            "environment": {"exact": environment, "home_must_be_unset": True, "forbidden_prefixes": ["PRIME_AGENT_INTERNAL_"]},
++            "limits": limits,
++        }
++
+     def process_config(self, frontend: Path, frontend_sha: str) -> RunControllerConfig:
+         target = self.path_identity(self.kernel_target)
+         pyvenv = self.path_identity(self.pyvenv)
+@@ -222,7 +312,11 @@
+
+         return [
+             {"type": "session", "version": 3, "id": SESSION_ID, "cwd": str(self.cwd), "rlmDepth": 0},
+             {"type": "model_change", "id": "m", "parentId": None, "provider": "openai-codex", "modelId": "gpt-5.6-sol"},
+-            {"type": "message", "id": "u", "parentId": "m", "message": {"role": "user", "content": [{"type": "text", "text": "synthetic"}]}},
++            {"type": "message", "id": "u", "parentId": "m", "message": {
++                "role": "user",
++                "content": [{"type": "text", "text": self.task_prompt_text}],
++                "timestamp": 122,
++            }},
+             {"type": "message", "id": "a1", "parentId": "u", "message": {
+                 "role": "assistant", "provider": "openai-codex", "model": "gpt-5.6-sol",
+                 "responseId": RESPONSE_IDS[0], "stopReason": "toolUse", "usage": usage1,
+@@ -373,6 +467,27 @@
+
+         self.assertEqual(result.session_sha256, self.session_binding.sha256)
+         self.assertEqual(result.native_gate_sha256, self.latest_binding.sha256)
+         self.assertEqual(self.verify_calls, 6)
++
++    def test_task_prompt_asset_change_and_foreign_gate_location_reject(self) -> None:
++        self.task_prompt.write_text("changed prompt\n", encoding="utf-8")
++        self.assertEqual(self.assess().reason, "SOURCE_MISMATCH")
++
++        self.task_prompt.write_text(self.task_prompt_text, encoding="utf-8")
++        foreign_gate = self.bound_data("foreign-gate-config.json", self.gate_config_value())
++        expectation = replace(self.expectation, gate_config=foreign_gate)
++        self.assertEqual(self.assess(expectation).reason, "SOURCE_MISMATCH")
++
++    def test_wrong_bound_user_prompt_rejects_with_consistent_session_and_gate(self) -> None:
++        records = self.session_records()
++        records[2]["message"]["content"][0]["text"] = "UNEXPECTED_SYNTHETIC_USER_PROMPT"
++        expectation = replace(self.expectation, current_session=self.write_session(records))
++        self.latest_binding, self.latest, self.checkpoint = self.make_latest_gate()
++        before = sorted(str(path.relative_to(self.root)) for path in self.root.rglob("*"))
++        result = self.assess(expectation)
++        after = sorted(str(path.relative_to(self.root)) for path in self.root.rglob("*"))
++        self.assertEqual(result.status, "NOT_ADMITTED")
++        self.assertEqual(result.reason, "TOOL_TRANSCRIPT_INVALID")
++        self.assertEqual(before, after)
+ 
+     def test_wrong_tool_id_and_extra_tool_call_reject(self) -> None:
+         records = self.session_records()

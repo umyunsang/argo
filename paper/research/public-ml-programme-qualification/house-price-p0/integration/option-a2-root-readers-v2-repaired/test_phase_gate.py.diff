@@ -1,0 +1,124 @@
+--- v1/test_phase_gate.py
+
++++ v2/test_phase_gate.py
+
+@@ -4,6 +4,7 @@
+
+ import hashlib
+ import io
+ import json
++import os
+ from dataclasses import asdict, replace
+ from contextlib import redirect_stdout
+ from pathlib import Path
+@@ -131,6 +132,13 @@
+
+         self.assertEqual(result.outcome,"READY_INITIAL_CHECKPOINT")
+         self.assertEqual(result.verified_dev_run_ids,RUNS[:2])
+ 
++
++    def test_verified_metric_count_bounds_remaining_opportunities(self):
++        public,dev,research,usage=views()
++        public["result"]["remaining_dev_opportunities"]=3
++        self.assertEqual(decide_phase("initial",public,dev,research,usage,expected_rows=2).outcome,"STOP_PROTOCOL_INVALID")
++        public["result"]["remaining_dev_opportunities"]=2
++        self.assertEqual(decide_phase("initial",public,dev,research,usage,expected_rows=2).outcome,"STOP_PROTOCOL_INVALID")
+ 
+ class PhaseGateCliTest(unittest.TestCase):
+     def setUp(self):
+@@ -146,6 +154,7 @@
+
+             message=row.get("message",{})
+             if message.get("role")=="assistant":
+                 message["provider"]="openai-codex";message["model"]="gpt-5.6-sol"
++                message["responseId"]="synthetic-response-"+row["id"]
+         self.native=("\n".join(json.dumps(row,separators=(",",":")) for row in records)+"\n").encode()
+         (self.session/(records[0]["id"]+".jsonl")).write_bytes(self.native)
+         bridge_file=self.root/"bridge-config.json";bridge_file.write_bytes(b"{}")
+@@ -215,6 +224,85 @@
+
+         with self.assertRaises(GateConfigError):self.call()
+ 
+ 
++    def test_fresh_gate_invocation_cannot_roll_back_or_forget_completed_usage(self):
++        first=self.call()
++        self.assertEqual(first["usage"]["total_tokens"],3745)
++        session_file=next(self.session.iterdir())
++        earlier=self.native.splitlines(keepends=True)[:-1]
++        session_file.write_bytes(b"".join(earlier))
++        rolled=self.call()
++        self.assertEqual(rolled["decision"]["outcome"],"STOP_USAGE_UNKNOWN")
++        self.assertEqual(rolled["usage"]["total_tokens"],3745)
++        session_file.unlink()
++        missing=self.call()
++        self.assertEqual(missing["decision"]["outcome"],"STOP_USAGE_UNKNOWN")
++
++    def test_outcome_chain_is_contiguous_and_checkpoint_is_exact(self):
++        first=self.call();second=self.call()
++        self.assertEqual(first["sequence"],1);self.assertEqual(second["sequence"],2)
++        outcomes=sorted(self.outcomes.glob("*.json"))
++        self.assertEqual(second["previous_outcome_sha256"],hashlib.sha256(outcomes[0].read_bytes()).hexdigest())
++        self.assertEqual(second["usage_checkpoint"]["observation"],second["usage"])
++        self.assertEqual(second["usage_checkpoint"]["prefix"]["bytes"],len(self.native))
++        outcomes[0].unlink()
++        with self.assertRaises(GateConfigError):self.call()
++
++    def test_corrupt_or_busy_history_fails_closed_without_new_outcome(self):
++        self.call();first=next(self.outcomes.glob("*.json"))
++        first.write_bytes(first.read_bytes().replace(b'"sequence":1',b'"sequence":2'))
++        with self.assertRaises(GateConfigError):self.call()
++        self.assertEqual(len(list(self.outcomes.glob("*.json"))),1)
++        lock=self.outcomes/".gate-evaluation.lock";lock.write_bytes(b"not-this-evaluation")
++        with self.assertRaises(GateConfigError):self.call()
++        self.assertEqual(lock.read_bytes(),b"not-this-evaluation")
++
++    def test_unknown_usage_cannot_be_repaired_into_readiness_on_next_call(self):
++        path=next(self.session.iterdir());path.write_bytes(self.native[:-1])
++        first=self.call();self.assertEqual(first["decision"]["outcome"],"STOP_USAGE_UNKNOWN")
++        path.write_bytes(self.native)
++        second=self.call();self.assertEqual(second["decision"]["outcome"],"STOP_USAGE_UNKNOWN")
++        self.assertFalse(second["decision"]["ready"])
++
++    def test_outcome_count_cap_and_short_write_are_fail_closed(self):
++        native_write=os.write
++        def short_write(fd,data):return native_write(fd,data[:7])
++        with patch("experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.phase_gate.os.write",side_effect=short_write):
++            first=self.call()
++        self.assertEqual(first["decision"]["outcome"],"READY_INITIAL_CHECKPOINT")
++        for _ in range(39):self.call()
++        with self.assertRaises(GateConfigError):self.call()
++        self.assertEqual(len(list(self.outcomes.glob("*.json"))),40)
++        self.assertFalse((self.outcomes/".gate-evaluation.lock").exists())
++
++    def test_partial_outcome_write_is_retained_and_blocks_next_invocation(self):
++        native_write=os.write
++        calls=0
++        def interrupted_write(fd,data):
++            nonlocal calls
++            calls+=1
++            if calls==3:raise OSError("synthetic")
++            return native_write(fd,data if calls==1 else data[:11])
++        with patch("experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.phase_gate.os.write",side_effect=interrupted_write):
++            with self.assertRaises(GateConfigError):self.call()
++        incomplete=next(self.outcomes.glob("*.json"))
++        self.assertEqual(incomplete.stat().st_size,11)
++        self.assertFalse((self.outcomes/".gate-evaluation.lock").exists())
++        with self.assertRaises(GateConfigError):self.call()
++        self.assertEqual(len(list(self.outcomes.glob("*.json"))),1)
++
++    def test_fresh_gate_keeps_valid_append_but_denies_identical_inode_replacement(self):
++        path=next(self.session.iterdir())
++        prefix=b"\n".join(self.native.split(b"\n")[:-2])+b"\n"
++        path.write_bytes(prefix)
++        first=self.call();self.assertEqual(first["decision"]["outcome"],"READY_INITIAL_CHECKPOINT")
++        self.assertLess(first["usage"]["current_tokens"],3745)
++        path.write_bytes(self.native)
++        second=self.call();self.assertEqual(second["decision"]["outcome"],"READY_INITIAL_CHECKPOINT")
++        self.assertEqual(second["usage"]["current_tokens"],3745)
++        replacement=self.root/"replacement.jsonl";replacement.write_bytes(self.native);replacement.replace(path)
++        third=self.call();self.assertEqual(third["decision"]["outcome"],"STOP_USAGE_UNKNOWN")
++        self.assertEqual(third["usage"]["current_tokens"],3745)
++
+ class FakeGateBridge:
+     def __init__(self,public,dev,research,state,lock=None):
+         self.responses={"read_public_result":public,"read_dev_result":dev,"read_solution":research}

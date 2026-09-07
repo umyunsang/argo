@@ -1,0 +1,84 @@
+--- v1/test_usage_observer.py
+
++++ v2/test_usage_observer.py
+
+@@ -20,7 +20,14 @@
+
+         self.root=Path(self.temp.name).resolve()
+         self.current=self.root/"session";self.current.mkdir(mode=0o700)
+         self.identity=DirectoryIdentity(self.current,self.current.stat().st_dev,self.current.stat().st_ino)
+-        self.raw=FIXTURE.read_bytes();self.records=[json.loads(line) for line in self.raw.split(b"\n") if line]
++        original=FIXTURE.read_bytes()
++        self.assertEqual(hashlib.sha256(original).hexdigest(),"3f7b6a84d8ed486b549f6fb4c255fad64c13d4d19b58e60cc8b5eff7fd6b937a")
++        self.records=[json.loads(line) for line in original.split(b"\n") if line]
++        # This derived positive fixture is not an unchanged native capture.
++        for row in self.records:
++            if row.get("message",{}).get("role")=="assistant":
++                row["message"]["responseId"]="synthetic-response-"+row["id"]
++        self.raw=("\n".join(json.dumps(row,separators=(",",":")) for row in self.records)+"\n").encode()
+         self.header=self.records[0]
+         self.config=UsageObserverConfig(self.identity,self.header["cwd"],"a2-faux-6122","a2-probe",120000,())
+         self.observer=UsageObserver(self.config)
+@@ -85,5 +92,61 @@
+
+         self.assertEqual(result.stop_reason,"CAMPAIGN_USAGE_UNKNOWN")
+         self.assertEqual(result.total_tokens,3745)
+ 
++    def test_restored_checkpoint_rejects_rollback_and_missing_file(self):
++        path=self.write();first=self.observer.observe()
++        checkpoint=self.observer.export_checkpoint()
++        self.write(self.records[:-1])
++        restored=UsageObserver(self.config,checkpoint=checkpoint)
++        result=restored.observe()
++        self.assertEqual(result.stop_reason,"CAMPAIGN_USAGE_UNKNOWN")
++        self.assertEqual(result.total_tokens,first.total_tokens)
++        stopped=restored.export_checkpoint()
++        path.unlink()
++        self.assertEqual(UsageObserver(self.config,checkpoint=stopped).observe().stop_reason,"CAMPAIGN_USAGE_UNKNOWN")
++
++    def test_restored_checkpoint_validates_configuration_types_and_prefix(self):
++        path=self.write();self.observer.observe();checkpoint=self.observer.export_checkpoint()
++        restored=UsageObserver(self.config,checkpoint=checkpoint)
++        self.assertEqual(restored.observe().total_tokens,3745)
++        for field,value in [("config_sha256","0"*64),("counts",[True,13,503,1615])]:
++            changed=json.loads(json.dumps(checkpoint));changed[field]=value
++            with self.assertRaises(UsageObservationError):UsageObserver(self.config,checkpoint=changed)
++        data=path.read_bytes();path.write_bytes(data.replace(b"synthetic",b"sYnthEtic"))
++        # Alter a complete byte prefix even if numeric counters stay unchanged.
++        if path.read_bytes()==data:path.write_bytes(data.replace(b"assistant",b"Assistant",1))
++        self.assertEqual(UsageObserver(self.config,checkpoint=checkpoint).observe().stop_reason,"CAMPAIGN_USAGE_UNKNOWN")
++
++    def test_restored_checkpoint_allows_only_real_append_and_preserves_waiting(self):
++        empty=self.observer.observe()
++        resumed=UsageObserver(self.config,checkpoint=self.observer.export_checkpoint())
++        self.assertEqual(resumed.observe(),empty)
++        path=self.write()
++        prefix=b"\n".join(self.raw.split(b"\n")[:-2])+b"\n"
++        path.write_bytes(prefix)
++        first=resumed.observe();self.assertEqual(first.state,"WITHIN_BUDGET")
++        self.assertLess(first.current_tokens,3745)
++        checkpoint=resumed.export_checkpoint()
++        path.write_bytes(self.raw)
++        appended=UsageObserver(self.config,checkpoint=checkpoint).observe()
++        self.assertEqual(appended.current_tokens,3745)
++        self.assertEqual(appended.state,"WITHIN_BUDGET")
++
++    def test_restored_checkpoint_rejects_replaced_identical_file(self):
++        path=self.write();first=self.observer.observe();checkpoint=self.observer.export_checkpoint()
++        replacement=self.root/"replacement.jsonl";replacement.write_bytes(self.raw)
++        replacement.replace(path)
++        result=UsageObserver(self.config,checkpoint=checkpoint).observe()
++        self.assertEqual(result.stop_reason,"CAMPAIGN_USAGE_UNKNOWN")
++        self.assertEqual(result.current_tokens,first.current_tokens)
++
++    def test_original_native_capture_missing_ids_stops_but_retains_known_counts(self):
++        path=self.write();path.write_bytes(FIXTURE.read_bytes())
++        result=self.observer.observe()
++        self.assertEqual(result.state,"USAGE_UNKNOWN")
++        self.assertEqual(result.current_tokens,3745)
++        self.assertFalse(result.complete)
++        restored=UsageObserver(self.config,checkpoint=self.observer.export_checkpoint())
++        self.assertEqual(restored.observe(),result)
++
+ if __name__=="__main__":unittest.main(verbosity=2)
+ 

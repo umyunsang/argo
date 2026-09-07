@@ -1,0 +1,106 @@
+"""Exercise real file/config producers without running any generated entry."""
+from __future__ import annotations
+from dataclasses import asdict
+import hashlib
+import json
+import os
+from pathlib import Path
+from types import SimpleNamespace
+import tempfile
+import time
+import unittest
+from unittest.mock import patch
+
+import experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.combination_driver as driver
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.controller_deployment import _revalidate_frontend_deployment
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.grading import FileBinding
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.source_closure import capture_tree, verify_tree
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.staging import DirectoryIdentity
+
+HERE=Path(__file__).resolve().parent
+FAUX_SHA="4c9b73b8d759fd0dd0061c84dd28a658452eaed6175fda4ba23ff4b60e6b09d6"
+
+def binding(path):
+    data=path.read_bytes();return FileBinding(path,hashlib.sha256(data).hexdigest(),len(data),path.stat().st_mtime_ns)
+def identity(path):
+    info=path.stat();return DirectoryIdentity(path,info.st_dev,info.st_ino)
+
+class CombinationEnvironmentTest(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory(prefix="hp-file-composition-")
+        self.root=Path(self.temp.name).resolve();self.root.chmod(0o700)
+        self.case=self.root/"case";self.case.mkdir(mode=0o700)
+        namespace=self.root/"namespace";namespace.mkdir(mode=0o700)
+        package=namespace
+        for name in ("experiments","argo_workflow_followup","public_ml_apparatus","house_price_runtime"):
+            package=package/name;package.mkdir(mode=0o700);(package/"__init__.py").write_bytes(b"")
+        (package/"process_exec.py").write_bytes((HERE/"process_exec.py").read_bytes())
+        (package/"bridge.py").write_bytes(b"# synthetic module, never executed\n")
+        (package/"phase_gate.py").write_bytes(b"# synthetic module, never executed\n")
+        seed=self.root/"seed";seed.mkdir(mode=0o700);(seed/"a2-frontend-probes").mkdir(mode=0o700)
+        for relative,expected in (("controller-main.ts",driver.NORMAL_SHA256),
+                ("controller-extension.ts",driver.EXTENSION_SHA256),(driver.FAUX_RELATIVE,FAUX_SHA)):
+            data=(HERE/relative).read_bytes()
+            self.assertEqual(hashlib.sha256(data).hexdigest(),expected)
+            (seed/relative).write_bytes(data)
+        prime_placeholder=self.root/"prime-placeholder";prime_placeholder.mkdir(mode=0o700)
+        self.config=driver.CombinationCaseConfig(self.case,capture_tree(namespace,driver.TREE_LIMITS),
+            capture_tree(seed,driver.TREE_LIMITS),capture_tree(prime_placeholder,driver.TREE_LIMITS),
+            FAUX_SHA,"a"*64,"b"*64,self.protected_roots())
+        fixture=self.case/"fixture";fixture.mkdir(mode=0o700)
+        state=fixture/"bridge-state";state.mkdir(mode=0o700)
+        config=fixture/"bridge-config.json";config.write_bytes(b"{}")
+        self.fixture=SimpleNamespace(bridge_config=binding(config),bridge_state=identity(state))
+    def protected_roots(self):
+        roots=[]
+        for name in ("raw","auth","user-profile","controller","public"):
+            path=self.root/name;path.mkdir(mode=0o700);roots.append(identity(path))
+        return driver.CaseProtectedRoots(*roots)
+    def tearDown(self):self.temp.cleanup()
+
+    def test_real_file_producers_preserve_two_field_config_difference(self):
+        with patch.object(driver,"prepare_fixture",side_effect=AssertionError("fixture invoked")), \
+                patch.object(driver,"run_controller",side_effect=AssertionError("controller invoked")), \
+                patch("subprocess.Popen",side_effect=AssertionError("subprocess invoked")):
+            prepared=driver._prepare_environment(self.config,self.fixture,time.monotonic_ns())
+        normal=json.loads(prepared.normal_process.path.read_bytes())
+        synthetic=json.loads(prepared.synthetic_process.path.read_bytes())
+        difference={key for key in normal if normal[key]!=synthetic[key]}
+        self.assertEqual(difference,{"frontend_path","frontend_identity"})
+        self.assertEqual(normal["frontend_identity"]["sha256"],driver.NORMAL_SHA256)
+        self.assertEqual(synthetic["frontend_identity"]["sha256"],FAUX_SHA)
+        self.assertIs(normal["synthetic_test_context"],False)
+        self.assertEqual(len(synthetic["child_environment"]),8)
+        self.assertEqual(synthetic["caps"]["rss_trigger_bytes"],2147483648)
+        self.assertEqual(synthetic["caps"]["model_tokens_between_turns"],120000)
+        deployment_path=Path(normal["deployment_path"])
+        deployment=json.loads(deployment_path.read_bytes())
+        _revalidate_frontend_deployment(deployment_path,deployment)
+        self.assertEqual(verify_tree(Path(prepared.frontend_tree.root),prepared.frontend_tree,driver.TREE_LIMITS),prepared.frontend_tree)
+        self.assertEqual(list(prepared.session_directory.path.iterdir()),[])
+        self.assertEqual(list((prepared.artifact_root/"tmp").iterdir()),[])
+        self.assertFalse((self.case/"profile"/"auth.json").exists())
+        self.assertEqual(set(path.name for path in prepared.artifact_root.iterdir()),{"deployment.json","session","tmp"})
+        gate=json.loads(prepared.gate_config.path.read_bytes())
+        self.assertEqual(gate["bridge_config"]["sha256"],self.fixture.bridge_config.sha256)
+        self.assertEqual(gate["session_directory"],{"path":str(prepared.session_directory.path),"device":prepared.session_directory.device,"inode":prepared.session_directory.inode})
+        self.assertEqual(gate["expected_rows"],292)
+        self.assertEqual(gate["context"],"initial")
+        for name in ("bridge-entry.py","gate-entry.py"):
+            entry=Path(prepared.frontend_tree.root)/name
+            text=entry.read_text()
+            self.assertIn("os.fchdir(descriptor)",text)
+            self.assertIn("os.execve(",text)
+            self.assertEqual(entry.stat().st_mode&0o777,0o700)
+        self.assertEqual(set(path.name for path in (self.case/"control").iterdir()),{"normal-process-config.json","synthetic-process-config.json"})
+
+    def test_tampered_fixed_seed_rejects_before_any_process_or_config(self):
+        target=Path(self.config.frontend_seed_tree.root)/"controller-main.ts"
+        target.write_bytes(target.read_bytes()+b"\n// wrong seed\n")
+        with patch.object(driver,"run_controller") as run,patch("subprocess.Popen") as spawn,self.assertRaises(Exception):
+            driver._prepare_environment(self.config,self.fixture,time.monotonic_ns())
+        run.assert_not_called();spawn.assert_not_called()
+        self.assertFalse((self.case/"artifacts"/"deployment.json").exists())
+        self.assertEqual(list((self.case/"artifacts"/"session").iterdir()),[])
+
+if __name__=="__main__":unittest.main(verbosity=2)

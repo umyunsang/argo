@@ -1,0 +1,280 @@
+"""Mock and small-tree tests for trusted combination preflight only."""
+from __future__ import annotations
+
+from contextlib import redirect_stderr
+from dataclasses import asdict
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+from types import SimpleNamespace
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+import combination_preflight as module
+from combination_preflight import execute_preflight, fixed_entry_source
+from source_closure import ClosureLimits, capture_tree, verify_tree
+
+KERNEL = "/Users/um-yunsang/.prime/agent/kernel-venv/bin/python"
+DRIVER_MODULE = "experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.combination_driver"
+ENV = {"LANG":"C.UTF-8","LC_ALL":"C.UTF-8","PATH":"/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin","TZ":"UTC"}
+RUNTIME = "experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime"
+DRIVER_REL = RUNTIME + "/combination_driver.py"
+FIXTURE_REL = RUNTIME + "/combination_fixture.py"
+ACCEPTANCE_REL = RUNTIME + "/combination_acceptance.py"
+FAUX_REL = "a2-frontend-probes/a2-combination-frontend.ts"
+SMALL_LIMITS = ClosureLimits(160, 8_388_608, 1_048_576, 8, 4096)
+
+
+def digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+class ExecSentinel(BaseException):
+    pass
+
+
+class Fixture:
+    def __init__(self, parent: Path):
+        self.parent = parent.resolve()
+        self.parent.chmod(0o700)
+        self.namespace = self.parent / "namespace"
+        self.frontend = self.parent / "frontend-seed"
+        self.installed = self.parent / "installed-prime"
+        for path in (self.namespace, self.frontend, self.installed):
+            path.mkdir(mode=0o700)
+        self.driver = b"DRIVER = True\n"
+        self.fixture = b"FIXTURE = True\n"
+        self.acceptance = b"ACCEPTANCE = True\n"
+        self.faux = b"export const synthetic = true;\n"
+        self._write(self.namespace, DRIVER_REL, self.driver)
+        self._write(self.namespace, FIXTURE_REL, self.fixture)
+        self._write(self.namespace, ACCEPTANCE_REL, self.acceptance)
+        self._write(self.frontend, FAUX_REL, self.faux)
+        (self.installed / "dist").mkdir()
+        (self.installed / "dist" / "index.js").write_bytes(b"export {};\n")
+        self.protected = {}
+        for role in ("raw", "auth", "profile", "controller", "public"):
+            path = self.parent / ("protected-" + role)
+            path.mkdir(mode=0o700)
+            info = path.stat()
+            self.protected[role] = {"path":str(path), "device":info.st_dev, "inode":info.st_ino}
+        self.case_root = self.parent / "case-root"
+        self.config_path = self.parent / "case-config.json"
+        self.write_config()
+
+    @staticmethod
+    def _write(root: Path, relative: str, data: bytes) -> None:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    def value(self) -> dict[str, object]:
+        return {
+            "schema_version":"argo-house-price-a2-combination-case-config/v2",
+            "case_root":str(self.case_root),
+            "protected_roots":json.loads(json.dumps(self.protected)),
+            "namespace_tree":asdict(capture_tree(self.namespace, SMALL_LIMITS)),
+            "frontend_seed_tree":asdict(capture_tree(self.frontend, SMALL_LIMITS)),
+            "installed_prime_tree":asdict(capture_tree(self.installed, SMALL_LIMITS)),
+            "expected_faux_frontend_sha256":digest(self.faux),
+            "expected_fixture_module_sha256":digest(self.fixture),
+            "expected_acceptance_module_sha256":digest(self.acceptance),
+        }
+
+    def write_config(self, value: object | None = None) -> str:
+        data=json.dumps(self.value() if value is None else value,sort_keys=True,separators=(",",":")).encode()
+        self.config_path.write_bytes(data)
+        self.config_path.chmod(0o600)
+        return digest(data)
+
+
+class PreflightTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary=tempfile.TemporaryDirectory(prefix="combination-preflight-test-")
+        self.fixture=Fixture(Path(self.temporary.name))
+        self.config_hash=digest(self.fixture.config_path.read_bytes())
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def assert_fixed_failure(self, action) -> None:
+        captured=io.StringIO()
+        with redirect_stderr(captured):
+            self.assertEqual(action(),2)
+        self.assertEqual(captured.getvalue(),"COMBINATION_PREFLIGHT_INVALID\n")
+        self.assertFalse(os.path.lexists(self.fixture.case_root))
+
+    def test_success_verifies_three_trees_reopens_config_closes_fd_and_execs_fixed(self) -> None:
+        fchdir_fds=[]
+        with patch.object(module,"verify_tree",wraps=verify_tree) as verifier, \
+             patch.object(module.os,"fchdir",side_effect=lambda fd:fchdir_fds.append(fd)) as fchdir, \
+             patch.object(module.os,"execve",side_effect=ExecSentinel) as execute, \
+             patch.object(module,"_read_config_bytes",wraps=module._read_config_bytes) as reader:
+            with self.assertRaises(ExecSentinel):
+                execute_preflight(self.fixture.config_path,self.config_hash)
+        self.assertEqual(verifier.call_count,3)
+        self.assertEqual(reader.call_count,2)
+        self.assertEqual(fchdir.call_count,1)
+        self.assertEqual(len(fchdir_fds),1)
+        with self.assertRaises(OSError):os.fstat(fchdir_fds[0])
+        self.assertEqual(execute.call_args.args,(KERNEL,[KERNEL,"-B","-m",DRIVER_MODULE,"--config",str(self.fixture.config_path),"--config-sha256",self.config_hash],ENV))
+        self.assertFalse(os.path.lexists(self.fixture.case_root))
+
+    def test_fixed_entry_has_only_allowed_imports_fixed_literals_and_argument_guard(self) -> None:
+        source=fixed_entry_source(self.fixture.config_path,self.config_hash)
+        self.assertIn("import sys",source)
+        self.assertIn("from pathlib import Path",source)
+        self.assertIn("from combination_preflight import execute_preflight",source)
+        self.assertNotIn("importlib",source);self.assertNotIn("sys.path",source);self.assertNotIn("PYTHONPATH",source)
+        calls=[]
+        def called(path,sha):calls.append((path,sha));return 2
+        captured=io.StringIO()
+        with patch.object(module,"execute_preflight",side_effect=called),patch.object(sys,"argv",["case-entry.py"]),redirect_stderr(captured),self.assertRaises(SystemExit) as stopped:
+            exec(compile(source,"case-entry.py","exec"),{"__name__":"__main__"})
+        self.assertEqual(stopped.exception.code,2)
+        self.assertEqual(calls,[(self.fixture.config_path,self.config_hash)])
+        calls.clear();captured=io.StringIO()
+        with patch.object(module,"execute_preflight",side_effect=called),patch.object(sys,"argv",["case-entry.py","extra"]),redirect_stderr(captured),self.assertRaises(SystemExit) as stopped:
+            exec(compile(source,"case-entry.py","exec"),{"__name__":"__main__"})
+        self.assertEqual(stopped.exception.code,2);self.assertEqual(calls,[])
+        self.assertEqual(captured.getvalue(),"COMBINATION_PREFLIGHT_INVALID\n")
+        with self.assertRaises(ValueError):fixed_entry_source(Path("relative.json"),self.config_hash)
+        with self.assertRaises(ValueError):fixed_entry_source(self.fixture.config_path,"0")
+
+    def test_wrong_interpreter_flags_and_malformed_invocation_stop_before_trees_or_exec(self) -> None:
+        cases=(
+            ("executable",patch.object(module.sys,"executable","/usr/bin/python3")),
+            ("no_site",patch.object(module.sys,"flags",SimpleNamespace(no_site=0,dont_write_bytecode=1))),
+            ("bytecode",patch.object(module.sys,"flags",SimpleNamespace(no_site=1,dont_write_bytecode=0))),
+        )
+        for name,change in cases:
+            with self.subTest(name=name),change,patch.object(module,"verify_tree") as verifier,patch.object(module.os,"execve") as execute:
+                self.assert_fixed_failure(lambda:execute_preflight(self.fixture.config_path,self.config_hash))
+                verifier.assert_not_called();execute.assert_not_called()
+        fake=self.fixture.parent/"regular-python";fake.write_bytes(b"python");fake.chmod(0o700)
+        with patch.object(module,"KERNEL",str(fake)),patch.object(module.sys,"executable",str(fake)),patch.object(module,"verify_tree") as verifier,patch.object(module.os,"execve") as execute:
+            self.assert_fixed_failure(lambda:execute_preflight(self.fixture.config_path,self.config_hash))
+            verifier.assert_not_called();execute.assert_not_called()
+        empty_cfg=self.fixture.parent/"empty-pyvenv.cfg";empty_cfg.write_bytes(b"")
+        with patch.object(module,"PYVENV_CONFIG",empty_cfg),patch.object(module,"verify_tree") as verifier,patch.object(module.os,"execve") as execute:
+            self.assert_fixed_failure(lambda:execute_preflight(self.fixture.config_path,self.config_hash))
+            verifier.assert_not_called();execute.assert_not_called()
+
+    def test_duplicate_wrong_hash_extra_and_disjoint_config_fail_before_exec(self) -> None:
+        old_value=self.fixture.value();old_value["schema_version"]="argo-house-price-a2-combination-case-config/v1";old_value.pop("protected_roots")
+        old_hash=self.fixture.write_config(old_value)
+        with patch.object(module,"verify_tree") as verifier,patch.object(module.os,"execve") as execute:
+            self.assert_fixed_failure(lambda:execute_preflight(self.fixture.config_path,old_hash))
+            verifier.assert_not_called();execute.assert_not_called()
+        self.config_hash=self.fixture.write_config()
+        original=self.fixture.config_path.read_bytes()
+        duplicate=original[:-1]+b',"case_root":"/duplicate"}'
+        self.fixture.config_path.write_bytes(duplicate);self.fixture.config_path.chmod(0o600)
+        with patch.object(module.os,"execve") as execute:
+            self.assert_fixed_failure(lambda:execute_preflight(self.fixture.config_path,digest(duplicate)))
+            execute.assert_not_called()
+        self.fixture.write_config();self.config_hash=digest(self.fixture.config_path.read_bytes())
+        with patch.object(module.os,"execve") as execute:
+            self.assert_fixed_failure(lambda:execute_preflight(self.fixture.config_path,"0"*64))
+            execute.assert_not_called()
+        value=self.fixture.value();value["extra"]=True
+        self.config_hash=self.fixture.write_config(value)
+        with patch.object(module.os,"execve") as execute:
+            self.assert_fixed_failure(lambda:execute_preflight(self.fixture.config_path,self.config_hash))
+            execute.assert_not_called()
+        value=self.fixture.value();value["namespace_tree"]["root"]=str(self.fixture.parent)
+        self.config_hash=self.fixture.write_config(value)
+        with patch.object(module.os,"execve") as execute:
+            self.assert_fixed_failure(lambda:execute_preflight(self.fixture.config_path,self.config_hash))
+            execute.assert_not_called()
+        self.fixture.config_path.unlink()
+        with patch.object(module.os,"execve") as execute:
+            self.assert_fixed_failure(lambda:execute_preflight(self.fixture.config_path,self.config_hash))
+            execute.assert_not_called()
+
+    def test_protected_roots_reject_case_ancestry_and_bad_identity_before_trees(self) -> None:
+        value=self.fixture.value()
+        denied_case=Path(value["protected_roots"]["profile"]["path"])/"case-root"
+        value["case_root"]=str(denied_case)
+        digest_value=self.fixture.write_config(value)
+        with patch.object(module,"verify_tree") as verifier,patch.object(module.os,"execve") as execute:
+            self.assert_fixed_failure(lambda:execute_preflight(self.fixture.config_path,digest_value))
+            verifier.assert_not_called();execute.assert_not_called()
+        self.assertFalse(os.path.lexists(denied_case))
+        value=self.fixture.value();value["protected_roots"]["raw"]["inode"] += 1
+        digest_value=self.fixture.write_config(value)
+        with patch.object(module,"verify_tree") as verifier,patch.object(module.os,"execve") as execute:
+            self.assert_fixed_failure(lambda:execute_preflight(self.fixture.config_path,digest_value))
+            verifier.assert_not_called();execute.assert_not_called()
+        value=self.fixture.value();value["protected_roots"]["auth"]["device"] = True
+        digest_value=self.fixture.write_config(value)
+        with patch.object(module,"verify_tree") as verifier,patch.object(module.os,"execve") as execute:
+            self.assert_fixed_failure(lambda:execute_preflight(self.fixture.config_path,digest_value))
+            verifier.assert_not_called();execute.assert_not_called()
+        value=self.fixture.value();value["protected_roots"].pop("public")
+        digest_value=self.fixture.write_config(value)
+        with patch.object(module,"verify_tree") as verifier,patch.object(module.os,"execve") as execute:
+            self.assert_fixed_failure(lambda:execute_preflight(self.fixture.config_path,digest_value))
+            verifier.assert_not_called();execute.assert_not_called()
+
+    def test_overlapping_protected_roles_revalidate_and_close_before_exec(self) -> None:
+        value=self.fixture.value();shared=value["protected_roots"]["raw"]
+        value["protected_roots"]={role:dict(shared) for role in ("raw","auth","profile","controller","public")}
+        digest_value=self.fixture.write_config(value)
+        opened=[];real_open=module._open_protected_roots
+        def opening(config):
+            descriptors=real_open(config);opened.extend(descriptors);return descriptors
+        def replaced(*_args):
+            for descriptor in opened:
+                with self.assertRaises(OSError):os.fstat(descriptor)
+            raise ExecSentinel()
+        with patch.object(module,"_open_protected_roots",side_effect=opening), \
+             patch.object(module,"_revalidate_protected_roots",wraps=module._revalidate_protected_roots) as revalidate, \
+             patch.object(module.os,"fchdir"),patch.object(module.os,"execve",side_effect=replaced):
+            with self.assertRaises(ExecSentinel):execute_preflight(self.fixture.config_path,digest_value)
+        self.assertEqual(len(opened),5);self.assertEqual(revalidate.call_count,1)
+        self.assertFalse(os.path.lexists(self.fixture.case_root))
+
+    def test_changed_tree_or_config_on_final_reopen_fails_without_case_or_exec(self) -> None:
+        (self.fixture.namespace/DRIVER_REL).write_bytes(b"CHANGED\n")
+        with patch.object(module.os,"execve") as execute:
+            self.assert_fixed_failure(lambda:execute_preflight(self.fixture.config_path,self.config_hash))
+            execute.assert_not_called()
+        # Restore the exact tree and config for a between-read mutation.
+        (self.fixture.namespace/DRIVER_REL).write_bytes(self.fixture.driver)
+        self.config_hash=self.fixture.write_config()
+        real_verify=module.verify_tree;calls=0
+        def mutate_after_third(root,expected,limits):
+            nonlocal calls
+            result=real_verify(root,expected,limits);calls+=1
+            if calls==3:self.fixture.config_path.write_bytes(self.fixture.config_path.read_bytes()+b" ")
+            return result
+        with patch.object(module,"verify_tree",side_effect=mutate_after_third),patch.object(module.os,"execve") as execute:
+            self.assert_fixed_failure(lambda:execute_preflight(self.fixture.config_path,self.config_hash))
+            execute.assert_not_called()
+        self.assertEqual(calls,3)
+
+    def test_member_hash_or_missing_driver_and_internal_error_fail_fixed_without_writes(self) -> None:
+        value=self.fixture.value();value["expected_fixture_module_sha256"]="0"*64
+        self.config_hash=self.fixture.write_config(value)
+        with patch.object(module.os,"execve") as execute:
+            self.assert_fixed_failure(lambda:execute_preflight(self.fixture.config_path,self.config_hash));execute.assert_not_called()
+        self.config_hash=self.fixture.write_config()
+        (self.fixture.namespace/DRIVER_REL).unlink()
+        value=self.fixture.value();self.config_hash=self.fixture.write_config(value)
+        # Config now truthfully binds the tree but the required driver member is absent.
+        with patch.object(module.os,"execve") as execute:
+            self.assert_fixed_failure(lambda:execute_preflight(self.fixture.config_path,self.config_hash));execute.assert_not_called()
+        captured=io.StringIO()
+        with patch.object(module,"_check_interpreter",side_effect=OSError("private detail")),redirect_stderr(captured):
+            self.assertEqual(execute_preflight(self.fixture.config_path,self.config_hash),2)
+        self.assertEqual(captured.getvalue(),"COMBINATION_PREFLIGHT_INVALID\n")
+        self.assertNotIn("private detail",captured.getvalue())
+        self.assertFalse(os.path.lexists(self.fixture.case_root))
+
+
+if __name__=="__main__":unittest.main(verbosity=2)

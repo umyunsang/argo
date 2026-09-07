@@ -1,0 +1,78 @@
+--- v2/test_combination_fixture.py
+
++++ v3/test_combination_fixture.py
+
+@@ -538,6 +538,72 @@
+
+         self.assertEqual(len(cleanup_threads), 1)
+         self.assertEqual(server.shutdown_calls, 0)
+ 
++    def test_owned_close_nonfinite_clock_never_manufactures_confirmation(self) -> None:
++        serve = FakeServeThread();server = FakeServer(serve)
++        harness = owned_harness_for_close(server, serve)
++        with patch.object(fixture_module.threading, "Thread") as thread_factory, \
++             patch.object(fixture_module.time, "monotonic", return_value=float("nan")):
++            result = harness.close()
++        self.assertFalse(result.confirmed)
++        self.assertEqual(result.error, "CLOSE_IDENTITY_UNKNOWN")
++        self.assertEqual(result.elapsed_seconds, 0.0)
++        thread_factory.assert_not_called()
++
++        clock = FakeClock();calls = 0;serve = FakeServeThread();server = FakeServer(serve)
++        harness = owned_harness_for_close(server, serve)
++        def clock_value():
++            nonlocal calls
++            calls += 1
++            return 0.0 if calls <= 3 else float("nan")
++        def factory(*, target, daemon):
++            return FakeCleanupThread(target, daemon=daemon, clock=clock, execute=True)
++        with patch.object(fixture_module.threading, "Thread", side_effect=factory), \
++             patch.object(fixture_module.time, "monotonic", side_effect=clock_value):
++            result = harness.close()
++        self.assertFalse(result.confirmed)
++        self.assertEqual(result.error, "CLOSE_IDENTITY_UNKNOWN")
++        self.assertTrue(result.shutdown_completed)
++        self.assertTrue(result.serve_thread_stopped)
++        self.assertTrue(result.socket_closed)
++
++    def test_external_confirmed_result_over_deadline_is_normalized_unconfirmed(self) -> None:
++        supplied = FixtureCloseResult(
++            "argo-house-price-a2-fixture-close/v1", True, True, True,
++            True, True, False, None, 2.25,
++        )
++        harness = SimpleNamespace(close=Mock(return_value=supplied))
++        result = fixture_module._close_harness(harness)
++        self.assertFalse(result.confirmed)
++        self.assertEqual(result.error, "CLOSE_IDENTITY_UNKNOWN")
++        self.assertEqual(result.elapsed_seconds, 0.0)
++
++    def test_owned_close_late_completed_join_is_cached_timeout_not_confirmation(self) -> None:
++        class LateButCompletedThread:
++            def __init__(self, target, *, daemon, clock):
++                self.target = target;self.daemon = daemon;self.clock = clock;self.alive = True
++            def start(self):
++                return None
++            def join(self, timeout=None):
++                self.clock.now += (0.0 if timeout is None else timeout) + 0.25
++                self.target();self.alive = False
++            def is_alive(self):
++                return self.alive
++        clock = FakeClock();serve = FakeServeThread();server = FakeServer(serve)
++        harness = owned_harness_for_close(server, serve);created = []
++        def factory(*, target, daemon):
++            thread = LateButCompletedThread(target, daemon=daemon, clock=clock)
++            created.append(thread);return thread
++        with patch.object(fixture_module.threading, "Thread", side_effect=factory), \
++             patch.object(fixture_module.time, "monotonic", side_effect=clock.monotonic):
++            first = harness.close();second = harness.close()
++        self.assertIs(first, second)
++        self.assertFalse(first.confirmed)
++        self.assertTrue(first.timed_out)
++        self.assertEqual(first.error, "CLOSE_TIMEOUT")
++        self.assertEqual(first.elapsed_seconds, 2.25)
++        self.assertEqual(len(created), 1)
++        self.assertEqual(server.shutdown_calls, 1)
++
+     def test_owned_close_alive_serve_thread_uses_remaining_deadline_and_times_out(self) -> None:
+         clock = FakeClock();serve = FakeServeThread(clock=clock)
+         server = FakeServer(serve, stop_serve=False)

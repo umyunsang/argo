@@ -1,0 +1,156 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+import tempfile
+import unittest
+import uuid
+
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.bridge import (
+    Binding, Bridge, BridgeConfig, FixedNativePort, FixedPortConfig, NativeObservation, parse_native_run_json,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.grading import FileBinding, grade_files
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.receipt_store import ExpectedDevExecution, verify_dev_receipt
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.staging import DirectoryIdentity
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.trusted_io import TrustedIo, TrustedIoLimits
+
+
+def digest(value: bytes | str) -> str:
+    if isinstance(value, str): value=value.encode()
+    return hashlib.sha256(value).hexdigest()
+
+
+def binding(path: Path) -> FileBinding:
+    info=path.stat()
+    return FileBinding(path.resolve(),digest(path.read_bytes()),info.st_size,info.st_mtime_ns)
+
+
+class FakePort:
+    def __init__(self, root: Path):
+        self.root=root;self.calls=[];self.dev_id=str(uuid.uuid4());self.final_id=str(uuid.uuid4())
+        self.experiment=str(uuid.uuid4());self.final_experiment=str(uuid.uuid4())
+        self.commit="a"*40;self.source=digest("native-source")
+        self.pred=root/"predictions.csv";self.ids=root/"ids.json";self.targets=root/"targets.csv";self.receipt=root/"dev-receipt.json";self.final_artifact=root/"final-artifact.bin"
+        self.pred.write_text("Id,SalePrice\n1,10\n2,20\n")
+        self.ids.write_text('["1","2"]')
+        self.targets.write_text("Id,SalePrice\n1,10\n2,22\n");self.final_artifact.write_bytes(b"sealed synthetic artifact")
+    def launch(self,snapshot,phase,parent):
+        self.calls.append(("launch",phase,parent,snapshot.closure_sha256))
+        if phase=="dev": return NativeObservation(self.dev_id,self.experiment,self.commit,self.source,"DONE")
+        return NativeObservation(self.final_id,self.final_experiment,self.commit,self.source,"DONE")
+    def observe(self,item):
+        self.calls.append(("observe",item.run_id))
+        return NativeObservation(item.run_id,item.experiment_id,self.commit,self.source,"DONE")
+    def verified_dev(self,item,observation):
+        pred,ids,targets=binding(self.pred),binding(self.ids),binding(self.targets)
+        expected=ExpectedDevExecution(item.run_id,item.experiment_id,self.commit,self.source,item.closure_sha256,item.solution_sha256,item.intent_sha256,item.task_sha256,item.environment_sha256,item.protocol_sha256,digest("runner"),"DONE",2)
+        score=grade_files(pred,ids,targets,max_rows=2)
+        payload={"schema_version":"argo-house-price-dev-receipt/v1","phase":"dev",**{
+            "run_id":expected.run_id,"experiment_id":expected.experiment_id,"native_commit":expected.native_commit,"native_source_digest":expected.native_source_digest,"closure_sha256":expected.closure_sha256,"solution_sha256":expected.solution_sha256,"intent_sha256":expected.intent_sha256,"task_sha256":expected.task_sha256,"environment_sha256":expected.environment_sha256,"protocol_sha256":expected.protocol_sha256,"runner_sha256":expected.runner_sha256,"rows":2,
+            "prediction_sha256":pred.sha256,"prediction_bytes":pred.bytes,"prediction_mtime_ns_max":pred.mtime_ns_max,"ids_sha256":ids.sha256,"targets_sha256":targets.sha256,
+            "mae_numerator":str(score.mae.numerator),"mae_denominator":str(score.mae.denominator)}}
+        self.receipt.write_text(json.dumps(payload,sort_keys=True,separators=(",",":")))
+        return verify_dev_receipt(binding(self.receipt),expected,pred,ids,targets)
+    def final_artifact_binding(self,item,observation): return binding(self.final_artifact)
+
+
+class BridgeTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();base=Path(self.tmp.name);self.source=base/'source';self.source.mkdir()
+        solution=b"print('candidate')\n";code=digest(solution)
+        (self.source/'solution.py').write_bytes(solution);(self.source/'research.md').write_text('research\n')
+        (self.source/'intent.json').write_text(json.dumps({"schema_version":"argo-house-price-intent/v1","phase":"dev","purpose":"synthetic","solution_sha256":code,"parent_run_id":None},sort_keys=True,separators=(",",":")))
+        limits=TrustedIoLimits(64,131072,393216,131072,16384,5,2097152)
+        io=TrustedIo(self.source,base/'state',limits);(base/'artifacts').mkdir()
+        self.port=FakePort(base/'artifacts')
+        state_path=(base/'state').resolve();state_info=state_path.stat()
+        self.bridge=Bridge(BridgeConfig(io,base/'bindings',digest('task'),digest('env'),digest('protocol'),digest('config'),digest('outer'),digest('hidden'),3,True,DirectoryIdentity(state_path,state_info.st_dev,state_info.st_ino)),test_port=self.port)
+    def tearDown(self): self.tmp.cleanup()
+    def call(self,action,args): return self.bridge.handle({"action":action,"arguments":args})
+    def test_failing_first_malformed_and_unknown_are_safe(self):
+        self.assertEqual(self.bridge.handle_bytes(b'{').get if False else json.loads(self.bridge.handle_bytes(b'{')),{"error":"INVALID_ARGUMENT","ok":False})
+        self.assertEqual(self.call('nope',{}),{"ok":False,"error":"INVALID_ARGUMENT"})
+    def test_read_write_and_expected_hash(self):
+        read=self.call('read_solution',{'path':'solution.py'});self.assertTrue(read['ok'])
+        self.assertEqual(self.call('write_solution',{'path':'solution.py','content':'x','expected_sha256':'0'*64})['error'],'HASH_MISMATCH')
+    def test_dev_uses_actual_receipt_bytes_and_native_facts(self):
+        launched=self.call('request_R1_run',{});self.assertTrue(launched['ok'],launched);self.assertEqual(launched['result']['run_id'],self.port.dev_id)
+        result=self.call('read_dev_result',{});self.assertTrue(result['ok']);self.assertEqual(result['result']['results'][0]['run_id'],self.port.dev_id);self.assertEqual(result['result']['results'][0]['mae'],'1.000000')
+        self.assertIn(('launch','dev',None,launched['result']['intent_sha256']) if False else ('launch','dev',None,next(x[3] for x in self.port.calls if x[0]=='launch')),self.port.calls)
+    def test_final_selection_reads_private_code_then_locks_bound_final_artifact(self):
+        dev=self.call('request_R1_run',{});self.assertTrue(dev['ok'])
+        code=self.call('read_solution',{'path':'solution.py'})['result']['sha256']
+        final_intent=json.dumps({"schema_version":"argo-house-price-intent/v1","phase":"final_refit","purpose":"select verified dev","solution_sha256":code,"selected_run_id":self.port.dev_id},sort_keys=True,separators=(",",":"))
+        self.assertTrue(self.call('write_solution',{'path':'intent.json','content':final_intent})['ok'])
+        final=self.call('request_R1_run',{});self.assertTrue(final['ok'],final);self.assertEqual(final['result']['phase'],'final_refit')
+        artifact=binding(self.port.final_artifact).sha256
+        locked=self.call('lock_final_artifact',{'run_id':self.port.final_id,'artifact_sha256':artifact});self.assertTrue(locked['ok'],locked);self.assertEqual(locked['result']['run_id'],self.port.final_id)
+
+    def test_bad_native_uuid_leaves_fence_uncertain_without_retry(self):
+        original=self.port.launch
+        self.port.launch=lambda snapshot,phase,parent: NativeObservation("bad",self.port.experiment,self.port.commit,self.port.source,"DONE")
+        first=self.call('request_R1_run',{});self.assertEqual(first['error'],'RESULT_INVALID')
+        self.port.launch=original
+        retry=self.call('request_R1_run',{});self.assertEqual(retry['error'],'UNCERTAIN_NO_AUTOMATIC_RETRY')
+
+    def test_final_lineage_uses_prior_selected_code_and_current_final_intent(self):
+        dev=self.call('request_R1_run',{});selected=dev['result']['solution_sha256']
+        self.assertTrue(self.call('write_solution',{'path':'solution.py','content':"print('later candidate')\n"})['ok'])
+        final_intent=json.dumps({"schema_version":"argo-house-price-intent/v1","phase":"final_refit","purpose":"use earlier verified run","solution_sha256":selected,"selected_run_id":dev['result']['run_id']},sort_keys=True,separators=(",",":"))
+        written=self.call('write_solution',{'path':'intent.json','content':final_intent});self.assertTrue(written['ok'])
+        final=self.call('request_R1_run',{});self.assertTrue(final['ok'],final)
+        self.assertEqual(final['result']['solution_sha256'],selected)
+        self.assertEqual(final['result']['intent_sha256'],written['result']['sha256'])
+        self.assertNotEqual(final['result']['intent_sha256'],dev['result']['intent_sha256'])
+
+    def test_selected_final_freezes_late_source_writes(self):
+        dev=self.call('request_R1_run',{});code=self.call('read_solution',{'path':'solution.py'})['result']['sha256']
+        final_intent=json.dumps({"schema_version":"argo-house-price-intent/v1","phase":"final_refit","purpose":"final","solution_sha256":code,"selected_run_id":dev['result']['run_id']},sort_keys=True,separators=(",",":"))
+        self.call('write_solution',{'path':'intent.json','content':final_intent});self.assertTrue(self.call('request_R1_run',{})['ok'])
+        self.assertEqual(self.call('write_solution',{'path':'solution.py','content':'late'})['error'],'SOURCE_LOCKED')
+
+    def test_wrong_native_source_never_becomes_result(self):
+        self.call('request_R1_run',{});self.port.source=digest("wrong-source")
+        self.assertEqual(self.call('read_dev_result',{})['error'],'RESULT_INVALID')
+
+    def test_dev_wire_metric_is_exact_unquoted_six_place_number(self):
+        self.call('request_R1_run',{})
+        raw=self.bridge.handle_bytes(json.dumps({"action":"read_dev_result","arguments":{}}).encode())
+        self.assertIn(b'"mae":1.000000',raw)
+        self.assertNotIn(b'"mae":"1.000000"',raw)
+
+    def test_fixed_port_builds_only_fixed_argv_with_faux_executor(self):
+        project='a0c1bc7e-cd76-4df3-b140-8e03af22d271';calls=[]
+        fixture_root=Path(__file__).parent/'orx_text_fixtures'
+        create_fixture=(fixture_root/'create-baseline.txt').read_text().replace('HP native fixture success','house-price-dev')
+        launch_fixture=(fixture_root/'launch-local.txt').read_text();native_fixture=(fixture_root/'native-run-success.json').read_bytes()
+        experiment='cbfc2315-b262-4608-806a-65f0080de6e5';run_id='191407a0-84ce-47e6-afa4-298d034b8aa3'
+        class Executor:
+            def run(self,argv,*,cwd,timeout_seconds,output_limit):
+                calls.append((argv,cwd,timeout_seconds,output_limit))
+                if argv[1]=='create-experiment': return create_fixture
+                if argv[-1]=='HEAD': return '99f66129ad6be4fa8feeb05377a113b63ad84162\n'
+                if argv[1:3]==('exp','run'): return launch_fixture
+                return ''
+            def get(self,url,*,timeout_seconds,output_limit):
+                self.url=url;return native_fixture
+        port=FixedNativePort(FixedPortConfig(Path('/usr/bin/orx'),Path('/usr/bin/git'),Path('/tmp/repo'),project,'/usr/bin/python3 fixture.py',Path('/Users/um-yunsang/.local/share/openresearch/local-runs'),Path('/Users/um-yunsang/.local/share/openresearch/source-snapshots'),18888),Executor())
+        snapshot=self.bridge._config.trusted_io.snapshot();observation=port.launch(snapshot,'dev',None)
+        self.assertEqual(observation.run_id,run_id);self.assertEqual(observation.status,'DONE');self.assertEqual(calls[0][0],('/usr/bin/orx','create-experiment',project,'--title','house-price-dev','--description','house-price fixed provenance','--no-telemetry'))
+        self.assertEqual(calls[1][0][-2:],('checkout','orx/hp-native-fixture-success'))
+        self.assertEqual(calls[-1][0],('/usr/bin/orx','exp','run',experiment,'--backend','local','--no-telemetry'))
+
+
+    def test_native_json_fixture_is_strictly_bound_to_expected_facts(self):
+        data=(Path(__file__).parent/'orx_text_fixtures'/'native-run-success.json').read_bytes()
+        observation=parse_native_run_json(data,project_id='a0c1bc7e-cd76-4df3-b140-8e03af22d271',run_id='191407a0-84ce-47e6-afa4-298d034b8aa3',experiment_id='cbfc2315-b262-4608-806a-65f0080de6e5',commit_sha='99f66129ad6be4fa8feeb05377a113b63ad84162',command='/usr/bin/python3 fixture.py',local_runs_root=Path('/Users/um-yunsang/.local/share/openresearch/local-runs'),source_root=Path('/Users/um-yunsang/.local/share/openresearch/source-snapshots'))
+        self.assertEqual(observation.status,'DONE')
+        with self.assertRaises(ValueError):
+            parse_native_run_json(data,project_id='a0c1bc7e-cd76-4df3-b140-8e03af22d271',run_id='191407a0-84ce-47e6-afa4-298d034b8aa3',experiment_id='cbfc2315-b262-4608-806a-65f0080de6e5',commit_sha='0'*40,command='/usr/bin/python3 fixture.py',local_runs_root=Path('/Users/um-yunsang/.local/share/openresearch/local-runs'),source_root=Path('/Users/um-yunsang/.local/share/openresearch/source-snapshots'))
+
+    def test_wrong_native_commit_never_becomes_result(self):
+        self.call('request_R1_run',{});self.port.commit='b'*40
+        self.assertEqual(self.call('read_dev_result',{})['error'],'RESULT_INVALID')
+
+if __name__=='__main__': unittest.main(verbosity=2)

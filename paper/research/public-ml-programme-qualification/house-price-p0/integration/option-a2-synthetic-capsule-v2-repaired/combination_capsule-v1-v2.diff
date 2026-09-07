@@ -1,0 +1,193 @@
+--- v1/combination_capsule.py
+
++++ v2/combination_capsule.py
+
+@@ -4,13 +4,19 @@
+
+ member hashes come from the root review manifest, never from model output.
+ """
+ from __future__ import annotations
++from dataclasses import dataclass, fields
++import hashlib
++import json
++import os
+ from pathlib import Path
++import stat
+ 
+ from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.deployment_assets import (
+     NamespaceMember, PACKAGE_PATHS, _new_private_path, _sync_directory, _write_new,
+ )
+ from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.grading import FileBinding, read_bound
+-from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.source_closure import ClosureLimits, SourceTree, capture_tree
++from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.source_closure import ClosureLimits, SourceTree, capture_tree, verify_tree
++from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.staging import DirectoryIdentity
+ 
+ EXACT_MEMBERS = frozenset(('experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/bridge.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/campaign_usage.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/combination_acceptance.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/combination_driver.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/combination_fixture.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/container_entry.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/container_runner.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/controller_deployment.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/controller_process.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/deployment_assets.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/grading.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/intent.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/orx_text.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/phase_completion.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/phase_driver.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/phase_gate.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/process_exec.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/receipt_store.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/run_entry.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/source_closure.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/staging.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/test_bridge.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/trusted_io.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_runtime/usage_observer.py', 'experiments/argo_workflow_followup/public_ml_apparatus/house_price_scorer.py'))
+ LIMITS = ClosureLimits(160,8388608,1048576,8,4096)
+@@ -20,9 +26,123 @@
+
+     def __init__(self):super().__init__("SYNTHETIC_CAPSULE_INVALID")
+ 
+ 
+-def materialize_synthetic_capsule(destination: Path, members: tuple[NamespaceMember,...]) -> SourceTree:
++@dataclass(frozen=True)
++class CapsuleProtectedRoots:
++    raw: DirectoryIdentity
++    auth: DirectoryIdentity
++    profile: DirectoryIdentity
++    controller: DirectoryIdentity
++    public: DirectoryIdentity
++
++
++def _identity(info: os.stat_result) -> tuple[int,...]:
++    return (info.st_dev,info.st_ino,info.st_mode,info.st_uid,info.st_nlink,
++            info.st_size,info.st_mtime_ns,info.st_ctime_ns)
++
++
++def _assert_directory(descriptor: int, identity: DirectoryIdentity, *, private: bool=False) -> None:
++    held=os.fstat(descriptor)
++    named=identity.path.lstat()
++    for info in (held,named):
++        if (not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.getuid() or
++                (info.st_dev,info.st_ino)!=(identity.device,identity.inode) or
++                private and stat.S_IMODE(info.st_mode)!=0o700):
++            raise SyntheticCapsuleError()
++
++
++def _open_protected_roots(destination: Path, policy: CapsuleProtectedRoots):
++    if type(policy) is not CapsuleProtectedRoots:raise SyntheticCapsuleError()
++    opened=[]
++    try:
++        for field in fields(policy):
++            identity=getattr(policy,field.name)
++            if (not isinstance(identity,DirectoryIdentity) or not isinstance(identity.path,Path) or
++                    type(identity.device) is not int or not 0<=identity.device<=2**64-1 or
++                    type(identity.inode) is not int or not 1<=identity.inode<=2**64-1):
++                raise SyntheticCapsuleError()
++            path=identity.path
++            if (not path.is_absolute() or ".." in path.parts or path.resolve(strict=True)!=path or
++                    destination==path or destination in path.parents or path in destination.parents):
++                raise SyntheticCapsuleError()
++            descriptor=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
++            opened.append((descriptor,identity))
++            _assert_directory(descriptor,identity)
++        return opened
++    except Exception:
++        for descriptor,_ in reversed(opened):os.close(descriptor)
++        raise
++
++
++def _expected_recipe(sources):
++    entries={relative:("directory",None) for relative in PACKAGE_PATHS}
++    entries.update({relative+"/__init__.py":("file",b"") for relative in PACKAGE_PATHS})
++    entries.update({member.relative_path:("file",data) for member,data in sources})
++    children={"":{}}
++    for relative,(kind,data) in entries.items():
++        parent,_,name=relative.rpartition("/")
++        children.setdefault(parent,{})[name]=(relative,kind,data)
++        if kind=="directory":children.setdefault(relative,{})
++    aggregate=hashlib.sha256(b"argo-source-tree/v1\x00")
++    def record(parent):
++        for name,(relative,kind,data) in sorted(children[parent].items()):
++            content=None if kind=="directory" else [len(data),hashlib.sha256(data).hexdigest()]
++            payload=json.dumps([relative,kind,0o700 if kind=="directory" else 0o600,content],
++                               ensure_ascii=True,separators=(",",":")).encode()
++            aggregate.update(len(payload).to_bytes(8,"big"));aggregate.update(payload)
++            if kind=="directory":record(relative)
++    record("")
++    return children,aggregate.hexdigest()
++
++
++def _verify_opened_recipe(root: int, children) -> None:
++    def scan(directory,relative):
++        before_dir=os.fstat(directory)
++        if (not stat.S_ISDIR(before_dir.st_mode) or stat.S_IMODE(before_dir.st_mode)!=0o700 or
++                before_dir.st_uid!=os.getuid()):raise SyntheticCapsuleError()
++        expected=children[relative]
++        names=[]
++        with os.scandir(directory) as entries:
++            for entry in entries:
++                names.append(entry.name)
++                if len(names)>len(expected):raise SyntheticCapsuleError()
++        if set(names)!=set(expected):raise SyntheticCapsuleError()
++        for name,(path,kind,data) in sorted(expected.items()):
++            named=os.stat(name,dir_fd=directory,follow_symlinks=False)
++            flags=os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK
++            if kind=="directory":flags|=os.O_DIRECTORY
++            descriptor=os.open(name,flags,dir_fd=directory)
++            try:
++                before=os.fstat(descriptor)
++                if _identity(before)!=_identity(named):raise SyntheticCapsuleError()
++                if kind=="directory":
++                    scan(descriptor,path)
++                else:
++                    if (not stat.S_ISREG(before.st_mode) or before.st_nlink!=1 or
++                            stat.S_IMODE(before.st_mode)!=0o600 or before.st_uid!=os.getuid() or
++                            before.st_size!=len(data)):
++                        raise SyntheticCapsuleError()
++                    offset=0
++                    while offset<len(data):
++                        chunk=os.read(descriptor,min(65536,len(data)-offset))
++                        if not chunk or chunk!=data[offset:offset+len(chunk)]:raise SyntheticCapsuleError()
++                        offset+=len(chunk)
++                    if os.read(descriptor,1):raise SyntheticCapsuleError()
++                after=os.fstat(descriptor)
++                current=os.stat(name,dir_fd=directory,follow_symlinks=False)
++                if _identity(before)!=_identity(after) or _identity(after)!=_identity(current):
++                    raise SyntheticCapsuleError()
++            finally:os.close(descriptor)
++        if _identity(os.fstat(directory))!=_identity(before_dir):raise SyntheticCapsuleError()
++    scan(root,"")
++
++
++def materialize_synthetic_capsule(destination: Path, members: tuple[NamespaceMember,...], *,
++                                  protected_roots: CapsuleProtectedRoots) -> SourceTree:
++    protected=[]
++    root_descriptor=None
+     try:
+         _new_private_path(destination)
++        protected=_open_protected_roots(destination,protected_roots)
+         if type(members) is not tuple or len(members)!=len(EXACT_MEMBERS):
+             raise SyntheticCapsuleError()
+         names=set()
+@@ -39,7 +159,12 @@
+
+             total+=len(data)
+             if total>LIMITS.max_total_bytes:raise SyntheticCapsuleError()
+             sources.append((member,data))
++        recipe,expected_digest=_expected_recipe(sources)
+         destination.mkdir(mode=0o700)
++        root_descriptor=os.open(destination,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
++        root_info=os.fstat(root_descriptor)
++        root_identity=DirectoryIdentity(destination,root_info.st_dev,root_info.st_ino)
++        _assert_directory(root_descriptor,root_identity,private=True)
+         for relative in PACKAGE_PATHS:
+             directory=destination/relative
+             directory.mkdir(mode=0o700)
+@@ -53,11 +178,23 @@
+
+                 raise SyntheticCapsuleError()
+         for relative in reversed(PACKAGE_PATHS):_sync_directory(destination/relative)
+         _sync_directory(destination);_sync_directory(destination.parent)
++        for member,data in sources:
++            if read_bound(member.source,LIMITS.max_file_bytes)!=data:raise SyntheticCapsuleError()
++        _assert_directory(root_descriptor,root_identity,private=True)
++        _verify_opened_recipe(root_descriptor,recipe)
+         tree=capture_tree(destination,LIMITS)
+         if (tree.file_count!=len(EXACT_MEMBERS)+4 or tree.directory_count!=4 or
+-                tree.symlink_count!=0 or tree.total_file_bytes!=total):
++                tree.symlink_count!=0 or tree.total_file_bytes!=total or tree.tree_sha256!=expected_digest or
++                (tree.root_device,tree.root_inode)!=(root_identity.device,root_identity.inode)):
+             raise SyntheticCapsuleError()
++        _verify_opened_recipe(root_descriptor,recipe)
++        verify_tree(destination,tree,LIMITS)
++        _assert_directory(root_descriptor,root_identity,private=True)
++        for descriptor,identity in protected:_assert_directory(descriptor,identity)
+         return tree
+     except Exception:
+         raise SyntheticCapsuleError() from None
+-
++    finally:
++        if root_descriptor is not None:os.close(root_descriptor)
++        for descriptor,_ in reversed(protected):os.close(descriptor)
++

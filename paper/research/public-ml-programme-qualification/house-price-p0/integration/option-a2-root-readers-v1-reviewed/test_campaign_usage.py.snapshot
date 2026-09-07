@@ -1,0 +1,90 @@
+"""Pure native-session accounting fixtures, never live user sessions."""
+from __future__ import annotations
+import json
+import unittest
+import hashlib
+from pathlib import Path
+from campaign_usage import UsageError, parse_session_usage, combine_usage
+
+SID="191407a0-84ce-47e6-afa4-298d034b8aa3"
+SID2="ff653932-3e4e-4bb6-8fab-f6c3764a1acb"
+CWD="/private/synthetic-controller"
+PROVIDER="openai-codex"
+MODEL="gpt-5.6-sol"
+
+def message(entry_id="a1", parent=None, response="resp-a", **changes):
+    obj={"type":"message","id":entry_id,"parentId":parent,"timestamp":"2026-09-07T10:00:00Z",
+         "message":{"role":"assistant","content":[{"type":"text","text":"synthetic"}],
+                    "api":"openai-codex-responses","provider":PROVIDER,"model":MODEL,
+                    "responseId":response,"stopReason":"stop","timestamp":1,
+                    "usage":{"input":10,"output":5,"cacheRead":100,"cacheWrite":3,"totalTokens":118,
+                             "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}}}
+    obj["message"].update(changes)
+    return obj
+
+def session(entries, sid=SID):
+    header={"type":"session","version":3,"id":sid,"cwd":CWD,"timestamp":"2026-09-07T10:00:00Z","rlmDepth":0}
+    return ("\n".join(json.dumps(obj,separators=(",",":")) for obj in [header,*entries])+"\n").encode()
+
+class CampaignUsageTest(unittest.TestCase):
+    def parse(self,data,sid=SID):return parse_session_usage(data,sid,CWD,PROVIDER,MODEL)
+    def test_all_four_categories_including_cache_reads_are_counted(self):
+        usage=self.parse(session([message()]))
+        self.assertTrue(usage.complete)
+        self.assertEqual((usage.input,usage.output,usage.cache_read,usage.cache_write),(10,5,100,3))
+        self.assertEqual(usage.total_tokens,118)
+        self.assertEqual(usage.native_autonomous_tokens,18)
+        self.assertEqual(usage.assistant_messages,1)
+
+    def test_combined_budget_never_resets_and_session_duplicates_are_rejected(self):
+        first=self.parse(session([message()]))
+        second=self.parse(session([message(response="resp-b")],SID2),SID2)
+        combined=combine_usage((first,second),200)
+        self.assertEqual(combined.total_tokens,236)
+        self.assertEqual(combined.disposition,"BUDGET_EXHAUSTED")
+        with self.assertRaises(UsageError):combine_usage((first,first),120000)
+        copied=self.parse(session([message()],SID2),SID2)
+        with self.assertRaises(UsageError):combine_usage((first,copied),120000)
+
+    def test_missing_partial_and_zero_error_usage_is_unknown_not_free(self):
+        for data in [session([]),session([message(usage=None)]),session([message()])[:-1],
+                     session([message(stopReason="error",usage={"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}})])]:
+            usage=self.parse(data)
+            self.assertFalse(usage.complete)
+            self.assertEqual(combine_usage((usage,),120000).disposition,"USAGE_UNKNOWN")
+        stopped=self.parse(session([message(stopReason="aborted")]))
+        self.assertEqual(stopped.total_tokens,118)
+        self.assertFalse(stopped.complete)
+
+    def test_native_identity_duplicate_or_malformed_usage_rejected(self):
+        with self.assertRaises(UsageError):self.parse(session([message()]),SID2)
+        for changes in [{"provider":"other"},{"model":"other"},{"usage":{"input":True,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":1}},
+                        {"usage":{"input":10,"output":5,"cacheRead":100,"cacheWrite":3,"totalTokens":0}}]:
+            with self.subTest(changes=changes),self.assertRaises(UsageError):self.parse(session([message(**changes)]))
+        with self.assertRaises(UsageError):self.parse(session([message(),message()]))
+        with self.assertRaises(UsageError):self.parse(b"x"*8388609)
+        with self.assertRaises(UsageError):self.parse(b"\xff\n")
+
+    def test_nonassistant_rows_do_not_manufacture_usage_and_branches_rejected(self):
+        user={"type":"message","id":"u1","parentId":None,"timestamp":"x","message":{"role":"user","content":"synthetic","timestamp":1}}
+        assistant=message("a1","u1")
+        usage=self.parse(session([user,assistant]))
+        self.assertEqual(usage.total_tokens,118)
+        branched=message("a2","u1","resp-b")
+        with self.assertRaises(UsageError):self.parse(session([user,assistant,branched]))
+        wrong=session([assistant]).replace(CWD.encode(),b"/wrong")
+        with self.assertRaises(UsageError):self.parse(wrong)
+
+    def test_archived_installed_prime_session_matches_exact_category_totals(self):
+        path=Path(__file__).with_name("a2-frontend-probes")/"evidence"/"installed-main-native-session-v1.jsonl"
+        data=path.read_bytes()
+        self.assertEqual(hashlib.sha256(data).hexdigest(),"3f7b6a84d8ed486b549f6fb4c255fad64c13d4d19b58e60cc8b5eff7fd6b937a")
+        rows=[json.loads(line) for line in data.split(b"\n") if line]
+        header=rows[0]
+        usage=parse_session_usage(data,header["id"],header["cwd"],"a2-faux-6122","a2-probe")
+        self.assertTrue(usage.complete)
+        self.assertEqual((usage.input,usage.output,usage.cache_read,usage.cache_write),(1614,13,503,1615))
+        self.assertEqual(usage.total_tokens,3745)
+        self.assertEqual(usage.assistant_messages,2)
+
+if __name__=="__main__":unittest.main(verbosity=2)

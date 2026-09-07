@@ -1,0 +1,115 @@
+"""Exact A2 configuration producers; no native controller or auth contents."""
+from __future__ import annotations
+from dataclasses import replace
+import hashlib
+import json
+import os
+from pathlib import Path
+import tempfile
+import time
+import unittest
+from unittest.mock import patch
+
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.controller_deployment import DeploymentConfigError, FrontendDeploymentInput, write_extension_binding, write_frontend_deployment, write_process_config
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.controller_process import capture_interpreter_identity
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.grading import FileBinding
+
+KERNEL=Path("/Users/um-yunsang/.prime/agent/kernel-venv/bin/python")
+PRIME=Path("/opt/homebrew/lib/node_modules/prime-agent/dist/index.js")
+NODE=Path("/opt/homebrew/bin/node").resolve()
+HERE=Path(__file__).parent
+
+def bind(path):
+    data=path.read_bytes();return FileBinding(path,hashlib.sha256(data).hexdigest(),len(data),path.stat().st_mtime_ns)
+
+class ControllerDeploymentTest(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory(prefix="hp-controller-deployment-");self.root=Path(self.temp.name).resolve()
+        self.root.chmod(0o700)
+        self.assets=self.root/"assets";self.assets.mkdir(mode=0o700)
+        self.artifact=self.root/"artifacts";self.artifact.mkdir(mode=0o700)
+        self.directories={"artifact_root":self.artifact,"cwd":self.root/"public","profile":self.root/"profile",
+                          "session_dir":self.artifact/"session","temporary_dir":self.artifact/"tmp"}
+        for key,path in self.directories.items():
+            if key!="artifact_root":path.mkdir(mode=0o700)
+        def asset(name,data):
+            path=self.assets/name;path.write_bytes(data);return bind(path)
+        self.extension=asset("controller-extension.ts",b"export default function synthetic() {}\n")
+        self.bootstrap=asset("bridge-entry",b"#!/usr/bin/false\n");self.bootstrap.path.chmod(0o700);self.bootstrap=bind(self.bootstrap.path)
+        self.gate=asset("gate-entry",b"#!/usr/bin/false\n");self.gate.path.chmod(0o700);self.gate=bind(self.gate.path)
+        settings=self.directories["profile"]/"settings.json"
+        settings.write_text(json.dumps({"retry":{"enabled":False,"provider":{"timeoutMs":120000,"maxRetries":0}}}))
+        self.raw_assets={"prime_entry":bind(PRIME),"prime_closure_manifest":asset("prime-tree.json",b"{}"),
+            "controller_main":asset("controller-main.ts",b'export const synthetic = true;\n'),
+            "frontend_closure_manifest":asset("frontend-tree.json",b"{}"),"extension":self.extension,
+            "settings":bind(settings),"system_prompt":asset("system.md",b"Synthetic fixed system."),
+            "task_prompt":asset("task.md",b"Synthetic fixed task."),"autonomous_gate":self.gate,"node_executable":bind(NODE)}
+        self.interpreter=capture_interpreter_identity(KERNEL,KERNEL.parent.parent/"pyvenv.cfg")
+    def tearDown(self):self.temp.cleanup()
+    def spec(self):
+        binding=write_extension_binding(self.extension,self.bootstrap)
+        return FrontendDeploymentInput({**self.raw_assets,"binding":binding},self.interpreter,self.directories,"dev")
+    def test_extension_binding_is_fixed_bounded_and_no_overwrite(self):
+        binding=write_extension_binding(self.extension,self.bootstrap)
+        self.assertEqual(binding.path,self.extension.path.with_name("controller-extension.binding.json"))
+        obj=json.loads(binding.path.read_bytes())
+        self.assertEqual(obj["bridge"],{"command":str(self.bootstrap.path),"argv":[]})
+        self.assertEqual(obj["expectedExtensionSha256"],self.extension.sha256)
+        self.assertEqual(obj["limits"]["maxRows"],292)
+        with self.assertRaises(DeploymentConfigError):write_extension_binding(self.extension,self.bootstrap)
+    def test_frontend_and_process_bind_exact_eight_env_and_native_argv_assets(self):
+        spec=self.spec();deployment=self.artifact/"deployment.json"
+        receipt=write_frontend_deployment(deployment,spec)
+        obj=json.loads(deployment.read_bytes())
+        self.assertEqual(len(obj["environment"]["exact"]),8);self.assertNotIn("HOME",obj["environment"]["exact"])
+        self.assertEqual(obj["assets"]["kernel_interpreter"]["invocation_path"],str(KERNEL))
+        self.assertEqual(obj["runtime"]["tools"],['read_solution','write_solution','request_R1_run','read_public_result','read_dev_result','lock_final_artifact'])
+        process_path=self.root/"process.json"
+        result=write_process_config(process_path,receipt,bind(HERE/"process_exec.py"),time.monotonic_ns())
+        process=json.loads(process_path.read_bytes())
+        self.assertFalse(process["synthetic_test_context"])
+        self.assertEqual(process["artifact_root_identity"]["size"],self.artifact.stat().st_size)
+        self.assertEqual(process["child_environment"],obj["environment"]["exact"])
+        self.assertEqual(process["caps"]["rss_trigger_bytes"],2147483648)
+        self.assertEqual(process["caps"]["model_tokens_between_turns"],120000)
+        self.assertEqual(result.sha256,hashlib.sha256(process_path.read_bytes()).hexdigest())
+        with self.assertRaises(DeploymentConfigError):write_frontend_deployment(deployment,spec)
+    def test_unknown_assets_modified_settings_and_stale_native_dirs_are_denied(self):
+        spec=self.spec()
+        wrong=replace(spec,assets={**spec.assets,"auth":spec.assets["settings"]})
+        with self.assertRaises(DeploymentConfigError):write_frontend_deployment(self.artifact/"wrong.json",wrong)
+        (self.directories["session_dir"]/"stale").write_bytes(b"x")
+        with self.assertRaises(DeploymentConfigError):write_frontend_deployment(self.artifact/"stale.json",spec)
+        self.assertFalse((self.artifact/"stale.json").exists())
+    def test_bad_settings_and_process_config_inside_artifact_are_rejected(self):
+        spec=self.spec();settings=self.directories["profile"]/"settings.json"
+        settings.write_text('{"retry":{"enabled":true,"provider":{"timeoutMs":120000,"maxRetries":0}}}')
+        wrong=replace(spec,assets={**spec.assets,"settings":bind(settings)})
+        with self.assertRaises(DeploymentConfigError):write_frontend_deployment(self.artifact/"wrong.json",wrong)
+        settings.write_text(json.dumps({"retry":{"enabled":False,"provider":{"timeoutMs":120000,"maxRetries":0}}}))
+        spec=replace(spec,assets={**spec.assets,"settings":bind(settings)})
+        receipt=write_frontend_deployment(self.artifact/"deployment.json",spec)
+        with self.assertRaises(DeploymentConfigError):write_process_config(self.artifact/"self-mutating.json",receipt,bind(HERE/"process_exec.py"),time.monotonic_ns())
+    def test_profile_auth_contents_are_never_opened_by_producer(self):
+        auth=self.directories["profile"]/"auth.json";auth.write_bytes(b"synthetic-unreadable")
+        spec=self.spec()
+        native_open=os.open
+        def checked(path,*args,**kwargs):
+            if str(path)==str(auth) or str(path)=="auth.json":raise AssertionError("Auth contents must never be opened")
+            return native_open(path,*args,**kwargs)
+        with patch("os.open",side_effect=checked):write_frontend_deployment(self.artifact/"deployment.json",spec)
+
+    def test_process_config_does_not_reseal_tampered_frontend_directories(self):
+        spec=self.spec();receipt=write_frontend_deployment(self.artifact/"deployment.json",spec)
+        sealed=json.loads(receipt.path.read_bytes())
+        old=self.directories["profile"];old.rename(self.root/"old-profile");old.mkdir(mode=0o700)
+        original=self.root/"old-profile"/"settings.json";(old/"settings.json").write_bytes(original.read_bytes())
+        # Rebinding unchanged settings is not allowed to erase the sealed directory's inode.
+        sealed["assets"]["settings"]["mtime_ns_max"]=str((old/"settings.json").stat().st_mtime_ns)
+        receipt.path.write_text(json.dumps(sealed))
+        changed=bind(receipt.path)
+        with self.assertRaises(DeploymentConfigError):
+            write_process_config(self.root/"rebound-process.json",changed,bind(HERE/"process_exec.py"),time.monotonic_ns())
+        self.assertFalse((self.root/"rebound-process.json").exists())
+
+if __name__=="__main__":unittest.main(verbosity=2)

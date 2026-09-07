@@ -1,0 +1,46 @@
+"""Exact selected private code staging, not a mutable-source restore."""
+from __future__ import annotations
+from dataclasses import replace
+import hashlib
+from pathlib import Path
+import tempfile
+import unittest
+import os
+
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.trusted_io import FinalSelection
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.staging import DirectoryIdentity, StagingError, read_selected_code
+
+class SelectedStagingTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(prefix="hp-stage-test-")
+        self.root=Path(self.tmp.name).resolve()
+        self.state=self.root/"state";self.state.mkdir(mode=0o700)
+        self.code=b"def fit_predict(train, features): return [1] * len(features)\n"
+        (self.state/"final-solution.py").write_bytes(self.code)
+        self.identity=DirectoryIdentity(self.state,self.state.stat().st_dev,self.state.stat().st_ino)
+        self.selection=FinalSelection("c"*64,hashlib.sha256(self.code).hexdigest(),"r"*64,"t"*64,"e"*64,"p"*64)
+    def tearDown(self):self.tmp.cleanup()
+    def test_copied_private_selected_bytes_not_mutable_source(self):
+        (self.root/"solution.py").write_bytes(b"unselected B")
+        self.assertEqual(read_selected_code(self.identity,self.selection),self.code)
+    def test_code_and_root_identity_tamper_rejected(self):
+        with self.assertRaises(StagingError):read_selected_code(self.identity,replace(self.selection,code_sha256="0"*64))
+        old=self.root/"old";self.state.rename(old);self.state.mkdir(mode=0o700)
+        (self.state/"final-solution.py").write_bytes(self.code)
+        with self.assertRaises(StagingError):read_selected_code(self.identity,self.selection)
+    def test_symlink_hardlink_fifo_and_size_rejected(self):
+        path=self.state/"final-solution.py";path.unlink()
+        target=self.root/"source";target.write_bytes(self.code);path.symlink_to(target)
+        with self.assertRaises(StagingError):read_selected_code(self.identity,self.selection)
+        path.unlink();os.link(target,path)
+        with self.assertRaises(StagingError):read_selected_code(self.identity,self.selection)
+        path.unlink();os.mkfifo(path)
+        with self.assertRaises(StagingError):read_selected_code(self.identity,self.selection)
+        path.unlink();path.write_bytes(b"x"*131073)
+        with self.assertRaises(StagingError):read_selected_code(self.identity,self.selection)
+    def test_ancestor_symlink_and_negative_identity_rejected(self):
+        link=self.root/"state-link";link.symlink_to(self.state,target_is_directory=True)
+        with self.assertRaises(StagingError):read_selected_code(replace(self.identity,path=link),self.selection)
+        with self.assertRaises(StagingError):read_selected_code(replace(self.identity,inode=-1),self.selection)
+
+if __name__=="__main__":unittest.main(verbosity=2)

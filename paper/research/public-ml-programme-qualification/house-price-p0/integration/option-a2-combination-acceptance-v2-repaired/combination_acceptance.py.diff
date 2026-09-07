@@ -1,0 +1,176 @@
+--- v1/combination_acceptance.py
+
++++ v2/combination_acceptance.py
+
+@@ -59,6 +59,21 @@
+
+     "read_solution", "write_solution", "request_R1_run", "read_public_result",
+     "read_dev_result", "lock_final_artifact",
+ )
++DEPLOYMENT_ASSET_KEYS = {
++    "prime_entry", "prime_closure_manifest", "controller_main", "frontend_closure_manifest",
++    "extension", "binding", "settings", "system_prompt", "task_prompt", "autonomous_gate",
++    "node_executable", "kernel_interpreter",
++}
++DEPLOYMENT_DIRECTORY_KEYS = {"artifact_root", "cwd", "profile", "session_dir", "temporary_dir"}
++DEPLOYMENT_RUNTIME_KEYS = {"phase", "model", "thinking", "mode", "print", "offline", "fresh_session", "tools"}
++DEPLOYMENT_ENVIRONMENT_KEYS = {"exact", "home_must_be_unset", "forbidden_prefixes"}
++DEPLOYMENT_LIMIT_KEYS = {
++    "provider_timeout_ms", "provider_retries", "phase_wall_seconds", "campaign_wall_seconds",
++    "cpu_seconds_per_process", "file_size_bytes", "rss_trigger_bytes", "rss_sample_ms",
++    "v8_old_space_mib", "model_tokens_between_turns", "controller_turn_limit_per_phase",
++    "source_text_max_bytes", "bridge_close_grace_ms", "autonomous_max_continuations",
++    "autonomous_gate_retries", "autonomous_gate_timeout_ms",
++}
+ STATE_LIMITS = ClosureLimits(256, 8388608, 2097152, 8, 1024)
+ NAMESPACE_LIMITS = ClosureLimits(160, 8388608, 1048576, 8, 4096)
+ FRONTEND_LIMITS = ClosureLimits(160, 8388608, 1048576, 8, 4096)
+@@ -340,7 +355,6 @@
+
+         expectation.normal_process_config.path,
+         expectation.synthetic_process_config.path,
+         expectation.process_receipt.path,
+-        expectation.gate_config.path,
+         expectation.metadata.path,
+         expectation.current_session.path,
+         Path(synthetic.artifact_root),
+@@ -349,8 +363,87 @@
+
+         Path(synthetic.temporary_dir),
+     )
+     roots = tuple(Path(tree.root) for tree in trees)
++    frontend_root = Path(expectation.frontend_tree.root)
++    if expectation.gate_config.path != frontend_root / "gate-config.json":
++        raise _Reject("SOURCE_MISMATCH")
++    if any(
++        _overlap(expectation.gate_config.path, root)
++        for root in roots
++        if root != frontend_root
++    ):
++        raise _Reject("SOURCE_MISMATCH")
+     if any(any(_overlap(path, root) for root in roots) for path in protected):
+         raise _Reject("SOURCE_MISMATCH")
++
++
++def _task_prompt(
++    expectation: CombinationExpectation,
++    normal: RunControllerConfig,
++    synthetic: RunControllerConfig,
++) -> str:
++    if (
++        normal.deployment_path != synthetic.deployment_path
++        or normal.deployment_identity != synthetic.deployment_identity
++    ):
++        raise _Reject("CONFIG_INVALID")
++    identity = synthetic.deployment_identity
++    try:
++        deployment_bytes = _gate_read(
++            Path(synthetic.deployment_path),
++            65536,
++            identity.sha256,
++            identity.size,
++            identity.mtime_ns_max,
++        )
++    except Exception:
++        raise _Reject("CONFIG_INVALID") from None
++    deployment = _json(deployment_bytes, "CONFIG_INVALID")
++    if (
++        set(deployment) != {"schema_version", "status", "assets", "directories", "runtime", "environment", "limits"}
++        or deployment["schema_version"] != "argo-house-price-a2-controller-main-deployment/v1"
++        or deployment["status"] != "TRUSTED_FIXED_DEPLOYMENT"
++        or type(deployment["assets"]) is not dict
++        or set(deployment["assets"]) != DEPLOYMENT_ASSET_KEYS
++        or type(deployment["directories"]) is not dict
++        or set(deployment["directories"]) != DEPLOYMENT_DIRECTORY_KEYS
++        or type(deployment["runtime"]) is not dict
++        or set(deployment["runtime"]) != DEPLOYMENT_RUNTIME_KEYS
++        or type(deployment["environment"]) is not dict
++        or set(deployment["environment"]) != DEPLOYMENT_ENVIRONMENT_KEYS
++        or type(deployment["limits"]) is not dict
++        or set(deployment["limits"]) != DEPLOYMENT_LIMIT_KEYS
++    ):
++        raise _Reject("CONFIG_INVALID")
++    seal = deployment["assets"]["task_prompt"]
++    if (
++        type(seal) is not dict
++        or set(seal) != {"path", "sha256", "bytes", "mtime_ns_max"}
++        or type(seal["path"]) is not str
++        or type(seal["sha256"]) is not str
++        or HEX64.fullmatch(seal["sha256"]) is None
++        or type(seal["bytes"]) is not int
++        or not 0 < seal["bytes"] <= 131072
++        or type(seal["mtime_ns_max"]) is not str
++        or re.fullmatch(r"(?:0|[1-9][0-9]{0,18})", seal["mtime_ns_max"]) is None
++    ):
++        raise _Reject("CONFIG_INVALID")
++    prompt_path = Path(seal["path"])
++    if not _path_within(prompt_path, Path(expectation.frontend_tree.root)):
++        raise _Reject("CONFIG_INVALID")
++    try:
++        data = _gate_read(
++            prompt_path,
++            131072,
++            seal["sha256"],
++            seal["bytes"],
++            int(seal["mtime_ns_max"]),
++        )
++        text = data.decode("utf-8")
++    except Exception:
++        raise _Reject("SOURCE_MISMATCH") from None
++    if not text.strip() or "\0" in text:
++        raise _Reject("CONFIG_INVALID")
++    return text
+ 
+ 
+ def _validate_public(value: object, expected_ids: tuple[str, str]) -> dict[str, object]:
+@@ -396,7 +489,11 @@
+
+     return value
+ 
+ 
+-def _transcript(session: bytes, expected_ids: tuple[str, str]) -> dict[str, object]:
++def _transcript(
++    session: bytes,
++    expected_ids: tuple[str, str],
++    task_prompt: str,
++) -> dict[str, object]:
+     try:
+         lines = session.splitlines()
+         records = [_json(line, "TOOL_TRANSCRIPT_INVALID") for line in lines]
+@@ -410,6 +507,15 @@
+
+         or len(other_types) != len(set(other_types))
+         or any(type(message) is not dict for message in messages)
+         or [message.get("role") for message in messages] != ["user", "assistant", "toolResult", "assistant"]
++    ):
++        raise _Reject("TOOL_TRANSCRIPT_INVALID")
++    user = messages[0]
++    if (
++        set(user) != {"role", "content", "timestamp"}
++        or user.get("role") != "user"
++        or type(user.get("timestamp")) is not int
++        or not 0 <= user["timestamp"] <= 2 ** 53 - 1
++        or user.get("content") != [{"type": "text", "text": task_prompt}]
+     ):
+         raise _Reject("TOOL_TRANSCRIPT_INVALID")
+     first = messages[1]
+@@ -777,6 +883,8 @@
+
+         normal, synthetic = _load_configs(expectation)
+         stage = "SOURCE_MISMATCH"
+         _verify_trees(expectation, trees, synthetic)
++        stage = "CONFIG_INVALID"
++        task_prompt = _task_prompt(expectation, normal, synthetic)
+         stage = "GATE_INVALID"
+         gate, session_directory, _bridge_path = _load_gate(expectation, synthetic)
+         stage = "USAGE_UNKNOWN"
+@@ -784,7 +892,7 @@
+
+         campaign_tokens = usage.total_tokens
+         session_sha256 = expectation.current_session.sha256
+         stage = "TOOL_TRANSCRIPT_INVALID"
+-        public = _transcript(session, expectation.verified_dev_run_ids)
++        public = _transcript(session, expectation.verified_dev_run_ids, task_prompt)
+         stage = "PROCESS_INVALID"
+         _process(expectation, synthetic)
+         stage = "SOURCE_MISMATCH"

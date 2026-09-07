@@ -1,0 +1,199 @@
+"""Count bounded native completed-message usage across a fixed P0 campaign.
+
+This parser does not observe provider in-flight buffers or enforce a current-call cap.
+Its inputs must come from the root-selected native session files, never model JSON.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+import json
+import re
+
+MAX_SESSION_BYTES = 8_388_608
+MAX_ENTRIES = 4096
+MAX_COUNTER = 10**9
+UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+class UsageError(ValueError):
+    def __init__(self):
+        super().__init__("USAGE_INVALID")
+
+
+@dataclass(frozen=True)
+class SessionUsage:
+    session_id: str
+    input: int
+    output: int
+    cache_read: int
+    cache_write: int
+    assistant_messages: int
+    response_ids: tuple[str, ...]
+    complete: bool
+    unknown_reasons: tuple[str, ...]
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input + self.output + self.cache_read + self.cache_write
+
+    @property
+    def native_autonomous_tokens(self) -> int:
+        return self.input + self.output + self.cache_write
+
+
+@dataclass(frozen=True)
+class CampaignUsage:
+    total_tokens: int
+    input: int
+    output: int
+    cache_read: int
+    cache_write: int
+    budget: int
+    disposition: str
+    assistant_messages: int
+    complete: bool
+
+
+def _unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise UsageError()
+        result[key] = value
+    return result
+
+
+def _reject_constant(value):
+    raise UsageError()
+
+
+def _json(data: bytes):
+    try:
+        return json.loads(data.decode("utf-8"), object_pairs_hook=_unique,
+                          parse_constant=_reject_constant)
+    except (ValueError, UnicodeError, RecursionError):
+        raise UsageError() from None
+
+
+
+
+def _contains_usage_attribution(value, depth=0) -> bool:
+    if depth > 32:
+        raise UsageError()
+    if isinstance(value, dict):
+        keys = {str(key).replace("_", "").lower() for key in value}
+        if keys & {"usage", "aggregateusage", "childusage", "totaltokens"}:
+            return True
+        return any(_contains_usage_attribution(child, depth+1) for child in value.values())
+    if isinstance(value, list):
+        return any(_contains_usage_attribution(child, depth+1) for child in value)
+    return False
+
+def parse_session_usage(data: bytes, session_id: str, cwd: str,
+                        provider: str, model: str) -> SessionUsage:
+    if (not isinstance(data, bytes) or not 0 < len(data) <= MAX_SESSION_BYTES or
+            not isinstance(session_id, str) or UUID.fullmatch(session_id) is None or
+            any(not isinstance(value,str) or not value for value in (cwd,provider,model))):
+        raise UsageError()
+    unknown: list[str] = []
+    lines = data.split(b"\n")
+    if lines[-1] != b"":
+        unknown.append("PARTIAL_LAST_RECORD")
+        lines = lines[:-1]
+    else:
+        lines.pop()
+    if not lines or len(lines) > MAX_ENTRIES or any(not line for line in lines):
+        raise UsageError()
+    header = _json(lines[0])
+    if (not isinstance(header,dict) or header.get("type") != "session" or
+            header.get("id") != session_id or header.get("cwd") != cwd or
+            type(header.get("version")) is not int or header["version"] != 3 or
+            header.get("parentSession") is not None or header.get("rlmDepth",0) != 0):
+        raise UsageError()
+    entries = set()
+    leaf = None
+    responses = set()
+    counts = [0,0,0,0]
+    assistants = 0
+    for line in lines[1:]:
+        entry = _json(line)
+        if (not isinstance(entry,dict) or not isinstance(entry.get("type"),str) or
+                not isinstance(entry.get("id"),str) or not entry["id"] or
+                entry["id"] in entries or entry.get("parentId") != leaf):
+            raise UsageError()
+        entries.add(entry["id"])
+        leaf = entry["id"]
+        if entry["type"] != "message":
+            if entry["type"] == "child_usage_attributed" or _contains_usage_attribution(entry):
+                unknown.append("UNSUPPORTED_USAGE_ATTRIBUTION")
+            continue
+        message = entry.get("message")
+        if not isinstance(message,dict) or not isinstance(message.get("role"),str):
+            raise UsageError()
+        if message["role"] != "assistant":
+            if _contains_usage_attribution(message):
+                unknown.append("UNSUPPORTED_USAGE_ATTRIBUTION")
+            continue
+        assistants += 1
+        if message.get("provider") != provider or message.get("model") != model:
+            raise UsageError()
+        stop = message.get("stopReason")
+        if not isinstance(stop,str) or stop not in {"stop","length","toolUse","error","aborted"}:
+            raise UsageError()
+        if stop in {"error","aborted"}:
+            unknown.append("FAILED_OR_ABORTED_RESPONSE")
+        response_id = message.get("responseId")
+        if response_id is None or response_id == "":
+            unknown.append("MISSING_RESPONSE_ID")
+        else:
+            if (not isinstance(response_id,str) or not response_id or len(response_id.encode("utf-8")) > 256 or
+                    response_id in responses):
+                raise UsageError()
+            responses.add(response_id)
+        usage = message.get("usage")
+        if usage is None:
+            unknown.append("MISSING_USAGE")
+            continue
+        keys = ("input","output","cacheRead","cacheWrite","totalTokens")
+        if not isinstance(usage,dict) or any(type(usage.get(key)) is not int or not 0 <= usage[key] <= MAX_COUNTER for key in keys):
+            raise UsageError()
+        values = [usage[key] for key in keys[:4]]
+        if sum(values) != usage["totalTokens"]:
+            raise UsageError()
+        if sum(values) == 0:
+            unknown.append("ZERO_USAGE_UNVERIFIED")
+        counts = [total+value for total,value in zip(counts,values)]
+        if sum(counts) > MAX_COUNTER:
+            raise UsageError()
+    if assistants == 0:
+        unknown.append("NO_COMPLETED_ASSISTANT_USAGE")
+    return SessionUsage(session_id,*counts,assistants,tuple(sorted(responses)),not unknown,
+                        tuple(sorted(set(unknown))))
+
+
+def combine_usage(sessions: tuple[SessionUsage, ...], budget: int) -> CampaignUsage:
+    if (not isinstance(sessions,tuple) or not 1 <= len(sessions) <= 2 or
+            any(not isinstance(item,SessionUsage) for item in sessions) or
+            type(budget) is not int or not 0 < budget <= MAX_COUNTER):
+        raise UsageError()
+    ids = set()
+    responses = set()
+    totals = [0,0,0,0]
+    complete = True
+    assistants = 0
+    for session in sessions:
+        if session.session_id in ids or responses.intersection(session.response_ids):
+            raise UsageError()
+        ids.add(session.session_id)
+        responses.update(session.response_ids)
+        values = (session.input,session.output,session.cache_read,session.cache_write)
+        if any(type(value) is not int or not 0 <= value <= MAX_COUNTER for value in values):
+            raise UsageError()
+        totals = [total+value for total,value in zip(totals,values)]
+        assistants += session.assistant_messages
+        complete = complete and session.complete
+    total = sum(totals)
+    if total > MAX_COUNTER:
+        raise UsageError()
+    disposition = "USAGE_UNKNOWN" if not complete else "BUDGET_EXHAUSTED" if total >= budget else "WITHIN_BUDGET"
+    return CampaignUsage(total,*totals,budget,disposition,assistants,complete)

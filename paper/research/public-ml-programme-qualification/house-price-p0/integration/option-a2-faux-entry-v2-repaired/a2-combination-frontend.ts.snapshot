@@ -1,0 +1,282 @@
+import { createHash } from "node:crypto";
+import { closeSync, constants, fsyncSync, openSync, writeSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type {
+  ExtensionAPI,
+  ExtensionFactory,
+  MainOptions,
+} from "/opt/homebrew/lib/node_modules/prime-agent/dist/index.js";
+import { main as publicMain } from "/opt/homebrew/lib/node_modules/prime-agent/dist/index.js";
+import {
+  fauxAssistantMessage,
+  fauxToolCall,
+  registerFauxProvider,
+  type Context,
+  type FauxProviderRegistration,
+  type FauxResponseFactory,
+} from "/opt/homebrew/lib/node_modules/prime-agent/node_modules/@earendil-works/pi-ai/dist/index.js";
+import {
+  prepareControllerMain,
+  type PreparedControllerMain,
+} from "../controller-main.ts";
+
+const SYNTHETIC_PROVIDER = "openai-codex";
+const SYNTHETIC_MODEL = "gpt-5.6-sol";
+const RESPONSE_IDS = [
+  "a2-combination-response-0001",
+  "a2-combination-response-0002",
+] as const;
+const EXPECTED_SCHEMA_SHA256 = "553e00b05207cc51eaf80d3d58ff480279319990ce620409ea52a1e4d281ad61";
+const TOOL_NAMES = [
+  "read_solution",
+  "write_solution",
+  "request_R1_run",
+  "read_public_result",
+  "read_dev_result",
+  "lock_final_artifact",
+] as const;
+const FINAL_TEXT = "A2 synthetic combination frontend complete.";
+const METADATA_NAME = "a2-synthetic-provider-metadata.json";
+const MAX_METADATA_BYTES = 4096;
+
+type MainCallable = (args: string[], options?: MainOptions) => Promise<undefined>;
+type FauxRegistrationFactory = () => FauxProviderRegistration;
+type MetadataSink = (metadata: SyntheticCombinationMetadata, artifactRoot: string) => void;
+
+export interface SyntheticCombinationMetadata {
+  schema_version: "argo-house-price-a2-synthetic-provider-metadata/v1";
+  test_only: true;
+  provider: typeof SYNTHETIC_PROVIDER;
+  model: typeof SYNTHETIC_MODEL;
+  response_ids: [typeof RESPONSE_IDS[0], typeof RESPONSE_IDS[1]];
+  provider_call_count: 2;
+  contexts_observed: 2;
+  tool_names: [...typeof TOOL_NAMES];
+  tool_schema_sha256: string;
+  final_text_sha256: string;
+  usage_authority: "NATIVE_SESSION_ONLY";
+  production_provider_factory: false;
+}
+
+class SyntheticEntryError extends Error {
+  constructor() {
+    super("A2_SYNTHETIC_FRONTEND_FAILED");
+    this.name = "SyntheticEntryError";
+  }
+}
+
+function fail(): never {
+  throw new SyntheticEntryError();
+}
+
+function canonicalJsonValue(value: unknown): unknown {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) fail();
+    return value;
+  }
+  if (Array.isArray(value)) return value.map((item) => canonicalJsonValue(item));
+  if (typeof value !== "object") fail();
+  const record = value as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+  for (const key of Object.keys(record).sort()) {
+    const item = record[key];
+    if (item === undefined || typeof item === "function" || typeof item === "symbol" || typeof item === "bigint") fail();
+    result[key] = canonicalJsonValue(item);
+  }
+  return result;
+}
+
+function canonicalToolSchema(context: Context): string {
+  if (!context.tools || context.tools.length !== TOOL_NAMES.length) fail();
+  const schemas = context.tools.map((tool, index) => {
+    if (tool.name !== TOOL_NAMES[index] || typeof tool.description !== "string") fail();
+    return {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    };
+  });
+  return JSON.stringify(canonicalJsonValue(schemas));
+}
+
+function assertPrepared(prepared: PreparedControllerMain): void {
+  if (!prepared || prepared.fixedFactories.length !== 1) fail();
+  const modelIndex = prepared.mainArgs.indexOf("--model");
+  const toolsIndex = prepared.mainArgs.indexOf("--tools");
+  if (
+    modelIndex < 0 ||
+    toolsIndex < 0 ||
+    prepared.mainArgs[modelIndex + 1] !== `${SYNTHETIC_PROVIDER}/${SYNTHETIC_MODEL}` ||
+    prepared.mainArgs[toolsIndex + 1] !== TOOL_NAMES.join(",") ||
+    prepared.mainArgs.includes("--api-key") ||
+    prepared.mainArgs.includes("--provider")
+  ) {
+    fail();
+  }
+}
+
+function makeResponse(
+  index: 0 | 1,
+  observedSchemas: string[],
+): FauxResponseFactory {
+  return (context) => {
+    const schema = canonicalToolSchema(context);
+    if (createHash("sha256").update(schema).digest("hex") !== EXPECTED_SCHEMA_SHA256) fail();
+    observedSchemas.push(schema);
+    if (index === 0) {
+      return fauxAssistantMessage(
+        fauxToolCall("read_public_result", {}, { id: "a2-combination-tool-0001" }),
+        { responseId: RESPONSE_IDS[0] },
+      );
+    }
+    return fauxAssistantMessage(FINAL_TEXT, { responseId: RESPONSE_IDS[1] });
+  };
+}
+
+export function createSyntheticFauxRegistration(): FauxProviderRegistration {
+  return registerFauxProvider({
+    provider: SYNTHETIC_PROVIDER,
+    models: [{
+      id: SYNTHETIC_MODEL,
+      name: "A2 Synthetic Combination Faux",
+      reasoning: true,
+      input: ["text"],
+      contextWindow: 128000,
+      maxTokens: 4096,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    }],
+  });
+}
+
+function createProviderFactory(registration: FauxProviderRegistration): ExtensionFactory {
+  return (pi: ExtensionAPI): void => {
+    pi.registerProvider(SYNTHETIC_PROVIDER, {
+      name: "A2 Synthetic Combination Faux",
+      baseUrl: "http://localhost:0",
+      apiKey: "faux-test-only",
+      api: registration.api,
+      models: registration.models.map((model) => ({
+        id: model.id,
+        name: model.name,
+        api: model.api,
+        baseUrl: model.baseUrl,
+        reasoning: model.reasoning,
+        input: model.input,
+        cost: model.cost,
+        contextWindow: model.contextWindow,
+        maxTokens: model.maxTokens,
+      })),
+    });
+    pi.on("before_agent_start", () => {
+      if (
+        pi.getActiveTools().length !== TOOL_NAMES.length ||
+        !pi.getActiveTools().every((name, index) => name === TOOL_NAMES[index])
+      ) {
+        fail();
+      }
+    });
+  };
+}
+
+function metadataBytes(metadata: SyntheticCombinationMetadata): Buffer {
+  const bytes = Buffer.from(`${JSON.stringify(metadata)}\n`, "utf8");
+  if (bytes.length > MAX_METADATA_BYTES) fail();
+  return bytes;
+}
+
+export function writeSyntheticMetadata(metadata: SyntheticCombinationMetadata, artifactRoot: string): void {
+  const path = join(artifactRoot, METADATA_NAME);
+  const bytes = metadataBytes(metadata);
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    let written = 0;
+    while (written < bytes.length) {
+      const count = writeSync(descriptor, bytes, written, bytes.length - written);
+      if (count <= 0) fail();
+      written += count;
+    }
+    fsyncSync(descriptor);
+  } catch (error) {
+    if (error instanceof SyntheticEntryError) throw error;
+    fail();
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+export async function runSyntheticCombination(
+  prepared: PreparedControllerMain,
+  callMain: MainCallable = publicMain,
+  createRegistration: FauxRegistrationFactory = createSyntheticFauxRegistration,
+  sink: MetadataSink = writeSyntheticMetadata,
+): Promise<SyntheticCombinationMetadata> {
+  assertPrepared(prepared);
+  const originalArgs = JSON.stringify(prepared.mainArgs);
+  const observedSchemas: string[] = [];
+  const registration = createRegistration();
+  try {
+    if (
+      registration.models.length !== 1 ||
+      registration.models[0].provider !== SYNTHETIC_PROVIDER ||
+      registration.models[0].id !== SYNTHETIC_MODEL
+    ) {
+      fail();
+    }
+    registration.setResponses([
+      makeResponse(0, observedSchemas),
+      makeResponse(1, observedSchemas),
+    ]);
+    const providerFactory = createProviderFactory(registration);
+    await callMain(prepared.mainArgs, {
+      extensionFactories: [...prepared.fixedFactories, providerFactory],
+    });
+    if (
+      JSON.stringify(prepared.mainArgs) !== originalArgs ||
+      registration.state.callCount !== 2 ||
+      registration.getPendingResponseCount() !== 0 ||
+      observedSchemas.length !== 2 ||
+      observedSchemas[0] !== observedSchemas[1] ||
+      observedSchemas.some((schema) => createHash("sha256").update(schema).digest("hex") !== EXPECTED_SCHEMA_SHA256)
+    ) {
+      fail();
+    }
+    prepared.verifyPostflight();
+    const metadata: SyntheticCombinationMetadata = {
+      schema_version: "argo-house-price-a2-synthetic-provider-metadata/v1",
+      test_only: true,
+      provider: SYNTHETIC_PROVIDER,
+      model: SYNTHETIC_MODEL,
+      response_ids: [...RESPONSE_IDS],
+      provider_call_count: 2,
+      contexts_observed: 2,
+      tool_names: [...TOOL_NAMES],
+      tool_schema_sha256: EXPECTED_SCHEMA_SHA256,
+      final_text_sha256: createHash("sha256").update(FINAL_TEXT).digest("hex"),
+      usage_authority: "NATIVE_SESSION_ONLY",
+      production_provider_factory: false,
+    };
+    metadataBytes(metadata);
+    sink(metadata, prepared.deployment.directories.artifact_root.path);
+    return metadata;
+  } finally {
+    registration.unregister();
+  }
+}
+
+async function executeDirectEntry(): Promise<void> {
+  try {
+    const prepared = prepareControllerMain(process.argv.slice(2), process.env, process.execArgv);
+    await runSyntheticCombination(prepared);
+    process.exit(0);
+  } catch {
+    process.stderr.write("A2_SYNTHETIC_FRONTEND_FAILED\n");
+    process.exit(1);
+  }
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  await executeDirectEntry();
+}

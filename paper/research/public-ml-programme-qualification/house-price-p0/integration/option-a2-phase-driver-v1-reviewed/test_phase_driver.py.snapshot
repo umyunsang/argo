@@ -1,0 +1,439 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+import hashlib
+import json
+import os
+from pathlib import Path
+import tempfile
+import threading
+import unittest
+from unittest.mock import patch
+
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.campaign_usage import SessionUsage
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.controller_process import (
+    ControllerRunReceipt,
+    PathIdentity,
+    ProcessHandleReceipt,
+    RunControllerConfig,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.grading import FileBinding, read_bound
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.phase_gate import _gate_read
+import experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.phase_driver as phase_driver_module
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.phase_driver import (
+    PhaseDriverConfig,
+    _GateInputs,
+    execute_phase,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.source_closure import ClosureError, SourceTree
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.staging import DirectoryIdentity
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.usage_observer import UsageObservation
+
+
+UUID = "11111111-1111-4111-8111-111111111111"
+HEX = "a" * 64
+
+
+@dataclass
+class FakeObserver:
+    observations: list[UsageObservation]
+    index: int = 0
+
+    def observe(self) -> UsageObservation:
+        value = self.observations[min(self.index, len(self.observations) - 1)]
+        self.index += 1
+        return value
+
+
+class PhaseDriverTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory(prefix="argo-a2-phase-driver-")
+        self.root = Path(self.temp.name).resolve()
+        os.chmod(self.root, 0o700)
+        self.artifact = self.private_dir("artifact")
+        self.session = self.private_dir("artifact/session")
+        self.temporary = self.private_dir("artifact/tmp")
+        self.profile = self.private_dir("profile")
+        self.evidence = self.private_dir("evidence")
+        self.namespace = self.private_dir("namespace")
+        self.frontend = self.private_dir("frontend")
+        self.prime = self.private_dir("prime")
+        self.cwd = self.private_dir("controller-cwd")
+        self.gate_outcomes = self.private_dir("gate-outcomes")
+        self.process_file = self.bound_file("process-config.json", b"{}")
+        self.bridge_file = self.bound_file("bridge-config.json", b"{\"schema_version\":\"mock\"}")
+        gate_payload = {
+            "schema_version": "argo-house-price-a2-phase-gate-deployment/v1",
+            "context": "initial",
+            "bridge_config": {
+                "path": str(self.bridge_file.path),
+                "sha256": self.bridge_file.sha256,
+                "bytes": self.bridge_file.bytes,
+                "mtime_ns_max": self.bridge_file.mtime_ns_max,
+            },
+            "session_directory": {
+                "path": str(self.session),
+                "device": self.session.stat().st_dev,
+                "inode": self.session.stat().st_ino,
+            },
+            "cwd": str(self.cwd),
+            "provider": "openai-codex",
+            "model": "gpt-5.6-sol",
+            "budget": 120000,
+            "prior_session": None,
+            "prior_session_id": None,
+            "prior_cwd": None,
+            "final_lock_path": str(self.root / "final-artifact-lock.json"),
+            "gate_outcome_directory": {
+                "path": str(self.gate_outcomes),
+                "device": self.gate_outcomes.stat().st_dev,
+                "inode": self.gate_outcomes.stat().st_ino,
+            },
+            "expected_rows": 292,
+        }
+        self.gate_file = self.bound_file(
+            "gate-config.json",
+            json.dumps(gate_payload, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        )
+        self.dummy_files = {}
+        for name in ("python", "process_exec.py", "node", "controller-main.ts", "deployment.json"):
+            path = self.root / name
+            path.write_bytes(name.encode("ascii"))
+            os.chmod(path, 0o700 if name in {"python", "node"} else 0o600)
+            self.dummy_files[name] = path
+        self.process_config = self.make_process_config()
+        self.gate_inputs = _GateInputs(
+            context="initial",
+            session_directory=self.directory_identity(self.session),
+            cwd=str(self.cwd),
+            provider="openai-codex",
+            model="gpt-5.6-sol",
+            budget=120000,
+            prior_sessions=(),
+        )
+        self.config = PhaseDriverConfig(
+            controller_context_id="b" * 64,
+            process_config=self.process_file,
+            gate_config=self.gate_file,
+            installed_prime_tree=self.tree(self.prime),
+            namespace_tree=self.tree(self.namespace),
+            frontend_tree=self.tree(self.frontend),
+            evidence_directory=self.directory_identity(self.evidence),
+        )
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def private_dir(self, relative: str) -> Path:
+        path = self.root / relative
+        path.mkdir(parents=True, exist_ok=True)
+        os.chmod(path, 0o700)
+        return path
+
+    def bound_file(self, name: str, data: bytes) -> FileBinding:
+        path = self.root / name
+        path.write_bytes(data)
+        os.chmod(path, 0o600)
+        return FileBinding(path, hashlib.sha256(data).hexdigest(), len(data), path.stat().st_mtime_ns)
+
+    def directory_identity(self, path: Path) -> DirectoryIdentity:
+        info = path.stat()
+        return DirectoryIdentity(path, info.st_dev, info.st_ino)
+
+    def tree(self, path: Path) -> SourceTree:
+        info = path.stat()
+        return SourceTree(str(path), info.st_dev, info.st_ino, HEX, 0, 0, 0, 0, info.st_mtime_ns)
+
+    def path_identity(self, path: Path) -> PathIdentity:
+        info = path.stat()
+        return PathIdentity(
+            str(path),
+            "regular_file",
+            info.st_dev,
+            info.st_ino,
+            info.st_mode & 0o777,
+            info.st_uid,
+            info.st_size,
+            info.st_mtime_ns,
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+
+    def make_process_config(self) -> RunControllerConfig:
+        return RunControllerConfig(
+            python_executable=str(self.dummy_files["python"]),
+            interpreter_identity=None,
+            process_exec_path=str(self.dummy_files["process_exec.py"]),
+            process_exec_identity=self.path_identity(self.dummy_files["process_exec.py"]),
+            node_executable=str(self.dummy_files["node"]),
+            node_identity=self.path_identity(self.dummy_files["node"]),
+            frontend_path=str(self.dummy_files["controller-main.ts"]),
+            frontend_identity=self.path_identity(self.dummy_files["controller-main.ts"]),
+            deployment_path=str(self.dummy_files["deployment.json"]),
+            deployment_identity=self.path_identity(self.dummy_files["deployment.json"]),
+            artifact_root=str(self.artifact),
+            artifact_root_identity=self.directory_path_identity(self.artifact),
+            temporary_dir=str(self.temporary),
+            temporary_dir_identity=self.directory_path_identity(self.temporary),
+            session_dir=str(self.session),
+            session_dir_identity=self.directory_path_identity(self.session),
+            profile_dir=str(self.profile),
+            profile_dir_identity=self.directory_path_identity(self.profile),
+            child_environment={},
+            caps=None,
+            campaign_started_monotonic_ns=1,
+            synthetic_test_context=False,
+        )
+
+    def directory_path_identity(self, path: Path) -> PathIdentity:
+        info = path.stat()
+        return PathIdentity(
+            str(path), "directory", info.st_dev, info.st_ino, info.st_mode & 0o777,
+            info.st_uid, info.st_size, info.st_mtime_ns, None,
+        )
+
+    def observation(
+        self,
+        state: str,
+        stop_reason: str | None,
+        complete: bool,
+        current_tokens: int | None,
+        total_tokens: int | None,
+        *,
+        with_session: bool,
+    ) -> UsageObservation:
+        data = b'{"type":"session"}\n'
+        digest = hashlib.sha256(data).hexdigest()
+        if with_session:
+            (self.session / f"{UUID}.jsonl").write_bytes(data)
+        return UsageObservation(
+            state,
+            stop_reason,
+            complete,
+            current_tokens,
+            total_tokens,
+            UUID if with_session else None,
+            digest if with_session else None,
+            len(data) if with_session else 0,
+        )
+
+    def process_receipt(self, status: str = "succeeded", reason: str = "completed") -> ControllerRunReceipt:
+        handle = ProcessHandleReceipt(
+            pid=123,
+            root_pgid=123,
+            pid_start_identity="mock",
+            stdout_path=str(self.artifact / "stdout"),
+            stderr_path=str(self.artifact / "stderr"),
+            spawn_attempts=1,
+            process_exec_path=self.process_config.process_exec_path,
+            frontend_path=self.process_config.frontend_path,
+            deployment_path=self.process_config.deployment_path,
+            artifact_root=str(self.artifact),
+            session_dir=str(self.session),
+            child_environment_keys=(),
+            stdin_mode="DEVNULL",
+        )
+        return ControllerRunReceipt(
+            schema_version="argo-house-price-a2-controller-process-receipt/v1",
+            authority_contract_sha256=HEX,
+            status=status,
+            terminal_reason=reason,
+            returncode=0,
+            started_monotonic_ns=1,
+            ended_monotonic_ns=2,
+            elapsed_seconds=0.1,
+            handle=handle,
+            resources=None,
+            cleanup=None,
+            limitations=(),
+        )
+
+    def patches(self, observer: FakeObserver, receipt: ControllerRunReceipt):
+        def run_side_effect(config, *, abort_event=None, campaign_guard=None):
+            self.assertIs(config, self.process_config)
+            self.assertIs(abort_event, getattr(self, "expected_abort_event", None))
+            self.assertTrue(callable(campaign_guard))
+            self.guard_reason = campaign_guard()
+            return receipt
+
+        def observer_factory(config):
+            self.observer_config = config
+            return observer
+
+        return (
+            patch("experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.phase_driver._load_process_config", return_value=self.process_config),
+            patch("experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.phase_driver._load_gate_config", return_value=self.gate_inputs),
+            patch("experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.phase_driver._verify_source_closures"),
+            patch("experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.phase_driver._validate_config"),
+            patch("experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.phase_driver.UsageObserver", side_effect=observer_factory),
+            patch("experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.phase_driver.run_controller", side_effect=run_side_effect),
+        )
+
+    def execute_patched(
+        self,
+        observer: FakeObserver,
+        receipt: ControllerRunReceipt,
+        abort_event=None,
+    ):
+        self.expected_abort_event = abort_event
+        contexts = self.patches(observer, receipt)
+        with contexts[0], contexts[1], contexts[2], contexts[3], contexts[4], contexts[5]:
+            return execute_phase(self.config, abort_event=abort_event)
+
+    def test_startup_guard_is_callable_and_same_observer_finalizes_clean_receipts(self) -> None:
+        waiting = self.observation("WAITING_FIRST_USAGE", None, False, None, None, with_session=False)
+        within = self.observation("WITHIN_BUDGET", None, True, 100, 100, with_session=True)
+        observer = FakeObserver([waiting, within])
+        abort_event = threading.Event()
+        result = self.execute_patched(observer, self.process_receipt(), abort_event=abort_event)
+        self.assertIsNone(self.guard_reason)
+        self.assertEqual(observer.index, 2)
+        self.assertEqual(result.disposition, "PROCESS_RECORDED")
+        self.assertEqual(result.reason, "PROCESS_RETURNED")
+        self.assertTrue(result.clean_process)
+        self.assertEqual(result.current_session_id, UUID)
+        self.assertEqual(
+            _gate_read(
+                result.current_session.path,
+                8388608,
+                result.current_session.sha256,
+                result.current_session.bytes,
+                result.current_session.mtime_ns_max,
+            ),
+            b'{"type":"session"}\n',
+        )
+        self.assertEqual(json.loads(read_bound(result.process_receipt, 1048576))["status"], "succeeded")
+        usage = json.loads(read_bound(result.usage_receipt, 65536))
+        self.assertEqual(usage["usage"]["total_tokens"], 100)
+        self.assertNotIn("raw", usage)
+        self.assertTrue((self.evidence / "controller-admission.json").is_file())
+
+    def test_budget_guard_uses_prior_sessions_without_reset_and_clean_is_false(self) -> None:
+        exhausted = self.observation(
+            "BUDGET_EXHAUSTED", "CAMPAIGN_TOKEN_TRIGGER", True, 20, 120000, with_session=True
+        )
+        observer = FakeObserver([exhausted])
+        prior = SessionUsage(
+            "22222222-2222-4222-8222-222222222222",
+            60000,
+            30000,
+            20000,
+            9980,
+            1,
+            ("response-prior",),
+            True,
+            (),
+        )
+        self.gate_inputs = replace(self.gate_inputs, prior_sessions=(prior,))
+        receipt = self.process_receipt("resource_invalid", "CAMPAIGN_TOKEN_TRIGGER")
+        result = self.execute_patched(observer, receipt)
+        self.assertEqual(self.observer_config.prior_sessions, (prior,))
+        self.assertEqual(self.guard_reason, "CAMPAIGN_TOKEN_TRIGGER")
+        self.assertFalse(result.clean_process)
+        self.assertEqual(result.reason, "PROCESS_RETURNED")
+
+    def test_late_unknown_prevents_clean_success(self) -> None:
+        waiting = self.observation("WAITING_FIRST_USAGE", None, False, None, None, with_session=False)
+        unknown = self.observation(
+            "USAGE_UNKNOWN", "CAMPAIGN_USAGE_UNKNOWN", False, None, None, with_session=False
+        )
+        result = self.execute_patched(FakeObserver([waiting, unknown]), self.process_receipt())
+        self.assertFalse(result.clean_process)
+        self.assertIsNone(result.current_session)
+
+    def test_gate_config_pure_reader_binds_current_observer_inputs(self) -> None:
+        loaded = phase_driver_module._load_gate_config(self.gate_file)
+        self.assertEqual(loaded.context, "initial")
+        self.assertEqual(loaded.session_directory, self.directory_identity(self.session))
+        self.assertEqual((loaded.provider, loaded.model, loaded.budget), ("openai-codex", "gpt-5.6-sol", 120000))
+        self.assertEqual(loaded.prior_sessions, ())
+
+    def test_guard_unknown_is_passed_through_and_never_clean(self) -> None:
+        unknown = self.observation(
+            "USAGE_UNKNOWN", "CAMPAIGN_USAGE_UNKNOWN", False, None, None, with_session=False
+        )
+        receipt = self.process_receipt("resource_invalid", "CAMPAIGN_USAGE_UNKNOWN")
+        result = self.execute_patched(FakeObserver([unknown]), receipt)
+        self.assertEqual(self.guard_reason, "CAMPAIGN_USAGE_UNKNOWN")
+        self.assertFalse(result.clean_process)
+        self.assertEqual(result.reason, "PROCESS_RETURNED")
+
+    def test_process_and_gate_session_mismatch_fails_before_admission(self) -> None:
+        other_session = self.private_dir("other-session")
+        self.gate_inputs = replace(
+            self.gate_inputs,
+            session_directory=self.directory_identity(other_session),
+        )
+        result = self.execute_patched(
+            FakeObserver([self.observation("WAITING_FIRST_USAGE", None, False, None, None, with_session=False)]),
+            self.process_receipt(),
+        )
+        self.assertEqual((result.disposition, result.reason), ("NOT_STARTED", "INVALID_INPUT"))
+        self.assertEqual(list(self.evidence.iterdir()), [])
+
+    def test_recording_failure_keeps_admission_and_never_clean_success(self) -> None:
+        waiting = self.observation("WAITING_FIRST_USAGE", None, False, None, None, with_session=False)
+        within = self.observation("WITHIN_BUDGET", None, True, 100, 100, with_session=True)
+        observer = FakeObserver([waiting, within])
+        contexts = self.patches(observer, self.process_receipt())
+        original_write = phase_driver_module._write_new
+
+        def fail_process_receipt(directory, identity, name, data, cap):
+            if name == "controller-process-receipt.json":
+                raise OSError("mock recording failure")
+            return original_write(directory, identity, name, data, cap)
+
+        with contexts[0], contexts[1], contexts[2], contexts[3], contexts[4], contexts[5], \
+                patch.object(phase_driver_module, "_write_new", side_effect=fail_process_receipt):
+            result = execute_phase(self.config)
+        self.assertEqual((result.disposition, result.reason), ("RECORDING_FAILED", "RECORDING_FAILED"))
+        self.assertFalse(result.clean_process)
+        self.assertTrue((self.evidence / "controller-admission.json").is_file())
+        self.assertFalse((self.evidence / "controller-process-receipt.json").exists())
+
+    def test_stale_source_tree_fails_before_admission_or_process(self) -> None:
+        with patch("experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.phase_driver._load_process_config", return_value=self.process_config), \
+                patch("experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.phase_driver._load_gate_config", return_value=self.gate_inputs), \
+                patch("experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.phase_driver._validate_config"), \
+                patch("experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.phase_driver._verify_source_closures", side_effect=ClosureError()), \
+                patch("experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.phase_driver.run_controller") as run:
+            result = execute_phase(self.config)
+        self.assertEqual((result.disposition, result.reason), ("NOT_STARTED", "SOURCE_MISMATCH"))
+        self.assertFalse((self.evidence / "controller-admission.json").exists())
+        run.assert_not_called()
+
+    def test_invalid_input_and_orphan_receipt_create_no_admission(self) -> None:
+        invalid = PhaseDriverConfig(
+            controller_context_id="bad",
+            process_config=self.process_file,
+            gate_config=self.gate_file,
+            installed_prime_tree=self.config.installed_prime_tree,
+            namespace_tree=self.config.namespace_tree,
+            frontend_tree=self.config.frontend_tree,
+            evidence_directory=self.config.evidence_directory,
+        )
+        result = execute_phase(invalid)
+        self.assertEqual((result.disposition, result.reason), ("NOT_STARTED", "INVALID_INPUT"))
+        self.assertEqual(list(self.evidence.iterdir()), [])
+        (self.evidence / "controller-process-receipt.json").write_text("partial", encoding="ascii")
+        result = execute_phase(self.config)
+        self.assertEqual((result.disposition, result.reason), ("NOT_STARTED", "INVALID_INPUT"))
+        self.assertFalse((self.evidence / "controller-admission.json").exists())
+
+    def test_existing_admission_fence_denies_second_attempt(self) -> None:
+        (self.evidence / "controller-admission.json").write_text("partial", encoding="ascii")
+        with patch("experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.phase_driver.run_controller") as run:
+            result = execute_phase(self.config)
+        self.assertEqual((result.disposition, result.reason), ("NOT_STARTED", "ALREADY_ATTEMPTED"))
+        run.assert_not_called()
+
+    def test_wrong_session_path_or_identity_never_becomes_clean(self) -> None:
+        waiting = self.observation("WAITING_FIRST_USAGE", None, False, None, None, with_session=False)
+        final = self.observation("WITHIN_BUDGET", None, True, 10, 10, with_session=False)
+        result = self.execute_patched(FakeObserver([waiting, final]), self.process_receipt())
+        self.assertFalse(result.clean_process)
+        self.assertIsNone(result.current_session)
+        self.assertEqual(result.disposition, "PROCESS_RECORDED")
+
+
+if __name__ == "__main__":
+    unittest.main()

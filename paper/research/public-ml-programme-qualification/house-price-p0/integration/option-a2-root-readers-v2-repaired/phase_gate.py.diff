@@ -1,0 +1,251 @@
+--- v1/phase_gate.py
+
++++ v2/phase_gate.py
+
+@@ -1,10 +1,11 @@
+
+-"""Pure A2 checkpoint predicate over validated producer views.
+-
+-This module makes no lifecycle requests, reads no files and grants no execution.
+-The root gate adapter must obtain each view from its hash-bound producer.
++"""A2 phase predicate and bounded adapter over hash-bound producer views.
++
++The predicate is pure. The adapter reads native usage and bridge views, then
++appends a private usage checkpoint. Neither grants scientific execution.
+ """
+ from __future__ import annotations
+ 
++from contextlib import contextmanager
+ from dataclasses import asdict, dataclass, fields
+ from decimal import Decimal, InvalidOperation
+ import hashlib
+@@ -15,7 +16,6 @@
+
+ import re
+ import stat
+ import sys
+-import time
+ import uuid
+ from typing import Sequence
+ 
+@@ -181,6 +181,8 @@
+
+             return _decision(usage_outcome)
+         public, by_id = _public_view(public_response)
+         dev_ids = _dev_view(dev_response, by_id, expected_rows)
++        if public["remaining_dev_opportunities"] > max(0, 3-len(dev_ids)):
++            raise _Invalid()
+         _research_view(research_response)
+         refs = tuple(by_id.values())
+         if any(row["status"] == "UNKNOWN" for row in refs):
+@@ -302,35 +304,112 @@
+
+     return DirectoryIdentity(path, info.st_dev, info.st_ino)
+ 
+ 
+-def _publish_gate_outcome(identity: DirectoryIdentity, payload: bytes) -> None:
+-    if len(payload) > 16384:
+-        raise GateConfigError()
+-    descriptor = os.open(identity.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+-    try:
+-        info = os.fstat(descriptor)
+-        if (info.st_dev, info.st_ino) != (identity.device, identity.inode):
+-            raise GateConfigError()
+-        count = 0
+-        total = len(payload)
+-        with os.scandir(descriptor) as entries:
+-            for entry in entries:
+-                entry_info = entry.stat(follow_symlinks=False)
+-                if (not re.fullmatch(r"[0-9]+-[0-9a-f]{32}\.json", entry.name)
+-                        or not stat.S_ISREG(entry_info.st_mode) or entry_info.st_nlink != 1):
++def _assert_outcome_directory(descriptor: int, identity: DirectoryIdentity) -> None:
++    held=os.fstat(descriptor)
++    named=identity.path.lstat()
++    for info in (held,named):
++        if (not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode)!=0o700 or
++                (info.st_dev,info.st_ino)!=(identity.device,identity.inode)):
++            raise GateConfigError()
++
++
++def _gate_write_all(descriptor: int, data: bytes) -> None:
++    written=0
++    while written<len(data):
++        count=os.write(descriptor,data[written:])
++        if count<=0:raise GateConfigError()
++        written+=count
++    os.fsync(descriptor)
++
++
++@contextmanager
++def _gate_operation(identity: DirectoryIdentity):
++    descriptor=os.open(identity.path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
++    lock=None
++    lock_identity=None
++    try:
++        _assert_outcome_directory(descriptor,identity)
++        lock=os.open(".gate-evaluation.lock",os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=descriptor)
++        _gate_write_all(lock,b"gate-evaluation/v1\n")
++        lock_identity=_gate_identity(os.fstat(lock))
++        os.fsync(descriptor)
++        yield descriptor
++    finally:
++        try:
++            if lock_identity is not None:
++                _assert_outcome_directory(descriptor,identity)
++                current=os.stat(".gate-evaluation.lock",dir_fd=descriptor,follow_symlinks=False)
++                if _gate_identity(current)!=lock_identity or _gate_identity(os.fstat(lock))!=lock_identity:
+                     raise GateConfigError()
+-                count += 1
+-                total += entry_info.st_size
+-                if count >= 40 or total > 1048576:
+-                    raise GateConfigError()
+-        name = f"{time.monotonic_ns()}-{uuid.uuid4().hex}.json"
+-        output = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=descriptor)
+-        with os.fdopen(output, "wb") as stream:
+-            stream.write(payload)
+-            stream.flush()
+-            os.fsync(stream.fileno())
+-        os.fsync(descriptor)
++                os.unlink(".gate-evaluation.lock",dir_fd=descriptor)
++                os.fsync(descriptor)
++        finally:
++            if lock is not None:os.close(lock)
++            os.close(descriptor)
++
++
++def _read_gate_history(descriptor: int, config_sha256: str, observer_config: UsageObserverConfig):
++    names=[]
++    total=0
++    with os.scandir(descriptor) as entries:
++        for entry in entries:
++            if entry.name==".gate-evaluation.lock":continue
++            if re.fullmatch(r"[0-9]{4}-[0-9a-f]{32}\.json",entry.name) is None:
++                raise GateConfigError()
++            info=entry.stat(follow_symlinks=False)
++            if (not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or stat.S_IMODE(info.st_mode)!=0o600 or
++                    not 0<info.st_size<=16384):
++                raise GateConfigError()
++            names.append(entry.name);total+=info.st_size
++            if len(names)>40 or total>1048576:raise GateConfigError()
++    previous=None
++    checkpoint=None
++    last_observation=None
++    for sequence,name in enumerate(sorted(names),1):
++        if name[:4]!=f"{sequence:04d}":raise GateConfigError()
++        file_fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=descriptor)
++        with os.fdopen(file_fd,"rb") as stream:
++            before=os.fstat(stream.fileno())
++            if (not stat.S_ISREG(before.st_mode) or before.st_nlink!=1 or stat.S_IMODE(before.st_mode)!=0o600 or
++                    not 0<before.st_size<=16384):raise GateConfigError()
++            data=stream.read(16385)
++            after=os.fstat(stream.fileno());named=os.stat(name,dir_fd=descriptor,follow_symlinks=False)
++            if (_gate_identity(before)!=_gate_identity(after) or _gate_identity(after)!=_gate_identity(named) or
++                    len(data)!=before.st_size):raise GateConfigError()
++        value=_gate_json(data)
++        _keys(value,("schema_version","context","config_sha256","bridge_config_sha256","decision","usage",
++                     "view_sha256","final_lock_sha256","sequence","previous_outcome_sha256","usage_checkpoint"))
++        if (value["schema_version"]!="argo-house-price-a2-phase-gate-outcome/v2" or
++                value["config_sha256"]!=config_sha256 or type(value["sequence"]) is not int or
++                value["sequence"]!=sequence or value["previous_outcome_sha256"]!=previous):
++            raise GateConfigError()
++        checkpoint=value["usage_checkpoint"]
++        restored=UsageObserver(observer_config,checkpoint=checkpoint).export_checkpoint()
++        if restored!=checkpoint or restored["observation"] is None or restored["observation"]!=value["usage"]:
++            raise GateConfigError()
++        observation=restored["observation"]
++        if last_observation is not None:
++            if last_observation["stop_reason"] is not None and observation!=last_observation:raise GateConfigError()
++            if last_observation["session_id"] is not None and observation["session_id"]!=last_observation["session_id"]:
++                raise GateConfigError()
++            if last_observation["total_tokens"] is not None and (observation["total_tokens"] is None or
++                    observation["total_tokens"]<last_observation["total_tokens"]):raise GateConfigError()
++            if observation["observed_bytes"]<last_observation["observed_bytes"]:raise GateConfigError()
++        last_observation=observation
++        previous=hashlib.sha256(data).hexdigest()
++    return checkpoint,len(names),previous,total
++
++
++def _publish_gate_outcome(descriptor: int, payload: bytes, sequence: int, existing_bytes: int) -> None:
++    if not 0<len(payload)<=16384 or not 1<=sequence<=40 or existing_bytes+len(payload)>1048576:
++        raise GateConfigError()
++    name=f"{sequence:04d}-{uuid.uuid4().hex}.json"
++    output=os.open(name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=descriptor)
++    try:
++        _gate_write_all(output,payload)
+     finally:
+-        os.close(descriptor)
++        os.close(output)
++    os.fsync(descriptor)
+ 
+ 
+ def _evaluate_gate(path: Path, expected_sha256: str) -> dict[str, object]:
+@@ -368,34 +447,40 @@
+
+             raise GateConfigError()
+         prior = (parse_session_usage(prior_data, config["prior_session_id"], config["prior_cwd"],
+                                      config["provider"], config["model"]),)
+-    usage = UsageObserver(UsageObserverConfig(session_directory, config["cwd"], config["provider"],
+-                          config["model"], config["budget"], prior)).observe()
+-    public = bridge.handle({"action":"read_public_result", "arguments":{}})
+-    dev = bridge.handle({"action":"read_dev_result", "arguments":{}})
+-    research = bridge.handle({"action":"read_solution", "arguments":{"path":"research.md"}})
+-    final_lock = None
+-    lock_hash = None
+-    if (isinstance(public, dict) and public.get("ok") is True
+-            and isinstance(public.get("result"), dict) and public["result"].get("phase") == "final_locked"):
+-        lock_bytes = _gate_read(Path(config["final_lock_path"]), 16384)
+-        lock_record = _gate_json(lock_bytes)
+-        _keys(lock_record, tuple(field.name for field in fields(FinalArtifactLock)))
+-        final_lock = FinalArtifactLock(**lock_record)
+-        stored_lock = bridge.config.trusted_io.final_artifact_lock()
+-        canonical = json.dumps(asdict(stored_lock), sort_keys=True, separators=(",",":"), ensure_ascii=True).encode()
+-        if final_lock != stored_lock or lock_bytes != canonical:
+-            raise GateConfigError()
+-        lock_hash = hashlib.sha256(lock_bytes).hexdigest()
+-    decision = decide_phase(config["context"], public, dev, research, usage, final_lock, config["expected_rows"])
+-    views = {"public":public, "dev":dev, "research":research}
+-    hashes = {key:hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",",":"), ensure_ascii=True,
+-                                          allow_nan=False).encode()).hexdigest() for key,value in views.items()}
+-    outcome = {"schema_version":"argo-house-price-a2-phase-gate-outcome/v1", "context":config["context"],
+-               "config_sha256":expected_sha256, "bridge_config_sha256":config["bridge_config"]["sha256"],
+-               "decision":asdict(decision), "usage":asdict(usage), "view_sha256":hashes, "final_lock_sha256":lock_hash}
+-    payload = json.dumps(outcome, sort_keys=True, separators=(",",":"), ensure_ascii=True, allow_nan=False).encode()
+-    _publish_gate_outcome(outcome_directory, payload)
+-    return _gate_json(payload)
++    observer_config=UsageObserverConfig(session_directory,config["cwd"],config["provider"],
++                                        config["model"],config["budget"],prior)
++    with _gate_operation(outcome_directory) as outcome_fd:
++        checkpoint,count,previous,total=_read_gate_history(outcome_fd,expected_sha256,observer_config)
++        observer = UsageObserver(observer_config,checkpoint=checkpoint)
++        usage = observer.observe()
++        public = bridge.handle({"action":"read_public_result", "arguments":{}})
++        dev = bridge.handle({"action":"read_dev_result", "arguments":{}})
++        research = bridge.handle({"action":"read_solution", "arguments":{"path":"research.md"}})
++        final_lock = None
++        lock_hash = None
++        if (isinstance(public, dict) and public.get("ok") is True
++                and isinstance(public.get("result"), dict) and public["result"].get("phase") == "final_locked"):
++            lock_bytes = _gate_read(Path(config["final_lock_path"]), 16384)
++            lock_record = _gate_json(lock_bytes)
++            _keys(lock_record, tuple(field.name for field in fields(FinalArtifactLock)))
++            final_lock = FinalArtifactLock(**lock_record)
++            stored_lock = bridge.config.trusted_io.final_artifact_lock()
++            canonical = json.dumps(asdict(stored_lock), sort_keys=True, separators=(",",":"), ensure_ascii=True).encode()
++            if final_lock != stored_lock or lock_bytes != canonical:
++                raise GateConfigError()
++            lock_hash = hashlib.sha256(lock_bytes).hexdigest()
++        decision = decide_phase(config["context"], public, dev, research, usage, final_lock, config["expected_rows"])
++        views = {"public":public, "dev":dev, "research":research}
++        hashes = {key:hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",",":"), ensure_ascii=True,
++                                              allow_nan=False).encode()).hexdigest() for key,value in views.items()}
++        outcome = {"schema_version":"argo-house-price-a2-phase-gate-outcome/v2", "context":config["context"],
++                   "config_sha256":expected_sha256, "bridge_config_sha256":config["bridge_config"]["sha256"],
++                   "decision":asdict(decision), "usage":asdict(usage), "view_sha256":hashes, "final_lock_sha256":lock_hash,
++                   "sequence":count+1,"previous_outcome_sha256":previous,"usage_checkpoint":observer.export_checkpoint()}
++        payload = json.dumps(outcome, sort_keys=True, separators=(",",":"), ensure_ascii=True, allow_nan=False).encode()
++        _assert_outcome_directory(outcome_fd,outcome_directory)
++        _publish_gate_outcome(outcome_fd,payload,count+1,total)
++        return _gate_json(payload)
+ 
+ 
+ def evaluate_gate_config(path: Path, expected_sha256: str) -> dict[str, object]:

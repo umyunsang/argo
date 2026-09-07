@@ -1,0 +1,1055 @@
+from __future__ import annotations
+
+import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+import tempfile
+import threading
+import unittest
+from unittest.mock import patch
+import uuid
+
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.bridge import (
+    BINDING_SCHEMA,
+    FIXED_COMMAND,
+    Binding,
+    Bridge,
+    BridgeConfig,
+    ContextRights,
+    BoundedSubprocessExecutor,
+    ExecutorError,
+    FixedNativePort,
+    FixedPortConfig,
+    LaunchPlan,
+    NativeObservation,
+    PreparedLaunch,
+    StrictNativeGetter,
+    _StateStore,
+    _valid_prior_process_receipt,
+    load_bridge_from_config,
+    parse_native_run_json,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.grading import (
+    FileBinding,
+    grade_files,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.receipt_store import (
+    ExpectedDevExecution,
+    VerifiedDevReceipt,
+    verify_dev_receipt,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.run_entry import (
+    PREFIX,
+    REQUIRED_RUNTIME_PATHS,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.staging import DirectoryIdentity
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.trusted_io import (
+    DevResultReceipt,
+    TrustedIo,
+    TrustedIoLimits,
+)
+
+
+def digest(value: bytes | str) -> str:
+    if isinstance(value, str):
+        value = value.encode()
+    return hashlib.sha256(value).hexdigest()
+
+
+def file_binding(path: Path) -> FileBinding:
+    info = path.stat()
+    return FileBinding(path.resolve(), digest(path.read_bytes()), info.st_size, info.st_mtime_ns)
+
+
+def directory_identity(path: Path) -> DirectoryIdentity:
+    path = path.resolve()
+    info = path.stat()
+    return DirectoryIdentity(path, info.st_dev, info.st_ino)
+
+
+def write_intent(path: Path, phase: str, solution_hash: str, reference: str | None = None) -> None:
+    key = "parent_run_id" if phase == "dev" else "selected_run_id"
+    path.write_text(json.dumps({
+        "schema_version": "argo-house-price-intent/v1", "phase": phase,
+        "purpose": "synthetic bounded research", "solution_sha256": solution_hash, key: reference,
+    }, sort_keys=True, separators=(",", ":")))
+
+
+def process_receipt(session_dir: Path, artifact_root: Path) -> dict[str, object]:
+    resources = {
+        "provider_timeout_ms": 120000, "provider_retries": 0, "model_tokens_between_turns": 120000,
+        "controller_turn_limit_per_phase": 20, "source_text_max_bytes": 131072,
+        "autonomous_gate_retries": 20, "autonomous_gate_timeout_ms": 30000,
+        "bridge_close_grace_ms": 1000, "rss_sampling_semantics": "sampled_trigger_not_hard_limit",
+        "rss_trigger_bytes": 2147483648, "rss_sample_interval_ms": 250,
+        "peak_sampled_rss_bytes": 1, "rss_overshoot_bytes": 0, "rss_trigger_monotonic_ns": None,
+        "rss_trigger_elapsed_from_first_sample_seconds": None, "sample_count": 2,
+        "first_sample_monotonic_ns": 1, "last_sample_monotonic_ns": 100000001, "max_sample_gap_ms": 100.0,
+        "observed_seconds": 0.1, "coverage_complete_for_observed_tree": True,
+        "observer_errors": [], "census_errors": [], "census_file_count_peak": 2,
+        "census_aggregate_bytes_peak": 100, "census_largest_file_bytes": 100,
+        "file_count_overshoot": 0, "aggregate_bytes_overshoot": 0,
+        "artifact_file_count_trigger": 128, "artifact_aggregate_bytes_trigger": 67108864,
+        "regular_file_rlimit_bytes": 8388608, "cpu_rlimit_seconds_per_process": 600,
+        "phase_wall_seconds": 3600.0, "campaign_wall_seconds": 10800.0,
+        "observer_output_limit_bytes": 8388608,
+        "native_usage_missing_or_inflight_semantics": "unknown_not_zero",
+    }
+    cleanup = {
+        "confirmed_for_tracked_processes": True, "claims_all_possible_descendants": False,
+        "unobserved_escape_possible": True, "root_process_reaped": True, "signals_sent": [],
+        "tracked_processes": [], "observed_process_groups": [], "escaped_observed_process_groups": [],
+        "alive_tracked_after_cleanup": [], "cleanup_errors": [],
+    }
+    handle = {
+        "pid": 99991, "root_pgid": 99991, "pid_start_identity": "synthetic-start",
+        "stdout_path": str(artifact_root / "controller.stdout"),
+        "stderr_path": str(artifact_root / "controller.stderr"), "spawn_attempts": 1,
+        "process_exec_path": str(artifact_root / "process-exec.py"),
+        "frontend_path": str(artifact_root / "frontend.mjs"),
+        "deployment_path": str(artifact_root / "deployment.json"),
+        "artifact_root": str(artifact_root), "session_dir": str(session_dir),
+        "child_environment_keys": ["LANG", "LC_ALL", "PATH"], "stdin_mode": "DEVNULL",
+    }
+    return {
+        "schema_version": "argo-house-price-a2-controller-process-receipt/v1",
+        "authority_contract_sha256": "0cfaeb57c18662f428cdb9fbdef842d55782624b9baaf9bbbbe98ebeb4412c20",
+        "status": "succeeded", "terminal_reason": "completed", "returncode": 0,
+        "started_monotonic_ns": 1, "ended_monotonic_ns": 100000001, "elapsed_seconds": 0.1,
+        "handle": handle, "resources": resources, "cleanup": cleanup, "limitations": [],
+    }
+
+
+def session_jsonl(session_id: str, cwd: Path) -> bytes:
+    records = [
+        {"type": "session", "id": session_id, "cwd": str(cwd), "version": 3, "parentSession": None, "rlmDepth": 0},
+        {"type": "message", "id": "entry-1", "parentId": None, "message": {
+            "role": "assistant", "provider": "openai-codex", "model": "gpt-5.6-sol",
+            "stopReason": "stop", "responseId": "response-1",
+            "usage": {"input": 10, "output": 20, "cacheRead": 30, "cacheWrite": 40, "totalTokens": 100},
+        }},
+    ]
+    return b"".join(json.dumps(item, sort_keys=True, separators=(",", ":")).encode() + b"\n" for item in records)
+
+
+class FakePort:
+    def __init__(self, root: Path):
+        self.root = root
+        self.prepared: list[LaunchPlan] = []
+        self.bindings: dict[str, tuple[str, str, str]] = {}
+        self.infrastructure: set[str] = set()
+        self.observation_status: dict[str, str] = {}
+        self.next_status = "DONE"
+        self.artifact = root / "final-predictions.csv"
+        self.artifact.write_text("Id,SalePrice\n1,10\n2,20\n")
+        self.ids = root / "ids.json"
+        self.ids.write_text('["1","2"]')
+        self.targets = root / "targets.csv"
+        self.targets.write_text("Id,SalePrice\n1,10\n2,22\n")
+
+    def prepare(self, plan: LaunchPlan) -> PreparedLaunch:
+        self.prepared.append(plan)
+        experiment = str(uuid.uuid4())
+        slug_phase = plan.phase.replace("_", "-")
+        title = f"house-price-{slug_phase}-{plan.ordinal:02d}"
+        branch = f"orx/house-price-{slug_phase}-{plan.ordinal:02d}"
+        commit = f"{plan.ordinal:040x}"
+        config_hash = digest(f"config-{plan.ordinal}")
+        return PreparedLaunch(plan, experiment, title, branch, commit, config_hash, b"{}")
+
+    def start(self, prepared: PreparedLaunch) -> NativeObservation:
+        run_id = str(uuid.uuid4())
+        source = digest(f"source-{prepared.plan.ordinal}")
+        self.bindings[run_id] = (prepared.experiment_id, prepared.native_commit, source)
+        status = self.next_status
+        self.next_status = "DONE"
+        self.observation_status[run_id] = status
+        if prepared.plan.phase == "dev" and status == "DONE":
+            (self.root / f"{run_id}-predictions.csv").write_text("Id,SalePrice\n1,10\n2,20\n")
+        return NativeObservation(run_id, prepared.experiment_id, prepared.native_commit, source, 1, status, False)
+
+    def observe(self, binding: Binding) -> NativeObservation:
+        status = self.observation_status.get(binding.run_id, "DONE")
+        return NativeObservation(binding.run_id, binding.experiment_id, binding.native_commit,
+                                 binding.native_source_digest, 1, status, False)
+
+    def _dev_parts(self, binding: Binding):
+        prediction_binding = file_binding(self.root / f"{binding.run_id}-predictions.csv")
+        ids = file_binding(self.ids)
+        targets = file_binding(self.targets)
+        expected = ExpectedDevExecution(
+            binding.run_id, binding.experiment_id, binding.native_commit,
+            binding.native_source_digest, binding.closure_sha256, binding.solution_sha256,
+            binding.intent_sha256, binding.task_sha256, binding.environment_sha256,
+            binding.protocol_sha256, digest("runner"), "DONE", 2,
+        )
+        score = grade_files(prediction_binding, ids, targets, max_rows=2)
+        payload = {
+            "schema_version": "argo-house-price-dev-receipt/v1", "phase": "dev",
+            "run_id": expected.run_id, "experiment_id": expected.experiment_id,
+            "native_commit": expected.native_commit, "native_source_digest": expected.native_source_digest,
+            "closure_sha256": expected.closure_sha256, "solution_sha256": expected.solution_sha256,
+            "intent_sha256": expected.intent_sha256, "task_sha256": expected.task_sha256,
+            "environment_sha256": expected.environment_sha256, "protocol_sha256": expected.protocol_sha256,
+            "runner_sha256": expected.runner_sha256, "rows": 2,
+            "prediction_sha256": prediction_binding.sha256, "prediction_bytes": prediction_binding.bytes,
+            "prediction_mtime_ns_max": prediction_binding.mtime_ns_max,
+            "ids_sha256": ids.sha256, "targets_sha256": targets.sha256,
+            "mae_numerator": str(score.mae.numerator), "mae_denominator": str(score.mae.denominator),
+        }
+        receipt_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        return prediction_binding, ids, targets, expected, score, receipt_bytes
+
+    def verified_dev(self, binding: Binding, observation: NativeObservation) -> VerifiedDevReceipt:
+        prediction, ids, targets, expected, score, receipt_bytes = self._dev_parts(binding)
+        return VerifiedDevReceipt(
+            DevResultReceipt(digest(receipt_bytes), binding.closure_sha256, binding.solution_sha256),
+            score, binding.run_id,
+        )
+
+    def publish_verified_dev(self, binding: Binding, observation: NativeObservation,
+                             receipt_sha256: str) -> VerifiedDevReceipt:
+        prediction, ids, targets, expected, score, receipt_bytes = self._dev_parts(binding)
+        if digest(receipt_bytes) != receipt_sha256:
+            raise ValueError("receipt mismatch")
+        receipt = self.root / f"{binding.run_id}-dev-receipt.json"
+        if receipt.exists():
+            if receipt.read_bytes() != receipt_bytes:
+                raise ValueError("receipt mismatch")
+        else:
+            receipt.write_bytes(receipt_bytes)
+        return verify_dev_receipt(file_binding(receipt), expected, prediction, ids, targets)
+
+    def final_artifact_binding(self, binding: Binding, observation: NativeObservation) -> FileBinding:
+        return file_binding(self.artifact)
+
+    def infrastructure_failure(self, binding: Binding, observation: NativeObservation) -> bool:
+        return binding.run_id in self.infrastructure
+
+    def cancel(self, binding: Binding) -> NativeObservation:
+        return NativeObservation(binding.run_id, binding.experiment_id, binding.native_commit,
+                                 binding.native_source_digest, 1, "CANCELLED", True)
+
+
+class BridgeFixture:
+    def __init__(self, base: Path, context: str = "initial"):
+        self.base = base
+        self.source = base / "source"
+        self.source.mkdir()
+        self.trusted_state = base / "trusted-state"
+        self.bridge_state = base / "bridge-state"
+        self.bridge_state.mkdir()
+        for name in ("attempts", "bindings", "receipts", "contexts"):
+            (self.bridge_state / name).mkdir()
+        self.artifacts = base / "artifacts"
+        self.artifacts.mkdir()
+        solution = b"print('candidate')\n"
+        (self.source / "solution.py").write_bytes(solution)
+        (self.source / "research.md").write_text("research\n")
+        write_intent(self.source / "intent.json", "dev", digest(solution))
+        trusted = TrustedIo(
+            self.source, self.trusted_state,
+            TrustedIoLimits(64, 131072, 393216, 131072, 16384, 5, 2097152),
+        )
+        context_id = digest(context + "-context")
+        checkpoint_path = base / "checkpoint.json"
+        checkpoint_path.write_text("{}")
+        checkpoint = file_binding(checkpoint_path) if context == "continuation" else None
+        rights = ContextRights(
+            "argo-house-price-a2-context-rights/v1", context_id, context,
+            digest("initial-context") if context == "continuation" else context_id, checkpoint,
+        )
+        config = BridgeConfig(
+            trusted, directory_identity(self.bridge_state), digest("task"), digest("environment"),
+            digest("protocol"), digest("outer"), digest("hidden"), 3, 1, 1, 5,
+            directory_identity(self.trusted_state), rights,
+        )
+        self.port = FakePort(self.artifacts)
+        self.bridge = Bridge(config, port=self.port)
+        if context == "continuation":
+            self.bridge.store.write_context_admission(context_id, {
+                "schema_version": "argo-house-price-a2-context-admission/v1",
+                "controller_context_id": context_id,
+                "initial_context_id": digest("initial-context"),
+                "checkpoint_sha256": checkpoint.sha256,
+                "verified_dev_run_ids": [str(uuid.uuid4()), str(uuid.uuid4())],
+                "campaign_used_tokens": 100,
+            })
+
+    def call(self, action: str, arguments: dict[str, object]) -> dict[str, object]:
+        return self.bridge.handle({"action": action, "arguments": arguments})
+
+
+class BoundaryRegressionTest(unittest.TestCase):
+    def test_executor_overflow_kills_and_reaps_alive_child(self) -> None:
+        class PatchedProcess:
+            def __init__(self):
+                stdout_read, stdout_write = os.pipe()
+                stderr_read, stderr_write = os.pipe()
+                self.stdout = os.fdopen(stdout_read, "rb", buffering=0)
+                self.stderr = os.fdopen(stderr_read, "rb", buffering=0)
+                self.pid = 424242
+                self.poll_calls = 0
+                self.wait_calls = 0
+                self.kill_calls = 0
+                def produce() -> None:
+                    try:
+                        os.write(stdout_write, b"x" * 70_000)
+                        os.write(stderr_write, b"y" * 70_000)
+                    except BrokenPipeError:
+                        pass
+                    finally:
+                        os.close(stdout_write)
+                        os.close(stderr_write)
+                self.writer = threading.Thread(target=produce, daemon=True)
+                self.writer.start()
+            def poll(self):
+                self.poll_calls += 1
+                return None
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                return -9
+            def kill(self):
+                self.kill_calls += 1
+
+        child = PatchedProcess()
+        environment = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TZ": "UTC"}
+        executor = BoundedSubprocessExecutor(environment)
+        killpg_calls = []
+        with patch("subprocess.Popen", return_value=child), patch("os.killpg", side_effect=lambda pid, sig: killpg_calls.append((pid, sig))):
+            with self.assertRaises(ExecutorError):
+                executor.run(("/usr/bin/printf", "fixed"), cwd=Path("/tmp"), timeout_seconds=3, output_limit=131072)
+        child.writer.join(timeout=1)
+        self.assertEqual(killpg_calls[0][0], child.pid)
+        self.assertGreaterEqual(child.poll_calls, 1)
+        self.assertEqual(child.wait_calls, 1)
+
+    def test_http_getter_enforces_one_total_slow_drip_deadline(self) -> None:
+        class SlowHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", "5")
+                self.end_headers()
+                for byte in b"12345":
+                    try:
+                        self.wfile.write(bytes([byte]))
+                        self.wfile.flush()
+                    except BrokenPipeError:
+                        return
+                    time.sleep(0.8)
+            def log_message(self, format, *args):
+                return
+        class SlowServer(ThreadingHTTPServer):
+            daemon_threads = True
+        server = SlowServer(("127.0.0.1", 0), SlowHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        started = time.monotonic()
+        try:
+            with self.assertRaises(ExecutorError):
+                StrictNativeGetter().get(server.server_address[1], "/api/projects/a0c1bc7e-cd76-4df3-b140-8e03af22d271/runs")
+        finally:
+            elapsed = time.monotonic() - started
+            server.shutdown()
+            server.server_close()
+        self.assertLess(elapsed, 3.5)
+
+
+class BridgeTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.fixture = BridgeFixture(Path(self.temporary.name))
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_malformed_and_invalid_typed_arguments_are_safe(self) -> None:
+        self.assertEqual(json.loads(self.fixture.bridge.handle_bytes(b"{")), {"error": "INVALID_ARGUMENT", "ok": False})
+        for request in (
+            {"action": [], "arguments": {}},
+            {"action": "write_solution", "arguments": {"path": [], "content": 1}},
+            {"action": "lock_final_artifact", "arguments": {"run_id": True, "artifact_sha256": []}},
+        ):
+            response = self.fixture.bridge.handle(request)
+            self.assertFalse(response["ok"], response)
+
+    def test_public_read_creates_no_bridge_state_or_lifecycle_mirror(self) -> None:
+        def snapshot_tree() -> dict[str, str]:
+            result = {}
+            for path in self.fixture.bridge.store.root.rglob("*"):
+                if path.is_file():
+                    result[str(path.relative_to(self.fixture.bridge.store.root))] = digest(path.read_bytes())
+            return result
+        before = snapshot_tree()
+        response = self.fixture.call("read_public_result", {})
+        self.assertTrue(response["ok"], response)
+        self.assertEqual(snapshot_tree(), before)
+
+    def test_arbitrary_dependency_exception_is_safe_for_both_handlers(self) -> None:
+        with patch.object(self.fixture.bridge.config.trusted_io, "read_solution", side_effect=RuntimeError("private detail")):
+            direct = self.fixture.bridge.handle({"action": "read_solution", "arguments": {"path": "solution.py"}})
+            wire = json.loads(self.fixture.bridge.handle_bytes(json.dumps({"action": "read_solution", "arguments": {"path": "solution.py"}}).encode()))
+        self.assertEqual(direct, {"ok": False, "error": "INTERNAL_ERROR"})
+        self.assertEqual(wire, {"ok": False, "error": "INTERNAL_ERROR"})
+
+    def test_read_write_and_expected_hash(self) -> None:
+        read = self.fixture.call("read_solution", {"path": "solution.py"})
+        self.assertTrue(read["ok"])
+        mismatch = self.fixture.call("write_solution", {
+            "path": "solution.py", "content": "x", "expected_sha256": "0" * 64,
+        })
+        self.assertEqual(mismatch["error"], "HASH_MISMATCH")
+
+    def test_wire_serializer_does_not_rewrite_source_mae_text(self) -> None:
+        source = 'value = \'"mae":"1.000000"\'\n'
+        self.assertTrue(self.fixture.call("write_solution", {"path": "research.md", "content": source})["ok"])
+        raw = self.fixture.bridge.handle_bytes(json.dumps({
+            "action": "read_solution", "arguments": {"path": "research.md"},
+        }).encode())
+        response = json.loads(raw)
+        self.assertEqual(response["result"]["content"], source)
+        self.assertIn(b'\\"mae\\":\\"1.000000\\"', raw)
+
+    def test_dev_receipt_is_real_regrade_and_metric_wire_is_numeric(self) -> None:
+        launched = self.fixture.call("request_R1_run", {})
+        self.assertTrue(launched["ok"], launched)
+        before = {str(path.relative_to(self.fixture.base)): digest(path.read_bytes()) for path in self.fixture.base.rglob("*") if path.is_file()}
+        result = self.fixture.call("read_dev_result", {})
+        after = {str(path.relative_to(self.fixture.base)): digest(path.read_bytes()) for path in self.fixture.base.rglob("*") if path.is_file()}
+        self.assertEqual(result["result"]["results"][0]["mae"], "1.000000")
+        self.assertEqual(after, before)
+        raw = self.fixture.bridge.handle_bytes(json.dumps({"action": "read_dev_result", "arguments": {}}).encode())
+        self.assertIn(b'"mae":1.000000', raw)
+        self.assertNotIn(b'"mae":"1.000000"', raw)
+
+    def test_parent_run_maps_to_parent_experiment(self) -> None:
+        first = self.fixture.call("request_R1_run", {})["result"]
+        code = digest("print('second')\n")
+        self.assertTrue(self.fixture.call("write_solution", {"path": "solution.py", "content": "print('second')\n"})["ok"])
+        write_intent_text = json.dumps({
+            "schema_version": "argo-house-price-intent/v1", "phase": "dev", "purpose": "second",
+            "solution_sha256": code, "parent_run_id": first["run_id"],
+        }, sort_keys=True, separators=(",", ":"))
+        self.assertTrue(self.fixture.call("write_solution", {"path": "intent.json", "content": write_intent_text})["ok"])
+        second = self.fixture.call("request_R1_run", {})
+        self.assertTrue(second["ok"], second)
+        self.assertEqual(self.fixture.port.prepared[1].parent_experiment_id, first["experiment_id"])
+        self.assertNotEqual(self.fixture.port.prepared[1].parent_experiment_id, first["run_id"])
+
+    def test_initial_context_blocks_third_valid_dev_and_final(self) -> None:
+        first = self.fixture.call("request_R1_run", {})["result"]
+        for ordinal in (2,):
+            source = f"print({ordinal})\n"
+            self.fixture.call("write_solution", {"path": "solution.py", "content": source})
+            intent = json.dumps({
+                "schema_version": "argo-house-price-intent/v1", "phase": "dev", "purpose": "next",
+                "solution_sha256": digest(source), "parent_run_id": first["run_id"],
+            }, sort_keys=True, separators=(",", ":"))
+            self.fixture.call("write_solution", {"path": "intent.json", "content": intent})
+            second = self.fixture.call("request_R1_run", {})
+            self.assertTrue(second["ok"], second)
+        source = "print(3)\n"
+        self.fixture.call("write_solution", {"path": "solution.py", "content": source})
+        third_intent = json.dumps({
+            "schema_version": "argo-house-price-intent/v1", "phase": "dev", "purpose": "forbidden",
+            "solution_sha256": digest(source), "parent_run_id": second["result"]["run_id"],
+        }, sort_keys=True, separators=(",", ":"))
+        self.fixture.call("write_solution", {"path": "intent.json", "content": third_intent})
+        before = {str(path.relative_to(self.fixture.base)): digest(path.read_bytes()) for path in self.fixture.base.rglob("*") if path.is_file()}
+        self.assertEqual(self.fixture.call("request_R1_run", {})["error"], "BUDGET_EXHAUSTED")
+        after = {str(path.relative_to(self.fixture.base)): digest(path.read_bytes()) for path in self.fixture.base.rglob("*") if path.is_file()}
+        self.assertEqual(after, before)
+
+    def test_attempt_fence_precedes_failure_and_blocks_every_later_r1(self) -> None:
+        self.fixture.port.prepare = lambda plan: (_ for _ in ()).throw(RuntimeError("partial staging"))
+        first = self.fixture.call("request_R1_run", {})
+        self.assertEqual(first["error"], "UNCERTAIN_NO_AUTOMATIC_RETRY")
+        public = self.fixture.call("read_public_result", {})
+        self.assertEqual(public["result"]["dev_attempts"], 1)
+        second = self.fixture.call("request_R1_run", {})
+        self.assertEqual(second["error"], "UNCERTAIN_NO_AUTOMATIC_RETRY")
+
+    def test_final_stages_selected_historical_bytes_and_publishes_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = BridgeFixture(Path(temporary), context="continuation")
+            dev = fixture.call("request_R1_run", {})["result"]
+            selected_bytes = fixture.port.prepared[0].solution_bytes
+            fixture.call("write_solution", {"path": "solution.py", "content": "print('unselected')\n"})
+            final_intent = json.dumps({
+                "schema_version": "argo-house-price-intent/v1", "phase": "final_refit", "purpose": "selected",
+                "solution_sha256": dev["solution_sha256"], "selected_run_id": dev["run_id"],
+            }, sort_keys=True, separators=(",", ":"))
+            fixture.call("write_solution", {"path": "intent.json", "content": final_intent})
+            final = fixture.call("request_R1_run", {})
+            self.assertTrue(final["ok"], final)
+            self.assertEqual(fixture.port.prepared[-1].solution_bytes, selected_bytes)
+            public = fixture.call("read_public_result", {})
+            final_public = next(item for item in public["result"]["runs"] if item["phase"] == "final_refit")
+            self.assertEqual(final_public["artifact_sha256"], file_binding(fixture.port.artifact).sha256)
+            locked = fixture.call("lock_final_artifact", {
+                "run_id": final["result"]["run_id"], "artifact_sha256": final_public["artifact_sha256"],
+            })
+            self.assertTrue(locked["ok"], locked)
+            lock_path = fixture.bridge.store.root / "final-artifact-lock.json"
+            self.assertEqual(locked["result"]["lock_sha256"], digest(lock_path.read_bytes()))
+            duplicate = fixture.call("lock_final_artifact", {
+                "run_id": final["result"]["run_id"], "artifact_sha256": final_public["artifact_sha256"],
+            })
+            self.assertEqual(duplicate["error"], "FINAL_LOCKED")
+
+    def test_one_mechanically_known_pre_metric_repair_does_not_expand_three_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = BridgeFixture(Path(temporary), context="continuation")
+            fixture.port.next_status = "FAILED"
+            failed = fixture.call("request_R1_run", {})["result"]
+            fixture.port.infrastructure.add(failed["run_id"])
+            parent = failed
+            for ordinal in range(3):
+                source = f"print('metric-{ordinal}')\n"
+                fixture.call("write_solution", {"path": "solution.py", "content": source})
+                intent = json.dumps({
+                    "schema_version": "argo-house-price-intent/v1", "phase": "dev", "purpose": "metric",
+                    "solution_sha256": digest(source), "parent_run_id": parent["run_id"],
+                }, sort_keys=True, separators=(",", ":"))
+                fixture.call("write_solution", {"path": "intent.json", "content": intent})
+                response = fixture.call("request_R1_run", {})
+                self.assertTrue(response["ok"], response)
+                parent = response["result"]
+            source = "print('too-many')\n"
+            fixture.call("write_solution", {"path": "solution.py", "content": source})
+            intent = json.dumps({
+                "schema_version": "argo-house-price-intent/v1", "phase": "dev", "purpose": "too many",
+                "solution_sha256": digest(source), "parent_run_id": parent["run_id"],
+            }, sort_keys=True, separators=(",", ":"))
+            fixture.call("write_solution", {"path": "intent.json", "content": intent})
+            denied = fixture.call("request_R1_run", {})
+            self.assertEqual(denied["error"], "BUDGET_EXHAUSTED")
+            public = fixture.call("read_public_result", {})
+            self.assertEqual(public["result"]["dev_attempts"], 4)
+            self.assertEqual(public["result"]["remaining_dev_opportunities"], 0)
+
+    def test_continuation_opens_process_and_session_evidence_once_then_allows_research_edits(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            (base / "campaign").mkdir()
+            initial = BridgeFixture(base / "campaign", context="initial")
+            first = initial.call("request_R1_run", {})["result"]
+            source = "print('second eligible')\n"
+            initial.call("write_solution", {"path": "solution.py", "content": source})
+            initial.call("write_solution", {"path": "intent.json", "content": json.dumps({
+                "schema_version": "argo-house-price-intent/v1", "phase": "dev", "purpose": "second",
+                "solution_sha256": digest(source), "parent_run_id": first["run_id"],
+            }, sort_keys=True, separators=(",", ":"))})
+            second = initial.call("request_R1_run", {})["result"]
+            dev_results = initial.call("read_dev_result", {})["result"]["results"]
+            self.assertEqual([item["run_id"] for item in dev_results], [first["run_id"], second["run_id"]])
+            research = initial.call("read_solution", {"path": "research.md"})["result"]
+
+            evidence = base / "evidence"
+            evidence.mkdir()
+            session_dir = evidence / "sessions"
+            session_dir.mkdir()
+            prior_cwd = evidence / "prior-cwd"
+            prior_cwd.mkdir()
+            session_id = str(uuid.uuid4())
+            session_path = session_dir / (session_id + ".jsonl")
+            session_path.write_bytes(session_jsonl(session_id, prior_cwd.resolve()))
+            process_path = evidence / "process-receipt.json"
+            process_path.write_text(json.dumps(process_receipt(session_dir.resolve(), evidence.resolve()), sort_keys=True, separators=(",", ":")))
+            next_context = digest("real-continuation")
+            checkpoint_path = evidence / "handoff.json"
+            checkpoint = {
+                "schema_version": "argo-house-price-a2-handoff/v1",
+                "initial_context_id": initial.bridge.config.context_rights.initial_context_id,
+                "next_context_id": next_context,
+                "verified_dev_run_ids": [first["run_id"], second["run_id"]],
+                "research_sha256": research["sha256"],
+                "prior_process_receipt": file_binding(process_path).__dict__ | {"path": str(file_binding(process_path).path)},
+                "prior_session": file_binding(session_path).__dict__ | {"path": str(file_binding(session_path).path)},
+                "prior_session_id": session_id, "prior_cwd": str(prior_cwd.resolve()),
+                "provider": "openai-codex", "model": "gpt-5.6-sol",
+                "campaign_token_budget": 120000, "campaign_used_tokens": 100,
+            }
+            checkpoint_path.write_text(json.dumps(checkpoint, sort_keys=True, separators=(",", ":")))
+            rights = ContextRights(
+                "argo-house-price-a2-context-rights/v1", next_context, "continuation",
+                initial.bridge.config.context_rights.initial_context_id, file_binding(checkpoint_path),
+            )
+            old_config = initial.bridge.config
+            continuation_config = BridgeConfig(
+                old_config.trusted_io, old_config.state_root, old_config.task_sha256,
+                old_config.environment_sha256, old_config.protocol_sha256,
+                old_config.outer_training_manifest_sha256, old_config.hidden_features_manifest_sha256,
+                3, 1, 1, 5, old_config.selected_state_root, rights,
+            )
+            continuation = Bridge(continuation_config, port=initial.port)
+            third_source = "print('third eligible')\n"
+            continuation.handle({"action": "write_solution", "arguments": {"path": "solution.py", "content": third_source}})
+            third_intent = json.dumps({
+                "schema_version": "argo-house-price-intent/v1", "phase": "dev", "purpose": "third",
+                "solution_sha256": digest(third_source), "parent_run_id": second["run_id"],
+            }, sort_keys=True, separators=(",", ":"))
+            continuation.handle({"action": "write_solution", "arguments": {"path": "intent.json", "content": third_intent}})
+            third = continuation.handle({"action": "request_R1_run", "arguments": {}})
+            self.assertTrue(third["ok"], third)
+            admission = continuation.store.read_context_admission(next_context)
+            self.assertEqual(admission["campaign_used_tokens"], 100)
+            attempt_file = next((continuation.store.root / "attempts").glob("03-*.json"))
+            context_file = continuation.store.root / "contexts" / (next_context + ".json")
+            published_receipts = list(initial.artifacts.glob("*-dev-receipt.json"))
+            self.assertEqual(len(published_receipts), 2)
+            self.assertLessEqual(attempt_file.stat().st_mtime_ns, context_file.stat().st_mtime_ns)
+            self.assertTrue(all(attempt_file.stat().st_mtime_ns <= item.stat().st_mtime_ns for item in published_receipts))
+            changed = continuation.handle({"action": "write_solution", "arguments": {"path": "research.md", "content": "later research\n"}})
+            self.assertTrue(changed["ok"], changed)
+            final_intent = json.dumps({
+                "schema_version": "argo-house-price-intent/v1", "phase": "final_refit", "purpose": "final",
+                "solution_sha256": third["result"]["solution_sha256"], "selected_run_id": third["result"]["run_id"],
+            }, sort_keys=True, separators=(",", ":"))
+            continuation.handle({"action": "write_solution", "arguments": {"path": "intent.json", "content": final_intent}})
+            final = continuation.handle({"action": "request_R1_run", "arguments": {}})
+            self.assertTrue(final["ok"], final)
+
+    def test_nonfinite_process_metadata_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            session = base / "sessions"
+            session.mkdir()
+            value = process_receipt(session.resolve(), base.resolve())
+            value["elapsed_seconds"] = json.loads("1e309")
+            self.assertFalse(_valid_prior_process_receipt(value, session.resolve() / (str(uuid.uuid4()) + ".jsonl")))
+            value = process_receipt(session.resolve(), base.resolve())
+            value["resources"]["max_sample_gap_ms"] = json.loads("1e309")
+            self.assertFalse(_valid_prior_process_receipt(value, session.resolve() / (str(uuid.uuid4()) + ".jsonl")))
+
+    def test_strict_native_json_validates_all_records_and_types(self) -> None:
+        fixture_path = Path(__file__).parent / "orx_text_fixtures" / "native-run-success.json"
+        value = json.loads(fixture_path.read_text())
+        value["runs"][0]["command"] = FIXED_COMMAND
+        data = json.dumps(value).encode()
+        observation = parse_native_run_json(
+            data, project_id="a0c1bc7e-cd76-4df3-b140-8eSquad" if False else "a0c1bc7e-cd76-4df3-b140-8e03af22d271",
+            run_id="191407a0-84ce-47e6-afa4-298d034b8aa3",
+            experiment_id="cbfc2315-b262-4608-806a-65f0080de6e5",
+            commit_sha="99f66129ad6be4fa8feeb05377a113b63ad84162", command=FIXED_COMMAND,
+            local_runs_root=Path("/Users/um-yunsang/.local/share/openresearch/local-runs"),
+            source_root=Path("/Users/um-yunsang/.local/share/openresearch/source-snapshots"),
+        )
+        self.assertEqual(observation.status, "DONE")
+        bad = json.loads(data)
+        bad["runs"].append(dict(bad["runs"][0]))
+        with self.assertRaises(ValueError):
+            parse_native_run_json(json.dumps(bad).encode(), project_id="a0c1bc7e-cd76-4df3-b140-8e03af22d271",
+                run_id=observation.run_id, experiment_id=observation.experiment_id,
+                commit_sha=observation.native_commit, command=FIXED_COMMAND,
+                local_runs_root=Path("/Users/um-yunsang/.local/share/openresearch/local-runs"),
+                source_root=Path("/Users/um-yunsang/.local/share/openresearch/source-snapshots"))
+        bad = json.loads(data)
+        bad["runs"][0]["backend"]["sourceSize"] = True
+        with self.assertRaises(ValueError):
+            parse_native_run_json(json.dumps(bad).encode(), project_id="a0c1bc7e-cd76-4df3-b140-8e03af22d271",
+                run_id=observation.run_id, experiment_id=observation.experiment_id,
+                commit_sha=observation.native_commit, command=FIXED_COMMAND,
+                local_runs_root=Path("/Users/um-yunsang/.local/share/openresearch/local-runs"),
+                source_root=Path("/Users/um-yunsang/.local/share/openresearch/source-snapshots"))
+        bad = json.loads(data)
+        bad["runs"][0]["createdAt"] = 2 ** 100
+        bad["runs"][0]["updatedAt"] = 2 ** 100
+        bad["runs"][0]["endedAt"] = 2 ** 100
+        with self.assertRaises(ValueError):
+            parse_native_run_json(json.dumps(bad).encode(), project_id="a0c1bc7e-cd76-4df3-b140-8e03af22d271",
+                run_id=observation.run_id, experiment_id=observation.experiment_id,
+                commit_sha=observation.native_commit, command=FIXED_COMMAND,
+                local_runs_root=Path("/Users/um-yunsang/.local/share/openresearch/local-runs"),
+                source_root=Path("/Users/um-yunsang/.local/share/openresearch/source-snapshots"))
+
+
+class NativeHarness:
+    PROJECT = "a0c1bc7e-cd76-4df3-b140-8e03af22d271"
+    ROOT_EXPERIMENT = "cbfc2315-b262-4608-806a-65f0080de6e5"
+
+    def __init__(self, base: Path, rows: int = 2):
+        self.base = base
+        self.repo = base / "repo"
+        self.repo.mkdir()
+        self.local_runs = base / "local-runs"
+        self.local_runs.mkdir()
+        self.snapshots = base / "source-snapshots"
+        self.snapshots.mkdir()
+        self.output = base / "output"
+        self.output.mkdir()
+        self.bridge_state = base / "bridge-state"
+        self.bridge_state.mkdir()
+        for name in ("attempts", "bindings", "receipts", "contexts"):
+            (self.bridge_state / name).mkdir()
+        self.source = base / "source"
+        self.source.mkdir()
+        self.trusted_state = base / "trusted-state"
+        self.trusted_state.mkdir()
+        solution = b"print('native harness')\n"
+        (self.source / "solution.py").write_bytes(solution)
+        (self.source / "research.md").write_text("native research\n")
+        write_intent(self.source / "intent.json", "dev", digest(solution))
+        self.native_state = base / "native-state.json"
+        self.fake_orx = base / "fake-orx"
+        self.rows = rows
+        for relative in REQUIRED_RUNTIME_PATHS:
+            path = self.repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"runtime:{relative}\n")
+        subprocess.run(["/usr/bin/git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(["/usr/bin/git", "-C", str(self.repo), "config", "user.email", "a2@example.invalid"], check=True)
+        subprocess.run(["/usr/bin/git", "-C", str(self.repo), "config", "user.name", "A2 Test"], check=True)
+        subprocess.run(["/usr/bin/git", "-C", str(self.repo), "add", "--", *REQUIRED_RUNTIME_PATHS], check=True)
+        subprocess.run(["/usr/bin/git", "-C", str(self.repo), "commit", "-q", "-m", "runtime"], check=True)
+        subprocess.run(["/usr/bin/git", "-C", str(self.repo), "branch", "-M", "orx/house-price-root"], check=True)
+        self.base_commit = subprocess.check_output(["/usr/bin/git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+        self._write_fake_orx()
+        self.environment = {
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+            "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TZ": "UTC", "HOME": str(base / "home"),
+        }
+        (base / "home").mkdir()
+        self.train = base / "train.csv"
+        self.features = base / "features.csv"
+        self.ids = base / "ids.json"
+        self.targets = base / "targets.csv"
+        ids = [str(index + 1) for index in range(rows)]
+        self.train.write_text("Id,SalePrice\n" + "".join(f"{item},{10 + index}\n" for index, item in enumerate(ids)))
+        self.features.write_text("Id,Feature\n" + "".join(f"{item},{index}\n" for index, item in enumerate(ids)))
+        self.ids.write_text(json.dumps(ids, separators=(",", ":")))
+        self.targets.write_text("Id,SalePrice\n" + "".join(f"{item},{10 + index}\n" for index, item in enumerate(ids)))
+        self.runtime_hashes = {relative: digest((self.repo / relative).read_bytes()) for relative in REQUIRED_RUNTIME_PATHS}
+        self.store = _StateStore(directory_identity(self.bridge_state))
+        self.config = FixedPortConfig(
+            file_binding(self.fake_orx), file_binding(Path("/opt/homebrew/bin/git").resolve()), directory_identity(self.repo),
+            directory_identity(self.local_runs), directory_identity(self.snapshots), directory_identity(self.output),
+            self.PROJECT, self.ROOT_EXPERIMENT, "orx/house-price-root", "House price root",
+            self.base_commit, FIXED_COMMAND, 1, self.environment, self.runtime_hashes,
+            {"train": file_binding(self.train), "features": file_binding(self.features), "ids": file_binding(self.ids), "targets": file_binding(self.targets)},
+            {"train": file_binding(self.train), "features": file_binding(self.features), "ids": file_binding(self.ids)},
+            rows, rows,
+        )
+        self.server = self._start_server()
+        object.__setattr__(self.config, "loopback_port", self.server.server_address[1])
+        self.port = FixedNativePort(self.config, self.store)
+        self.port.bind_bridge_identity(digest("task"), digest("environment"), digest("protocol"))
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+    def _start_server(self) -> ThreadingHTTPServer:
+        state_path = self.native_state
+        project = self.PROJECT
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.headers.get("Authorization") is not None or self.headers.get("Cookie") is not None:
+                    self.send_response(400)
+                    self.end_headers()
+                    return
+                if self.path != f"/api/projects/{project}/runs":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                if state_path.exists():
+                    state = json.loads(state_path.read_text())
+                    runs = list(state.get("runs", {}).values())
+                else:
+                    runs = []
+                payload = json.dumps({"runs": runs}, sort_keys=True, separators=(",", ":")).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+            def log_message(self, format, *args):
+                return
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server
+
+    def _write_fake_orx(self) -> None:
+        script = f'''#!{sys.executable}
+import hashlib,json,pathlib,subprocess,sys,time,uuid
+REPO=pathlib.Path({str(self.repo.resolve())!r}); STATE=pathlib.Path({str(self.native_state.resolve())!r}); RUNS=pathlib.Path({str(self.local_runs.resolve())!r}); SNAPS=pathlib.Path({str(self.snapshots.resolve())!r})
+PROJECT={self.PROJECT!r}; ROOT={self.ROOT_EXPERIMENT!r}; COMMAND={FIXED_COMMAND!r}
+def load():
+    if STATE.exists(): return json.loads(STATE.read_text())
+    return {{"counter":0,"experiments":{{ROOT:{{"title":"House price root","branch":"orx/house-price-root","parent":None,"run":None}}}},"runs":{{}}}}
+def save(state): STATE.write_text(json.dumps(state,sort_keys=True,separators=(",",":")))
+def commit(branch): return subprocess.check_output(["/usr/bin/git","-C",str(REPO),"rev-parse","refs/heads/"+branch],text=True).strip()
+def status_text(exp,state):
+    item=state["experiments"][exp]; run=item["run"]
+    lines=[item["title"]+"  ("+("running" if run and state["runs"][run]["status"] in ("starting","running") else "idle")+")  [local]",f"  id:       {{exp}}",f"  branch:   {{item['branch']}}",("  parent:   — (root experiment)" if item["parent"] is None else f"  parent:   {{item['parent']}} (branch {{state['experiments'][item['parent']]['branch']}})"),f"  command:  {{COMMAND}}"]
+    if run is None: lines.append("  last run: — (never run)")
+    else:
+        row=state["runs"][run]; lines.append(f"  last run: {{run}} ({{row['status']}}, commit {{row['commitSha'][:7]}}, ran 1s, updated 1s ago)")
+        if row["status"]=="failed": lines.append("  reason: fixed failure")
+        lines.append(f"  commit:   {{row['commitSha']}}")
+    return "\\n".join(lines)+"\\n"
+args=sys.argv[1:]; state=load()
+if args[0]=="create-experiment":
+    parent=args[args.index("--parent")+1]; title=args[args.index("--title")+1]; state["counter"]+=1
+    exp=str(uuid.UUID(int=state["counter"]+100)); slug=title; branch="orx/"+slug
+    subprocess.run(["/usr/bin/git","-C",str(REPO),"branch",branch,commit(state["experiments"][parent]["branch"])],check=True)
+    state["experiments"][exp]={{"title":title,"branch":branch,"parent":parent,"run":None}}; save(state)
+    print("✓ Created local child experiment");print(f"  id:      {{exp}}");print(f"  title:   {{title}}");print(f"  slug:    {{slug}}");print(f"  branch:  {{branch}}");print(f"  command: {{COMMAND}}");print();print("To edit it, check out the branch in the project's local clone:");print(f"  cd {{REPO}}");print(f"  git checkout {{branch}}");print("  # …edit, then…");print('  git commit -am "<msg>"')
+elif args[:2]==["exp","status"]: print(status_text(args[2],state),end="")
+elif args[0]=="runs":
+    exp=args[args.index("--experiment")+1]; item=state["experiments"][exp]
+    if not item["run"]: print("No runs found.")
+    else:
+        print("ID                                    STATUS   EXPERIMENT  COMMIT   DURATION  UPDATED");print("────────────────────────────────────  ───────  ──────────  ───────  ────────  ───────")
+        run=item["run"]; row=state["runs"][run]; print(f"{{run}}  {{row['status']}}  {{item['title']}}  {{row['commitSha'][:7]}}  1s        1s ago")
+elif args[:2]==["exp","run"]:
+    exp=args[2]; item=state["experiments"][exp]; sha=commit(item["branch"]); archive=subprocess.check_output(["/usr/bin/git","-C",str(REPO),"archive","--format=tar",sha]); source=hashlib.sha256(archive).hexdigest(); (SNAPS/(source+".tar")).write_bytes(archive)
+    state["counter"]+=1; run=str(uuid.UUID(int=state["counter"]+1000)); (RUNS/run).mkdir(); now=int(time.time()*1000)
+    state["runs"][run]={{"backend":{{"jobId":str(RUNS/run),"kind":"local_job","sourceDigest":source,"sourcePath":str(SNAPS/(source+".tar")),"sourceSize":len(archive)}},"cancelRequested":False,"command":COMMAND,"commitSha":sha,"createdAt":now,"experimentId":exp,"id":run,"projectId":PROJECT,"status":"running","updatedAt":now}}
+    item["run"]=run;save(state);print("✓ Local run started.");print(f"  dir  {{RUNS/run}}");print(f"  run  {{run}}");print(f"  Follow it with `orx exp wait {{exp}}` or `orx logs {{run}}`.")
+elif args[:2]==["exp","cancel"]:
+    exp=args[2];run=state["experiments"][exp]["run"];now=int(time.time()*1000);state["runs"][run]["status"]="cancelled";state["runs"][run]["cancelRequested"]=True;state["runs"][run]["endedAt"]=now;state["runs"][run]["updatedAt"]=now;save(state);print(f"✓ Cancel requested for run {{run}}.")
+else: sys.exit(2)
+'''
+        self.fake_orx.write_text(script)
+        self.fake_orx.chmod(0o700)
+
+    def mark_done(self, observation: NativeObservation, binding: Binding, phase: str) -> FileBinding:
+        state = json.loads(self.native_state.read_text())
+        row = state["runs"][observation.run_id]
+        now = row["updatedAt"] + 1
+        row["status"] = "done"
+        row["endedAt"] = now
+        row["updatedAt"] = now
+        self.native_state.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")))
+        run_output = self.output / observation.run_id
+        run_output.mkdir()
+        ids = json.loads(self.ids.read_text())
+        predictions = run_output / "predictions.csv"
+        predictions.write_text("Id,SalePrice\n" + "".join(f"{item},{10 + index}\n" for index, item in enumerate(ids)))
+        prediction = file_binding(predictions)
+        metric = None
+        if phase == "dev":
+            score = grade_files(prediction, file_binding(self.ids), file_binding(self.targets), max_rows=self.rows)
+            metric = {"numerator": str(score.mae.numerator), "denominator": str(score.mae.denominator), "mae_decimal": score.public_metric()["mae"]}
+        receipt = {
+            "schema_version": "argo-house-price-runner-receipt/v1", "phase": phase,
+            "run_id": observation.run_id, "project_id": self.PROJECT,
+            "experiment_id": observation.experiment_id, "closure_sha256": binding.closure_sha256,
+            "solution_sha256": binding.solution_sha256, "intent_sha256": binding.intent_sha256,
+            "task_sha256": binding.task_sha256, "environment_sha256": binding.environment_sha256,
+            "protocol_sha256": binding.protocol_sha256, "execution_config_sha256": binding.execution_config_sha256,
+            "runner_sha256": self.runtime_hashes[PREFIX + "house_price_runtime/container_runner.py"],
+            "status": "SUCCESS", "predictions": {"sha256": prediction.sha256, "bytes": prediction.bytes, "mtime_ns_max": prediction.mtime_ns_max},
+            "rows": self.rows, "metric": metric, "stdout_bytes": 0, "stderr_bytes": 0, "logs_truncated": False,
+        }
+        (run_output / "runner-receipt.json").write_text(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
+        return prediction
+
+    def deployment(self, context_rights: dict[str, object] | None = None) -> dict[str, object]:
+        def file_json(path: Path) -> dict[str, object]:
+            item = file_binding(path)
+            return {"path": str(item.path), "sha256": item.sha256, "bytes": item.bytes, "mtime_ns_max": item.mtime_ns_max}
+        def directory_json(path: Path) -> dict[str, object]:
+            item = directory_identity(path)
+            return {"path": str(item.path), "device": item.device, "inode": item.inode}
+        if context_rights is None:
+            context_id = digest("native-initial-context")
+            context_rights = {
+                "schema_version": "argo-house-price-a2-context-rights/v1",
+                "controller_context_id": context_id, "context": "initial",
+                "initial_context_id": context_id, "checkpoint": None,
+            }
+        return {
+            "schema_version": "argo-house-price-a2-bridge-deployment/v1", "production_enabled": True,
+            "files": {
+                "bridge": file_json(Path(__file__).parent / "bridge.py"),
+                "python": file_json(Path(sys.executable).resolve()),
+                "orx": file_json(self.fake_orx),
+                "git": file_json(Path("/opt/homebrew/bin/git").resolve()),
+            },
+            "directories": {
+                "source": directory_json(self.source), "trusted_state": directory_json(self.trusted_state),
+                "bridge_state": directory_json(self.bridge_state), "repository": directory_json(self.repo),
+                "local_runs": directory_json(self.local_runs), "source_snapshots": directory_json(self.snapshots),
+                "output": directory_json(self.output),
+            },
+            "project": {
+                "project_id": self.PROJECT, "root_experiment_id": self.ROOT_EXPERIMENT,
+                "root_branch": "orx/house-price-root", "root_title": "House price root",
+                "base_commit": self.base_commit, "fixed_command": FIXED_COMMAND,
+                "loopback_port": self.config.loopback_port,
+            },
+            "identities": {
+                "task_sha256": digest("task"), "environment_sha256": digest("environment"),
+                "protocol_sha256": digest("protocol"), "outer_training_manifest_sha256": digest("outer"),
+                "hidden_features_manifest_sha256": digest("hidden"),
+            },
+            "runtime_hashes": self.runtime_hashes,
+            "inputs": {
+                "dev": {name: file_json(path) for name, path in {
+                    "train": self.train, "features": self.features, "ids": self.ids, "targets": self.targets,
+                }.items()},
+                "final_refit": {name: file_json(path) for name, path in {
+                    "train": self.train, "features": self.features, "ids": self.ids,
+                }.items()},
+            },
+            "rows": {"dev": self.rows, "final_refit": self.rows},
+            "environment": self.environment,
+            "context_rights": context_rights,
+        }
+
+    @staticmethod
+    def make_binding(plan: LaunchPlan, prepared: PreparedLaunch, observation: NativeObservation) -> Binding:
+        return Binding(
+            BINDING_SCHEMA, plan.ordinal, plan.intent_sha256, plan.closure_sha256, plan.solution_sha256,
+            plan.phase, observation.run_id, observation.experiment_id, prepared.title, prepared.branch,
+            observation.native_commit, observation.native_source_digest, prepared.execution_config_sha256,
+            digest("task"), digest("environment"), digest("protocol"),
+        )
+
+
+class FixedNativePortIntegrationTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.harness = NativeHarness(Path(self.temporary.name))
+
+    def tearDown(self) -> None:
+        self.harness.close()
+        self.temporary.cleanup()
+
+    def test_real_git_staging_native_receipt_regrade_and_selected_final_bytes(self) -> None:
+        first_code = b"print('selected historical')\n"
+        first = LaunchPlan(1, "dev", digest("intent-1"), digest("closure-1"), digest(first_code), first_code, None, None)
+        prepared = self.harness.port.prepare(first)
+        staged = subprocess.check_output(["/usr/bin/git", "-C", str(self.harness.repo), "show", prepared.native_commit + ":house-price-solution.py"])
+        staged_config = subprocess.check_output(["/usr/bin/git", "-C", str(self.harness.repo), "show", prepared.native_commit + ":house-price-execution.json"])
+        self.assertEqual(staged, first_code)
+        self.assertEqual(digest(staged_config), prepared.execution_config_sha256)
+        config_value = json.loads(staged_config)
+        self.assertEqual(config_value["intent_sha256"], first.intent_sha256)
+        self.assertNotIn("native_commit", config_value)
+        observation = self.harness.port.start(prepared)
+        self.assertEqual(observation.status, "RUNNING")
+        binding = self.harness.make_binding(first, prepared, observation)
+        self.harness.mark_done(observation, binding, "dev")
+        done = self.harness.port.observe(binding)
+        receipt_path = self.harness.bridge_state / "receipts" / (binding.run_id + ".json")
+        verified = self.harness.port.verified_dev(binding, done)
+        self.assertFalse(receipt_path.exists())
+        published = self.harness.port.publish_verified_dev(binding, done, verified.eligibility.receipt_sha256)
+        self.assertTrue(receipt_path.exists())
+        self.assertEqual(published.public_result()["mae"], "0.000000")
+
+        final_code = first_code
+        final = LaunchPlan(2, "final_refit", digest("current-final-intent"), first.closure_sha256,
+                           first.solution_sha256, final_code, first.experiment_id if False else prepared.experiment_id,
+                           prepared.native_commit)
+        final_prepared = self.harness.port.prepare(final)
+        state = json.loads(self.harness.native_state.read_text())
+        self.assertEqual(state["experiments"][final_prepared.experiment_id]["parent"], prepared.experiment_id)
+        final_staged = subprocess.check_output(["/usr/bin/git", "-C", str(self.harness.repo), "show", final_prepared.native_commit + ":house-price-solution.py"])
+        final_config = json.loads(subprocess.check_output(["/usr/bin/git", "-C", str(self.harness.repo), "show", final_prepared.native_commit + ":house-price-execution.json"]))
+        self.assertEqual(final_staged, first_code)
+        self.assertEqual(final_config["solution_sha256"], first.solution_sha256)
+        self.assertEqual(final_config["intent_sha256"], final.intent_sha256)
+        self.assertNotIn("targets", final_config["inputs"])
+        final_observation = self.harness.port.start(final_prepared)
+        final_binding = self.harness.make_binding(final, final_prepared, final_observation)
+        prediction = self.harness.mark_done(final_observation, final_binding, "final_refit")
+        final_done = self.harness.port.observe(final_binding)
+        artifact = self.harness.port.final_artifact_binding(final_binding, final_done)
+        self.assertEqual(artifact.sha256, prediction.sha256)
+
+    def test_cancel_requires_unique_bound_expected_run(self) -> None:
+        code = b"print('cancel')\n"
+        plan = LaunchPlan(1, "dev", digest("cancel-intent"), digest("cancel-closure"), digest(code), code, None, None)
+        prepared = self.harness.port.prepare(plan)
+        observation = self.harness.port.start(prepared)
+        binding = self.harness.make_binding(plan, prepared, observation)
+        cancelled = self.harness.port.cancel(binding)
+        self.assertEqual(cancelled.status, "CANCELLED")
+        self.assertTrue(cancelled.cancel_requested)
+        wrong = Binding(**{**binding.__dict__, "run_id": str(uuid.uuid4())})
+        with self.assertRaises(ValueError):
+            self.harness.port.cancel(wrong)
+
+    def test_loaded_production_path_runs_end_to_end_with_only_fake_orx_and_socket(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            harness = NativeHarness(Path(temporary), rows=292)
+            try:
+                config_path = Path(temporary) / "bridge-config.json"
+                config_path.write_text(json.dumps(harness.deployment(), sort_keys=True, separators=(",", ":")))
+                bridge = load_bridge_from_config(config_path.resolve(), digest(config_path.read_bytes()))
+                launched = bridge.handle({"action": "request_R1_run", "arguments": {}})
+                self.assertTrue(launched["ok"], launched)
+                bindings = bridge.store.read_bindings()
+                self.assertEqual(len(bindings), 1)
+                binding = bindings[0]
+                running = bridge.port.observe(binding)
+                self.assertEqual(running.status, "RUNNING")
+                harness.mark_done(running, binding, "dev")
+                public = bridge.handle({"action": "read_public_result", "arguments": {}})
+                self.assertEqual(public["result"]["dev_attempts"], len(public["result"]["runs"]))
+                self.assertEqual(public["result"]["runs"][0]["status"], "DONE")
+                before_read = {str(path.relative_to(harness.base)): digest(path.read_bytes()) for path in harness.base.rglob("*") if path.is_file()}
+                result = bridge.handle({"action": "read_dev_result", "arguments": {}})
+                after_read = {str(path.relative_to(harness.base)): digest(path.read_bytes()) for path in harness.base.rglob("*") if path.is_file()}
+                self.assertTrue(result["ok"], result)
+                self.assertEqual(after_read, before_read)
+                self.assertEqual(result["result"]["results"][0]["rows"], 292)
+                self.assertEqual(result["result"]["results"][0]["mae"], "0.000000")
+            finally:
+                harness.close()
+
+    def test_fixed_config_factory_and_cli_work_outside_repository_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            harness = NativeHarness(Path(temporary), rows=292)
+            try:
+                deployment = harness.deployment()
+                config_path = Path(temporary) / "bridge-config.json"
+                config_path.write_text(json.dumps(deployment, sort_keys=True, separators=(",", ":")))
+                config_hash = digest(config_path.read_bytes())
+                bridge = load_bridge_from_config(config_path.resolve(), config_hash)
+                direct = bridge.handle({"action": "read_solution", "arguments": {"path": "solution.py"}})
+                self.assertTrue(direct["ok"], direct)
+                outside = Path(temporary) / "outside"
+                outside.mkdir()
+                module = "experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.bridge"
+                module_environment = dict(os.environ)
+                module_environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[4])
+                process = subprocess.run(
+                    [sys.executable, "-m", module,
+                     "--config", str(config_path.resolve()), "--config-sha256", config_hash],
+                    cwd=outside, env=module_environment,
+                    input=json.dumps({"action": "read_solution", "arguments": {"path": "research.md"}}).encode(),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10,
+                )
+                self.assertEqual(process.returncode, 0, process.stderr)
+                self.assertEqual(process.stderr, b"")
+                self.assertTrue(json.loads(process.stdout)["ok"], process.stdout)
+                no_config = subprocess.run(
+                    [sys.executable, "-m", module], cwd=outside, env=module_environment,
+                    input=b"{}", stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10,
+                )
+                self.assertEqual(no_config.stderr, b"")
+                self.assertEqual(json.loads(no_config.stdout), {"error": "INTERNAL_ERROR", "ok": False})
+            finally:
+                harness.close()
+
+    def test_shell_metacharacters_cannot_be_injected_as_source_or_intent(self) -> None:
+        marker = self.harness.base / "injected"
+        code = f"print('$(touch {marker})')\n".encode()
+        plan = LaunchPlan(1, "dev", digest("; touch injected"), digest("closure"), digest(code), code, None, None)
+        prepared = self.harness.port.prepare(plan)
+        self.assertFalse(marker.exists())
+        staged = subprocess.check_output(["/usr/bin/git", "-C", str(self.harness.repo), "show", prepared.native_commit + ":house-price-solution.py"])
+        self.assertEqual(staged, code)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

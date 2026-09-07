@@ -1,0 +1,755 @@
+"""One-shot root adapter for the reviewed A2 process and native usage observer."""
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import threading
+
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.campaign_usage import (
+    SessionUsage,
+    parse_session_usage,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.controller_process import (
+    ControllerRunReceipt,
+    RunControllerConfig,
+    _validate_config,
+    run_controller,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.grading import (
+    FileBinding,
+    GradingError,
+    read_bound,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.phase_gate import _gate_read
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.source_closure import (
+    ClosureError,
+    ClosureLimits,
+    SourceTree,
+    verify_tree,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.staging import DirectoryIdentity
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.usage_observer import (
+    UsageObservation,
+    UsageObserver,
+    UsageObserverConfig,
+)
+
+HEX64 = re.compile(r"[0-9a-f]{64}")
+UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+PROCESS_CORE_SHA256 = "135a3e28291ea8e7db3b85cdd4fda05124113baaeb0d1a1335a905bc5bdd3f33"
+PROCESS_EXEC_SHA256 = "c8c19b2d87bb155f8886ba0a696aa962a1fa9d55feb17e1f01ba65bc95054840"
+FRONTEND_SHA256 = "dbe87f0405f11401d209176d7cff629824e1192e69421d40b818bcfdec297f21"
+INSTALLED_PRIME_LIMITS = ClosureLimits(30000, 268435456, 67108864, 32, 4096)
+NAMESPACE_LIMITS = ClosureLimits(160, 8388608, 1048576, 8, 4096)
+FRONTEND_LIMITS = ClosureLimits(160, 8388608, 1048576, 8, 4096)
+
+
+class PhaseDriverError(ValueError):
+    pass
+
+
+class _SourceMismatch(PhaseDriverError):
+    pass
+
+
+@dataclass(frozen=True)
+class PhaseDriverConfig:
+    controller_context_id: str
+    process_config: FileBinding
+    gate_config: FileBinding
+    installed_prime_tree: SourceTree
+    namespace_tree: SourceTree
+    frontend_tree: SourceTree
+    evidence_directory: DirectoryIdentity
+
+
+@dataclass(frozen=True)
+class PhaseDriverResult:
+    disposition: str
+    reason: str
+    process_receipt: FileBinding | None
+    usage_receipt: FileBinding | None
+    clean_process: bool
+    current_session: FileBinding | None
+    current_session_id: str | None
+
+
+@dataclass(frozen=True)
+class _GateInputs:
+    context: str
+    session_directory: DirectoryIdentity
+    cwd: str
+    provider: str
+    model: str
+    budget: int
+    prior_sessions: tuple[SessionUsage, ...]
+
+
+def _result(disposition: str, reason: str) -> PhaseDriverResult:
+    return PhaseDriverResult(disposition, reason, None, None, False, None, None)
+
+
+def _strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise PhaseDriverError("INVALID_INPUT")
+        value[key] = item
+    return value
+
+
+def _reject_constant(_value: str) -> object:
+    raise PhaseDriverError("INVALID_INPUT")
+
+
+def _json(data: bytes) -> dict[str, object]:
+    try:
+        value = json.loads(
+            data.decode("utf-8"),
+            object_pairs_hook=_strict_object,
+            parse_constant=_reject_constant,
+        )
+    except (ValueError, UnicodeError, RecursionError):
+        raise PhaseDriverError("INVALID_INPUT") from None
+    if type(value) is not dict:
+        raise PhaseDriverError("INVALID_INPUT")
+    return value
+
+
+def _canonical(value: object) -> bytes:
+    try:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, RecursionError):
+        raise PhaseDriverError("RECORDING_FAILED") from None
+
+
+def _path_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return path != root
+    except ValueError:
+        return False
+
+
+def _directory(identity: DirectoryIdentity) -> Path:
+    if (
+        not isinstance(identity, DirectoryIdentity)
+        or not isinstance(identity.path, Path)
+        or type(identity.device) is not int
+        or type(identity.inode) is not int
+        or identity.device < 0
+        or identity.inode <= 0
+    ):
+        raise PhaseDriverError("INVALID_INPUT")
+    path = identity.path
+    try:
+        if not path.is_absolute() or ".." in path.parts or path.resolve(strict=True) != path:
+            raise PhaseDriverError("INVALID_INPUT")
+        info = path.lstat()
+    except (OSError, RuntimeError):
+        raise PhaseDriverError("INVALID_INPUT") from None
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or stat.S_IMODE(info.st_mode) != 0o700
+        or info.st_uid != os.getuid()
+        or (info.st_dev, info.st_ino) != (identity.device, identity.inode)
+    ):
+        raise PhaseDriverError("INVALID_INPUT")
+    return path
+
+
+def _validate_binding(binding: FileBinding, max_bytes: int) -> bytes:
+    try:
+        return read_bound(binding, max_bytes)
+    except GradingError:
+        raise PhaseDriverError("INVALID_INPUT") from None
+
+
+def _validate_config_shape(config: PhaseDriverConfig) -> Path:
+    if (
+        not isinstance(config, PhaseDriverConfig)
+        or type(config.controller_context_id) is not str
+        or HEX64.fullmatch(config.controller_context_id) is None
+        or not isinstance(config.process_config, FileBinding)
+        or not isinstance(config.gate_config, FileBinding)
+        or not isinstance(config.installed_prime_tree, SourceTree)
+        or not isinstance(config.namespace_tree, SourceTree)
+        or not isinstance(config.frontend_tree, SourceTree)
+    ):
+        raise PhaseDriverError("INVALID_INPUT")
+    evidence = _directory(config.evidence_directory)
+    roots = tuple(Path(tree.root) for tree in (
+        config.installed_prime_tree,
+        config.namespace_tree,
+        config.frontend_tree,
+    ))
+    if len(set(roots)) != 3:
+        raise PhaseDriverError("INVALID_INPUT")
+    for other in (*roots, config.process_config.path, config.gate_config.path):
+        if evidence == other or evidence in other.parents or other in evidence.parents:
+            raise PhaseDriverError("INVALID_INPUT")
+    return evidence
+
+
+def _evidence_preflight(evidence: Path) -> str | None:
+    try:
+        names = []
+        with os.scandir(evidence) as entries:
+            for entry in entries:
+                names.append(entry.name)
+                if len(names) > 3:
+                    raise PhaseDriverError("INVALID_INPUT")
+    except OSError:
+        raise PhaseDriverError("INVALID_INPUT") from None
+    if "controller-admission.json" in names:
+        return "ALREADY_ATTEMPTED"
+    if names:
+        raise PhaseDriverError("INVALID_INPUT")
+    return None
+
+
+def _load_process_config(binding: FileBinding) -> RunControllerConfig:
+    data = _validate_binding(binding, 65536)
+    try:
+        config = RunControllerConfig.from_dict(_json(data))
+    except (ValueError, TypeError, KeyError):
+        raise PhaseDriverError("INVALID_INPUT") from None
+    if config.synthetic_test_context is not False:
+        raise PhaseDriverError("INVALID_INPUT")
+    try:
+        _validate_config(config)
+    except ValueError:
+        raise PhaseDriverError("INVALID_INPUT") from None
+    if (
+        config.caps.terminate_grace_seconds != 2
+        or config.caps.kill_grace_seconds != 2
+        or config.caps.observer_timeout_seconds != 3
+    ):
+        raise PhaseDriverError("INVALID_INPUT")
+    return config
+
+
+def _gate_directory(value: object) -> DirectoryIdentity:
+    if type(value) is not dict or set(value) != {"path", "device", "inode"}:
+        raise PhaseDriverError("INVALID_INPUT")
+    path_value = value["path"]
+    if type(path_value) is not str or type(value["device"]) is not int or type(value["inode"]) is not int:
+        raise PhaseDriverError("INVALID_INPUT")
+    return DirectoryIdentity(Path(path_value), value["device"], value["inode"])
+
+
+def _file_binding(value: object, cap: int) -> tuple[FileBinding, bytes]:
+    if type(value) is not dict or set(value) != {"path", "sha256", "bytes", "mtime_ns_max"}:
+        raise PhaseDriverError("INVALID_INPUT")
+    path_value = value["path"]
+    digest = value["sha256"]
+    byte_count = value["bytes"]
+    mtime = value["mtime_ns_max"]
+    if (
+        type(path_value) is not str
+        or type(digest) is not str
+        or HEX64.fullmatch(digest) is None
+        or type(byte_count) is not int
+        or not 0 < byte_count <= cap
+        or type(mtime) is not int
+        or mtime < 0
+    ):
+        raise PhaseDriverError("INVALID_INPUT")
+    path = Path(path_value)
+    try:
+        data = _gate_read(path, cap, digest, byte_count, mtime)
+    except Exception:
+        raise PhaseDriverError("INVALID_INPUT") from None
+    return FileBinding(path, digest, byte_count, mtime), data
+
+
+def _load_gate_config(binding: FileBinding) -> _GateInputs:
+    value = _json(_validate_binding(binding, 65536))
+    required = {
+        "schema_version", "context", "bridge_config", "session_directory", "cwd",
+        "provider", "model", "budget", "prior_session", "prior_session_id",
+        "prior_cwd", "final_lock_path", "gate_outcome_directory", "expected_rows",
+    }
+    if (
+        set(value) != required
+        or value["schema_version"] != "argo-house-price-a2-phase-gate-deployment/v1"
+    ):
+        raise PhaseDriverError("INVALID_INPUT")
+    context = value["context"]
+    if (
+        type(context) is not str
+        or context not in {"initial", "continuation"}
+        or value["provider"] != "openai-codex"
+        or value["model"] != "gpt-5.6-sol"
+        or type(value["budget"]) is not int
+        or value["budget"] != 120000
+        or type(value["cwd"]) is not str
+        or not Path(value["cwd"]).is_absolute()
+        or type(value["expected_rows"]) is not int
+        or not 1 <= value["expected_rows"] <= 292
+    ):
+        raise PhaseDriverError("INVALID_INPUT")
+    session = _gate_directory(value["session_directory"])
+    _directory(session)
+    outcome = _gate_directory(value["gate_outcome_directory"])
+    _directory(outcome)
+    if outcome.path == session.path or session.path in outcome.path.parents:
+        raise PhaseDriverError("INVALID_INPUT")
+    _file_binding(value["bridge_config"], 65536)
+    if type(value["final_lock_path"]) is not str or not Path(value["final_lock_path"]).is_absolute():
+        raise PhaseDriverError("INVALID_INPUT")
+    prior: tuple[SessionUsage, ...] = ()
+    if context == "initial":
+        if any(value[key] is not None for key in ("prior_session", "prior_session_id", "prior_cwd")):
+            raise PhaseDriverError("INVALID_INPUT")
+    else:
+        prior_id = value["prior_session_id"]
+        prior_cwd = value["prior_cwd"]
+        if (
+            type(prior_id) is not str
+            or UUID.fullmatch(prior_id) is None
+            or type(prior_cwd) is not str
+            or not Path(prior_cwd).is_absolute()
+        ):
+            raise PhaseDriverError("INVALID_INPUT")
+        prior_binding, prior_data = _file_binding(value["prior_session"], 8388608)
+        if prior_binding.path.name != f"{prior_id}.jsonl":
+            raise PhaseDriverError("INVALID_INPUT")
+        try:
+            prior = (parse_session_usage(
+                prior_data,
+                prior_id,
+                prior_cwd,
+                value["provider"],
+                value["model"],
+            ),)
+        except Exception:
+            raise PhaseDriverError("INVALID_INPUT") from None
+    return _GateInputs(
+        context,
+        session,
+        value["cwd"],
+        value["provider"],
+        value["model"],
+        value["budget"],
+        prior,
+    )
+
+
+def _directory_seal(value: object) -> tuple[str, int, int]:
+    if type(value) is not dict:
+        raise _SourceMismatch("SOURCE_MISMATCH")
+    path = value.get("path")
+    device = value.get("device")
+    inode = value.get("inode")
+    if (
+        type(path) is not str
+        or type(device) is not str
+        or type(inode) is not str
+        or re.fullmatch(r"(?:0|[1-9][0-9]*)", device) is None
+        or re.fullmatch(r"[1-9][0-9]*", inode) is None
+    ):
+        raise _SourceMismatch("SOURCE_MISMATCH")
+    return path, int(device), int(inode)
+
+
+def _load_frontend_deployment(process_config: RunControllerConfig) -> dict[str, object]:
+    identity = process_config.deployment_identity
+    try:
+        data = _gate_read(
+            Path(process_config.deployment_path),
+            65536,
+            identity.sha256,
+            identity.size,
+            identity.mtime_ns_max,
+        )
+    except Exception:
+        raise _SourceMismatch("SOURCE_MISMATCH") from None
+    try:
+        return _json(data)
+    except PhaseDriverError:
+        raise _SourceMismatch("SOURCE_MISMATCH") from None
+
+
+def _verify_fixed_file(path: Path, digest: str, cap: int) -> None:
+    try:
+        info = path.lstat()
+        _gate_read(path, cap, digest, info.st_size, info.st_mtime_ns)
+    except Exception:
+        raise _SourceMismatch("SOURCE_MISMATCH") from None
+
+
+def _verify_source_closures(
+    config: PhaseDriverConfig,
+    process_config: RunControllerConfig,
+    gate: _GateInputs,
+) -> None:
+    try:
+        verify_tree(Path(config.installed_prime_tree.root), config.installed_prime_tree, INSTALLED_PRIME_LIMITS)
+        verify_tree(Path(config.namespace_tree.root), config.namespace_tree, NAMESPACE_LIMITS)
+        verify_tree(Path(config.frontend_tree.root), config.frontend_tree, FRONTEND_LIMITS)
+    except ClosureError:
+        raise _SourceMismatch("SOURCE_MISMATCH") from None
+    deployment = _load_frontend_deployment(process_config)
+    if (
+        set(deployment) != {"schema_version", "status", "assets", "directories", "runtime", "environment", "limits"}
+        or deployment["schema_version"] != "argo-house-price-a2-controller-main-deployment/v1"
+        or deployment["status"] != "TRUSTED_FIXED_DEPLOYMENT"
+        or type(deployment["assets"]) is not dict
+        or type(deployment["directories"]) is not dict
+        or type(deployment["runtime"]) is not dict
+        or type(deployment["environment"]) is not dict
+    ):
+        raise _SourceMismatch("SOURCE_MISMATCH")
+    assets = deployment["assets"]
+    directories = deployment["directories"]
+    runtime = deployment["runtime"]
+    environment = deployment["environment"]
+    controller_asset = assets.get("controller_main")
+    node_asset = assets.get("node_executable")
+    prime_asset = assets.get("prime_entry")
+    if any(type(asset) is not dict for asset in (controller_asset, node_asset, prime_asset)):
+        raise _SourceMismatch("SOURCE_MISMATCH")
+    if (
+        controller_asset.get("path") != process_config.frontend_path
+        or controller_asset.get("sha256") != FRONTEND_SHA256
+        or process_config.frontend_identity.sha256 != FRONTEND_SHA256
+        or node_asset.get("path") != process_config.node_executable
+        or node_asset.get("sha256") != process_config.node_identity.sha256
+    ):
+        raise _SourceMismatch("SOURCE_MISMATCH")
+    namespace_root = Path(config.namespace_tree.root)
+    frontend_root = Path(config.frontend_tree.root)
+    prime_root = Path(config.installed_prime_tree.root)
+    process_exec = Path(process_config.process_exec_path)
+    frontend = Path(process_config.frontend_path)
+    controller_core = Path(__file__).with_name("controller_process.py").resolve(strict=True)
+    prime_entry = Path(str(prime_asset.get("path")))
+    if (
+        not _path_within(process_exec, namespace_root)
+        or not _path_within(controller_core, namespace_root)
+        or not _path_within(frontend, frontend_root)
+        or not _path_within(prime_entry, prime_root)
+        or process_config.process_exec_identity.sha256 != PROCESS_EXEC_SHA256
+    ):
+        raise _SourceMismatch("SOURCE_MISMATCH")
+    _verify_fixed_file(controller_core, PROCESS_CORE_SHA256, 1048576)
+    _verify_fixed_file(process_exec, PROCESS_EXEC_SHA256, 1048576)
+    _verify_fixed_file(frontend, FRONTEND_SHA256, 1048576)
+    try:
+        prime_digest = prime_asset.get("sha256")
+        prime_bytes = prime_asset.get("bytes")
+        prime_mtime = prime_asset.get("mtime_ns_max")
+        if (
+            type(prime_digest) is not str
+            or HEX64.fullmatch(prime_digest) is None
+            or type(prime_bytes) is not int
+            or not 0 < prime_bytes <= 1048576
+            or type(prime_mtime) is not str
+            or re.fullmatch(r"[1-9][0-9]*", prime_mtime) is None
+        ):
+            raise _SourceMismatch("SOURCE_MISMATCH")
+        _gate_read(prime_entry, 1048576, prime_digest, prime_bytes, int(prime_mtime))
+    except Exception:
+        raise _SourceMismatch("SOURCE_MISMATCH") from None
+    expected_directories = {
+        "artifact_root": (process_config.artifact_root, process_config.artifact_root_identity.device, process_config.artifact_root_identity.inode),
+        "profile": (process_config.profile_dir, process_config.profile_dir_identity.device, process_config.profile_dir_identity.inode),
+        "session_dir": (process_config.session_dir, process_config.session_dir_identity.device, process_config.session_dir_identity.inode),
+        "temporary_dir": (process_config.temporary_dir, process_config.temporary_dir_identity.device, process_config.temporary_dir_identity.inode),
+    }
+    if any(
+        name not in directories or _directory_seal(directories[name]) != expected
+        for name, expected in expected_directories.items()
+    ):
+        raise _SourceMismatch("SOURCE_MISMATCH")
+    if (
+        type(runtime.get("model")) is not str
+        or runtime.get("model") != f"{gate.provider}/{gate.model}"
+        or type(environment.get("exact")) is not dict
+        or environment.get("exact") != dict(process_config.child_environment)
+        or directories.get("cwd", {}).get("path") != gate.cwd
+        or gate.session_directory.path != Path(process_config.session_dir)
+        or (gate.session_directory.device, gate.session_directory.inode) != (
+            process_config.session_dir_identity.device,
+            process_config.session_dir_identity.inode,
+        )
+    ):
+        raise _SourceMismatch("SOURCE_MISMATCH")
+
+
+def _cross_bind(
+    config: PhaseDriverConfig,
+    process_config: RunControllerConfig,
+    gate: _GateInputs,
+    evidence: Path,
+) -> None:
+    if gate.session_directory.path != Path(process_config.session_dir):
+        raise PhaseDriverError("INVALID_INPUT")
+    if (gate.session_directory.device, gate.session_directory.inode) != (
+        process_config.session_dir_identity.device,
+        process_config.session_dir_identity.inode,
+    ):
+        raise PhaseDriverError("INVALID_INPUT")
+    excluded = (
+        Path(process_config.artifact_root),
+        Path(process_config.session_dir),
+        Path(process_config.temporary_dir),
+        Path(process_config.profile_dir),
+        Path(config.installed_prime_tree.root),
+        Path(config.namespace_tree.root),
+        Path(config.frontend_tree.root),
+        Path(gate.cwd),
+    )
+    if any(evidence == path or evidence in path.parents or path in evidence.parents for path in excluded):
+        raise PhaseDriverError("INVALID_INPUT")
+    if _path_within(config.process_config.path, Path(process_config.artifact_root)):
+        raise PhaseDriverError("INVALID_INPUT")
+
+
+def _assert_evidence_directory(descriptor: int, identity: DirectoryIdentity) -> None:
+    held = os.fstat(descriptor)
+    named = identity.path.lstat()
+    for info in (held, named):
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or stat.S_IMODE(info.st_mode) != 0o700
+            or info.st_uid != os.getuid()
+            or (info.st_dev, info.st_ino) != (identity.device, identity.inode)
+        ):
+            raise PhaseDriverError("RECORDING_FAILED")
+
+
+def _write_all(descriptor: int, data: bytes) -> None:
+    written = 0
+    while written < len(data):
+        count = os.write(descriptor, data[written:])
+        if count <= 0:
+            raise PhaseDriverError("RECORDING_FAILED")
+        written += count
+    os.fsync(descriptor)
+
+
+def _write_new(
+    evidence_descriptor: int,
+    evidence_identity: DirectoryIdentity,
+    name: str,
+    data: bytes,
+    cap: int,
+) -> FileBinding:
+    if len(data) == 0 or len(data) > cap or re.fullmatch(r"[a-z0-9-]+\.json", name) is None:
+        raise PhaseDriverError("RECORDING_FAILED")
+    _assert_evidence_directory(evidence_descriptor, evidence_identity)
+    descriptor = os.open(
+        name,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=evidence_descriptor,
+    )
+    try:
+        _write_all(descriptor, data)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1:
+            raise PhaseDriverError("RECORDING_FAILED")
+    finally:
+        os.close(descriptor)
+    os.fsync(evidence_descriptor)
+    binding = FileBinding(evidence_identity.path / name, hashlib.sha256(data).hexdigest(), len(data), info.st_mtime_ns)
+    try:
+        read_bound(binding, min(cap, 1048576))
+    except GradingError:
+        raise PhaseDriverError("RECORDING_FAILED") from None
+    return binding
+
+
+def _current_session(
+    process_config: RunControllerConfig,
+    observation: UsageObservation,
+) -> FileBinding | None:
+    if (
+        observation.session_id is None
+        or observation.session_sha256 is None
+        or not 0 < observation.observed_bytes <= 8388608
+        or UUID.fullmatch(observation.session_id) is None
+        or HEX64.fullmatch(observation.session_sha256) is None
+    ):
+        return None
+    path = Path(process_config.session_dir) / f"{observation.session_id}.jsonl"
+    try:
+        info = path.lstat()
+        binding = FileBinding(
+            path,
+            observation.session_sha256,
+            observation.observed_bytes,
+            info.st_mtime_ns,
+        )
+        _gate_read(path, 8388608, binding.sha256, binding.bytes, binding.mtime_ns_max)
+        return binding
+    except Exception:
+        return None
+
+
+def _clean_process(
+    receipt: ControllerRunReceipt,
+    process_config: RunControllerConfig,
+    usage: UsageObservation,
+    current: FileBinding | None,
+) -> bool:
+    return bool(
+        isinstance(receipt, ControllerRunReceipt)
+        and receipt.status == "succeeded"
+        and receipt.terminal_reason == "completed"
+        and type(receipt.returncode) is int
+        and receipt.returncode == 0
+        and receipt.handle is not None
+        and receipt.handle.session_dir == process_config.session_dir
+        and usage.complete is True
+        and usage.state == "WITHIN_BUDGET"
+        and usage.stop_reason is None
+        and type(usage.total_tokens) is int
+        and usage.total_tokens < 120000
+        and current is not None
+        and usage.session_id is not None
+        and current.path == Path(process_config.session_dir) / f"{usage.session_id}.jsonl"
+    )
+
+
+def execute_phase(
+    config: PhaseDriverConfig,
+    *,
+    abort_event: threading.Event | None = None,
+) -> PhaseDriverResult:
+    try:
+        evidence = _validate_config_shape(config)
+        prior_attempt = _evidence_preflight(evidence)
+        if prior_attempt is not None:
+            return _result("NOT_STARTED", prior_attempt)
+        process_config = _load_process_config(config.process_config)
+        gate = _load_gate_config(config.gate_config)
+        _cross_bind(config, process_config, gate, evidence)
+    except Exception:
+        return _result("NOT_STARTED", "INVALID_INPUT")
+    try:
+        _verify_source_closures(config, process_config, gate)
+    except Exception:
+        return _result("NOT_STARTED", "SOURCE_MISMATCH")
+    try:
+        observer_config = UsageObserverConfig(
+            gate.session_directory,
+            gate.cwd,
+            gate.provider,
+            gate.model,
+            gate.budget,
+            gate.prior_sessions,
+        )
+        observer = UsageObserver(observer_config)
+    except Exception:
+        return _result("NOT_STARTED", "INVALID_INPUT")
+
+    evidence_descriptor: int | None = None
+    process_binding: FileBinding | None = None
+    usage_binding: FileBinding | None = None
+    try:
+        evidence_descriptor = os.open(evidence, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        attempt_material = {
+            "controller_context_id": config.controller_context_id,
+            "process_config_sha256": config.process_config.sha256,
+            "gate_config_sha256": config.gate_config.sha256,
+            "installed_prime_tree_sha256": config.installed_prime_tree.tree_sha256,
+            "namespace_tree_sha256": config.namespace_tree.tree_sha256,
+            "frontend_tree_sha256": config.frontend_tree.tree_sha256,
+        }
+        admission = {
+            "schema_version": "argo-house-price-a2-controller-admission/v1",
+            **attempt_material,
+            "attempt": 1,
+            "attempt_identity": hashlib.sha256(_canonical(attempt_material)).hexdigest(),
+        }
+        _write_new(
+            evidence_descriptor,
+            config.evidence_directory,
+            "controller-admission.json",
+            _canonical(admission),
+            65536,
+        )
+        def campaign_guard() -> str | None:
+            return observer.observe().stop_reason
+
+        receipt = run_controller(
+            process_config,
+            abort_event=abort_event,
+            campaign_guard=campaign_guard,
+        )
+        if not isinstance(receipt, ControllerRunReceipt):
+            raise PhaseDriverError("RECORDING_FAILED")
+        final_usage = observer.observe()
+        current = _current_session(process_config, final_usage)
+        process_binding = _write_new(
+            evidence_descriptor,
+            config.evidence_directory,
+            "controller-process-receipt.json",
+            _canonical(receipt.to_dict()),
+            1048576,
+        )
+        usage_record = {
+            "schema_version": "argo-house-price-a2-controller-usage-receipt/v1",
+            "controller_context_id": config.controller_context_id,
+            "process_config_sha256": config.process_config.sha256,
+            "gate_config_sha256": config.gate_config.sha256,
+            "session_directory": {
+                "path": str(gate.session_directory.path),
+                "device": gate.session_directory.device,
+                "inode": gate.session_directory.inode,
+            },
+            "usage": asdict(final_usage),
+            "current_session": (
+                {
+                    "path": str(current.path),
+                    "sha256": current.sha256,
+                    "bytes": current.bytes,
+                    "mtime_ns_max": current.mtime_ns_max,
+                }
+                if current is not None else None
+            ),
+        }
+        usage_binding = _write_new(
+            evidence_descriptor,
+            config.evidence_directory,
+            "controller-usage-receipt.json",
+            _canonical(usage_record),
+            65536,
+        )
+        clean = _clean_process(receipt, process_config, final_usage, current)
+        return PhaseDriverResult(
+            "PROCESS_RECORDED",
+            "PROCESS_RETURNED",
+            process_binding,
+            usage_binding,
+            clean,
+            current,
+            final_usage.session_id if current is not None else None,
+        )
+    except Exception:
+        return PhaseDriverResult(
+            "RECORDING_FAILED",
+            "RECORDING_FAILED",
+            process_binding,
+            usage_binding,
+            False,
+            None,
+            None,
+        )
+    finally:
+        if evidence_descriptor is not None:
+            os.close(evidence_descriptor)

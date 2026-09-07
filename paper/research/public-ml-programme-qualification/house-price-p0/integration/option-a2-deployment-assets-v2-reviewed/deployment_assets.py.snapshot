@@ -1,0 +1,125 @@
+"""Root-owned regular-file module deployment for the bounded A2 apparatus."""
+from __future__ import annotations
+from dataclasses import dataclass
+import hashlib
+import os
+from pathlib import Path
+import re
+import stat
+
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.controller_process import InterpreterIdentity, capture_interpreter_identity
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.grading import FileBinding, read_bound
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.source_closure import ClosureLimits, SourceTree, capture_tree, verify_tree
+
+PREFIX="experiments/argo_workflow_followup/public_ml_apparatus/"
+RUNTIME=PREFIX+"house_price_runtime/"
+KERNEL="/Users/um-yunsang/.prime/agent/kernel-venv/bin/python"
+RUNTIME_NAMES=frozenset({
+    "bridge.py","campaign_usage.py","container_entry.py","container_runner.py","controller_process.py",
+    "deployment_assets.py","grading.py","intent.py","orx_text.py","phase_completion.py","phase_driver.py",
+    "phase_gate.py","process_exec.py","receipt_store.py","run_entry.py","source_closure.py","staging.py","trusted_io.py","usage_observer.py",
+})
+MEMBER_PATHS=frozenset({RUNTIME+name for name in RUNTIME_NAMES})|{PREFIX+"house_price_scorer.py"}
+PACKAGE_PATHS=("experiments","experiments/argo_workflow_followup",PREFIX.rstrip("/"),RUNTIME.rstrip("/"))
+MODULES=frozenset({RUNTIME.replace("/",".")+"bridge",RUNTIME.replace("/",".")+"phase_gate"})
+LIMITS=ClosureLimits(160,8388608,1048576,8,4096)
+BOOTSTRAP_ENV={"LANG":"C.UTF-8","LC_ALL":"C.UTF-8","PATH":"/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin","TZ":"UTC"}
+
+
+class DeploymentError(ValueError):
+    def __init__(self):super().__init__("DEPLOYMENT_INVALID")
+
+
+@dataclass(frozen=True)
+class NamespaceMember:
+    relative_path: str
+    source: FileBinding
+
+
+def _new_private_path(path: Path) -> None:
+    if (not isinstance(path,Path) or not path.is_absolute() or ".." in path.parts or
+            path.parent.resolve(strict=True)!=path.parent or re.fullmatch(r"[A-Za-z0-9_.-]{1,128}",path.name) is None):
+        raise DeploymentError()
+    parent=path.parent.lstat()
+    if not stat.S_ISDIR(parent.st_mode) or stat.S_IMODE(parent.st_mode)!=0o700 or parent.st_uid!=os.getuid():
+        raise DeploymentError()
+    if path.exists() or path.is_symlink():raise DeploymentError()
+    for ancestor in (path.parent,*path.parent.parents):
+        if (ancestor/".git").exists():raise DeploymentError()
+
+
+def _sync_directory(path: Path) -> None:
+    descriptor=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:os.fsync(descriptor)
+    finally:os.close(descriptor)
+
+
+def _write_new(path: Path, data: bytes, mode: int) -> None:
+    descriptor=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,mode)
+    try:
+        written=0
+        while written<len(data):
+            count=os.write(descriptor,data[written:])
+            if count<=0:raise DeploymentError()
+            written+=count
+        os.fsync(descriptor)
+    finally:os.close(descriptor)
+    _sync_directory(path.parent)
+
+
+def materialize_namespace(destination: Path, members: tuple[NamespaceMember,...]) -> SourceTree:
+    try:
+        _new_private_path(destination)
+        if type(members) is not tuple or not 1<=len(members)<=128:raise DeploymentError()
+        names=set();sources=[];total=0
+        for member in members:
+            if (not isinstance(member,NamespaceMember) or type(member.relative_path) is not str or
+                    member.relative_path not in MEMBER_PATHS or member.relative_path in names):raise DeploymentError()
+            names.add(member.relative_path)
+            data=read_bound(member.source,1048576)
+            total+=len(data)
+            if total>8388608:raise DeploymentError()
+            sources.append((member.relative_path,data))
+        destination.mkdir(mode=0o700)
+        for relative in PACKAGE_PATHS:
+            directory=destination/relative;directory.mkdir(mode=0o700)
+            _write_new(directory/"__init__.py",b"",0o600)
+        for relative,data in sorted(sources):_write_new(destination/relative,data,0o600)
+        for relative in reversed(PACKAGE_PATHS):_sync_directory(destination/relative)
+        _sync_directory(destination);_sync_directory(destination.parent)
+        tree=capture_tree(destination,LIMITS)
+        if tree.file_count!=len(members)+4 or tree.directory_count!=4 or tree.symlink_count!=0:
+            raise DeploymentError()
+        return tree
+    except Exception:
+        raise DeploymentError() from None
+
+
+def write_module_bootstrap(output: Path, namespace: SourceTree, interpreter: InterpreterIdentity,
+                           module: str, config: FileBinding) -> FileBinding:
+    try:
+        _new_private_path(output)
+        if (not isinstance(namespace,SourceTree) or not isinstance(interpreter,InterpreterIdentity) or
+                type(module) is not str or module not in MODULES or interpreter.invocation_path!=KERNEL):
+            raise DeploymentError()
+        root=Path(namespace.root)
+        if (not isinstance(config,FileBinding) or not isinstance(config.path,Path) or
+                output==root or root in output.parents or config.path==root or root in config.path.parents):
+            raise DeploymentError()
+        actual=capture_interpreter_identity(KERNEL,Path(KERNEL).parent.parent/"pyvenv.cfg")
+        if actual!=interpreter:raise DeploymentError()
+        verify_tree(root,namespace,LIMITS)
+        if not (root/(module.replace(".","/")+".py")).is_file():raise DeploymentError()
+        read_bound(config,65536)
+        argv=[KERNEL,"-B","-m",module,"--config",str(config.path),"--config-sha256",config.sha256]
+        source=(f"#!{KERNEL}\n"+
+                '"""Fixed root-owned A2 module entry. No user-supplied arguments."""\n'+
+                "import os\nimport sys\n\nif len(sys.argv) != 1:\n    raise SystemExit(2)\n"+
+                f"os.chdir({str(root)!r})\n"+f"os.execve({KERNEL!r}, {argv!r}, {BOOTSTRAP_ENV!r})\n")
+        data=source.encode("utf-8")
+        if len(data)>16384:raise DeploymentError()
+        _write_new(output,data,0o700)
+        info=output.lstat()
+        return FileBinding(output,hashlib.sha256(data).hexdigest(),len(data),info.st_mtime_ns)
+    except Exception:
+        raise DeploymentError() from None

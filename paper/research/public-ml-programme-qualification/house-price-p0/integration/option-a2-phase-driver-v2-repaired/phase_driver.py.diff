@@ -1,0 +1,374 @@
+--- v1/phase_driver.py
+
++++ v2/phase_driver.py
+
+@@ -10,12 +10,17 @@
+
+ import stat
+ import threading
+ 
++from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.bridge import _valid_prior_process_receipt
+ from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.campaign_usage import (
+     SessionUsage,
+     parse_session_usage,
+ )
++from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.controller_deployment import _revalidate_frontend_deployment
+ from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.controller_process import (
++    CleanupReceipt,
+     ControllerRunReceipt,
++    ProcessHandleReceipt,
++    ResourceObservationReceipt,
+     RunControllerConfig,
+     _validate_config,
+     run_controller,
+@@ -44,6 +49,7 @@
+
+ PROCESS_CORE_SHA256 = "135a3e28291ea8e7db3b85cdd4fda05124113baaeb0d1a1335a905bc5bdd3f33"
+ PROCESS_EXEC_SHA256 = "c8c19b2d87bb155f8886ba0a696aa962a1fa9d55feb17e1f01ba65bc95054840"
+ FRONTEND_SHA256 = "dbe87f0405f11401d209176d7cff629824e1192e69421d40b818bcfdec297f21"
++CONTROLLER_DEPLOYMENT_SHA256 = "c26c57ce10c1a16026a0ee2d54f7133573f8acfe249e16f78760bd2b7f19812e"
+ INSTALLED_PRIME_LIMITS = ClosureLimits(30000, 268435456, 67108864, 32, 4096)
+ NAMESPACE_LIMITS = ClosureLimits(160, 8388608, 1048576, 8, 4096)
+ FRONTEND_LIMITS = ClosureLimits(160, 8388608, 1048576, 8, 4096)
+@@ -194,8 +200,10 @@
+
+         config.namespace_tree,
+         config.frontend_tree,
+     ))
+-    if len(set(roots)) != 3:
+-        raise PhaseDriverError("INVALID_INPUT")
++    for index, left in enumerate(roots):
++        for right in roots[index + 1:]:
++            if left == right or left in right.parents or right in left.parents:
++                raise PhaseDriverError("INVALID_INPUT")
+     for other in (*roots, config.process_config.path, config.gate_config.path):
+         if evidence == other or evidence in other.parents or other in evidence.parents:
+             raise PhaseDriverError("INVALID_INPUT")
+@@ -390,6 +398,32 @@
+
+         raise _SourceMismatch("SOURCE_MISMATCH") from None
+ 
+ 
++def _asset_binding_from_deployment(value: object, cap: int) -> tuple[FileBinding, bytes]:
++    if (
++        type(value) is not dict
++        or set(value) != {"path", "sha256", "bytes", "mtime_ns_max"}
++        or type(value["path"]) is not str
++        or type(value["sha256"]) is not str
++        or HEX64.fullmatch(value["sha256"]) is None
++        or type(value["bytes"]) is not int
++        or not 0 < value["bytes"] <= cap
++        or type(value["mtime_ns_max"]) is not str
++        or re.fullmatch(r"(?:0|[1-9][0-9]{0,18})", value["mtime_ns_max"]) is None
++    ):
++        raise _SourceMismatch("SOURCE_MISMATCH")
++    binding = FileBinding(
++        Path(value["path"]),
++        value["sha256"],
++        value["bytes"],
++        int(value["mtime_ns_max"]),
++    )
++    try:
++        data = _gate_read(binding.path, cap, binding.sha256, binding.bytes, binding.mtime_ns_max)
++    except Exception:
++        raise _SourceMismatch("SOURCE_MISMATCH") from None
++    return binding, data
++
++
+ def _verify_source_closures(
+     config: PhaseDriverConfig,
+     process_config: RunControllerConfig,
+@@ -402,6 +436,10 @@
+
+     except ClosureError:
+         raise _SourceMismatch("SOURCE_MISMATCH") from None
+     deployment = _load_frontend_deployment(process_config)
++    try:
++        _revalidate_frontend_deployment(Path(process_config.deployment_path), deployment)
++    except Exception:
++        raise _SourceMismatch("SOURCE_MISMATCH") from None
+     if (
+         set(deployment) != {"schema_version", "status", "assets", "directories", "runtime", "environment", "limits"}
+         or deployment["schema_version"] != "argo-house-price-a2-controller-main-deployment/v1"
+@@ -435,18 +473,48 @@
+
+     process_exec = Path(process_config.process_exec_path)
+     frontend = Path(process_config.frontend_path)
+     controller_core = Path(__file__).with_name("controller_process.py").resolve(strict=True)
++    controller_deployment = Path(__file__).with_name("controller_deployment.py").resolve(strict=True)
+     prime_entry = Path(str(prime_asset.get("path")))
+     if (
+         not _path_within(process_exec, namespace_root)
+         or not _path_within(controller_core, namespace_root)
++        or not _path_within(controller_deployment, namespace_root)
+         or not _path_within(frontend, frontend_root)
+         or not _path_within(prime_entry, prime_root)
+         or process_config.process_exec_identity.sha256 != PROCESS_EXEC_SHA256
+     ):
+         raise _SourceMismatch("SOURCE_MISMATCH")
+     _verify_fixed_file(controller_core, PROCESS_CORE_SHA256, 1048576)
++    _verify_fixed_file(controller_deployment, CONTROLLER_DEPLOYMENT_SHA256, 1048576)
+     _verify_fixed_file(process_exec, PROCESS_EXEC_SHA256, 1048576)
+     _verify_fixed_file(frontend, FRONTEND_SHA256, 1048576)
++    frontend_asset_names = {
++        "prime_closure_manifest",
++        "controller_main",
++        "frontend_closure_manifest",
++        "extension",
++        "binding",
++        "task_prompt",
++        "autonomous_gate",
++    }
++    for name in frontend_asset_names:
++        binding, _ = _asset_binding_from_deployment(assets.get(name), 1048576)
++        if not _path_within(binding.path, frontend_root):
++            raise _SourceMismatch("SOURCE_MISMATCH")
++    manifest_binding, manifest_data = _asset_binding_from_deployment(
++        assets.get("frontend_closure_manifest"),
++        65536,
++    )
++    try:
++        manifest = _json(manifest_data)
++        bootstrap = manifest["bridge_bootstrap"]
++        if type(bootstrap) is not dict or type(bootstrap.get("resolved_path")) is not str:
++            raise _SourceMismatch("SOURCE_MISMATCH")
++        bootstrap_path = Path(bootstrap["resolved_path"])
++    except Exception:
++        raise _SourceMismatch("SOURCE_MISMATCH") from None
++    if not _path_within(bootstrap_path, frontend_root):
++        raise _SourceMismatch("SOURCE_MISMATCH")
+     try:
+         prime_digest = prime_asset.get("sha256")
+         prime_bytes = prime_asset.get("bytes")
+@@ -573,31 +641,161 @@
+
+     return binding
+ 
+ 
++def _file_identity(info: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
++    return (
++        info.st_dev,
++        info.st_ino,
++        info.st_mode,
++        info.st_nlink,
++        info.st_size,
++        info.st_mtime_ns,
++        info.st_ctime_ns,
++    )
++
++
++def _session_root_matches(info: os.stat_result, expected: DirectoryIdentity) -> bool:
++    return (
++        stat.S_ISDIR(info.st_mode)
++        and stat.S_IMODE(info.st_mode) == 0o700
++        and info.st_uid == os.getuid()
++        and (info.st_dev, info.st_ino) == (expected.device, expected.inode)
++    )
++
++
+ def _current_session(
+     process_config: RunControllerConfig,
++    expected_directory: DirectoryIdentity,
+     observation: UsageObservation,
+ ) -> FileBinding | None:
+     if (
+-        observation.session_id is None
++        not isinstance(expected_directory, DirectoryIdentity)
++        or expected_directory.path != Path(process_config.session_dir)
++        or (expected_directory.device, expected_directory.inode) != (
++            process_config.session_dir_identity.device,
++            process_config.session_dir_identity.inode,
++        )
++        or observation.session_id is None
+         or observation.session_sha256 is None
++        or type(observation.observed_bytes) is not int
+         or not 0 < observation.observed_bytes <= 8388608
+         or UUID.fullmatch(observation.session_id) is None
+         or HEX64.fullmatch(observation.session_sha256) is None
+     ):
+         return None
+-    path = Path(process_config.session_dir) / f"{observation.session_id}.jsonl"
+-    try:
+-        info = path.lstat()
+-        binding = FileBinding(
+-            path,
++    directory: int | None = None
++    descriptor: int | None = None
++    name = f"{observation.session_id}.jsonl"
++    try:
++        directory = os.open(
++            expected_directory.path,
++            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
++        )
++        held_before = os.fstat(directory)
++        named_before = expected_directory.path.lstat()
++        if (
++            not _session_root_matches(held_before, expected_directory)
++            or not _session_root_matches(named_before, expected_directory)
++        ):
++            return None
++        descriptor = os.open(
++            name,
++            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
++            dir_fd=directory,
++        )
++        file_before = os.fstat(descriptor)
++        if (
++            not stat.S_ISREG(file_before.st_mode)
++            or file_before.st_nlink != 1
++            or file_before.st_size != observation.observed_bytes
++        ):
++            return None
++        data = bytearray()
++        while len(data) <= 8388608:
++            block = os.read(descriptor, min(65536, 8388609 - len(data)))
++            if not block:
++                break
++            data.extend(block)
++        if len(data) != file_before.st_size or len(data) > 8388608:
++            return None
++        file_after = os.fstat(descriptor)
++        file_named = os.stat(name, dir_fd=directory, follow_symlinks=False)
++        held_after = os.fstat(directory)
++        named_after = expected_directory.path.lstat()
++        if (
++            _file_identity(file_before) != _file_identity(file_after)
++            or _file_identity(file_after) != _file_identity(file_named)
++            or not _session_root_matches(held_after, expected_directory)
++            or not _session_root_matches(named_after, expected_directory)
++            or hashlib.sha256(data).hexdigest() != observation.session_sha256
++        ):
++            return None
++        return FileBinding(
++            expected_directory.path / name,
+             observation.session_sha256,
+-            observation.observed_bytes,
+-            info.st_mtime_ns,
+-        )
+-        _gate_read(path, 8388608, binding.sha256, binding.bytes, binding.mtime_ns_max)
+-        return binding
+-    except Exception:
++            len(data),
++            file_after.st_mtime_ns,
++        )
++    except (OSError, RuntimeError, ValueError):
+         return None
++    finally:
++        if descriptor is not None:
++            os.close(descriptor)
++        if directory is not None:
++            os.close(directory)
++
++
++def _resource_matches_config(
++    resources: ResourceObservationReceipt,
++    process_config: RunControllerConfig,
++) -> bool:
++    caps = process_config.caps
++    expected = {
++        "provider_timeout_ms": caps.provider_timeout_ms,
++        "provider_retries": caps.provider_retries,
++        "model_tokens_between_turns": caps.model_tokens_between_turns,
++        "controller_turn_limit_per_phase": caps.controller_turn_limit_per_phase,
++        "source_text_max_bytes": caps.source_text_max_bytes,
++        "autonomous_gate_retries": caps.autonomous_gate_retries,
++        "autonomous_gate_timeout_ms": caps.autonomous_gate_timeout_ms,
++        "bridge_close_grace_ms": caps.bridge_close_grace_ms,
++        "rss_trigger_bytes": caps.rss_trigger_bytes,
++        "rss_sample_interval_ms": caps.rss_sample_ms,
++        "artifact_file_count_trigger": caps.artifact_file_count,
++        "artifact_aggregate_bytes_trigger": caps.artifact_aggregate_bytes,
++        "regular_file_rlimit_bytes": caps.file_size_bytes,
++        "cpu_rlimit_seconds_per_process": caps.cpu_seconds_per_process,
++        "phase_wall_seconds": caps.phase_wall_seconds,
++        "campaign_wall_seconds": caps.campaign_wall_seconds,
++        "observer_output_limit_bytes": caps.observer_output_bytes,
++    }
++    return all(getattr(resources, key) == value for key, value in expected.items())
++
++
++def _handle_matches_config(
++    handle: ProcessHandleReceipt,
++    process_config: RunControllerConfig,
++) -> bool:
++    expected = {
++        "process_exec_path": process_config.process_exec_path,
++        "frontend_path": process_config.frontend_path,
++        "deployment_path": process_config.deployment_path,
++        "artifact_root": process_config.artifact_root,
++        "session_dir": process_config.session_dir,
++    }
++    if any(getattr(handle, key) != value for key, value in expected.items()):
++        return False
++    if (
++        handle.root_pgid != handle.pid
++        or handle.spawn_attempts != 1
++        or handle.stdin_mode != "DEVNULL"
++        or handle.child_environment_keys != tuple(sorted(process_config.child_environment))
++    ):
++        return False
++    artifact_root = Path(process_config.artifact_root)
++    return all(
++        Path(path).parent == artifact_root
++        for path in (handle.stdout_path, handle.stderr_path)
++    )
+ 
+ 
+ def _clean_process(
+@@ -606,20 +804,41 @@
+
+     usage: UsageObservation,
+     current: FileBinding | None,
+ ) -> bool:
++    if (
++        not isinstance(receipt, ControllerRunReceipt)
++        or not isinstance(receipt.handle, ProcessHandleReceipt)
++        or not isinstance(receipt.resources, ResourceObservationReceipt)
++        or not isinstance(receipt.cleanup, CleanupReceipt)
++        or not isinstance(usage, UsageObservation)
++        or current is None
++    ):
++        return False
++    try:
++        persisted = json.loads(_canonical(receipt.to_dict()))
++    except (ValueError, TypeError, PhaseDriverError):
++        return False
++    if not _valid_prior_process_receipt(persisted, current.path):
++        return False
+     return bool(
+-        isinstance(receipt, ControllerRunReceipt)
++        _handle_matches_config(receipt.handle, process_config)
++        and _resource_matches_config(receipt.resources, process_config)
+         and receipt.status == "succeeded"
+         and receipt.terminal_reason == "completed"
+         and type(receipt.returncode) is int
+         and receipt.returncode == 0
+-        and receipt.handle is not None
+-        and receipt.handle.session_dir == process_config.session_dir
++        and receipt.cleanup.root_process_reaped is True
++        and receipt.cleanup.confirmed_for_tracked_processes is True
++        and receipt.cleanup.alive_tracked_after_cleanup == ()
++        and receipt.cleanup.cleanup_errors == ()
++        and receipt.resources.observer_errors == ()
++        and receipt.resources.census_errors == ()
++        and receipt.resources.coverage_complete_for_observed_tree is True
++        and receipt.resources.native_usage_missing_or_inflight_semantics == "unknown_not_zero"
+         and usage.complete is True
+         and usage.state == "WITHIN_BUDGET"
+         and usage.stop_reason is None
+         and type(usage.total_tokens) is int
+         and usage.total_tokens < 120000
+-        and current is not None
+         and usage.session_id is not None
+         and current.path == Path(process_config.session_dir) / f"{usage.session_id}.jsonl"
+     )
+@@ -694,7 +913,7 @@
+
+         if not isinstance(receipt, ControllerRunReceipt):
+             raise PhaseDriverError("RECORDING_FAILED")
+         final_usage = observer.observe()
+-        current = _current_session(process_config, final_usage)
++        current = _current_session(process_config, gate.session_directory, final_usage)
+         process_binding = _write_new(
+             evidence_descriptor,
+             config.evidence_directory,

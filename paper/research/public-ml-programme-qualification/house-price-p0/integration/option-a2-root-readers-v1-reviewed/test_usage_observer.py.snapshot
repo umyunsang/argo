@@ -1,0 +1,88 @@
+"""Root-selected native session directory reader; synthetic session bytes only."""
+from __future__ import annotations
+import hashlib
+import json
+import os
+from pathlib import Path
+import tempfile
+import unittest
+
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.campaign_usage import parse_session_usage
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.staging import DirectoryIdentity
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.usage_observer import UsageObserver, UsageObserverConfig, UsageObservationError
+
+HERE=Path(__file__).parent
+FIXTURE=HERE/"a2-frontend-probes"/"evidence"/"installed-main-native-session-v1.jsonl"
+
+class UsageObserverTest(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory(prefix="hp-usage-observer-")
+        self.root=Path(self.temp.name).resolve()
+        self.current=self.root/"session";self.current.mkdir(mode=0o700)
+        self.identity=DirectoryIdentity(self.current,self.current.stat().st_dev,self.current.stat().st_ino)
+        self.raw=FIXTURE.read_bytes();self.records=[json.loads(line) for line in self.raw.split(b"\n") if line]
+        self.header=self.records[0]
+        self.config=UsageObserverConfig(self.identity,self.header["cwd"],"a2-faux-6122","a2-probe",120000,())
+        self.observer=UsageObserver(self.config)
+    def tearDown(self):self.temp.cleanup()
+    def write(self,records=None):
+        path=self.current/(self.header["id"]+".jsonl")
+        path.write_bytes(self.raw if records is None else ("\n".join(json.dumps(row) for row in records)+"\n").encode())
+        return path
+    def test_waiting_is_not_zero_complete_and_native_bytes_count(self):
+        waiting=self.observer.observe()
+        self.assertEqual(waiting.state,"WAITING_FIRST_USAGE");self.assertFalse(waiting.complete)
+        self.assertIsNone(waiting.current_tokens);self.assertIsNone(waiting.stop_reason)
+        self.write();result=self.observer.observe()
+        self.assertEqual(result.state,"WITHIN_BUDGET");self.assertEqual(result.current_tokens,3745)
+        self.assertTrue(result.complete);self.assertIsNone(result.stop_reason)
+        self.assertEqual(result.session_sha256,hashlib.sha256(self.raw).hexdigest())
+    def test_combined_limit_counts_prior_not_reset_and_disallows_duplicate_session(self):
+        prior_id="ff653932-3e4e-4bb6-8fab-f6c3764a1acb"
+        prior_rows=json.loads(json.dumps(self.records));prior_rows[0]["id"]=prior_id
+        for row in prior_rows:
+            msg=row.get("message",{})
+            if msg.get("responseId"):msg["responseId"]+="-prior"
+        raw=("\n".join(json.dumps(row) for row in prior_rows)+"\n").encode()
+        prior=parse_session_usage(raw,prior_id,self.header["cwd"],"a2-faux-6122","a2-probe")
+        observer=UsageObserver(UsageObserverConfig(self.identity,self.header["cwd"],"a2-faux-6122","a2-probe",7000,(prior,)))
+        self.write();result=observer.observe()
+        self.assertEqual(result.total_tokens,7490);self.assertEqual(result.stop_reason,"CAMPAIGN_TOKEN_TRIGGER")
+        repeated=parse_session_usage(self.raw,self.header["id"],self.header["cwd"],"a2-faux-6122","a2-probe")
+        observer=UsageObserver(UsageObserverConfig(self.identity,self.header["cwd"],"a2-faux-6122","a2-probe",120000,(repeated,)))
+        self.assertEqual(observer.observe().stop_reason,"CAMPAIGN_USAGE_UNKNOWN")
+    def test_unknown_partial_and_counter_regression_stop_after_record(self):
+        path=self.write();self.observer.observe()
+        path.write_bytes(self.raw[:-1]);self.assertEqual(self.observer.observe().stop_reason,"CAMPAIGN_USAGE_UNKNOWN")
+        self.write();self.observer.observe()
+        earlier=self.records[:-1];self.write(earlier)
+        self.assertEqual(self.observer.observe().stop_reason,"CAMPAIGN_USAGE_UNKNOWN")
+    def test_links_multiple_files_and_root_replacement_are_rejected(self):
+        target=self.root/"outside.jsonl";target.write_bytes(self.raw)
+        link=self.current/(self.header["id"]+".jsonl");link.symlink_to(target)
+        self.assertEqual(self.observer.observe().stop_reason,"CAMPAIGN_USAGE_UNKNOWN")
+        link.unlink();self.write();(self.current/"extra.jsonl").write_bytes(self.raw)
+        self.assertEqual(self.observer.observe().stop_reason,"CAMPAIGN_USAGE_UNKNOWN")
+        self.current.rename(self.root/"old");self.current.mkdir()
+        self.assertEqual(self.observer.observe().stop_reason,"CAMPAIGN_USAGE_UNKNOWN")
+    def test_wrong_native_identity_and_oversize_fail_closed(self):
+        changed=json.loads(json.dumps(self.records));changed[0]["cwd"]="/wrong"
+        self.write(changed);self.assertEqual(self.observer.observe().stop_reason,"CAMPAIGN_USAGE_UNKNOWN")
+        path=self.write()
+        with path.open("wb") as stream:stream.truncate(8388609)
+        self.assertEqual(self.observer.observe().stop_reason,"CAMPAIGN_USAGE_UNKNOWN")
+
+    def test_foreign_filename_and_sticky_unknown_never_reenable_work(self):
+        foreign=self.current/"foreign.jsonl";foreign.write_bytes(self.raw)
+        self.assertEqual(self.observer.observe().stop_reason,"CAMPAIGN_USAGE_UNKNOWN")
+        foreign.unlink();self.write()
+        self.assertEqual(self.observer.observe().stop_reason,"CAMPAIGN_USAGE_UNKNOWN")
+
+    def test_counter_regression_is_detected_without_prior_unknown_state(self):
+        self.write();self.observer.observe()
+        self.write(self.records[:-1])
+        result=self.observer.observe()
+        self.assertEqual(result.stop_reason,"CAMPAIGN_USAGE_UNKNOWN")
+        self.assertEqual(result.total_tokens,3745)
+
+if __name__=="__main__":unittest.main(verbosity=2)

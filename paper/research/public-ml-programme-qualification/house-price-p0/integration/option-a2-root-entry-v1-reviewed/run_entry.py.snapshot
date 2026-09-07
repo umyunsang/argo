@@ -1,0 +1,280 @@
+"""Fixed ORX snapshot entry. Generated solution code executes only in Docker.
+
+The committed config is created by the trusted bridge. It is not a model argument.
+ORX commit/source identity is checked by the bridge after launch, not self-attested here.
+"""
+from __future__ import annotations
+
+import csv
+from decimal import Decimal, InvalidOperation
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import re
+import stat
+
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.container_runner import (
+    RunnerConfig, RunStatus, run_fixed_solution,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.grading import (
+    FileBinding, GradingError, grade_files, read_bound,
+)
+
+PREFIX = "experiments/argo_workflow_followup/public_ml_apparatus/"
+REQUIRED_RUNTIME_PATHS = (
+    PREFIX+"house_price_runtime/run_entry.py",
+    PREFIX+"house_price_runtime/container_runner.py",
+    PREFIX+"house_price_runtime/container_entry.py",
+    PREFIX+"house_price_runtime/grading.py",
+    PREFIX+"house_price_scorer.py",
+)
+FIXED_LIMITS = {"wall_seconds":1200, "cpus":2, "memory_bytes":4294967296,
+                "pids_limit":64, "nofile":256, "tmpfs_bytes":268435456,
+                "max_input_bytes":1048576, "max_output_bytes":1048576,
+                "log_quarantine_bytes":1048576}
+IDENTITY_FIELDS = ("closure_sha256", "solution_sha256", "intent_sha256", "task_sha256",
+                   "environment_sha256", "protocol_sha256")
+UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+HEX64 = re.compile(r"[0-9a-f]{64}")
+
+
+class EntryError(ValueError):
+    def __init__(self, code: str = "ENTRY_INVALID"):
+        super().__init__(code)
+
+
+def _strict_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise EntryError()
+        result[key] = value
+    return result
+
+
+def _reject_constant(value):
+    raise EntryError()
+
+
+def _load_json(data: bytes):
+    try:
+        return json.loads(data.decode("utf-8"), object_pairs_hook=_strict_object,
+                          parse_constant=_reject_constant)
+    except (ValueError, UnicodeError, RecursionError):
+        raise EntryError() from None
+
+
+def _canonical_dir(value) -> Path:
+    if not isinstance(value, (str, Path)):
+        raise EntryError()
+    path = Path(value)
+    if not path.is_absolute() or ".." in path.parts or path.resolve(strict=True) != path:
+        raise EntryError()
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        raise EntryError()
+    return path
+
+
+def _read_file(path: Path, cap: int, expected_hash: str | None = None) -> tuple[bytes, FileBinding]:
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or not 0 < before.st_size <= cap:
+        raise EntryError()
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino, opened.st_size) != (before.st_dev, before.st_ino, before.st_size):
+            raise EntryError()
+        chunks = []; remaining = cap+1
+        while remaining:
+            chunk = os.read(fd, min(65536,remaining))
+            if not chunk:break
+            chunks.append(chunk);remaining -= len(chunk)
+        data = b"".join(chunks)
+        after = os.fstat(fd)
+        if (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            raise EntryError()
+    finally:
+        os.close(fd)
+    digest = hashlib.sha256(data).hexdigest()
+    if expected_hash is not None and digest != expected_hash:
+        raise EntryError()
+    binding = FileBinding(path,digest,before.st_size,before.st_mtime_ns)
+    if read_bound(binding,cap) != data:
+        raise EntryError()
+    return data,binding
+
+
+def _input_binding(value) -> FileBinding:
+    if not isinstance(value,dict) or set(value) != {"path","sha256","bytes","mtime_ns_max"}:
+        raise EntryError()
+    if not isinstance(value["path"],str):raise EntryError()
+    return FileBinding(Path(value["path"]),value["sha256"],value["bytes"],value["mtime_ns_max"])
+
+
+def _validate_config(config: object, cwd: Path):
+    fields = {"schema_version","phase","project_id","experiment_id",*IDENTITY_FIELDS,
+              "local_runs_root","output_root","runtime_hashes","inputs","rows","limits"}
+    if not isinstance(config,dict) or set(config) != fields:
+        raise EntryError()
+    if (config["schema_version"] != "argo-house-price-execution/v1" or
+            not isinstance(config["phase"],str) or config["phase"] not in {"dev","final_refit"}):
+        raise EntryError()
+    for key in ["project_id","experiment_id"]:
+        if not isinstance(config[key],str) or UUID.fullmatch(config[key]) is None:
+            raise EntryError()
+    for key in IDENTITY_FIELDS:
+        if not isinstance(config[key],str) or HEX64.fullmatch(config[key]) is None:
+            raise EntryError()
+    if type(config["rows"]) is not int or not 1 <= config["rows"] <= 292:
+        raise EntryError()
+    if not isinstance(config["limits"],dict) or set(config["limits"]) != set(FIXED_LIMITS):
+        raise EntryError()
+    for key,value in FIXED_LIMITS.items():
+        if type(config["limits"][key]) is not int or config["limits"][key] != value:
+            raise EntryError()
+    local_root = _canonical_dir(config["local_runs_root"])
+    if cwd.name != "repo" or cwd.parent.parent != local_root or UUID.fullmatch(cwd.parent.name) is None:
+        raise EntryError()
+    run_id = cwd.parent.name
+    output = _canonical_dir(config["output_root"])
+    if output == cwd or cwd in output.parents or output in cwd.parents:
+        raise EntryError()
+    hashes = config["runtime_hashes"]
+    if not isinstance(hashes,dict) or set(hashes) != set(REQUIRED_RUNTIME_PATHS):
+        raise EntryError()
+    for relative in REQUIRED_RUNTIME_PATHS:
+        if not isinstance(hashes[relative],str) or HEX64.fullmatch(hashes[relative]) is None:
+            raise EntryError()
+        _read_file(cwd/relative,1048576,hashes[relative])
+    inputs = config["inputs"]
+    required_inputs = {"train","features","ids"} | ({"targets"} if config["phase"] == "dev" else set())
+    if not isinstance(inputs,dict) or set(inputs) != required_inputs:
+        raise EntryError()
+    bindings = {key:_input_binding(value) for key,value in inputs.items()}
+    payloads = {key:read_bound(binding,1048576 if key in {"train","features"} else 262144)
+                for key,binding in bindings.items()}
+    ids = _load_json(payloads["ids"])
+    if (not isinstance(ids,list) or len(ids) != config["rows"] or
+            any(not isinstance(value,str) or re.fullmatch(r"[0-9]{1,32}",value) is None for value in ids) or
+            len(set(ids)) != len(ids)):
+        raise EntryError()
+    feature_rows = list(csv.reader(io.StringIO(payloads["features"].decode("utf-8"),newline=""),strict=True))
+    if not feature_rows or feature_rows[0].count("Id") != 1 or "SalePrice" in feature_rows[0]:
+        raise EntryError()
+    header = feature_rows[0]; id_index = header.index("Id")
+    if (any(len(row) != len(header) for row in feature_rows[1:]) or
+            [row[id_index] for row in feature_rows[1:]] != ids):
+        raise EntryError()
+    train_header = next(csv.reader(io.StringIO(payloads["train"].decode("utf-8"),newline=""),strict=True))
+    if train_header.count("Id") != 1 or train_header.count("SalePrice") != 1:
+        raise EntryError()
+    return run_id,output,bindings,payloads,ids
+
+
+
+def _validate_prediction_number(value: str) -> None:
+    if len(value.encode("utf-8")) > 128:
+        raise EntryError("RUNNER_INVALID")
+    match = re.fullmatch(r"[+-]?([0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE]([+-]?[0-9]+))?",value)
+    if match is None or len(match[1].replace(".","")) > 32:
+        raise EntryError("RUNNER_INVALID")
+    if match[2] is not None:
+        exponent_text = match[2].lstrip("+-").lstrip("0") or "0"
+        if len(exponent_text)>2 or int(exponent_text)>32:
+            raise EntryError("RUNNER_INVALID")
+    try:
+        number = Decimal(value)
+    except InvalidOperation:
+        raise EntryError("RUNNER_INVALID") from None
+    if not number.is_finite() or abs(number.as_tuple().exponent)>32:
+        raise EntryError("RUNNER_INVALID")
+
+def _write_exclusive(path: Path, data: bytes, mode: int) -> None:
+    fd = os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,mode)
+    with os.fdopen(fd,"wb") as stream:
+        stream.write(data);stream.flush();os.fsync(stream.fileno())
+    os.chmod(path,mode)
+
+
+def _execute(cwd: Path) -> dict[str,object]:
+    cwd = _canonical_dir(cwd)
+    config_bytes,_ = _read_file(cwd/"house-price-execution.json",16384)
+    config = _load_json(config_bytes)
+    run_id,output,bindings,payloads,ids = _validate_config(config,cwd)
+    solution,_ = _read_file(cwd/"house-price-solution.py",131072,config["solution_sha256"])
+    if (output/run_id).exists() or (output/run_id).is_symlink():
+        raise EntryError()
+    stage = output/(".inputs-"+run_id)
+    stage.mkdir(mode=0o700)
+    _write_exclusive(stage/"solution.py",solution,0o444)
+    _write_exclusive(stage/"train.csv",payloads["train"],0o444)
+    _write_exclusive(stage/"features.csv",payloads["features"],0o444)
+    limits = config["limits"]
+    runner_config = RunnerConfig(run_id=run_id,solution_path=stage/"solution.py",
+        train_path=stage/"train.csv",features_path=stage/"features.csv",output_parent=output,**limits)
+    result = run_fixed_solution(runner_config)
+    if result.run_id != run_id or not isinstance(result.status,RunStatus):
+        raise EntryError("RUNNER_INVALID")
+    if (type(result.stdout_bytes) is not int or type(result.stderr_bytes) is not int or
+            min(result.stdout_bytes,result.stderr_bytes) < 0 or type(result.logs_truncated) is not bool):
+        raise EntryError("RUNNER_INVALID")
+    receipt = {"schema_version":"argo-house-price-runner-receipt/v1","phase":config["phase"],
+        "run_id":run_id,"project_id":config["project_id"],"experiment_id":config["experiment_id"],
+        **{key:config[key] for key in IDENTITY_FIELDS},
+        "execution_config_sha256":hashlib.sha256(config_bytes).hexdigest(),
+        "runner_sha256":config["runtime_hashes"][PREFIX+"house_price_runtime/container_runner.py"],
+        "status":result.status.value,"predictions":None,"rows":None,"metric":None,
+        "stdout_bytes":result.stdout_bytes,"stderr_bytes":result.stderr_bytes,
+        "logs_truncated":result.logs_truncated}
+    if result.status is RunStatus.SUCCESS:
+        pred_path = output/run_id/"predictions.csv"
+        if (result.predictions_path != pred_path or type(result.row_count) is not int or
+                result.row_count != config["rows"] or not isinstance(result.predictions_sha256,str) or
+                HEX64.fullmatch(result.predictions_sha256) is None):
+            raise EntryError("RUNNER_INVALID")
+        pred_bytes,pred_binding = _read_file(pred_path,1048576,result.predictions_sha256)
+        records = list(csv.reader(io.StringIO(pred_bytes.decode("utf-8"),newline=""),strict=True))
+        if not records or records[0] != ["Id","SalePrice"] or any(len(row)!=2 for row in records[1:]) or [row[0] for row in records[1:]] != ids:
+            raise EntryError("RUNNER_INVALID")
+        for row in records[1:]:
+            _validate_prediction_number(row[1])
+        receipt["predictions"] = {"sha256":pred_binding.sha256,"bytes":pred_binding.bytes,
+                                  "mtime_ns_max":pred_binding.mtime_ns_max}
+        receipt["rows"] = config["rows"]
+        if config["phase"] == "dev":
+            score = grade_files(pred_binding,bindings["ids"],bindings["targets"],max_rows=config["rows"])
+            receipt["metric"] = {"numerator":str(score.mae.numerator),"denominator":str(score.mae.denominator),
+                                  "mae_decimal":score.public_metric()["mae"]}
+    run_directory = output/run_id
+    if not run_directory.exists():run_directory.mkdir(mode=0o700)
+    _canonical_dir(run_directory)
+    serialized = json.dumps(receipt,sort_keys=True,separators=(",",":"),allow_nan=False).encode()
+    if len(serialized)>8192:raise EntryError("RECEIPT_LIMIT")
+    _write_exclusive(run_directory/"runner-receipt.json",serialized,0o600)
+    return receipt
+
+
+def execute_entry(cwd: Path) -> dict[str,object]:
+    try:
+        return _execute(cwd)
+    except EntryError:
+        raise
+    except (OSError,ValueError,TypeError,KeyError,AttributeError,StopIteration):
+        raise EntryError() from None
+
+
+def main() -> int:
+    try:
+        receipt = execute_entry(Path.cwd())
+    except EntryError as error:
+        print("ARGO_HP_RESULT "+json.dumps({"schema_version":"argo-house-price-entry-error/v1","status":str(error)},sort_keys=True))
+        return 1
+    print("ARGO_HP_RESULT "+json.dumps(receipt,sort_keys=True,separators=(",",":")))
+    return 0 if receipt["status"] == "SUCCESS" else 1
+
+
+if __name__=="__main__":
+    raise SystemExit(main())

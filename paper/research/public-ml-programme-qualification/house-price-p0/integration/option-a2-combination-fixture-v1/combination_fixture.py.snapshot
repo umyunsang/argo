@@ -1,0 +1,379 @@
+"""Prepare one held two-dev synthetic fixture after an explicit root clearance.
+
+Importing this module has no effects. Tests replace NativeHarness and bridge loading;
+no Git, socket, fake ORX, or Bridge action is exercised by the unit suite.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.bridge import (
+    load_bridge_from_config,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.grading import (
+    FileBinding,
+    GradingError,
+    read_bound,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.source_closure import (
+    ClosureError,
+    ClosureLimits,
+    SourceTree,
+    capture_tree,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.staging import (
+    DirectoryIdentity,
+)
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.test_bridge import (
+    NativeHarness,
+)
+
+SECOND_SOLUTION = b"print('synthetic combination second candidate')\n"
+SECOND_PURPOSE = "synthetic combination second seed"
+CONFIG_NAME = "bridge-config.json"
+HEX64 = re.compile(r"[0-9a-f]{64}")
+UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+SAFE_BASE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+FORBIDDEN_BASE_COMPONENTS = frozenset({"raw", "auth", "profile"})
+TREE_LIMITS = ClosureLimits(256, 8_388_608, 2_097_152, 8, 1024)
+
+
+class CombinationFixtureError(ValueError):
+    def __init__(self) -> None:
+        super().__init__("COMBINATION_FIXTURE_INVALID")
+
+
+@dataclass
+class CombinationFixture:
+    harness: NativeHarness
+    bridge_config: FileBinding
+    source: DirectoryIdentity
+    trusted_state: DirectoryIdentity
+    bridge_state: DirectoryIdentity
+    context_id: str
+    verified_dev_run_ids: tuple[str, str]
+    research_sha256: str
+    source_tree: SourceTree
+    trusted_state_tree: SourceTree
+    state_tree: SourceTree
+    _closed: bool = field(default=False, init=False, repr=False)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.harness.close()
+        except Exception:
+            raise CombinationFixtureError() from None
+
+
+def prepare_fixture(base: Path) -> CombinationFixture:
+    harness: NativeHarness | None = None
+    try:
+        owned_base = _create_owned_base(base)
+        harness = NativeHarness(owned_base, rows=292)
+        _privatize_harness_directories(harness, owned_base)
+        deployment = harness.deployment()
+        if (type(deployment) is not dict or
+                deployment.get("schema_version") != "argo-house-price-a2-bridge-deployment/v1" or
+                deployment.get("production_enabled") is not True):
+            raise CombinationFixtureError()
+        bridge_config = _publish_config(owned_base / CONFIG_NAME, deployment)
+        bridge = load_bridge_from_config(bridge_config.path, bridge_config.sha256)
+        context_id = _context_id(bridge)
+
+        first = _request_run(bridge)
+        first_binding, first_observation = _running_binding(bridge, first, expected_count=1)
+        harness.mark_done(first_observation, first_binding, "dev")
+        expected = {first["run_id"]: first["solution_sha256"]}
+        _validate_dev_view(_call(bridge, "read_dev_result", {}), expected)
+        _validate_public_view(_call(bridge, "read_public_result", {}), expected, 2)
+
+        solution_text = SECOND_SOLUTION.decode("utf-8")
+        _validate_write(_call(bridge, "write_solution", {
+            "path": "solution.py", "content": solution_text,
+        }), "solution.py", SECOND_SOLUTION)
+        intent_bytes = _canonical({
+            "schema_version": "argo-house-price-intent/v1",
+            "phase": "dev",
+            "purpose": SECOND_PURPOSE,
+            "solution_sha256": hashlib.sha256(SECOND_SOLUTION).hexdigest(),
+            "parent_run_id": first["run_id"],
+        })
+        _validate_write(_call(bridge, "write_solution", {
+            "path": "intent.json", "content": intent_bytes.decode("ascii"),
+        }), "intent.json", intent_bytes)
+
+        second = _request_run(bridge)
+        second_binding, second_observation = _running_binding(bridge, second, expected_count=2)
+        if second["run_id"] == first["run_id"]:
+            raise CombinationFixtureError()
+        harness.mark_done(second_observation, second_binding, "dev")
+        expected[second["run_id"]] = second["solution_sha256"]
+
+        source = _directory_identity(harness.source, owned_base)
+        trusted_state = _directory_identity(harness.trusted_state, owned_base)
+        bridge_state = _directory_identity(harness.bridge_state, owned_base)
+        before = _capture_trees(source, trusted_state, bridge_state)
+
+        dev_view = _call(bridge, "read_dev_result", {})
+        public_view = _call(bridge, "read_public_result", {})
+        research_view = _call(bridge, "read_solution", {"path": "research.md"})
+        _validate_dev_view(dev_view, expected)
+        _validate_public_view(public_view, expected, 1)
+        research_sha256 = _validate_research(research_view)
+
+        after = _capture_trees(source, trusted_state, bridge_state)
+        if after != before:
+            raise CombinationFixtureError()
+        source_tree, trusted_state_tree, state_tree = before
+        return CombinationFixture(
+            harness=harness,
+            bridge_config=bridge_config,
+            source=source,
+            trusted_state=trusted_state,
+            bridge_state=bridge_state,
+            context_id=context_id,
+            verified_dev_run_ids=tuple(sorted(expected)),
+            research_sha256=research_sha256,
+            source_tree=source_tree,
+            trusted_state_tree=trusted_state_tree,
+            state_tree=state_tree,
+        )
+    except Exception:
+        if harness is not None:
+            try:
+                harness.close()
+            except Exception:
+                pass
+        raise CombinationFixtureError() from None
+
+
+def _create_owned_base(base: Path) -> Path:
+    if (not isinstance(base, Path) or not base.is_absolute() or ".." in base.parts or
+            SAFE_BASE_NAME.fullmatch(base.name) is None or
+            any(part.lower() in FORBIDDEN_BASE_COMPONENTS for part in base.parts) or
+            os.path.lexists(base)):
+        raise CombinationFixtureError()
+    try:
+        parent = base.parent
+        if parent.resolve(strict=True) != parent:
+            raise CombinationFixtureError()
+        info = parent.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or
+                stat.S_IMODE(info.st_mode) != 0o700 or info.st_uid != os.getuid()):
+            raise CombinationFixtureError()
+        for ancestor in (parent, *parent.parents):
+            marker = ancestor / ".git"
+            if marker.exists() or marker.is_symlink():
+                raise CombinationFixtureError()
+        os.mkdir(base, 0o700)
+        created = base.lstat()
+        if (not stat.S_ISDIR(created.st_mode) or stat.S_ISLNK(created.st_mode) or
+                stat.S_IMODE(created.st_mode) != 0o700 or created.st_uid != os.getuid() or
+                base.resolve(strict=True) != base):
+            raise CombinationFixtureError()
+        return base
+    except CombinationFixtureError:
+        raise
+    except (OSError, RuntimeError, ValueError):
+        raise CombinationFixtureError() from None
+
+
+def _privatize_harness_directories(harness: NativeHarness, base: Path) -> None:
+    paths = (
+        base, harness.repo, harness.local_runs, harness.snapshots, harness.output,
+        harness.bridge_state, harness.source, harness.trusted_state, base / "home",
+        *(harness.bridge_state / name for name in ("attempts", "bindings", "receipts", "contexts")),
+    )
+    for path in paths:
+        if (not isinstance(path, Path) or not path.is_absolute() or path.resolve(strict=True) != path or
+                (path != base and base not in path.parents)):
+            raise CombinationFixtureError()
+        info = path.lstat()
+        if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid():
+            raise CombinationFixtureError()
+        path.chmod(0o700)
+        if stat.S_IMODE(path.lstat().st_mode) != 0o700:
+            raise CombinationFixtureError()
+
+
+def _publish_config(path: Path, value: object) -> FileBinding:
+    data = _canonical(value)
+    if not 0 < len(data) <= 65_536:
+        raise CombinationFixtureError()
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        offset = 0
+        while offset < len(data):
+            written = os.write(descriptor, data[offset:])
+            if written <= 0:
+                raise OSError()
+            offset += written
+        os.fsync(descriptor)
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+                stat.S_IMODE(info.st_mode) != 0o600 or info.st_size != len(data)):
+            raise OSError()
+        os.close(descriptor)
+        descriptor = None
+        parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+        binding = FileBinding(path, hashlib.sha256(data).hexdigest(), len(data), info.st_mtime_ns)
+        if read_bound(binding, 65_536) != data:
+            raise CombinationFixtureError()
+        return binding
+    except (OSError, GradingError, ValueError, TypeError):
+        raise CombinationFixtureError() from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _call(bridge: object, action: str, arguments: dict[str, object]) -> dict[str, object]:
+    response = bridge.handle({"action": action, "arguments": arguments})
+    if (type(response) is not dict or set(response) != {"ok", "result"} or
+            response.get("ok") is not True or type(response.get("result")) is not dict):
+        raise CombinationFixtureError()
+    return response["result"]
+
+
+def _request_run(bridge: object) -> dict[str, object]:
+    result = _call(bridge, "request_R1_run", {})
+    keys = {"intent_sha256", "run_id", "experiment_id", "solution_sha256", "phase"}
+    if (set(result) != keys or result["phase"] != "dev" or
+            any(not isinstance(result[key], str) or HEX64.fullmatch(result[key]) is None
+                for key in ("intent_sha256", "solution_sha256")) or
+            any(not isinstance(result[key], str) or UUID.fullmatch(result[key]) is None
+                for key in ("run_id", "experiment_id"))):
+        raise CombinationFixtureError()
+    return result
+
+
+def _running_binding(bridge: object, run: dict[str, object], expected_count: int) -> tuple[object, object]:
+    bindings = bridge.store.read_bindings()
+    if (type(bindings) is not list or len(bindings) != expected_count or
+            len({item.run_id for item in bindings}) != len(bindings)):
+        raise CombinationFixtureError()
+    matches = [item for item in bindings if item.run_id == run["run_id"]]
+    if len(matches) != 1:
+        raise CombinationFixtureError()
+    binding = matches[0]
+    if (binding.experiment_id != run["experiment_id"] or binding.phase != "dev" or
+            binding.solution_sha256 != run["solution_sha256"] or
+            binding.intent_sha256 != run["intent_sha256"]):
+        raise CombinationFixtureError()
+    observation = bridge.port.observe(binding)
+    if (observation.status != "RUNNING" or observation.run_id != binding.run_id or
+            observation.experiment_id != binding.experiment_id):
+        raise CombinationFixtureError()
+    return binding, observation
+
+
+def _validate_write(result: dict[str, object], path: str, data: bytes) -> None:
+    expected = {"path": path, "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+    if result != expected or any(type(result[key]) is not type(value) for key, value in expected.items()):
+        raise CombinationFixtureError()
+
+
+def _validate_dev_view(result: dict[str, object], expected: dict[str, str]) -> None:
+    if set(result) != {"results"} or type(result["results"]) is not list or len(result["results"]) != len(expected):
+        raise CombinationFixtureError()
+    seen: set[str] = set()
+    for item in result["results"]:
+        if (type(item) is not dict or set(item) != {"run_id", "solution_sha256", "valid", "mae", "rows"} or
+                item.get("valid") is not True or type(item.get("rows")) is not int or item["rows"] != 292 or
+                item.get("mae") != "0.000000" or item.get("solution_sha256") != expected.get(item.get("run_id")) or
+                item.get("run_id") in seen):
+            raise CombinationFixtureError()
+        seen.add(item["run_id"])
+    if seen != set(expected):
+        raise CombinationFixtureError()
+
+
+def _validate_public_view(result: dict[str, object], expected: dict[str, str], remaining: int) -> None:
+    keys = {"phase", "dev_attempts", "final_attempts", "remaining_dev_opportunities", "runs"}
+    if (set(result) != keys or result["phase"] != "development" or
+            type(result["dev_attempts"]) is not int or result["dev_attempts"] != len(expected) or
+            type(result["final_attempts"]) is not int or result["final_attempts"] != 0 or
+            type(result["remaining_dev_opportunities"]) is not int or
+            result["remaining_dev_opportunities"] != remaining or type(result["runs"]) is not list or
+            len(result["runs"]) != len(expected)):
+        raise CombinationFixtureError()
+    seen: set[str] = set()
+    run_keys = {"intent_sha256", "run_id", "experiment_id", "solution_sha256", "phase", "status"}
+    for item in result["runs"]:
+        if (type(item) is not dict or set(item) != run_keys or item.get("phase") != "dev" or
+                item.get("status") != "DONE" or item.get("solution_sha256") != expected.get(item.get("run_id")) or
+                item.get("run_id") in seen or not isinstance(item.get("experiment_id"), str) or
+                UUID.fullmatch(item["experiment_id"]) is None or not isinstance(item.get("intent_sha256"), str) or
+                HEX64.fullmatch(item["intent_sha256"]) is None):
+            raise CombinationFixtureError()
+        seen.add(item["run_id"])
+    if seen != set(expected):
+        raise CombinationFixtureError()
+
+
+def _validate_research(result: dict[str, object]) -> str:
+    if (set(result) != {"path", "content", "sha256"} or result.get("path") != "research.md" or
+            not isinstance(result.get("content"), str) or not result["content"].strip() or
+            "\x00" in result["content"] or not isinstance(result.get("sha256"), str) or
+            HEX64.fullmatch(result["sha256"]) is None):
+        raise CombinationFixtureError()
+    data = result["content"].encode("utf-8")
+    if len(data) > 131_072 or hashlib.sha256(data).hexdigest() != result["sha256"]:
+        raise CombinationFixtureError()
+    return result["sha256"]
+
+
+def _context_id(bridge: object) -> str:
+    rights = bridge.config.context_rights
+    value = rights.controller_context_id
+    if (not isinstance(value, str) or HEX64.fullmatch(value) is None or
+            rights.context != "initial" or rights.initial_context_id != value or rights.checkpoint is not None):
+        raise CombinationFixtureError()
+    return value
+
+
+def _directory_identity(path: Path, base: Path) -> DirectoryIdentity:
+    if (not isinstance(path, Path) or not path.is_absolute() or path.resolve(strict=True) != path or
+            path == base or base not in path.parents):
+        raise CombinationFixtureError()
+    info = path.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or
+            stat.S_IMODE(info.st_mode) != 0o700 or info.st_uid != os.getuid()):
+        raise CombinationFixtureError()
+    return DirectoryIdentity(path, info.st_dev, info.st_ino)
+
+
+def _capture_trees(source: DirectoryIdentity, trusted_state: DirectoryIdentity,
+                   bridge_state: DirectoryIdentity) -> tuple[SourceTree, SourceTree, SourceTree]:
+    try:
+        trees = (
+            capture_tree(source.path, TREE_LIMITS),
+            capture_tree(trusted_state.path, TREE_LIMITS),
+            capture_tree(bridge_state.path, TREE_LIMITS),
+        )
+    except ClosureError:
+        raise CombinationFixtureError() from None
+    if (any(tree.symlink_count != 0 for tree in trees) or
+            trees[0].root != str(source.path) or trees[1].root != str(trusted_state.path) or
+            trees[2].root != str(bridge_state.path)):
+        raise CombinationFixtureError()
+    return trees
+
+
+def _canonical(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=True, allow_nan=False).encode("ascii")

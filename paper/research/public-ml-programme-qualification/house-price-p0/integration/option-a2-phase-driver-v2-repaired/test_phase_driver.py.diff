@@ -1,0 +1,286 @@
+--- v1/test_phase_driver.py
+
++++ v2/test_phase_driver.py
+
+@@ -12,9 +12,12 @@
+
+ 
+ from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.campaign_usage import SessionUsage
+ from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.controller_process import (
++    CleanupReceipt,
+     ControllerRunReceipt,
+     PathIdentity,
+     ProcessHandleReceipt,
++    ResourceObservationReceipt,
++    RunControllerCaps,
+     RunControllerConfig,
+ )
+ from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.grading import FileBinding, read_bound
+@@ -158,6 +161,31 @@
+
+             hashlib.sha256(path.read_bytes()).hexdigest(),
+         )
+ 
++    def production_caps(self) -> RunControllerCaps:
++        return RunControllerCaps(
++            provider_timeout_ms=120000,
++            provider_retries=0,
++            phase_wall_seconds=3600,
++            campaign_wall_seconds=10800,
++            cpu_seconds_per_process=600,
++            file_size_bytes=8388608,
++            rss_trigger_bytes=2147483648,
++            rss_sample_ms=250,
++            v8_old_space_mib=1024,
++            model_tokens_between_turns=120000,
++            controller_turn_limit_per_phase=20,
++            source_text_max_bytes=131072,
++            autonomous_gate_retries=20,
++            autonomous_gate_timeout_ms=30000,
++            bridge_close_grace_ms=1000,
++            artifact_aggregate_bytes=67108864,
++            artifact_file_count=128,
++            terminate_grace_seconds=2,
++            kill_grace_seconds=2,
++            observer_timeout_seconds=3,
++            observer_output_bytes=8388608,
++        )
++
+     def make_process_config(self) -> RunControllerConfig:
+         return RunControllerConfig(
+             python_executable=str(self.dummy_files["python"]),
+@@ -179,7 +207,7 @@
+
+             profile_dir=str(self.profile),
+             profile_dir_identity=self.directory_path_identity(self.profile),
+             child_environment={},
+-            caps=None,
++            caps=self.production_caps(),
+             campaign_started_monotonic_ns=1,
+             synthetic_test_context=False,
+         )
+@@ -217,6 +245,7 @@
+
+         )
+ 
+     def process_receipt(self, status: str = "succeeded", reason: str = "completed") -> ControllerRunReceipt:
++        caps = self.process_config.caps
+         handle = ProcessHandleReceipt(
+             pid=123,
+             root_pgid=123,
+@@ -229,21 +258,71 @@
+
+             deployment_path=self.process_config.deployment_path,
+             artifact_root=str(self.artifact),
+             session_dir=str(self.session),
+-            child_environment_keys=(),
++            child_environment_keys=tuple(sorted(self.process_config.child_environment)),
+             stdin_mode="DEVNULL",
++        )
++        resources = ResourceObservationReceipt(
++            provider_timeout_ms=caps.provider_timeout_ms,
++            provider_retries=caps.provider_retries,
++            model_tokens_between_turns=caps.model_tokens_between_turns,
++            controller_turn_limit_per_phase=caps.controller_turn_limit_per_phase,
++            source_text_max_bytes=caps.source_text_max_bytes,
++            autonomous_gate_retries=caps.autonomous_gate_retries,
++            autonomous_gate_timeout_ms=caps.autonomous_gate_timeout_ms,
++            bridge_close_grace_ms=caps.bridge_close_grace_ms,
++            rss_sampling_semantics="sampled_trigger_not_hard_limit",
++            rss_trigger_bytes=caps.rss_trigger_bytes,
++            rss_sample_interval_ms=caps.rss_sample_ms,
++            peak_sampled_rss_bytes=0,
++            rss_overshoot_bytes=0,
++            rss_trigger_monotonic_ns=None,
++            rss_trigger_elapsed_from_first_sample_seconds=None,
++            sample_count=1,
++            first_sample_monotonic_ns=1,
++            last_sample_monotonic_ns=1,
++            max_sample_gap_ms=0.0,
++            observed_seconds=0.0,
++            coverage_complete_for_observed_tree=True,
++            observer_errors=(),
++            census_errors=(),
++            census_file_count_peak=0,
++            census_aggregate_bytes_peak=0,
++            census_largest_file_bytes=0,
++            file_count_overshoot=0,
++            aggregate_bytes_overshoot=0,
++            artifact_file_count_trigger=caps.artifact_file_count,
++            artifact_aggregate_bytes_trigger=caps.artifact_aggregate_bytes,
++            regular_file_rlimit_bytes=caps.file_size_bytes,
++            cpu_rlimit_seconds_per_process=caps.cpu_seconds_per_process,
++            phase_wall_seconds=caps.phase_wall_seconds,
++            campaign_wall_seconds=caps.campaign_wall_seconds,
++            observer_output_limit_bytes=caps.observer_output_bytes,
++            native_usage_missing_or_inflight_semantics="unknown_not_zero",
++        )
++        cleanup = CleanupReceipt(
++            confirmed_for_tracked_processes=True,
++            claims_all_possible_descendants=False,
++            unobserved_escape_possible=True,
++            root_process_reaped=True,
++            signals_sent=(),
++            tracked_processes=(),
++            observed_process_groups=(123,),
++            escaped_observed_process_groups=(),
++            alive_tracked_after_cleanup=(),
++            cleanup_errors=(),
+         )
+         return ControllerRunReceipt(
+             schema_version="argo-house-price-a2-controller-process-receipt/v1",
+-            authority_contract_sha256=HEX,
++            authority_contract_sha256="0cfaeb57c18662f428cdb9fbdef842d55782624b9baaf9bbbbe98ebeb4412c20",
+             status=status,
+             terminal_reason=reason,
+             returncode=0,
+             started_monotonic_ns=1,
+-            ended_monotonic_ns=2,
++            ended_monotonic_ns=100_000_001,
+             elapsed_seconds=0.1,
+             handle=handle,
+-            resources=None,
+-            cleanup=None,
++            resources=resources,
++            cleanup=cleanup,
+             limitations=(),
+         )
+ 
+@@ -435,6 +514,136 @@
+
+         self.assertEqual(result.disposition, "PROCESS_RECORDED")
+ 
+ 
++class PhaseDriverRepairTests(unittest.TestCase):
++    def make_case(self) -> PhaseDriverTests:
++        case = PhaseDriverTests("test_startup_guard_is_callable_and_same_observer_finalizes_clean_receipts")
++        case.setUp()
++        return case
++
++    def test_replaced_session_directory_identity_never_returns_current_or_clean(self) -> None:
++        case = self.make_case()
++        try:
++            original_inode = case.session.stat().st_ino
++            waiting = case.observation("WAITING_FIRST_USAGE", None, False, None, None, with_session=False)
++            within = case.observation("WITHIN_BUDGET", None, True, 100, 100, with_session=True)
++            session_file = case.session / f"{within.session_id}.jsonl"
++            session_bytes = session_file.read_bytes()
++
++            class SwapObserver:
++                index = 0
++
++                def observe(self):
++                    self.index += 1
++                    if self.index == 1:
++                        return waiting
++                    old = case.artifact / "session-old"
++                    case.session.rename(old)
++                    case.session.mkdir(mode=0o700)
++                    (case.session / session_file.name).write_bytes(session_bytes)
++                    return within
++
++            result = case.execute_patched(SwapObserver(), case.process_receipt())
++            self.assertNotEqual(case.session.stat().st_ino, original_inode)
++            self.assertIsNone(result.current_session)
++            self.assertFalse(result.clean_process)
++        finally:
++            case.tearDown()
++
++    def test_malformed_or_foreign_process_receipt_is_never_clean(self) -> None:
++        case = self.make_case()
++        try:
++            within = case.observation("WITHIN_BUDGET", None, True, 100, 100, with_session=True)
++            current = phase_driver_module._current_session(case.process_config, case.gate_inputs.session_directory, within)
++            receipt = case.process_receipt()
++            malformed_handle = replace(
++                receipt.handle,
++                frontend_path=str(case.root / "foreign-frontend"),
++                process_exec_path=str(case.root / "foreign-process-exec"),
++            )
++            malformed = replace(receipt, handle=malformed_handle, resources=None, cleanup=None)
++            self.assertFalse(
++                phase_driver_module._clean_process(
++                    malformed,
++                    case.process_config,
++                    within,
++                    current,
++                )
++            )
++        finally:
++            case.tearDown()
++
++    def test_incomplete_frontend_deployment_is_rejected_before_admission(self) -> None:
++        case = self.make_case()
++        try:
++            process = replace(
++                case.process_config,
++                process_exec_identity=replace(
++                    case.process_config.process_exec_identity,
++                    sha256=phase_driver_module.PROCESS_EXEC_SHA256,
++                ),
++                frontend_identity=replace(
++                    case.process_config.frontend_identity,
++                    sha256=phase_driver_module.FRONTEND_SHA256,
++                ),
++            )
++
++            def directory_record(path, identity):
++                return {"path": path, "device": str(identity.device), "inode": str(identity.inode)}
++
++            deployment = {
++                "schema_version": "argo-house-price-a2-controller-main-deployment/v1",
++                "status": "TRUSTED_FIXED_DEPLOYMENT",
++                "assets": {
++                    "controller_main": {"path": process.frontend_path, "sha256": phase_driver_module.FRONTEND_SHA256},
++                    "node_executable": {"path": process.node_executable, "sha256": process.node_identity.sha256},
++                    "prime_entry": {
++                        "path": str(case.root / "outside-prime"),
++                        "sha256": "f" * 64,
++                        "bytes": 1,
++                        "mtime_ns_max": "1",
++                    },
++                },
++                "directories": {
++                    "artifact_root": directory_record(process.artifact_root, process.artifact_root_identity),
++                    "profile": directory_record(process.profile_dir, process.profile_dir_identity),
++                    "session_dir": directory_record(process.session_dir, process.session_dir_identity),
++                    "temporary_dir": directory_record(process.temporary_dir, process.temporary_dir_identity),
++                    "cwd": {"path": case.gate_inputs.cwd},
++                },
++                "runtime": {"model": "openai-codex/gpt-5.6-sol"},
++                "environment": {"exact": dict(process.child_environment)},
++                "limits": {},
++            }
++            with patch.object(phase_driver_module, "verify_tree"), \
++                    patch.object(phase_driver_module, "_load_frontend_deployment", return_value=deployment), \
++                    patch.object(phase_driver_module, "_path_within", return_value=True), \
++                    patch.object(phase_driver_module, "_verify_fixed_file"), \
++                    patch.object(phase_driver_module, "_gate_read", return_value=b"x"):
++                with self.assertRaises(Exception):
++                    phase_driver_module._verify_source_closures(case.config, process, case.gate_inputs)
++        finally:
++            case.tearDown()
++
++    def test_all_source_tree_roots_must_be_pairwise_nonoverlapping(self) -> None:
++        case = self.make_case()
++        try:
++            nested = case.private_dir("namespace/frontend-nested")
++            overlap = PhaseDriverConfig(
++                controller_context_id=case.config.controller_context_id,
++                process_config=case.config.process_config,
++                gate_config=case.config.gate_config,
++                installed_prime_tree=case.config.installed_prime_tree,
++                namespace_tree=case.tree(case.namespace),
++                frontend_tree=case.tree(nested),
++                evidence_directory=case.config.evidence_directory,
++            )
++            with self.assertRaises(Exception):
++                phase_driver_module._validate_config_shape(overlap)
++            self.assertEqual(list(case.evidence.iterdir()), [])
++        finally:
++            case.tearDown()
++
++
+ if __name__ == "__main__":
+     unittest.main()
+ 

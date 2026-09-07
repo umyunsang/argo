@@ -1,0 +1,324 @@
+"""Mock-only tests for combination_fixture; no NativeHarness effects execute."""
+from __future__ import annotations
+
+from hashlib import sha256
+import json
+import os
+from pathlib import Path
+from types import SimpleNamespace
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime import combination_fixture as fixture_module
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.combination_fixture import (
+    CombinationFixtureError,
+    SECOND_SOLUTION,
+    prepare_fixture,
+)
+
+RUN_IDS = (
+    "00000000-0000-0000-0000-000000000101",
+    "00000000-0000-0000-0000-000000000102",
+)
+EXPERIMENT_IDS = (
+    "00000000-0000-0000-0000-000000000201",
+    "00000000-0000-0000-0000-000000000202",
+)
+CONTEXT_ID = sha256(b"mock-combination-context").hexdigest()
+
+
+def digest(data: bytes) -> str:
+    return sha256(data).hexdigest()
+
+
+class FakeStore:
+    def __init__(self, bridge_state: Path) -> None:
+        self.bindings: list[SimpleNamespace] = []
+        self.bridge_state = bridge_state
+
+    def read_bindings(self) -> list[SimpleNamespace]:
+        return list(self.bindings)
+
+
+class FakePort:
+    def __init__(self, bridge: "FakeBridge") -> None:
+        self.bridge = bridge
+
+    def observe(self, binding: SimpleNamespace) -> SimpleNamespace:
+        status = self.bridge.statuses[binding.run_id]
+        return SimpleNamespace(
+            run_id=binding.run_id,
+            experiment_id=binding.experiment_id,
+            native_commit=binding.native_commit,
+            native_source_digest=binding.native_source_digest,
+            native_source_size=1,
+            status=status,
+            cancel_requested=False,
+        )
+
+
+class FakeBridge:
+    def __init__(self, harness: "FakeHarness", mode: str) -> None:
+        self.harness = harness
+        self.mode = mode
+        self.actions: list[tuple[str, dict[str, object]]] = []
+        self.statuses: dict[str, str] = {}
+        self.solutions: dict[str, bytes] = {
+            "solution.py": (harness.source / "solution.py").read_bytes(),
+            "intent.json": (harness.source / "intent.json").read_bytes(),
+            "research.md": (harness.source / "research.md").read_bytes(),
+        }
+        self.store = FakeStore(harness.bridge_state)
+        self.port = FakePort(self)
+        self.config = SimpleNamespace(context_rights=SimpleNamespace(
+            schema_version="argo-house-price-a2-context-rights/v1",
+            controller_context_id=CONTEXT_ID, context="initial",
+            initial_context_id=CONTEXT_ID, checkpoint=None,
+        ))
+
+    def handle(self, request: object) -> dict[str, object]:
+        if not isinstance(request, dict):
+            return {"ok": False, "error": "INVALID_ARGUMENT"}
+        action = request.get("action")
+        arguments = request.get("arguments")
+        if not isinstance(action, str) or not isinstance(arguments, dict):
+            return {"ok": False, "error": "INVALID_ARGUMENT"}
+        self.actions.append((action, dict(arguments)))
+        if action == "write_solution":
+            path = arguments.get("path")
+            content = arguments.get("content")
+            if not isinstance(path, str) or not isinstance(content, str):
+                return {"ok": False, "error": "INVALID_ARGUMENT"}
+            data = content.encode("utf-8")
+            self.solutions[path] = data
+            (self.harness.source / path).write_bytes(data)
+            return {"ok": True, "result": {"path": path, "sha256": digest(data), "bytes": len(data)}}
+        if action == "request_R1_run":
+            ordinal = len(self.store.bindings)
+            if self.mode == "request_error" and ordinal == 1:
+                return {"ok": False, "error": "UNCERTAIN_NO_AUTOMATIC_RETRY"}
+            run_id = RUN_IDS[0] if self.mode == "duplicate_ids" and ordinal == 1 else RUN_IDS[ordinal]
+            experiment_id = EXPERIMENT_IDS[ordinal]
+            solution_hash = digest(self.solutions["solution.py"])
+            intent_hash = digest(self.solutions["intent.json"])
+            binding = SimpleNamespace(
+                run_id=run_id,
+                experiment_id=experiment_id,
+                phase="dev",
+                solution_sha256=solution_hash,
+                intent_sha256=intent_hash,
+                native_commit=f"{ordinal + 1:040x}",
+                native_source_digest=digest(f"source-{ordinal + 1}".encode()),
+            )
+            self.store.bindings.append(binding)
+            self.statuses[run_id] = "RUNNING"
+            attempts = self.harness.bridge_state / "attempts"
+            bindings = self.harness.bridge_state / "bindings"
+            (attempts / f"{ordinal + 1:02d}.json").write_text("{}")
+            (bindings / f"{ordinal + 1:02d}.json").write_text("{}")
+            (self.harness.trusted_state / f"admission-{ordinal + 1}.json").write_text("{}")
+            return {"ok": True, "result": {
+                "intent_sha256": intent_hash,
+                "run_id": run_id,
+                "experiment_id": experiment_id,
+                "solution_sha256": solution_hash,
+                "phase": "dev",
+            }}
+        if action == "read_dev_result":
+            done = [item for item in self.store.bindings if self.statuses[item.run_id] == "DONE"]
+            if self.mode == "no_eligibility" and len(self.store.bindings) == 2:
+                done = done[:1]
+            return {"ok": True, "result": {"results": [
+                {"run_id": item.run_id, "solution_sha256": item.solution_sha256,
+                 "valid": True, "mae": "0.000000", "rows": 292}
+                for item in done
+            ]}}
+        if action == "read_public_result":
+            return {"ok": True, "result": {
+                "phase": "development",
+                "dev_attempts": len(self.store.bindings),
+                "final_attempts": 0,
+                "remaining_dev_opportunities": 3 - len(self.store.bindings),
+                "runs": [
+                    {"intent_sha256": item.intent_sha256, "run_id": item.run_id,
+                     "experiment_id": item.experiment_id, "solution_sha256": item.solution_sha256,
+                     "phase": "dev", "status": self.statuses[item.run_id]}
+                    for item in self.store.bindings
+                ],
+            }}
+        if action == "read_solution" and arguments == {"path": "research.md"}:
+            data = self.solutions["research.md"]
+            return {"ok": True, "result": {
+                "path": "research.md", "content": data.decode("utf-8"), "sha256": digest(data),
+            }}
+        return {"ok": False, "error": "TOOL_SURFACE"}
+
+    def mark_done(self, binding: SimpleNamespace) -> None:
+        if self.mode == "no_done" and len(self.store.bindings) == 2:
+            return
+        self.statuses[binding.run_id] = "DONE"
+
+
+class FakeHarness:
+    instances: list["FakeHarness"] = []
+    mode = "ok"
+
+    def __init__(self, base: Path, rows: int = 2) -> None:
+        if rows != 292:
+            raise AssertionError("rows must be 292")
+        self.base = base
+        self.repo = base / "repo"
+        self.local_runs = base / "local-runs"
+        self.snapshots = base / "source-snapshots"
+        self.output = base / "output"
+        self.bridge_state = base / "bridge-state"
+        self.source = base / "source"
+        self.trusted_state = base / "trusted-state"
+        self.home = base / "home"
+        for path in (
+            self.repo, self.local_runs, self.snapshots, self.output, self.bridge_state,
+            self.source, self.trusted_state, self.home,
+        ):
+            path.mkdir(mode=0o700)
+        for name in ("attempts", "bindings", "receipts", "contexts"):
+            (self.bridge_state / name).mkdir(mode=0o700)
+        initial = b"print('native harness')\n"
+        (self.source / "solution.py").write_bytes(initial)
+        (self.source / "research.md").write_bytes(b"native research\n")
+        (self.source / "intent.json").write_text(json.dumps({
+            "schema_version": "argo-house-price-intent/v1", "phase": "dev",
+            "purpose": "synthetic first", "solution_sha256": digest(initial),
+            "parent_run_id": None,
+        }, sort_keys=True, separators=(",", ":")))
+        self.close_calls = 0
+        self.bridge: FakeBridge | None = None
+        FakeHarness.instances.append(self)
+
+    def deployment(self) -> dict[str, object]:
+        return {"schema_version": "argo-house-price-a2-bridge-deployment/v1", "production_enabled": True}
+
+    def mark_done(self, observation: SimpleNamespace, binding: SimpleNamespace, phase: str):
+        if phase != "dev" or observation.status != "RUNNING" or self.bridge is None:
+            raise AssertionError("invalid mark_done")
+        self.bridge.mark_done(binding)
+        output = self.output / binding.run_id
+        output.mkdir(exist_ok=True)
+        (output / "predictions.csv").write_text("Id,SalePrice\n1,10\n")
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class CombinationFixtureTest(unittest.TestCase):
+    def setUp(self) -> None:
+        FakeHarness.instances = []
+        FakeHarness.mode = "ok"
+        self.temporary = tempfile.TemporaryDirectory(prefix="combination-fixture-test-")
+        self.parent = Path(self.temporary.name).resolve()
+        self.parent.chmod(0o700)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def prepare(self, name: str = "fixture", mode: str = "ok"):
+        FakeHarness.mode = mode
+        def load(_path: Path, _sha256: str) -> FakeBridge:
+            harness = FakeHarness.instances[-1]
+            bridge = FakeBridge(harness, mode)
+            harness.bridge = bridge
+            return bridge
+        with patch.object(fixture_module, "NativeHarness", FakeHarness), \
+             patch.object(fixture_module, "load_bridge_from_config", side_effect=load):
+            return prepare_fixture(self.parent / name)
+
+    def test_success_returns_exact_owned_snapshot_and_idempotent_close(self) -> None:
+        result = self.prepare()
+        harness = FakeHarness.instances[0]
+        self.assertEqual(result.harness, harness)
+        self.assertEqual(result.verified_dev_run_ids, tuple(sorted(RUN_IDS)))
+        self.assertEqual(result.context_id, CONTEXT_ID)
+        self.assertEqual(result.research_sha256, digest(b"native research\n"))
+        self.assertEqual(result.source_tree.root, str(result.source.path))
+        self.assertEqual(result.trusted_state_tree.root, str(result.trusted_state.path))
+        self.assertEqual(result.state_tree.root, str(result.bridge_state.path))
+        self.assertEqual(result.source_tree.file_count, 3)
+        config = result.bridge_config.path
+        self.assertEqual(config.parent, self.parent / "fixture")
+        self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+        self.assertTrue(json.loads(config.read_bytes())["production_enabled"])
+        result.close();result.close()
+        self.assertEqual(harness.close_calls, 1)
+        self.assertTrue((self.parent / "fixture").exists())
+
+    def test_two_exact_dev_requests_use_current_second_hash_and_no_other_run_actions(self) -> None:
+        self.prepare()
+        bridge = FakeHarness.instances[0].bridge
+        self.assertIsNotNone(bridge)
+        actions = [action for action, _ in bridge.actions]
+        self.assertEqual(actions.count("request_R1_run"), 2)
+        self.assertEqual(actions.count("write_solution"), 2)
+        self.assertNotIn("lock_final_artifact", actions)
+        second_writes = [arguments for action, arguments in bridge.actions if action == "write_solution"]
+        self.assertEqual(second_writes[0], {"path": "solution.py", "content": SECOND_SOLUTION.decode("utf-8")})
+        intent = json.loads(second_writes[1]["content"])
+        self.assertEqual(intent, {
+            "schema_version": "argo-house-price-intent/v1", "phase": "dev",
+            "purpose": "synthetic combination second seed",
+            "solution_sha256": digest(SECOND_SOLUTION), "parent_run_id": RUN_IDS[0],
+        })
+        self.assertEqual(actions.count("read_dev_result"), 2)
+        self.assertEqual(actions.count("read_public_result"), 2)
+        self.assertEqual(actions.count("read_solution"), 1)
+
+    def test_duplicate_ids_missing_done_or_missing_eligibility_close_once_and_preserve_base(self) -> None:
+        for mode in ("duplicate_ids", "no_done", "no_eligibility"):
+            with self.subTest(mode=mode):
+                base = self.parent / mode
+                with self.assertRaisesRegex(CombinationFixtureError, "^COMBINATION_FIXTURE_INVALID$"):
+                    self.prepare(mode, mode)
+                harness = FakeHarness.instances[-1]
+                self.assertEqual(harness.close_calls, 1)
+                self.assertTrue(base.exists())
+
+    def test_action_error_closes_once_without_deleting_partial_evidence(self) -> None:
+        base = self.parent / "action-error"
+        with self.assertRaisesRegex(CombinationFixtureError, "^COMBINATION_FIXTURE_INVALID$"):
+            self.prepare("action-error", "request_error")
+        harness = FakeHarness.instances[-1]
+        self.assertEqual(harness.close_calls, 1)
+        self.assertTrue(base.exists())
+        self.assertTrue((base / "bridge-config.json").exists())
+
+    def test_existing_nonprivate_and_nested_git_bases_are_rejected_before_constructor(self) -> None:
+        existing = self.parent / "existing";existing.mkdir(mode=0o700)
+        with self.assertRaises(CombinationFixtureError):self.prepare("existing")
+        nonprivate = self.parent / "nonprivate";self.parent.chmod(0o755)
+        with self.assertRaises(CombinationFixtureError):self.prepare("nonprivate")
+        self.parent.chmod(0o700)
+        git_parent = self.parent / "nested";git_parent.mkdir(mode=0o700);(git_parent / ".git").mkdir()
+        with self.assertRaises(CombinationFixtureError):
+            with patch.object(fixture_module, "NativeHarness", FakeHarness):
+                prepare_fixture(git_parent / "fixture")
+        for name in ("raw", "auth", "profile"):
+            forbidden = self.parent / name;forbidden.mkdir(mode=0o700)
+            with self.subTest(name=name),self.assertRaises(CombinationFixtureError):
+                with patch.object(fixture_module, "NativeHarness", FakeHarness):
+                    prepare_fixture(forbidden / "fixture")
+        self.assertEqual(FakeHarness.instances, [])
+
+    def test_config_collision_closes_once_and_preserves_collision(self) -> None:
+        class CollidingHarness(FakeHarness):
+            def __init__(self, base: Path, rows: int = 2) -> None:
+                super().__init__(base, rows)
+                (base / "bridge-config.json").write_text("collision")
+        base = self.parent / "collision"
+        with patch.object(fixture_module, "NativeHarness", CollidingHarness):
+            with self.assertRaises(CombinationFixtureError):prepare_fixture(base)
+        harness = FakeHarness.instances[-1]
+        self.assertEqual(harness.close_calls, 1)
+        self.assertEqual((base / "bridge-config.json").read_text(), "collision")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

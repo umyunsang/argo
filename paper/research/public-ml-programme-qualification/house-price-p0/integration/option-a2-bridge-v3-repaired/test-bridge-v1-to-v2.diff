@@ -1,0 +1,349 @@
+--- test_bridge.py.old
++++ test_bridge.py.new
+@@ -6,11 +6,13 @@
+ import os
+ from pathlib import Path
+ import subprocess
+ import sys
++import time
+ import tempfile
+ import threading
+ import unittest
++from unittest.mock import patch
+ import uuid
+ 
+ from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.bridge import (
+     BINDING_SCHEMA,
+@@ -18,14 +20,18 @@
+     Binding,
+     Bridge,
+     BridgeConfig,
+     ContextRights,
++    BoundedSubprocessExecutor,
++    ExecutorError,
+     FixedNativePort,
+     FixedPortConfig,
+     LaunchPlan,
+     NativeObservation,
+     PreparedLaunch,
++    StrictNativeGetter,
+     _StateStore,
++    _valid_prior_process_receipt,
+     load_bridge_from_config,
+     parse_native_run_json,
+ )
+ from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.grading import (
+@@ -42,8 +48,9 @@
+     REQUIRED_RUNTIME_PATHS,
+ )
+ from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.staging import DirectoryIdentity
+ from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.trusted_io import (
++    DevResultReceipt,
+     TrustedIo,
+     TrustedIoLimits,
+ )
+ 
+@@ -81,9 +88,9 @@
+         "bridge_close_grace_ms": 1000, "rss_sampling_semantics": "sampled_trigger_not_hard_limit",
+         "rss_trigger_bytes": 2147483648, "rss_sample_interval_ms": 250,
+         "peak_sampled_rss_bytes": 1, "rss_overshoot_bytes": 0, "rss_trigger_monotonic_ns": None,
+         "rss_trigger_elapsed_from_first_sample_seconds": None, "sample_count": 2,
+-        "first_sample_monotonic_ns": 1, "last_sample_monotonic_ns": 2, "max_sample_gap_ms": 1.0,
++        "first_sample_monotonic_ns": 1, "last_sample_monotonic_ns": 100000001, "max_sample_gap_ms": 100.0,
+         "observed_seconds": 0.1, "coverage_complete_for_observed_tree": True,
+         "observer_errors": [], "census_errors": [], "census_file_count_peak": 2,
+         "census_aggregate_bytes_peak": 100, "census_largest_file_bytes": 100,
+         "file_count_overshoot": 0, "aggregate_bytes_overshoot": 0,
+@@ -112,9 +119,9 @@
+     return {
+         "schema_version": "argo-house-price-a2-controller-process-receipt/v1",
+         "authority_contract_sha256": "0cfaeb57c18662f428cdb9fbdef842d55782624b9baaf9bbbbe98ebeb4412c20",
+         "status": "succeeded", "terminal_reason": "completed", "returncode": 0,
+-        "started_monotonic_ns": 1, "ended_monotonic_ns": 2, "elapsed_seconds": 0.1,
++        "started_monotonic_ns": 1, "ended_monotonic_ns": 100000001, "elapsed_seconds": 0.1,
+         "handle": handle, "resources": resources, "cleanup": cleanup, "limitations": [],
+     }
+ 
+ 
+@@ -161,19 +168,19 @@
+         self.bindings[run_id] = (prepared.experiment_id, prepared.native_commit, source)
+         status = self.next_status
+         self.next_status = "DONE"
+         self.observation_status[run_id] = status
++        if prepared.plan.phase == "dev" and status == "DONE":
++            (self.root / f"{run_id}-predictions.csv").write_text("Id,SalePrice\n1,10\n2,20\n")
+         return NativeObservation(run_id, prepared.experiment_id, prepared.native_commit, source, 1, status, False)
+ 
+     def observe(self, binding: Binding) -> NativeObservation:
+         status = self.observation_status.get(binding.run_id, "DONE")
+         return NativeObservation(binding.run_id, binding.experiment_id, binding.native_commit,
+                                  binding.native_source_digest, 1, status, False)
+ 
+-    def verified_dev(self, binding: Binding, observation: NativeObservation) -> VerifiedDevReceipt:
+-        predictions = self.root / f"{binding.run_id}-predictions.csv"
+-        predictions.write_text("Id,SalePrice\n1,10\n2,20\n")
+-        prediction_binding = file_binding(predictions)
++    def _dev_parts(self, binding: Binding):
++        prediction_binding = file_binding(self.root / f"{binding.run_id}-predictions.csv")
+         ids = file_binding(self.ids)
+         targets = file_binding(self.targets)
+         expected = ExpectedDevExecution(
+             binding.run_id, binding.experiment_id, binding.native_commit,
+@@ -194,11 +201,30 @@
+             "prediction_mtime_ns_max": prediction_binding.mtime_ns_max,
+             "ids_sha256": ids.sha256, "targets_sha256": targets.sha256,
+             "mae_numerator": str(score.mae.numerator), "mae_denominator": str(score.mae.denominator),
+         }
++        receipt_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
++        return prediction_binding, ids, targets, expected, score, receipt_bytes
++
++    def verified_dev(self, binding: Binding, observation: NativeObservation) -> VerifiedDevReceipt:
++        prediction, ids, targets, expected, score, receipt_bytes = self._dev_parts(binding)
++        return VerifiedDevReceipt(
++            DevResultReceipt(digest(receipt_bytes), binding.closure_sha256, binding.solution_sha256),
++            score, binding.run_id,
++        )
++
++    def publish_verified_dev(self, binding: Binding, observation: NativeObservation,
++                             receipt_sha256: str) -> VerifiedDevReceipt:
++        prediction, ids, targets, expected, score, receipt_bytes = self._dev_parts(binding)
++        if digest(receipt_bytes) != receipt_sha256:
++            raise ValueError("receipt mismatch")
+         receipt = self.root / f"{binding.run_id}-dev-receipt.json"
+-        receipt.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+-        return verify_dev_receipt(file_binding(receipt), expected, prediction_binding, ids, targets)
++        if receipt.exists():
++            if receipt.read_bytes() != receipt_bytes:
++                raise ValueError("receipt mismatch")
++        else:
++            receipt.write_bytes(receipt_bytes)
++        return verify_dev_receipt(file_binding(receipt), expected, prediction, ids, targets)
+ 
+     def final_artifact_binding(self, binding: Binding, observation: NativeObservation) -> FileBinding:
+         return file_binding(self.artifact)
+ 
+@@ -258,8 +284,82 @@
+     def call(self, action: str, arguments: dict[str, object]) -> dict[str, object]:
+         return self.bridge.handle({"action": action, "arguments": arguments})
+ 
+ 
++class BoundaryRegressionTest(unittest.TestCase):
++    def test_executor_overflow_kills_and_reaps_alive_child(self) -> None:
++        class PatchedProcess:
++            def __init__(self):
++                stdout_read, stdout_write = os.pipe()
++                stderr_read, stderr_write = os.pipe()
++                self.stdout = os.fdopen(stdout_read, "rb", buffering=0)
++                self.stderr = os.fdopen(stderr_read, "rb", buffering=0)
++                self.pid = 424242
++                self.poll_calls = 0
++                self.wait_calls = 0
++                self.kill_calls = 0
++                def produce() -> None:
++                    try:
++                        os.write(stdout_write, b"x" * 70_000)
++                        os.write(stderr_write, b"y" * 70_000)
++                    except BrokenPipeError:
++                        pass
++                    finally:
++                        os.close(stdout_write)
++                        os.close(stderr_write)
++                self.writer = threading.Thread(target=produce, daemon=True)
++                self.writer.start()
++            def poll(self):
++                self.poll_calls += 1
++                return None
++            def wait(self, timeout=None):
++                self.wait_calls += 1
++                return -9
++            def kill(self):
++                self.kill_calls += 1
++
++        child = PatchedProcess()
++        environment = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TZ": "UTC"}
++        executor = BoundedSubprocessExecutor(environment)
++        killpg_calls = []
++        with patch("subprocess.Popen", return_value=child), patch("os.killpg", side_effect=lambda pid, sig: killpg_calls.append((pid, sig))):
++            with self.assertRaises(ExecutorError):
++                executor.run(("/usr/bin/printf", "fixed"), cwd=Path("/tmp"), timeout_seconds=3, output_limit=131072)
++        child.writer.join(timeout=1)
++        self.assertEqual(killpg_calls[0][0], child.pid)
++        self.assertGreaterEqual(child.poll_calls, 1)
++        self.assertEqual(child.wait_calls, 1)
++
++    def test_http_getter_enforces_one_total_slow_drip_deadline(self) -> None:
++        class SlowHandler(BaseHTTPRequestHandler):
++            def do_GET(self):
++                self.send_response(200)
++                self.send_header("Content-Length", "5")
++                self.end_headers()
++                for byte in b"12345":
++                    try:
++                        self.wfile.write(bytes([byte]))
++                        self.wfile.flush()
++                    except BrokenPipeError:
++                        return
++                    time.sleep(0.8)
++            def log_message(self, format, *args):
++                return
++        class SlowServer(ThreadingHTTPServer):
++            daemon_threads = True
++        server = SlowServer(("127.0.0.1", 0), SlowHandler)
++        threading.Thread(target=server.serve_forever, daemon=True).start()
++        started = time.monotonic()
++        try:
++            with self.assertRaises(ExecutorError):
++                StrictNativeGetter().get(server.server_address[1], "/api/projects/a0c1bc7e-cd76-4df3-b140-8e03af22d271/runs")
++        finally:
++            elapsed = time.monotonic() - started
++            server.shutdown()
++            server.server_close()
++        self.assertLess(elapsed, 3.5)
++
++
+ class BridgeTest(unittest.TestCase):
+     def setUp(self) -> None:
+         self.temporary = tempfile.TemporaryDirectory()
+         self.fixture = BridgeFixture(Path(self.temporary.name))
+@@ -288,8 +388,15 @@
+         response = self.fixture.call("read_public_result", {})
+         self.assertTrue(response["ok"], response)
+         self.assertEqual(snapshot_tree(), before)
+ 
++    def test_arbitrary_dependency_exception_is_safe_for_both_handlers(self) -> None:
++        with patch.object(self.fixture.bridge.config.trusted_io, "read_solution", side_effect=RuntimeError("private detail")):
++            direct = self.fixture.bridge.handle({"action": "read_solution", "arguments": {"path": "solution.py"}})
++            wire = json.loads(self.fixture.bridge.handle_bytes(json.dumps({"action": "read_solution", "arguments": {"path": "solution.py"}}).encode()))
++        self.assertEqual(direct, {"ok": False, "error": "INTERNAL_ERROR"})
++        self.assertEqual(wire, {"ok": False, "error": "INTERNAL_ERROR"})
++
+     def test_read_write_and_expected_hash(self) -> None:
+         read = self.fixture.call("read_solution", {"path": "solution.py"})
+         self.assertTrue(read["ok"])
+         mismatch = self.fixture.call("write_solution", {
+@@ -309,10 +416,13 @@
+ 
+     def test_dev_receipt_is_real_regrade_and_metric_wire_is_numeric(self) -> None:
+         launched = self.fixture.call("request_R1_run", {})
+         self.assertTrue(launched["ok"], launched)
++        before = {str(path.relative_to(self.fixture.base)): digest(path.read_bytes()) for path in self.fixture.base.rglob("*") if path.is_file()}
+         result = self.fixture.call("read_dev_result", {})
++        after = {str(path.relative_to(self.fixture.base)): digest(path.read_bytes()) for path in self.fixture.base.rglob("*") if path.is_file()}
+         self.assertEqual(result["result"]["results"][0]["mae"], "1.000000")
++        self.assertEqual(after, before)
+         raw = self.fixture.bridge.handle_bytes(json.dumps({"action": "read_dev_result", "arguments": {}}).encode())
+         self.assertIn(b'"mae":1.000000', raw)
+         self.assertNotIn(b'"mae":"1.000000"', raw)
+ 
+@@ -348,9 +458,12 @@
+             "schema_version": "argo-house-price-intent/v1", "phase": "dev", "purpose": "forbidden",
+             "solution_sha256": digest(source), "parent_run_id": second["result"]["run_id"],
+         }, sort_keys=True, separators=(",", ":"))
+         self.fixture.call("write_solution", {"path": "intent.json", "content": third_intent})
++        before = {str(path.relative_to(self.fixture.base)): digest(path.read_bytes()) for path in self.fixture.base.rglob("*") if path.is_file()}
+         self.assertEqual(self.fixture.call("request_R1_run", {})["error"], "BUDGET_EXHAUSTED")
++        after = {str(path.relative_to(self.fixture.base)): digest(path.read_bytes()) for path in self.fixture.base.rglob("*") if path.is_file()}
++        self.assertEqual(after, before)
+ 
+     def test_attempt_fence_precedes_failure_and_blocks_every_later_r1(self) -> None:
+         self.fixture.port.prepare = lambda plan: (_ for _ in ()).throw(RuntimeError("partial staging"))
+         first = self.fixture.call("request_R1_run", {})
+@@ -484,8 +597,14 @@
+             third = continuation.handle({"action": "request_R1_run", "arguments": {}})
+             self.assertTrue(third["ok"], third)
+             admission = continuation.store.read_context_admission(next_context)
+             self.assertEqual(admission["campaign_used_tokens"], 100)
++            attempt_file = next((continuation.store.root / "attempts").glob("03-*.json"))
++            context_file = continuation.store.root / "contexts" / (next_context + ".json")
++            published_receipts = list(initial.artifacts.glob("*-dev-receipt.json"))
++            self.assertEqual(len(published_receipts), 2)
++            self.assertLessEqual(attempt_file.stat().st_mtime_ns, context_file.stat().st_mtime_ns)
++            self.assertTrue(all(attempt_file.stat().st_mtime_ns <= item.stat().st_mtime_ns for item in published_receipts))
+             changed = continuation.handle({"action": "write_solution", "arguments": {"path": "research.md", "content": "later research\n"}})
+             self.assertTrue(changed["ok"], changed)
+             final_intent = json.dumps({
+                 "schema_version": "argo-house-price-intent/v1", "phase": "final_refit", "purpose": "final",
+@@ -493,8 +612,20 @@
+             }, sort_keys=True, separators=(",", ":"))
+             continuation.handle({"action": "write_solution", "arguments": {"path": "intent.json", "content": final_intent}})
+             final = continuation.handle({"action": "request_R1_run", "arguments": {}})
+             self.assertTrue(final["ok"], final)
++
++    def test_nonfinite_process_metadata_is_rejected(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            base = Path(temporary)
++            session = base / "sessions"
++            session.mkdir()
++            value = process_receipt(session.resolve(), base.resolve())
++            value["elapsed_seconds"] = json.loads("1e309")
++            self.assertFalse(_valid_prior_process_receipt(value, session.resolve() / (str(uuid.uuid4()) + ".jsonl")))
++            value = process_receipt(session.resolve(), base.resolve())
++            value["resources"]["max_sample_gap_ms"] = json.loads("1e309")
++            self.assertFalse(_valid_prior_process_receipt(value, session.resolve() / (str(uuid.uuid4()) + ".jsonl")))
+ 
+     def test_strict_native_json_validates_all_records_and_types(self) -> None:
+         fixture_path = Path(__file__).parent / "orx_text_fixtures" / "native-run-success.json"
+         value = json.loads(fixture_path.read_text())
+@@ -518,8 +649,18 @@
+                 local_runs_root=Path("/Users/um-yunsang/.local/share/openresearch/local-runs"),
+                 source_root=Path("/Users/um-yunsang/.local/share/openresearch/source-snapshots"))
+         bad = json.loads(data)
+         bad["runs"][0]["backend"]["sourceSize"] = True
++        with self.assertRaises(ValueError):
++            parse_native_run_json(json.dumps(bad).encode(), project_id="a0c1bc7e-cd76-4df3-b140-8e03af22d271",
++                run_id=observation.run_id, experiment_id=observation.experiment_id,
++                commit_sha=observation.native_commit, command=FIXED_COMMAND,
++                local_runs_root=Path("/Users/um-yunsang/.local/share/openresearch/local-runs"),
++                source_root=Path("/Users/um-yunsang/.local/share/openresearch/source-snapshots"))
++        bad = json.loads(data)
++        bad["runs"][0]["createdAt"] = 2 ** 100
++        bad["runs"][0]["updatedAt"] = 2 ** 100
++        bad["runs"][0]["endedAt"] = 2 ** 100
+         with self.assertRaises(ValueError):
+             parse_native_run_json(json.dumps(bad).encode(), project_id="a0c1bc7e-cd76-4df3-b140-8e03af22d271",
+                 run_id=observation.run_id, experiment_id=observation.experiment_id,
+                 commit_sha=observation.native_commit, command=FIXED_COMMAND,
+@@ -660,10 +801,11 @@
+     print("✓ Created local child experiment");print(f"  id:      {{exp}}");print(f"  title:   {{title}}");print(f"  slug:    {{slug}}");print(f"  branch:  {{branch}}");print(f"  command: {{COMMAND}}");print();print("To edit it, check out the branch in the project's local clone:");print(f"  cd {{REPO}}");print(f"  git checkout {{branch}}");print("  # …edit, then…");print('  git commit -am "<msg>"')
+ elif args[:2]==["exp","status"]: print(status_text(args[2],state),end="")
+ elif args[0]=="runs":
+     exp=args[args.index("--experiment")+1]; item=state["experiments"][exp]
+-    print("ID                                    STATUS   EXPERIMENT  COMMIT   DURATION  UPDATED");print("────────────────────────────────────  ───────  ──────────  ───────  ────────  ───────")
+-    if item["run"]:
++    if not item["run"]: print("No runs found.")
++    else:
++        print("ID                                    STATUS   EXPERIMENT  COMMIT   DURATION  UPDATED");print("────────────────────────────────────  ───────  ──────────  ───────  ────────  ───────")
+         run=item["run"]; row=state["runs"][run]; print(f"{{run}}  {{row['status']}}  {{item['title']}}  {{row['commitSha'][:7]}}  1s        1s ago")
+ elif args[:2]==["exp","run"]:
+     exp=args[2]; item=state["experiments"][exp]; sha=commit(item["branch"]); archive=subprocess.check_output(["/usr/bin/git","-C",str(REPO),"archive","--format=tar",sha]); source=hashlib.sha256(archive).hexdigest(); (SNAPS/(source+".tar")).write_bytes(archive)
+     state["counter"]+=1; run=str(uuid.UUID(int=state["counter"]+1000)); (RUNS/run).mkdir(); now=int(time.time()*1000)
+@@ -795,10 +937,14 @@
+         self.assertEqual(observation.status, "RUNNING")
+         binding = self.harness.make_binding(first, prepared, observation)
+         self.harness.mark_done(observation, binding, "dev")
+         done = self.harness.port.observe(binding)
++        receipt_path = self.harness.bridge_state / "receipts" / (binding.run_id + ".json")
+         verified = self.harness.port.verified_dev(binding, done)
+-        self.assertEqual(verified.public_result()["mae"], "0.000000")
++        self.assertFalse(receipt_path.exists())
++        published = self.harness.port.publish_verified_dev(binding, done, verified.eligibility.receipt_sha256)
++        self.assertTrue(receipt_path.exists())
++        self.assertEqual(published.public_result()["mae"], "0.000000")
+ 
+         final_code = first_code
+         final = LaunchPlan(2, "final_refit", digest("current-final-intent"), first.closure_sha256,
+                            first.solution_sha256, final_code, first.experiment_id if False else prepared.experiment_id,
+@@ -849,10 +995,13 @@
+                 harness.mark_done(running, binding, "dev")
+                 public = bridge.handle({"action": "read_public_result", "arguments": {}})
+                 self.assertEqual(public["result"]["dev_attempts"], len(public["result"]["runs"]))
+                 self.assertEqual(public["result"]["runs"][0]["status"], "DONE")
++                before_read = {str(path.relative_to(harness.base)): digest(path.read_bytes()) for path in harness.base.rglob("*") if path.is_file()}
+                 result = bridge.handle({"action": "read_dev_result", "arguments": {}})
++                after_read = {str(path.relative_to(harness.base)): digest(path.read_bytes()) for path in harness.base.rglob("*") if path.is_file()}
+                 self.assertTrue(result["ok"], result)
++                self.assertEqual(after_read, before_read)
+                 self.assertEqual(result["result"]["results"][0]["rows"], 292)
+                 self.assertEqual(result["result"]["results"][0]["mae"], "0.000000")
+             finally:
+                 harness.close()

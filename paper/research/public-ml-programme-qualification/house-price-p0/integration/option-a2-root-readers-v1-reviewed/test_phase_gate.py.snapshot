@@ -1,0 +1,226 @@
+"""Phase readiness and halt semantics with fabricated, typed bridge views."""
+from __future__ import annotations
+
+import hashlib
+import io
+import json
+from dataclasses import asdict, replace
+from contextlib import redirect_stdout
+from pathlib import Path
+from types import SimpleNamespace
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.phase_gate import decide_phase, GateConfigError, evaluate_gate_config, main as gate_main
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.staging import DirectoryIdentity
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.usage_observer import UsageObservation
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.trusted_io import FinalArtifactLock
+
+RUNS=("11111111-1111-4111-8111-111111111111","22222222-2222-4222-8222-222222222222","33333333-3333-4333-8333-333333333333")
+FINAL="44444444-4444-4444-8444-444444444444"
+SESSION="55555555-5555-4555-8555-555555555555"
+
+
+def envelope(result):return {"ok":True,"result":result}
+
+
+def views(count=2):
+    refs=[{"intent_sha256":str(i+1)*64,"run_id":RUNS[i],"experiment_id":RUNS[i],
+           "solution_sha256":str(i+5)*64,"phase":"dev","status":"DONE"} for i in range(count)]
+    public=envelope({"phase":"development","dev_attempts":count,"final_attempts":0,
+                     "remaining_dev_opportunities":3-count,"runs":refs})
+    dev=envelope({"results":[{"run_id":x["run_id"],"solution_sha256":x["solution_sha256"],
+                              "valid":True,"mae":"12.250000","rows":2} for x in refs]})
+    content="Preserved public method and dev-evidence reasoning.\n"
+    research=envelope({"path":"research.md","content":content,"sha256":hashlib.sha256(content.encode()).hexdigest()})
+    usage=UsageObservation("WITHIN_BUDGET",None,True,100,200,SESSION,"a"*64,1000)
+    return public,dev,research,usage
+
+
+def final_views():
+    public,dev,research,usage=views()
+    code=dev["result"]["results"][0]["solution_sha256"]
+    public["result"].update(phase="final_locked",final_attempts=1)
+    public["result"]["runs"].append({"intent_sha256":"f"*64,"run_id":FINAL,"experiment_id":FINAL,
+        "solution_sha256":code,"phase":"final_refit","status":"DONE","artifact_sha256":"b"*64})
+    lock=FinalArtifactLock("c"*64,code,"d"*64,"e"*64,"f"*64,"1"*64,"2"*64,FINAL,"b"*64,"3"*64,"4"*64,"5"*64)
+    return public,dev,research,usage,lock
+
+
+class PhaseGateTest(unittest.TestCase):
+    def test_initial_exact_two_verified_results_and_hashed_research_are_ready(self):
+        result=decide_phase("initial",*views(),expected_rows=2)
+        self.assertEqual(result.outcome,"READY_INITIAL_CHECKPOINT")
+        self.assertTrue(result.ready);self.assertTrue(result.stop)
+        self.assertEqual(result.verified_dev_run_ids,RUNS[:2])
+        self.assertIsNone(result.selected_final_run_id)
+
+    def test_first_result_or_active_run_is_not_ready_and_unknown_is_not_success(self):
+        result=decide_phase("initial",*views(1),expected_rows=2)
+        self.assertEqual(result.outcome,"NOT_READY");self.assertFalse(result.stop)
+        public,dev,research,usage=views()
+        dev["result"]["results"].pop()
+        public["result"]["runs"][1]["status"]="RUNNING"
+        self.assertEqual(decide_phase("initial",public,dev,research,usage,expected_rows=2).outcome,"NOT_READY")
+        public["result"]["runs"][1]["status"]="UNKNOWN"
+        result=decide_phase("initial",public,dev,research,usage,expected_rows=2)
+        self.assertEqual(result.outcome,"STOP_PROTOCOL_INVALID");self.assertTrue(result.stop);self.assertFalse(result.ready)
+
+    def test_initial_cannot_skip_handoff_or_accept_self_declared_eligibility(self):
+        self.assertEqual(decide_phase("initial",*views(3),expected_rows=2).outcome,"STOP_PROTOCOL_INVALID")
+        public,dev,research,usage,lock=final_views()
+        self.assertEqual(decide_phase("initial",public,dev,research,usage,lock,2).outcome,"STOP_PROTOCOL_INVALID")
+        public,dev,research,usage=views()
+        dev["result"]["results"][1]["solution_sha256"]="0"*64
+        self.assertEqual(decide_phase("initial",public,dev,research,usage,expected_rows=2).outcome,"STOP_PROTOCOL_INVALID")
+
+    def test_final_requires_root_loaded_lock_matches_native_artifact_and_selected_dev_code(self):
+        public,dev,research,usage,lock=final_views()
+        result=decide_phase("continuation",public,dev,research,usage,lock,2)
+        self.assertEqual(result.outcome,"READY_FINAL_LOCK");self.assertEqual(result.selected_final_run_id,FINAL)
+        self.assertTrue(result.ready)
+        self.assertEqual(decide_phase("continuation",public,dev,research,usage,None,2).outcome,"STOP_PROTOCOL_INVALID")
+        for field,value in [("artifact_sha256","0"*64),("code_sha256","0"*64),("run_id",RUNS[0])]:
+            with self.subTest(field=field):
+                outcome=decide_phase("continuation",public,dev,research,usage,replace(lock,**{field:value}),2)
+                self.assertEqual(outcome.outcome,"STOP_PROTOCOL_INVALID")
+
+    def test_budget_unknown_and_waiting_are_distinct_from_completion(self):
+        public,dev,research,usage=views()
+        stopped=replace(usage,state="BUDGET_EXHAUSTED",total_tokens=120000,stop_reason="CAMPAIGN_TOKEN_TRIGGER")
+        result=decide_phase("initial",public,dev,research,stopped,expected_rows=2)
+        self.assertEqual(result.outcome,"STOP_BUDGET");self.assertFalse(result.ready)
+        unknown=replace(usage,state="USAGE_UNKNOWN",complete=False,stop_reason="CAMPAIGN_USAGE_UNKNOWN")
+        self.assertEqual(decide_phase("initial",public,dev,research,unknown,expected_rows=2).outcome,"STOP_USAGE_UNKNOWN")
+        waiting=UsageObservation("WAITING_FIRST_USAGE",None,False,None,None,None,None,0)
+        result=decide_phase("initial",public,dev,research,waiting,expected_rows=2)
+        self.assertEqual(result.outcome,"NOT_READY");self.assertFalse(result.stop)
+
+    def test_exact_schemas_duplicate_ids_type_bounds_and_hashes_are_checked(self):
+        for kind in ["duplicate","count","hash","empty","extra","metric","row_bool","error"]:
+            public,dev,research,usage=views()
+            if kind=="duplicate":public["result"]["runs"][1]=public["result"]["runs"][0].copy()
+            elif kind=="count":public["result"]["dev_attempts"]=True
+            elif kind=="hash":research["result"]["sha256"]="0"*64
+            elif kind=="empty":research["result"]["content"]=""
+            elif kind=="extra":public["result"]["hidden_targets"]=[1,2]
+            elif kind=="metric":dev["result"]["results"][0]["mae"]=float("nan")
+            elif kind=="row_bool":dev["result"]["results"][0]["rows"]=True
+            elif kind=="error":dev={"ok":False,"error":"RESULT_INVALID"}
+            with self.subTest(kind=kind):
+                self.assertEqual(decide_phase("initial",public,dev,research,usage,expected_rows=2).outcome,"STOP_PROTOCOL_INVALID")
+        public,dev,research,usage=views()
+        self.assertEqual(decide_phase([],public,dev,research,usage,expected_rows=2).outcome,"STOP_PROTOCOL_INVALID")
+        self.assertEqual(decide_phase("initial",public,dev,research,usage,expected_rows=True).outcome,"STOP_PROTOCOL_INVALID")
+
+    def test_unbound_attempt_or_missing_final_reference_never_reports_ready(self):
+        public,dev,research,usage=views()
+        public["result"]["dev_attempts"]=3
+        self.assertEqual(decide_phase("initial",public,dev,research,usage,expected_rows=2).outcome,"STOP_PROTOCOL_INVALID")
+        public,dev,research,usage=views()
+        public["result"]["final_attempts"]=1
+        self.assertEqual(decide_phase("initial",public,dev,research,usage,expected_rows=2).outcome,"STOP_PROTOCOL_INVALID")
+
+    def test_known_failed_attempt_is_preserved_without_becoming_eligible(self):
+        public,dev,research,usage=views()
+        public["result"]["dev_attempts"]=3
+        public["result"]["runs"].append({"intent_sha256":"9"*64,"run_id":RUNS[2],"experiment_id":RUNS[2],
+            "solution_sha256":"8"*64,"phase":"dev","status":"FAILED"})
+        result=decide_phase("initial",public,dev,research,usage,expected_rows=2)
+        self.assertEqual(result.outcome,"READY_INITIAL_CHECKPOINT")
+        self.assertEqual(result.verified_dev_run_ids,RUNS[:2])
+
+
+class PhaseGateCliTest(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory(prefix="hp-gate-cli-")
+        self.root=Path(self.temp.name).resolve()
+        self.session=self.root/"session";self.session.mkdir(mode=0o700)
+        self.state=self.root/"bridge-state";self.state.mkdir(mode=0o700)
+        self.outcomes=self.root/"gate-outcomes";self.outcomes.mkdir(mode=0o700)
+        source=Path(__file__).with_name("a2-frontend-probes")/"evidence"/"installed-main-native-session-v1.jsonl"
+        records=[json.loads(line) for line in source.read_bytes().split(b"\n") if line]
+        records[0]["cwd"]=str(self.root)
+        for row in records:
+            message=row.get("message",{})
+            if message.get("role")=="assistant":
+                message["provider"]="openai-codex";message["model"]="gpt-5.6-sol"
+        self.native=("\n".join(json.dumps(row,separators=(",",":")) for row in records)+"\n").encode()
+        (self.session/(records[0]["id"]+".jsonl")).write_bytes(self.native)
+        bridge_file=self.root/"bridge-config.json";bridge_file.write_bytes(b"{}")
+        self.config={"schema_version":"argo-house-price-a2-phase-gate-deployment/v1","context":"initial",
+            "bridge_config":self.file_binding(bridge_file),"session_directory":self.directory(self.session),
+            "cwd":str(self.root),"provider":"openai-codex","model":"gpt-5.6-sol","budget":120000,
+            "prior_session":None,"prior_session_id":None,"prior_cwd":None,
+            "final_lock_path":str(self.state/"final-artifact-lock.json"),
+            "gate_outcome_directory":self.directory(self.outcomes),"expected_rows":2}
+        self.public,self.dev,self.research,self.usage=views()
+        self.bridge=FakeGateBridge(self.public,self.dev,self.research,self.state)
+        self.config_path=self.root/"gate.json"
+
+    def tearDown(self):self.temp.cleanup()
+    def directory(self,path):
+        info=path.stat();return {"path":str(path),"device":info.st_dev,"inode":info.st_ino}
+    def file_binding(self,path):
+        data=path.read_bytes();return {"path":str(path),"sha256":hashlib.sha256(data).hexdigest(),"bytes":len(data),"mtime_ns_max":path.stat().st_mtime_ns}
+    def save(self):
+        data=json.dumps(self.config,separators=(",",":"),sort_keys=True).encode()
+        self.config_path.write_bytes(data);return hashlib.sha256(data).hexdigest()
+    def call(self):
+        digest=self.save()
+        with patch("experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.phase_gate.load_bridge_from_config",return_value=self.bridge):
+            return evaluate_gate_config(self.config_path,digest)
+    def test_reads_same_bridge_views_and_publishes_hashed_native_usage_ready(self):
+        result=self.call()
+        self.assertEqual(result["decision"]["outcome"],"READY_INITIAL_CHECKPOINT")
+        self.assertEqual(result["usage"]["total_tokens"],3745)
+        self.assertEqual(self.bridge.calls,["read_public_result","read_dev_result","read_solution"])
+        files=list(self.outcomes.iterdir());self.assertEqual(len(files),1)
+        self.assertEqual(json.loads(files[0].read_bytes()),result)
+        self.assertNotIn('"content"',files[0].read_text())
+    def test_corrupt_usage_stops_without_claiming_readiness(self):
+        session_file=next(self.session.iterdir());session_file.write_bytes(self.native[:-1])
+        result=self.call()
+        self.assertEqual(result["decision"]["outcome"],"STOP_USAGE_UNKNOWN")
+        self.assertFalse(result["decision"]["ready"])
+    def test_wrong_lock_path_and_config_hash_fail_before_bridge_call(self):
+        self.config["final_lock_path"]=str(self.root/"wrong-lock.json")
+        with self.assertRaises(GateConfigError):self.call()
+        self.assertEqual(self.bridge.calls,[])
+        self.save()
+        with self.assertRaises(GateConfigError):evaluate_gate_config(self.config_path,"0"*64)
+    def test_terminal_failure_stdout_is_safe_stop_not_retry(self):
+        capture=io.StringIO()
+        with redirect_stdout(capture):
+            exit_code=gate_main(["--config",str(self.config_path),"--config-sha256","0"*64])
+        self.assertEqual(exit_code,0)
+        self.assertIn("STOP_PROTOCOL_INVALID",capture.getvalue())
+        self.assertNotIn(str(self.root),capture.getvalue())
+    def test_final_lock_is_reopened_and_compared_to_bridge_canonical_lock(self):
+        public,dev,research,usage,lock=final_views()
+        self.config["context"]="continuation"
+        # A valid prior native phase is required, with disjoint native response IDs.
+        records=[json.loads(line) for line in self.native.split(b"\n") if line]
+        prior_id="66666666-6666-4666-8666-666666666666";records[0]["id"]=prior_id
+        for row in records:
+            if row.get("message",{}).get("responseId"):row["message"]["responseId"]+="-prior"
+        prior=self.root/(prior_id+".jsonl");prior.write_bytes(("\n".join(json.dumps(row) for row in records)+"\n").encode())
+        self.config.update(prior_session=self.file_binding(prior),prior_session_id=prior_id,prior_cwd=str(self.root))
+        self.bridge=FakeGateBridge(public,dev,research,self.state,lock)
+        lock_path=self.state/"final-artifact-lock.json"
+        lock_path.write_bytes(json.dumps(asdict(lock),sort_keys=True,separators=(",",":"),ensure_ascii=True).encode())
+        result=self.call();self.assertEqual(result["decision"]["outcome"],"READY_FINAL_LOCK")
+        lock_path.write_text("{}")
+        with self.assertRaises(GateConfigError):self.call()
+
+
+class FakeGateBridge:
+    def __init__(self,public,dev,research,state,lock=None):
+        self.responses={"read_public_result":public,"read_dev_result":dev,"read_solution":research}
+        self.calls=[]
+        self.config=SimpleNamespace(state_root=DirectoryIdentity(state,state.stat().st_dev,state.stat().st_ino),trusted_io=SimpleNamespace(final_artifact_lock=lambda:lock))
+    def handle(self,request):
+        action=request["action"];self.calls.append(action);return self.responses[action]
+
+if __name__=="__main__":unittest.main(verbosity=2)

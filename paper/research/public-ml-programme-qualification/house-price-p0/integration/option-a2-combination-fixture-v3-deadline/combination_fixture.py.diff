@@ -1,0 +1,124 @@
+--- v2/combination_fixture.py
+
++++ v3/combination_fixture.py
+
+@@ -121,14 +121,27 @@
+
+         return self._fixture_close_result
+ 
+ 
++def _clock_now() -> float | None:
++    try:
++        value = time.monotonic()
++        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
++            return None
++        return float(value)
++    except Exception:
++        return None
++
++
++def _deadline_expired(deadline: float) -> bool | None:
++    current = _clock_now()
++    return None if current is None else current > deadline
++
++
+ def _elapsed(started: float) -> float:
+-    try:
+-        elapsed = time.monotonic() - started
+-        if not math.isfinite(elapsed) or elapsed < 0:
+-            return 0.0
+-        return float(elapsed)
+-    except Exception:
++    current = _clock_now()
++    if current is None:
+         return 0.0
++    elapsed = current - started
++    return float(elapsed) if math.isfinite(elapsed) and elapsed >= 0 else 0.0
+ 
+ 
+ def _remaining(deadline: float) -> float:
+@@ -166,7 +179,12 @@
+
+ 
+ 
+ def _close_owned_server(harness: OwnedNativeHarness) -> FixtureCloseResult:
+-    started = time.monotonic()
++    started = _clock_now()
++    if started is None:
++        return FixtureCloseResult(
++            "argo-house-price-a2-fixture-close/v1", False, False, False,
++            False, False, False, "CLOSE_IDENTITY_UNKNOWN", 0.0,
++        )
+     deadline = started + 2.0
+     server = getattr(harness, "_owned_server", None)
+     serve_thread = getattr(harness, "_owned_serve_thread", None)
+@@ -201,10 +219,11 @@
+
+         return _fixed_close("CLOSE_FAILED", started)
+ 
+     cleanup_stopped = _thread_stopped(cleanup_thread)
+-    if cleanup_stopped is None:
++    cleanup_expired = _deadline_expired(deadline)
++    if cleanup_stopped is None or cleanup_expired is None:
+         return _fixed_close("CLOSE_IDENTITY_UNKNOWN", started)
+     shutdown_completed = cleanup_stopped and state["completed"] is True and state["error"] is None
+-    timed_out = not cleanup_stopped
++    timed_out = not cleanup_stopped or cleanup_expired
+ 
+     serve_stopped = _thread_stopped(serve_thread)
+     if serve_stopped is None:
+@@ -221,12 +240,13 @@
+
+                 cleanup_thread_stopped=cleanup_stopped,
+             )
+         serve_stopped = _thread_stopped(serve_thread)
+-        if serve_stopped is None:
++        serve_expired = _deadline_expired(deadline)
++        if serve_stopped is None or serve_expired is None:
+             return _fixed_close(
+                 "CLOSE_IDENTITY_UNKNOWN", started, shutdown_completed=True,
+                 cleanup_thread_stopped=cleanup_stopped,
+             )
+-        timed_out = timed_out or not serve_stopped
++        timed_out = timed_out or not serve_stopped or serve_expired
+ 
+     socket_closed = _socket_closed(server)
+     if socket_closed is None:
+@@ -253,9 +273,26 @@
+
+             serve_thread_stopped=serve_stopped, socket_closed=socket_closed,
+             cleanup_thread_stopped=cleanup_stopped,
+         )
++    final_now = _clock_now()
++    if final_now is None:
++        return _fixed_close(
++            "CLOSE_IDENTITY_UNKNOWN", started, shutdown_completed=True,
++            serve_thread_stopped=True, socket_closed=True, cleanup_thread_stopped=True,
++        )
++    final_elapsed = final_now - started
++    if not math.isfinite(final_elapsed) or final_elapsed < 0:
++        return _fixed_close(
++            "CLOSE_IDENTITY_UNKNOWN", started, shutdown_completed=True,
++            serve_thread_stopped=True, socket_closed=True, cleanup_thread_stopped=True,
++        )
++    if final_now > deadline or final_elapsed > 2.0:
++        return FixtureCloseResult(
++            "argo-house-price-a2-fixture-close/v1", False, True, True, True,
++            True, True, "CLOSE_TIMEOUT", float(final_elapsed),
++        )
+     return FixtureCloseResult(
+         "argo-house-price-a2-fixture-close/v1", True, True, True, True,
+-        True, False, None, _elapsed(started),
++        True, False, None, float(final_elapsed),
+     )
+ 
+ 
+@@ -275,6 +312,7 @@
+
+                 result.socket_closed, result.cleanup_thread_stopped, result.timed_out,
+             )) or result.error not in allowed_errors or type(result.elapsed_seconds) is not float or
+             not math.isfinite(result.elapsed_seconds) or result.elapsed_seconds < 0 or
++            (result.confirmed and result.elapsed_seconds > 2.0) or
+             (not result.confirmed and result.error is None) or
+             (result.error == "CLOSE_TIMEOUT") != result.timed_out or
+             result.confirmed != (
