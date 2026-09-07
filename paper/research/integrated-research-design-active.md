@@ -1,6 +1,6 @@
 # 통합 장기 자율연구 설계 — Sol 5인과 Fable 5.1 검토 반영 revision
 
-상태: **RE_REVIEW_READY_FOR_TASK_QUALIFICATION_WITH_CONDITIONS · NOT_PREREGISTERED · NO_NEW_EXECUTION_AUTHORITY**
+상태: **HOUSE_PRICE_P0_START_APPROVED · EXACT_RUNTIME_PROTOCOL_NOT_FROZEN · NOT_LAUNCHED**
 갱신: 2026-09-07
 상위: `paper/research/ROOT-research-direction.md`
 
@@ -47,7 +47,7 @@ C-B는 compulsory-process package, G-C는 graph-control package의 증분이다.
 
 후보는 하나의 coherent 공개 small-compute ML task/source 묶음이다. license, ancestry, train/dev/final-test, 기제별 competing method, actual training/analysis와 다음 결정, final artifact가 있어야 한다. 기존 coding/retrieval/skill/SFT 점수는 이 연구 캠페인의 직접 대체가 아니다.
 
-주 outcome은 예산 종료 전에 dev evidence로 선택한 **단일 frozen artifact**의 hidden task 성과다. metric/단위/정규화/무산출물 floor/invalid 처리/선택 규칙은 아직 미정이며 task 선정 후 실행 전에 고정한다. archive-best, best seed/checkpoint와 hidden-score 기반 재선택은 primary에서 금지한다.
+주 outcome은 예산 종료 전에 dev evidence로 선택한 **단일 frozen artifact**의 hidden task 성과다. 선택된 House Price의 source metric은 달러 단위 MAE다. 실제 split·무산출물/invalid 처리·선택 규칙은 실행 전에 고정하고, P1/P2의 metric·정규화는 과제별로 별도 확정한다. archive-best, best seed/checkpoint와 hidden-score 기반 재선택은 primary에서 금지한다.
 
 trusted deterministic scorer는 자신의 격리된 경계에서 hidden data/test를 읽는다. planner/developer/LLM critic은 읽지 못한다. primary scorer는 treatment label과 연구 trace 없이 artifact와 frozen evaluation manifest를 받는다. 모든 final selection lock 뒤 결과를 공개한다. 사람/rubric 검토는 보조 의미 calibration이며 model-role 분리는 오류 독립성이 아니다.
 
@@ -109,19 +109,29 @@ ResearchDone는 task/protocol/개발·확증 분석/실패·비용/ArchitectureS
 
 `paper/research/fable51-design-review-20260907/re-review-01/integration/task-qualification-requirements.json`이 다음 P0/P1/P2 계약의 추가 요구사항이다. 검토된 ISD/RCC 바이트는 바꾸지 않는다. F3/F7의 집행 경계는 부분 해결이며 문구만으로 hard-gate runtime을 인증하지 않는다.
 
-- **권한/집행:** 재검토 당시 보류였던 apparatus code 범위는 사용자 `c40c59a9`가 승인했다. 현행 제한은 `paper/research/public-ml-programme-qualification/effective-authority-v2.json`을 따른다. 공통 authority/budget/identity gate는 B/C/G 모두, 추가 compulsory 연구 점검은 C/G가 같은 trusted launch/lock locus에서 집행하는 방향이다. agent-writable journal·guard 존재만으로 우회 방지를 주장하지 않는다. 직접 실행 census와 coverage가 검증돼야 한다.
+- **권한/집행:** 재검토 당시 보류였던 apparatus code 범위는 사용자 `c40c59a9`가 승인했다. 현행 제한과 후속 P0 승인은 `paper/research/public-ml-programme-qualification/effective-authority-v3.json`을 따른다. 공통 authority/budget/identity gate는 B/C/G 모두, 추가 compulsory 연구 점검은 C/G가 같은 trusted launch/lock locus에서 집행하는 방향이다. agent-writable journal·guard 존재만으로 우회 방지를 주장하지 않는다. 직접 실행 census와 coverage가 검증돼야 한다.
 - **분류/선택:** 사전 고정한 자동 R1/R2/preparation 규칙과 사후 전수 lineage를 함께 검사한다. 새 task 학습/selection-performance score는 R1이다. 원문·데이터 진단·명시적 R1 재계산 R2는 별도 typed supporting evidence다. 사후 R1 분류가 미승인 실행을 정당화하지 않는다. 작업용 primary selection 클래스는 agent의 단일 artifact lock이며 미lock/fallback·deadline은 task 전에 고정한다.
 - **MUE/단계:** MUE 또는 outcome-independent 도출 규칙은 P1 arm 대비 계산·공개 전에 commit한다. RQ/candidate·개발 선택 절차는 개발 전, exact confirmation contrast는 P1 후 P2 outcome 전에 고정한다. 모든 단계는 invalid/missingness/retry/repair/no-replacement 계약과 별도 정확한 승인이 필요하다.
 - **결측/계보/비용:** process UNKNOWN, no-lock/no-artifact, lock 성공·scorer 결과·numerical observability를 분리한다. utility floor로 미관측 hidden 성과를 대입하지 않는다. scorer 한 번씩 호출했다고 비차등 결측으로 부르지 않는다. P0와 그 task/source-data/generator ancestry는 개발 측으로 기록하고 P2에서 제외한다. P0는 R1 latency·UNKNOWN/BLOCKED·gate 거부/우회·R2 위반과 각각의 분모/탐지 coverage/전체 비용을 보고한다.
 - **비교군:** 이 연구의 선택적 Arbor anchor는 별도 승인된 서술적 비교만이다. causal whole-system 연구는 별도 protocol과 승인이 필요하며 여기서 생기지 않는다.
 
-현재는 문서 수준 task qualification으로 진행할 수 있다. 다음 검토는 실제 과제·장치·평가·숫자 예산에 묶인 P0 protocol이며, 추가 일반 설계 검토나 native 구현이 아니다.
+현재는 승인된 House Price P0의 도구·runner 구현과 검증으로 진행할 수 있다. 새 material 신뢰 경계는 §14에서 별도 확인한다. 다음 검토는 실제 과제·장치·평가·숫자 예산에 묶인 P0 protocol이며, 추가 일반 설계 검토나 native 구현이 아니다.
 
 
 ## 13. 현재 source/code fan-in과 사용자 결정
 
 `paper/research/public-ml-programme-qualification/integration/parallel-audit-intake-v1.json`이 검증된 원문·공개 코드·현재 Prime/ORX 인터페이스의 입력이다. MLA 원문 v2는 완독했고, AgentHPOBench 논문과 pinned strict runner의 final-step 대 archive-best 차이는 프로토콜 불일치로 보존한다. published score나 코드의 CPU fallback/epoch 값은 local 성과·자원 측정이 아니다.
 
-계정 없는 접근은 필수 조건이 아니다(`666dade1`). Kaggle 두 후보의 파일 metadata 접근을 확인했지만 약관/재배포 권한·원본 다운로드·hidden custody는 미확정이다. 계정 요구를 이유로 제외했던 원결론은 superseded이며, House Price·Spaceship Titanic·CIFAR-10·California Housing은 비교안 상태다. 최종 선택/중요 제외는 사용자 확인 후 한다. routine source 연구와 승인된 static fixture는 병렬로 계속한다.
+계정 없는 접근은 필수 조건이 아니다(`666dade1`). Kaggle 두 후보의 metadata 접근 후 선택된 House Price의 규칙을 읽고 승인된 원본 두 파일을 취득했다. 재배포 권한과 실제 hidden custody 검증은 별개이며 아직 인증하지 않았다. 계정 요구로 제외했던 원결론은 superseded다. 네 과제 비교 후 House Price가 사용자에게 선택됐으며 다른 과제는 보존된 대안이다. 후속 중요한 제외/범위 변경은 사용자 확인 후 한다. routine source 연구와 승인된 static fixture는 병렬로 계속한다.
 
-공통 artifact-lock static fixture의 7 tests와 clean `npm run check`는 `integration/artifact-lock-immutable-validation-v1.json`에 있다. 어떤 실제 task score도 생성하지 않았으며 phase/run/hidden-scorer 권한은 닫혀 있다. 현행 authority·account policy는 같은 qualification 디렉터리의 별도 명시적 사용자 receipt를 따른다. 원 Fable 계약의 historical false/pending 값은 이 후속 승인/제한을 부정하는 값이 아니다.
+공통 artifact-lock static fixture의 7 tests와 clean `npm run check`는 `integration/artifact-lock-immutable-validation-v1.json`에 있다. 이후 House Price task/terms/data/P0/start는 승인됐지만 실제 task score는 아직 없다. 현행 authority·account policy는 같은 qualification 디렉터리의 `effective-authority-v3.json`과 명시적 사용자 receipt를 따른다. 원 Fable 계약의 historical false/pending 값은 이 후속 승인/제한을 부정하는 값이 아니다.
+
+## 14. House Price P0 준비와 신뢰 경계
+
+사용자 `49159554`의 선택은 정확한 `home-data-for-ml-course` 기반 MLAgentBench House Price P0다. `f1601306`과 `dc771d57`이 terms/data/실행/start를 승인했다. Kaggle 공식 로그 RMSE와 선택된 local MAE는 구별하며 official leaderboard 제출은 하지 않는다. 데이터 acquisition·fixed Linux 환경·scorer17synthetic test 준비는 `house-price-p0/integration/preparation-summary-ko.md`와 `working-frontier-v2.json`에 있다.
+
+원본 raw labels는 trusted local cache에만 있고 아직 분할·controller/provider payload에는 노출되지 않았다. local mode0700/0600은 same-user security boundary가 아니다. 별도 native Prime top-level JSON controller에 task 도구만 주고 생성 코드를 networkless container에서 돌리는 권장안은 Prime/extension 자체를 trusted code로 둔다. RLM은 root의 병렬 연구/검토용으로 유지한다. 이 action-space/TCB 조정은 아직 사용자 확인 전이며 전체 controller OS격리와 동등하게 말하지 않는다.
+
+프로토콜 옵션의 RF/Ridge/boosting 고정 체인과 C0는 실행 사양으로 확정되지 않았다. 고정 메뉴로 정하면 prestructured feasibility로 범위를 한정해야 하며 open-ended scientific search라고 하지 않는다. exact self-time/token/currency cap, per-intent ORX admission, generated-code stdout·prediction exfiltration 차단, cleanup과 scorer one-lock semantics는 실제 negative tests가 필요하다. 환경 import·parser 단위테스트와 paper/source review는 이를 대신하지 않는다.
+
+현재 남은 일은 동일 start승인을 다시 받는 것이 아니라 새 material trust/action-space 결정과 실제 tool/runner 구현·분할/예산/command·immutable review다. P0는 아직 시작하지 않았고 P1/P2·native·writing gates도 닫혀 있다.
