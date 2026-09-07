@@ -1,0 +1,1300 @@
+"""Trusted, bounded filesystem primitives for the HousePrice Option-A fixture.
+
+This module does not launch ORX or claim external exactly-once execution.  Its durable
+admission fence provides at-most-once *local admission* for one immutable source
+closure.  A PENDING admission is deliberately fail-closed because an external launch
+may have happened before its run identifier was observed.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+import errno
+import hashlib
+import json
+import os
+from pathlib import Path
+import secrets
+import stat
+import uuid
+from typing import Iterable, Mapping
+
+
+class TrustedIoErrorCode(str, Enum):
+    INVALID_NAME = "INVALID_NAME"
+    INVALID_VALUE = "INVALID_VALUE"
+    NOT_FOUND = "NOT_FOUND"
+    UNSAFE_FILE = "UNSAFE_FILE"
+    LIMIT_EXCEEDED = "LIMIT_EXCEEDED"
+    HASH_MISMATCH = "HASH_MISMATCH"
+    SNAPSHOT_CHANGED = "SNAPSHOT_CHANGED"
+    LOCK_UNAVAILABLE = "LOCK_UNAVAILABLE"
+    STATE_CORRUPT = "STATE_CORRUPT"
+    ADMISSION_EXISTS = "ADMISSION_EXISTS"
+    ADMISSION_UNCERTAIN = "ADMISSION_UNCERTAIN"
+    ADMISSION_NOT_FOUND = "ADMISSION_NOT_FOUND"
+    FINALIZED = "FINALIZED"
+    RECEIPT_NOT_PERMITTED = "RECEIPT_NOT_PERMITTED"
+    SELECTION_NOT_FOUND = "SELECTION_NOT_FOUND"
+    FINAL_REFIT_EXISTS = "FINAL_REFIT_EXISTS"
+    FINAL_REFIT_UNCERTAIN = "FINAL_REFIT_UNCERTAIN"
+    FINAL_REFIT_NOT_FOUND = "FINAL_REFIT_NOT_FOUND"
+
+
+class TrustedIoError(RuntimeError):
+    """An intentionally payload-free error suitable for a safe tool enum."""
+
+    def __init__(self, code: TrustedIoErrorCode):
+        self.code = code
+        super().__init__(code.value)
+
+
+class SolutionName(str, Enum):
+    SOLUTION = "solution.py"
+    RESEARCH = "research.md"
+    INTENT = "intent.json"
+
+
+SOLUTION_NAMES = tuple(item.value for item in SolutionName)
+_HEX64 = frozenset("0123456789abcdef")
+_STATE_FILE = "state.json"
+_LOCK_FILE = ".trusted-io.transaction.lock"
+_FINAL_CODE_FILE = "final-solution.py"
+
+
+@dataclass(frozen=True)
+class TrustedIoLimits:
+    """All byte limits are explicit; this type intentionally has no defaults."""
+
+    max_name_bytes: int
+    max_file_bytes: int
+    max_closure_bytes: int
+    max_write_bytes: int
+    max_state_bytes: int
+    max_snapshot_count: int
+    max_snapshot_bytes: int
+
+    def __post_init__(self) -> None:
+        values = (
+            self.max_name_bytes,
+            self.max_file_bytes,
+            self.max_closure_bytes,
+            self.max_write_bytes,
+            self.max_state_bytes,
+            self.max_snapshot_count,
+            self.max_snapshot_bytes,
+        )
+        if any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in values):
+            raise TrustedIoError(TrustedIoErrorCode.INVALID_VALUE)
+        if (
+            self.max_file_bytes > self.max_closure_bytes
+            or self.max_write_bytes > self.max_file_bytes
+            or self.max_state_bytes < 256
+        ):
+            raise TrustedIoError(TrustedIoErrorCode.INVALID_VALUE)
+
+
+@dataclass(frozen=True)
+class ReadFile:
+    name: SolutionName
+    content: str
+    sha256: str
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    """Identity rederived from opened bytes, never fields supplied by a controller."""
+
+    closure_sha256: str
+    solution_sha256: str
+    research_sha256: str
+    intent_sha256: str
+    solution_bytes: bytes
+    research_bytes: bytes
+    intent_bytes: bytes
+
+
+class AdmissionState(str, Enum):
+    PENDING = "PENDING"
+    BOUND = "BOUND"
+
+
+@dataclass(frozen=True)
+class Admission:
+    closure_sha256: str
+    state: AdmissionState
+    run_id: str | None
+
+
+@dataclass(frozen=True)
+class DevResultReceipt:
+    """A root-verified permitted development receipt reference.
+
+    The bridge must construct this only after it has checked the real trusted receipt.
+    This module validates shape and binds the selected code and immutable closure to
+    bytes it opens itself.
+    """
+
+    receipt_sha256: str
+    closure_sha256: str
+    code_sha256: str
+
+
+@dataclass(frozen=True)
+class FinalSelectionBinding:
+    """Trusted protocol hashes bound before source writes freeze for final refit."""
+
+    selection_receipt_sha256: str
+    task_sha256: str
+    environment_sha256: str
+    protocol_sha256: str
+
+
+class FinalRefitPhase(str, Enum):
+    FINAL_REFIT = "final_refit"
+
+
+@dataclass(frozen=True)
+class FinalRefitIdentity:
+    """Trusted final execution identity. Hidden targets are deliberately absent."""
+
+    phase: FinalRefitPhase
+    selection_receipt_sha256: str
+    execution_config_sha256: str
+    outer_training_manifest_sha256: str
+    hidden_features_manifest_sha256: str
+
+
+@dataclass(frozen=True)
+class FinalRefitAdmission:
+    execution_identity_sha256: str
+    state: AdmissionState
+    run_id: str | None
+
+
+@dataclass(frozen=True)
+class FinalArtifactBinding:
+    """Trusted root inputs for a sealed final artifact; all hashes are lowercase SHA-256."""
+
+    run_id: str
+    artifact_sha256: str
+    task_sha256: str
+    environment_sha256: str
+    protocol_sha256: str
+
+
+@dataclass(frozen=True)
+class FinalSelection:
+    closure_sha256: str
+    code_sha256: str
+    selection_receipt_sha256: str
+    task_sha256: str
+    environment_sha256: str
+    protocol_sha256: str
+
+
+@dataclass(frozen=True)
+class FinalArtifactLock:
+    closure_sha256: str
+    code_sha256: str
+    selection_receipt_sha256: str
+    execution_identity_sha256: str
+    execution_config_sha256: str
+    outer_training_manifest_sha256: str
+    hidden_features_manifest_sha256: str
+    run_id: str
+    artifact_sha256: str
+    task_sha256: str
+    environment_sha256: str
+    protocol_sha256: str
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _is_hex64(value: str) -> bool:
+    return isinstance(value, str) and len(value) == 64 and set(value) <= _HEX64
+
+
+def _require_hash(value: str) -> None:
+    if not _is_hex64(value):
+        raise TrustedIoError(TrustedIoErrorCode.INVALID_VALUE)
+
+
+def _canonical_json(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+
+
+def _closure_hash(parts: Iterable[tuple[str, bytes]]) -> str:
+    digest = hashlib.sha256()
+    digest.update(b"argo-house-price-trusted-io-closure/v1\0")
+    for name, content in parts:
+        encoded_name = name.encode("ascii")
+        digest.update(len(encoded_name).to_bytes(2, "big"))
+        digest.update(encoded_name)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
+def _final_execution_identity(selection: FinalSelection, identity: FinalRefitIdentity) -> str:
+    """Derive the final refit identity from the stored selection inside a transaction."""
+    return _closure_hash(
+        (
+            ("phase", identity.phase.value.encode("ascii")),
+            ("selection_receipt_sha256", selection.selection_receipt_sha256.encode("ascii")),
+            ("selected_closure_sha256", selection.closure_sha256.encode("ascii")),
+            ("selected_code_sha256", selection.code_sha256.encode("ascii")),
+            ("task_sha256", selection.task_sha256.encode("ascii")),
+            ("environment_sha256", selection.environment_sha256.encode("ascii")),
+            ("protocol_sha256", selection.protocol_sha256.encode("ascii")),
+            ("execution_config_sha256", identity.execution_config_sha256.encode("ascii")),
+            ("outer_training_manifest_sha256", identity.outer_training_manifest_sha256.encode("ascii")),
+            ("hidden_features_manifest_sha256", identity.hidden_features_manifest_sha256.encode("ascii")),
+        )
+    )
+
+class TrustedIo:
+    """Own a trusted source root plus a separate trusted private state directory."""
+
+    def __init__(self, source_root: Path | str, state_root: Path | str, limits: TrustedIoLimits):
+        self._limits = limits
+        self._source_root, self._source_root_identity = self._anchor_root(Path(source_root), create=False)
+        self._state_root, self._state_root_identity = self._anchor_root(Path(state_root), create=True)
+        if self._source_root_identity == self._state_root_identity:
+            raise TrustedIoError(TrustedIoErrorCode.INVALID_VALUE)
+
+    @property
+    def limits(self) -> TrustedIoLimits:
+        return self._limits
+
+    def read_solution(self, name: SolutionName | str) -> ReadFile:
+        checked = self._solution_name(name)
+        with self._source_dir_fd() as directory_fd:
+            content = self._read_regular_at(directory_fd, checked.value, self._limits.max_file_bytes)
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise TrustedIoError(TrustedIoErrorCode.INVALID_VALUE) from exc
+        return ReadFile(checked, text, _sha256(content))
+
+    def write_solution(
+        self,
+        name: SolutionName | str,
+        content: str,
+        expected_sha256: str | None = None,
+    ) -> str:
+        checked = self._solution_name(name)
+        if not isinstance(content, str):
+            raise TrustedIoError(TrustedIoErrorCode.INVALID_VALUE)
+        try:
+            encoded = content.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise TrustedIoError(TrustedIoErrorCode.INVALID_VALUE) from exc
+        if len(encoded) > self._limits.max_write_bytes:
+            raise TrustedIoError(TrustedIoErrorCode.LIMIT_EXCEEDED)
+        if expected_sha256 is not None:
+            _require_hash(expected_sha256)
+        with self._transaction():
+            state = self._read_state()
+            self._assert_mutable(state)
+            with self._source_dir_fd() as directory_fd:
+                try:
+                    current = self._read_regular_at(directory_fd, checked.value, self._limits.max_file_bytes)
+                except TrustedIoError as exc:
+                    if exc.code != TrustedIoErrorCode.NOT_FOUND:
+                        raise
+                    if expected_sha256 is not None:
+                        raise TrustedIoError(TrustedIoErrorCode.HASH_MISMATCH) from exc
+                else:
+                    if expected_sha256 is not None and _sha256(current) != expected_sha256:
+                        raise TrustedIoError(TrustedIoErrorCode.HASH_MISMATCH)
+                self._replace_at(directory_fd, checked.value, encoded)
+        return _sha256(encoded)
+
+    def snapshot(self) -> Snapshot:
+        with self._source_dir_fd() as directory_fd:
+            return self._snapshot_from_fd(directory_fd)
+
+    def admit_intent(self, snapshot: Snapshot) -> Admission:
+        """Persist the canonical three-file closure before publishing its dev fence."""
+        self._validate_snapshot_shape(snapshot)
+        with self._transaction():
+            state = self._read_state()
+            self._assert_not_finalized(state)
+            current = self.snapshot()
+            if current != snapshot:
+                raise TrustedIoError(TrustedIoErrorCode.SNAPSHOT_CHANGED)
+            admissions = state["admissions"]
+            record = admissions.get(current.closure_sha256)
+            if record is not None:
+                self._load_stored_snapshot(current.closure_sha256)
+                record_state = record.get("state")
+                if record_state == AdmissionState.PENDING.value:
+                    raise TrustedIoError(TrustedIoErrorCode.ADMISSION_UNCERTAIN)
+                raise TrustedIoError(TrustedIoErrorCode.ADMISSION_EXISTS)
+            next_state = json.loads(_canonical_json(state).decode("ascii"))
+            next_state["admissions"][current.closure_sha256] = {"state": AdmissionState.PENDING.value, "run_id": None}
+            self._preflight_state(next_state)
+            self._preflight_snapshot_capacity(current)
+            self._store_snapshot(current)
+            admissions[current.closure_sha256] = {"state": AdmissionState.PENDING.value, "run_id": None}
+            self._write_state(state)
+            return Admission(current.closure_sha256, AdmissionState.PENDING, None)
+
+    def admission(self, snapshot: Snapshot) -> Admission:
+        self._validate_snapshot_shape(snapshot)
+        with self._transaction():
+            state = self._read_state()
+            record = state["admissions"].get(snapshot.closure_sha256)
+            if record is None:
+                raise TrustedIoError(TrustedIoErrorCode.ADMISSION_NOT_FOUND)
+            return self._admission_from_record(snapshot.closure_sha256, record)
+
+    def bind_admission(self, snapshot: Snapshot, run_id: str) -> Admission:
+        """Bind only an externally observed run id; callers decide reconciliation policy."""
+        self._validate_snapshot_shape(snapshot)
+        self._validate_uuid(run_id)
+        with self._transaction():
+            state = self._read_state()
+            record = state["admissions"].get(snapshot.closure_sha256)
+            if record is None:
+                raise TrustedIoError(TrustedIoErrorCode.ADMISSION_NOT_FOUND)
+            if record.get("state") == AdmissionState.BOUND.value:
+                if record.get("run_id") == run_id:
+                    return self._admission_from_record(snapshot.closure_sha256, record)
+                raise TrustedIoError(TrustedIoErrorCode.ADMISSION_EXISTS)
+            if record.get("state") != AdmissionState.PENDING.value:
+                raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+            record["state"] = AdmissionState.BOUND.value
+            record["run_id"] = run_id
+            self._write_state(state)
+            return Admission(snapshot.closure_sha256, AdmissionState.BOUND, run_id)
+
+    def select_final_method(
+        self,
+        selected_closure_sha256: str,
+        selected_code_sha256: str,
+        permitted_dev_receipts: Iterable[DevResultReceipt],
+        binding: FinalSelectionBinding,
+    ) -> FinalSelection:
+        """Select an eligible immutable development closure, never mutable active files."""
+        _require_hash(selected_closure_sha256)
+        _require_hash(selected_code_sha256)
+        self._validate_selection_binding(binding)
+        receipt_tuples = self._permitted_receipt_tuples(permitted_dev_receipts)
+        with self._transaction():
+            state = self._read_state()
+            self._assert_not_finalized(state)
+            if selected_closure_sha256 not in state["admissions"]:
+                raise TrustedIoError(TrustedIoErrorCode.ADMISSION_NOT_FOUND)
+            stored = self._load_stored_snapshot(selected_closure_sha256)
+            if stored.solution_sha256 != selected_code_sha256:
+                raise TrustedIoError(TrustedIoErrorCode.RECEIPT_NOT_PERMITTED)
+            if (
+                binding.selection_receipt_sha256,
+                stored.closure_sha256,
+                stored.solution_sha256,
+            ) not in receipt_tuples:
+                raise TrustedIoError(TrustedIoErrorCode.RECEIPT_NOT_PERMITTED)
+            with self._state_dir_fd() as directory_fd:
+                self._replace_at(directory_fd, _FINAL_CODE_FILE, stored.solution_bytes)
+                copied = self._read_regular_at(directory_fd, _FINAL_CODE_FILE, self._limits.max_file_bytes)
+            if _sha256(copied) != stored.solution_sha256 or copied != stored.solution_bytes:
+                raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+            state["final_selection"] = {
+                "closure_sha256": stored.closure_sha256,
+                "code_sha256": stored.solution_sha256,
+                "selection_receipt_sha256": binding.selection_receipt_sha256,
+                "task_sha256": binding.task_sha256,
+                "environment_sha256": binding.environment_sha256,
+                "protocol_sha256": binding.protocol_sha256,
+            }
+            self._write_state(state)
+            return self._selection_from_record(state["final_selection"])
+
+    def final_selection(self) -> FinalSelection:
+        with self._transaction():
+            selection = self._read_state()["final_selection"]
+            if selection is None:
+                raise TrustedIoError(TrustedIoErrorCode.SELECTION_NOT_FOUND)
+            return self._selection_from_record(selection)
+
+    def admit_final_refit(self, identity: FinalRefitIdentity) -> FinalRefitAdmission:
+        """Create the one campaign-wide final-refit fence before the root launches ORX.
+
+        This is local at-most-once admission, not an ORX lifecycle registry or an
+        external exactly-once claim. A PENDING record is an uncertain launch window
+        and cannot be retried automatically.
+        """
+        self._validate_final_refit_identity(identity)
+        with self._transaction():
+            state = self._read_state()
+            if state["final_lock"] is not None:
+                raise TrustedIoError(TrustedIoErrorCode.FINALIZED)
+            selection_record = state["final_selection"]
+            if selection_record is None:
+                raise TrustedIoError(TrustedIoErrorCode.SELECTION_NOT_FOUND)
+            selection = self._selection_from_record(selection_record)
+            if identity.selection_receipt_sha256 != selection.selection_receipt_sha256:
+                raise TrustedIoError(TrustedIoErrorCode.RECEIPT_NOT_PERMITTED)
+            execution_identity = _final_execution_identity(selection, identity)
+            existing = state["final_refit_admission"]
+            if existing is not None:
+                admission = self._final_refit_from_record(existing)
+                if admission.state is AdmissionState.PENDING:
+                    raise TrustedIoError(TrustedIoErrorCode.FINAL_REFIT_UNCERTAIN)
+                raise TrustedIoError(TrustedIoErrorCode.FINAL_REFIT_EXISTS)
+            state["final_refit_admission"] = {
+                "phase": identity.phase.value,
+                "selection_receipt_sha256": identity.selection_receipt_sha256,
+                "execution_config_sha256": identity.execution_config_sha256,
+                "outer_training_manifest_sha256": identity.outer_training_manifest_sha256,
+                "hidden_features_manifest_sha256": identity.hidden_features_manifest_sha256,
+                "execution_identity_sha256": execution_identity,
+                "state": AdmissionState.PENDING.value,
+                "run_id": None,
+            }
+            self._write_state(state)
+            return FinalRefitAdmission(execution_identity, AdmissionState.PENDING, None)
+
+    def final_refit_admission(self) -> FinalRefitAdmission:
+        with self._transaction():
+            record = self._read_state()["final_refit_admission"]
+            if record is None:
+                raise TrustedIoError(TrustedIoErrorCode.FINAL_REFIT_NOT_FOUND)
+            return self._final_refit_from_record(record)
+
+    def bind_final_refit(self, run_id: str) -> FinalRefitAdmission:
+        """Bind an externally observed ORX run id after trusted reconciliation."""
+        self._validate_uuid(run_id)
+        with self._transaction():
+            state = self._read_state()
+            record = state["final_refit_admission"]
+            if record is None:
+                raise TrustedIoError(TrustedIoErrorCode.FINAL_REFIT_NOT_FOUND)
+            admission = self._final_refit_from_record(record)
+            if admission.state is not AdmissionState.PENDING:
+                raise TrustedIoError(TrustedIoErrorCode.FINAL_REFIT_EXISTS)
+            record["state"] = AdmissionState.BOUND.value
+            record["run_id"] = run_id
+            self._write_state(state)
+            return FinalRefitAdmission(admission.execution_identity_sha256, AdmissionState.BOUND, run_id)
+
+    def lock_final_artifact(self, binding: FinalArtifactBinding) -> FinalArtifactLock:
+        self._validate_binding(binding)
+        with self._transaction():
+            state = self._read_state()
+            if state["final_lock"] is not None:
+                raise TrustedIoError(TrustedIoErrorCode.FINALIZED)
+            selection_record = state["final_selection"]
+            if selection_record is None:
+                raise TrustedIoError(TrustedIoErrorCode.SELECTION_NOT_FOUND)
+            selection = self._selection_from_record(selection_record)
+            refit_record = state["final_refit_admission"]
+            if refit_record is None:
+                raise TrustedIoError(TrustedIoErrorCode.FINAL_REFIT_NOT_FOUND)
+            refit = self._final_refit_from_record(refit_record)
+            if refit.state is AdmissionState.PENDING:
+                raise TrustedIoError(TrustedIoErrorCode.FINAL_REFIT_UNCERTAIN)
+            if (
+                binding.run_id != refit.run_id
+                or binding.task_sha256 != selection.task_sha256
+                or binding.environment_sha256 != selection.environment_sha256
+                or binding.protocol_sha256 != selection.protocol_sha256
+            ):
+                raise TrustedIoError(TrustedIoErrorCode.RECEIPT_NOT_PERMITTED)
+            with self._state_dir_fd() as directory_fd:
+                code = self._read_regular_at(directory_fd, _FINAL_CODE_FILE, self._limits.max_file_bytes)
+            if _sha256(code) != selection.code_sha256:
+                raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+            lock = {
+                "closure_sha256": selection.closure_sha256,
+                "code_sha256": selection.code_sha256,
+                "selection_receipt_sha256": selection.selection_receipt_sha256,
+                "execution_identity_sha256": refit.execution_identity_sha256,
+                "execution_config_sha256": refit_record["execution_config_sha256"],
+                "outer_training_manifest_sha256": refit_record["outer_training_manifest_sha256"],
+                "hidden_features_manifest_sha256": refit_record["hidden_features_manifest_sha256"],
+                "run_id": binding.run_id,
+                "artifact_sha256": binding.artifact_sha256,
+                "task_sha256": binding.task_sha256,
+                "environment_sha256": binding.environment_sha256,
+                "protocol_sha256": binding.protocol_sha256,
+            }
+            state["final_lock"] = lock
+            self._write_state(state)
+            return self._lock_from_record(lock)
+
+    def final_artifact_lock(self) -> FinalArtifactLock:
+        with self._transaction():
+            record = self._read_state()["final_lock"]
+            if record is None:
+                raise TrustedIoError(TrustedIoErrorCode.SELECTION_NOT_FOUND)
+            return self._lock_from_record(record)
+
+    def _snapshot_from_fd(self, directory_fd: int) -> Snapshot:
+        remaining = self._limits.max_closure_bytes
+        contents: list[tuple[str, bytes]] = []
+        for name in SOLUTION_NAMES:
+            content = self._read_regular_at(directory_fd, name, min(self._limits.max_file_bytes, remaining))
+            contents.append((name, content))
+            remaining -= len(content)
+        immutable_contents = tuple(contents)
+        by_name = dict(immutable_contents)
+        return Snapshot(
+            closure_sha256=_closure_hash(immutable_contents),
+            solution_sha256=_sha256(by_name[SolutionName.SOLUTION.value]),
+            research_sha256=_sha256(by_name[SolutionName.RESEARCH.value]),
+            intent_sha256=_sha256(by_name[SolutionName.INTENT.value]),
+            solution_bytes=by_name[SolutionName.SOLUTION.value],
+            research_bytes=by_name[SolutionName.RESEARCH.value],
+            intent_bytes=by_name[SolutionName.INTENT.value],
+        )
+
+    def _preflight_snapshot_capacity(self, snapshot: Snapshot) -> None:
+        """Count all known complete and incomplete private snapshot evidence before writing."""
+        self._validate_snapshot_shape(snapshot)
+        count, total_bytes, known = self._snapshot_census()
+        if snapshot.closure_sha256 in known:
+            try:
+                stored = self._load_stored_snapshot(snapshot.closure_sha256)
+            except TrustedIoError as exc:
+                raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT) from exc
+            if stored != snapshot:
+                raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+            return
+        manifest_bytes = len(_canonical_json(self._snapshot_manifest(snapshot)))
+        if (
+            count + 1 > self._limits.max_snapshot_count
+            or total_bytes + len(snapshot.solution_bytes) + len(snapshot.research_bytes) + len(snapshot.intent_bytes) + manifest_bytes
+            > self._limits.max_snapshot_bytes
+        ):
+            raise TrustedIoError(TrustedIoErrorCode.LIMIT_EXCEEDED)
+
+    def _snapshot_census(self) -> tuple[int, int, set[str]]:
+        with self._state_dir_fd() as state_fd:
+            try:
+                snapshots_fd = self._open_directory_at(state_fd, "snapshots")
+            except TrustedIoError as exc:
+                if exc.code == TrustedIoErrorCode.NOT_FOUND:
+                    return 0, 0, set()
+                raise
+            try:
+                names = os.listdir(snapshots_fd)
+                count = 0
+                total_bytes = 0
+                known: set[str] = set()
+                for name in names:
+                    if not (_is_hex64(name) or self._is_known_temp_name(name)):
+                        raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+                    child_fd = self._open_directory_at(snapshots_fd, name)
+                    try:
+                        child_names = os.listdir(child_fd)
+                        allowed = {"solution.py", "research.md", "intent.json", "manifest.json"}
+                        if not set(child_names) <= allowed:
+                            raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+                        for child_name in child_names:
+                            limit = self._limits.max_state_bytes if child_name == "manifest.json" else self._limits.max_file_bytes
+                            value = os.stat(child_name, dir_fd=child_fd, follow_symlinks=False)
+                            self._assert_safe_regular(value, limit)
+                            total_bytes += value.st_size
+                    finally:
+                        os.close(child_fd)
+                    count += 1
+                    known.add(name)
+                if count > self._limits.max_snapshot_count or total_bytes > self._limits.max_snapshot_bytes:
+                    raise TrustedIoError(TrustedIoErrorCode.LIMIT_EXCEEDED)
+                return count, total_bytes, known
+            except OSError as exc:
+                raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE) from exc
+            finally:
+                os.close(snapshots_fd)
+
+    @staticmethod
+    def _is_known_temp_name(name: str) -> bool:
+        return isinstance(name, str) and name.startswith(".snapshot-") and len(name) == len(".snapshot-") + 32 and set(name[len(".snapshot-"):]) <= _HEX64
+
+    def _store_snapshot(self, snapshot: Snapshot) -> None:
+        """Write all closure files and manifest durably before state publishes admission."""
+        self._validate_snapshot_shape(snapshot)
+        with self._state_dir_fd() as state_fd:
+            snapshots_fd = self._open_or_create_directory_at(state_fd, "snapshots")
+            temporary: str | None = None
+            temporary_identity: tuple[int, int] | None = None
+            published = False
+            try:
+                try:
+                    existing_fd = self._open_directory_at(snapshots_fd, snapshot.closure_sha256)
+                except TrustedIoError as exc:
+                    if exc.code != TrustedIoErrorCode.NOT_FOUND:
+                        raise
+                else:
+                    try:
+                        try:
+                            existing = self._snapshot_from_store_fd(existing_fd)
+                        except TrustedIoError as exc:
+                            raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT) from exc
+                    finally:
+                        os.close(existing_fd)
+                    if existing != snapshot:
+                        raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+                    return
+                temporary = f".snapshot-{secrets.token_hex(16)}"
+                try:
+                    os.mkdir(temporary, 0o700, dir_fd=snapshots_fd)
+                except OSError as exc:
+                    raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE) from exc
+                temporary_fd = self._open_directory_at(snapshots_fd, temporary)
+                try:
+                    temp_stat = os.fstat(temporary_fd)
+                    temporary_identity = (temp_stat.st_dev, temp_stat.st_ino)
+                    try:
+                        os.fsync(snapshots_fd)
+                        self._replace_at(temporary_fd, SolutionName.SOLUTION.value, snapshot.solution_bytes)
+                        self._replace_at(temporary_fd, SolutionName.RESEARCH.value, snapshot.research_bytes)
+                        self._replace_at(temporary_fd, SolutionName.INTENT.value, snapshot.intent_bytes)
+                        manifest = _canonical_json(self._snapshot_manifest(snapshot))
+                        self._replace_at(temporary_fd, "manifest.json", manifest, self._limits.max_state_bytes)
+                        os.fsync(temporary_fd)
+                    except OSError as exc:
+                        raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE) from exc
+                finally:
+                    os.close(temporary_fd)
+                try:
+                    os.rename(temporary, snapshot.closure_sha256, src_dir_fd=snapshots_fd, dst_dir_fd=snapshots_fd)
+                    published = True
+                    os.fsync(snapshots_fd)
+                except FileExistsError as exc:
+                    raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT) from exc
+                except OSError as exc:
+                    raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE) from exc
+            except TrustedIoError:
+                if temporary is not None and temporary_identity is not None and not published:
+                    self._cleanup_created_snapshot_temp(snapshots_fd, temporary, temporary_identity)
+                raise
+            finally:
+                os.close(snapshots_fd)
+
+    def _cleanup_created_snapshot_temp(
+        self,
+        snapshots_fd: int,
+        name: str,
+        expected_identity: tuple[int, int],
+    ) -> None:
+        """Remove only the verified local temp created by this handled call."""
+        try:
+            directory_fd = self._open_directory_at(snapshots_fd, name)
+        except TrustedIoError:
+            return
+        try:
+            current = os.fstat(directory_fd)
+            if (current.st_dev, current.st_ino) != expected_identity:
+                return
+            names = os.listdir(directory_fd)
+            allowed = {"solution.py", "research.md", "intent.json", "manifest.json"}
+            if not set(names) <= allowed:
+                return
+            for child_name in names:
+                value = os.stat(child_name, dir_fd=directory_fd, follow_symlinks=False)
+                limit = self._limits.max_state_bytes if child_name == "manifest.json" else self._limits.max_file_bytes
+                self._assert_safe_regular(value, limit)
+                os.unlink(child_name, dir_fd=directory_fd)
+            os.fsync(directory_fd)
+        except (OSError, TrustedIoError):
+            return
+        finally:
+            os.close(directory_fd)
+        try:
+            current = os.stat(name, dir_fd=snapshots_fd, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != expected_identity:
+                return
+            os.rmdir(name, dir_fd=snapshots_fd)
+            os.fsync(snapshots_fd)
+        except OSError:
+            return
+
+    def _load_stored_snapshot(self, closure_sha256: str) -> Snapshot:
+        _require_hash(closure_sha256)
+        with self._state_dir_fd() as state_fd:
+            snapshots_fd = self._open_directory_at(state_fd, "snapshots")
+            try:
+                snapshot_fd = self._open_directory_at(snapshots_fd, closure_sha256)
+                try:
+                    snapshot = self._snapshot_from_store_fd(snapshot_fd)
+                finally:
+                    os.close(snapshot_fd)
+            finally:
+                os.close(snapshots_fd)
+        if snapshot.closure_sha256 != closure_sha256:
+            raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+        return snapshot
+
+    @staticmethod
+    def _snapshot_manifest(snapshot: Snapshot) -> dict[str, object]:
+        return {
+            "version": 1,
+            "closure_sha256": snapshot.closure_sha256,
+            "solution_sha256": snapshot.solution_sha256,
+            "research_sha256": snapshot.research_sha256,
+            "intent_sha256": snapshot.intent_sha256,
+        }
+
+    def _snapshot_from_store_fd(self, directory_fd: int) -> Snapshot:
+        snapshot = self._snapshot_from_fd(directory_fd)
+        try:
+            raw_manifest = self._read_regular_at(directory_fd, "manifest.json", self._limits.max_state_bytes)
+            manifest = json.loads(raw_manifest.decode("ascii"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT) from exc
+        if manifest != self._snapshot_manifest(snapshot):
+            raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+        return snapshot
+
+    def _solution_name(self, name: SolutionName | str) -> SolutionName:
+        if isinstance(name, SolutionName):
+            return name
+        if not isinstance(name, str) or "\x00" in name:
+            raise TrustedIoError(TrustedIoErrorCode.INVALID_NAME)
+        try:
+            encoded = name.encode("ascii")
+        except UnicodeEncodeError as exc:
+            raise TrustedIoError(TrustedIoErrorCode.INVALID_NAME) from exc
+        if len(encoded) > self._limits.max_name_bytes:
+            raise TrustedIoError(TrustedIoErrorCode.INVALID_NAME)
+        try:
+            return SolutionName(name)
+        except ValueError as exc:
+            raise TrustedIoError(TrustedIoErrorCode.INVALID_NAME) from exc
+
+    def _validate_snapshot_shape(self, snapshot: Snapshot) -> None:
+        if not isinstance(snapshot, Snapshot):
+            raise TrustedIoError(TrustedIoErrorCode.INVALID_VALUE)
+        parts = (
+            (SolutionName.SOLUTION.value, snapshot.solution_bytes),
+            (SolutionName.RESEARCH.value, snapshot.research_bytes),
+            (SolutionName.INTENT.value, snapshot.intent_bytes),
+        )
+        if any(not isinstance(content, bytes) or len(content) > self._limits.max_file_bytes for _, content in parts):
+            raise TrustedIoError(TrustedIoErrorCode.INVALID_VALUE)
+        if sum(len(content) for _, content in parts) > self._limits.max_closure_bytes:
+            raise TrustedIoError(TrustedIoErrorCode.INVALID_VALUE)
+        expected = (
+            _closure_hash(parts),
+            _sha256(snapshot.solution_bytes),
+            _sha256(snapshot.research_bytes),
+            _sha256(snapshot.intent_bytes),
+        )
+        actual = (
+            snapshot.closure_sha256,
+            snapshot.solution_sha256,
+            snapshot.research_sha256,
+            snapshot.intent_sha256,
+        )
+        if actual != expected:
+            raise TrustedIoError(TrustedIoErrorCode.INVALID_VALUE)
+
+    def _permitted_receipt_tuples(self, receipts: Iterable[DevResultReceipt]) -> set[tuple[str, str, str]]:
+        result: set[tuple[str, str, str]] = set()
+        for receipt in receipts:
+            if not isinstance(receipt, DevResultReceipt):
+                raise TrustedIoError(TrustedIoErrorCode.INVALID_VALUE)
+            _require_hash(receipt.receipt_sha256)
+            _require_hash(receipt.closure_sha256)
+            _require_hash(receipt.code_sha256)
+            result.add((receipt.receipt_sha256, receipt.closure_sha256, receipt.code_sha256))
+        return result
+
+    @staticmethod
+    def _validate_selection_binding(binding: FinalSelectionBinding) -> None:
+        if not isinstance(binding, FinalSelectionBinding):
+            raise TrustedIoError(TrustedIoErrorCode.INVALID_VALUE)
+        for value in (
+            binding.selection_receipt_sha256,
+            binding.task_sha256,
+            binding.environment_sha256,
+            binding.protocol_sha256,
+        ):
+            _require_hash(value)
+
+    @staticmethod
+    def _validate_final_refit_identity(identity: FinalRefitIdentity) -> None:
+        if not isinstance(identity, FinalRefitIdentity) or identity.phase is not FinalRefitPhase.FINAL_REFIT:
+            raise TrustedIoError(TrustedIoErrorCode.INVALID_VALUE)
+        for value in (
+            identity.selection_receipt_sha256,
+            identity.execution_config_sha256,
+            identity.outer_training_manifest_sha256,
+            identity.hidden_features_manifest_sha256,
+        ):
+            _require_hash(value)
+
+    def _validate_binding(self, binding: FinalArtifactBinding) -> None:
+        if not isinstance(binding, FinalArtifactBinding):
+            raise TrustedIoError(TrustedIoErrorCode.INVALID_VALUE)
+        self._validate_uuid(binding.run_id)
+        for value in (
+            binding.artifact_sha256,
+            binding.task_sha256,
+            binding.environment_sha256,
+            binding.protocol_sha256,
+        ):
+            _require_hash(value)
+
+    @staticmethod
+    def _validate_uuid(value: str) -> None:
+        if not isinstance(value, str):
+            raise TrustedIoError(TrustedIoErrorCode.INVALID_VALUE)
+        try:
+            parsed = uuid.UUID(value)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise TrustedIoError(TrustedIoErrorCode.INVALID_VALUE) from exc
+        if str(parsed) != value.lower():
+            raise TrustedIoError(TrustedIoErrorCode.INVALID_VALUE)
+
+    @staticmethod
+    def _admission_from_record(closure_sha256: str, record: Mapping[str, object]) -> Admission:
+        status = record.get("state")
+        run_id = record.get("run_id")
+        if status == AdmissionState.PENDING.value and run_id is None:
+            return Admission(closure_sha256, AdmissionState.PENDING, None)
+        if status == AdmissionState.BOUND.value and isinstance(run_id, str):
+            return Admission(closure_sha256, AdmissionState.BOUND, run_id)
+        raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+
+    @staticmethod
+    def _selection_from_record(record: Mapping[str, object]) -> FinalSelection:
+        values = (
+            record.get("closure_sha256"),
+            record.get("code_sha256"),
+            record.get("selection_receipt_sha256"),
+            record.get("task_sha256"),
+            record.get("environment_sha256"),
+            record.get("protocol_sha256"),
+        )
+        if not all(_is_hex64(value) for value in values):
+            raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+        return FinalSelection(*values)
+
+    @staticmethod
+    def _final_refit_from_record(record: Mapping[str, object]) -> FinalRefitAdmission:
+        required = {
+            "phase",
+            "selection_receipt_sha256",
+            "execution_config_sha256",
+            "outer_training_manifest_sha256",
+            "hidden_features_manifest_sha256",
+            "execution_identity_sha256",
+            "state",
+            "run_id",
+        }
+        if set(record) != required or record.get("phase") != FinalRefitPhase.FINAL_REFIT.value:
+            raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+        hashes = (
+            record.get("selection_receipt_sha256"),
+            record.get("execution_config_sha256"),
+            record.get("outer_training_manifest_sha256"),
+            record.get("hidden_features_manifest_sha256"),
+            record.get("execution_identity_sha256"),
+        )
+        if not all(_is_hex64(value) for value in hashes):
+            raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+        status = record.get("state")
+        run_id = record.get("run_id")
+        if status == AdmissionState.PENDING.value and run_id is None:
+            return FinalRefitAdmission(record["execution_identity_sha256"], AdmissionState.PENDING, None)
+        if status == AdmissionState.BOUND.value and isinstance(run_id, str):
+            try:
+                TrustedIo._validate_uuid(run_id)
+            except TrustedIoError as exc:
+                raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT) from exc
+            return FinalRefitAdmission(record["execution_identity_sha256"], AdmissionState.BOUND, run_id)
+        raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+
+    @staticmethod
+    def _lock_from_record(record: Mapping[str, object]) -> FinalArtifactLock:
+        required = {
+            "closure_sha256",
+            "code_sha256",
+            "selection_receipt_sha256",
+            "execution_identity_sha256",
+            "execution_config_sha256",
+            "outer_training_manifest_sha256",
+            "hidden_features_manifest_sha256",
+            "run_id",
+            "artifact_sha256",
+            "task_sha256",
+            "environment_sha256",
+            "protocol_sha256",
+        }
+        if set(record) != required:
+            raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+        values = tuple(record[name] for name in required)
+        if not all(isinstance(value, str) for value in values):
+            raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+        lock = FinalArtifactLock(
+            closure_sha256=record["closure_sha256"],
+            code_sha256=record["code_sha256"],
+            selection_receipt_sha256=record["selection_receipt_sha256"],
+            execution_identity_sha256=record["execution_identity_sha256"],
+            execution_config_sha256=record["execution_config_sha256"],
+            outer_training_manifest_sha256=record["outer_training_manifest_sha256"],
+            hidden_features_manifest_sha256=record["hidden_features_manifest_sha256"],
+            run_id=record["run_id"],
+            artifact_sha256=record["artifact_sha256"],
+            task_sha256=record["task_sha256"],
+            environment_sha256=record["environment_sha256"],
+            protocol_sha256=record["protocol_sha256"],
+        )
+        try:
+            TrustedIo._validate_uuid(lock.run_id)
+            for value in (
+                lock.closure_sha256,
+                lock.code_sha256,
+                lock.selection_receipt_sha256,
+                lock.execution_identity_sha256,
+                lock.execution_config_sha256,
+                lock.outer_training_manifest_sha256,
+                lock.hidden_features_manifest_sha256,
+                lock.artifact_sha256,
+                lock.task_sha256,
+                lock.environment_sha256,
+                lock.protocol_sha256,
+            ):
+                _require_hash(value)
+        except TrustedIoError as exc:
+            raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT) from exc
+        return lock
+
+    @staticmethod
+    def _assert_mutable(state: Mapping[str, object]) -> None:
+        if state["final_selection"] is not None or state["final_lock"] is not None:
+            raise TrustedIoError(TrustedIoErrorCode.FINALIZED)
+
+    @staticmethod
+    def _assert_not_finalized(state: Mapping[str, object]) -> None:
+        if state["final_selection"] is not None or state["final_lock"] is not None:
+            raise TrustedIoError(TrustedIoErrorCode.FINALIZED)
+
+    def _empty_state(self) -> dict[str, object]:
+        return {
+            "version": 3,
+            "admissions": {},
+            "final_selection": None,
+            "final_refit_admission": None,
+            "final_lock": None,
+        }
+
+    def _read_state(self) -> dict[str, object]:
+        with self._state_dir_fd() as directory_fd:
+            try:
+                raw = self._read_regular_at(directory_fd, _STATE_FILE, self._limits.max_state_bytes)
+            except TrustedIoError as exc:
+                if exc.code != TrustedIoErrorCode.NOT_FOUND:
+                    raise
+                return self._empty_state()
+        try:
+            decoded = json.loads(raw.decode("ascii"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT) from exc
+        if not isinstance(decoded, dict) or set(decoded) != {"version", "admissions", "final_selection", "final_refit_admission", "final_lock"}:
+            raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+        if decoded["version"] != 3 or not isinstance(decoded["admissions"], dict):
+            raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+        for closure, record in decoded["admissions"].items():
+            if not _is_hex64(closure) or not isinstance(record, dict):
+                raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+            self._admission_from_record(closure, record)
+        selection: FinalSelection | None = None
+        refit: FinalRefitAdmission | None = None
+        if decoded["final_selection"] is not None:
+            if not isinstance(decoded["final_selection"], dict):
+                raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+            selection = self._selection_from_record(decoded["final_selection"])
+        if decoded["final_refit_admission"] is not None:
+            if not isinstance(decoded["final_refit_admission"], dict):
+                raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+            refit = self._final_refit_from_record(decoded["final_refit_admission"])
+            if selection is None or decoded["final_refit_admission"].get("selection_receipt_sha256") != selection.selection_receipt_sha256:
+                raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+            refit_identity = FinalRefitIdentity(
+                phase=FinalRefitPhase.FINAL_REFIT,
+                selection_receipt_sha256=selection.selection_receipt_sha256,
+                execution_config_sha256=decoded["final_refit_admission"]["execution_config_sha256"],
+                outer_training_manifest_sha256=decoded["final_refit_admission"]["outer_training_manifest_sha256"],
+                hidden_features_manifest_sha256=decoded["final_refit_admission"]["hidden_features_manifest_sha256"],
+            )
+            if _final_execution_identity(selection, refit_identity) != refit.execution_identity_sha256:
+                raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+        if decoded["final_lock"] is not None:
+            if not isinstance(decoded["final_lock"], dict):
+                raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+            lock = self._lock_from_record(decoded["final_lock"])
+            if (
+                selection is None
+                or refit is None
+                or refit.state is not AdmissionState.BOUND
+                or lock.closure_sha256 != selection.closure_sha256
+                or lock.code_sha256 != selection.code_sha256
+                or lock.selection_receipt_sha256 != selection.selection_receipt_sha256
+                or lock.execution_identity_sha256 != refit.execution_identity_sha256
+                or lock.run_id != refit.run_id
+                or lock.task_sha256 != selection.task_sha256
+                or lock.environment_sha256 != selection.environment_sha256
+                or lock.protocol_sha256 != selection.protocol_sha256
+                or lock.execution_config_sha256 != decoded["final_refit_admission"]["execution_config_sha256"]
+                or lock.outer_training_manifest_sha256 != decoded["final_refit_admission"]["outer_training_manifest_sha256"]
+                or lock.hidden_features_manifest_sha256 != decoded["final_refit_admission"]["hidden_features_manifest_sha256"]
+            ):
+                raise TrustedIoError(TrustedIoErrorCode.STATE_CORRUPT)
+        return decoded
+
+    def _preflight_state(self, state: Mapping[str, object]) -> None:
+        if len(_canonical_json(state)) > self._limits.max_state_bytes:
+            raise TrustedIoError(TrustedIoErrorCode.LIMIT_EXCEEDED)
+
+    def _write_state(self, state: Mapping[str, object]) -> None:
+        self._preflight_state(state)
+        encoded = _canonical_json(state)
+        with self._state_dir_fd() as directory_fd:
+            self._replace_at(directory_fd, _STATE_FILE, encoded, self._limits.max_state_bytes)
+
+    def _transaction(self) -> "_Transaction":
+        return _Transaction(self)
+
+    def _source_dir_fd(self) -> "_DirectoryFd":
+        return _DirectoryFd(self._source_root, self._source_root_identity)
+
+    def _state_dir_fd(self) -> "_DirectoryFd":
+        return _DirectoryFd(self._state_root, self._state_root_identity)
+
+    @staticmethod
+    def _anchor_root(path: Path, create: bool) -> tuple[Path, tuple[int, int]]:
+        try:
+            if not path.exists():
+                if not create:
+                    raise TrustedIoError(TrustedIoErrorCode.NOT_FOUND)
+                path.mkdir(mode=0o700)
+            canonical = path.resolve(strict=True)
+        except (FileNotFoundError, OSError) as exc:
+            if isinstance(exc, TrustedIoError):
+                raise
+            raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE) from exc
+        current = os.lstat(canonical)
+        if stat.S_ISLNK(current.st_mode) or not stat.S_ISDIR(current.st_mode):
+            raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE)
+        with _DirectoryFd(canonical) as directory_fd:
+            value = os.fstat(directory_fd)
+            return canonical, (value.st_dev, value.st_ino)
+
+    @staticmethod
+    def _same_directory(left: Path, right: Path) -> bool:
+        left_stat = os.stat(left, follow_symlinks=False)
+        right_stat = os.stat(right, follow_symlinks=False)
+        return (left_stat.st_dev, left_stat.st_ino) == (right_stat.st_dev, right_stat.st_ino)
+
+    @staticmethod
+    def _open_directory_at(parent_fd: int, name: str) -> int:
+        try:
+            fd = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_fd,
+            )
+        except FileNotFoundError as exc:
+            raise TrustedIoError(TrustedIoErrorCode.NOT_FOUND) from exc
+        except OSError as exc:
+            raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE) from exc
+        try:
+            value = os.fstat(fd)
+            if not stat.S_ISDIR(value.st_mode):
+                raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE)
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def _open_or_create_directory_at(self, parent_fd: int, name: str) -> int:
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE) from exc
+        return self._open_directory_at(parent_fd, name)
+
+    def _read_regular_at(self, directory_fd: int, name: str, limit: int) -> bytes:
+        flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        try:
+            fd = os.open(name, flags, dir_fd=directory_fd)
+        except FileNotFoundError as exc:
+            raise TrustedIoError(TrustedIoErrorCode.NOT_FOUND) from exc
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.ENXIO, errno.ENOTDIR):
+                raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE) from exc
+            raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE) from exc
+        try:
+            before = os.fstat(fd)
+            self._assert_safe_regular(before, limit)
+            remaining = before.st_size
+            chunks: list[bytes] = []
+            while remaining:
+                chunk = os.read(fd, min(65536, remaining))
+                if not chunk:
+                    raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE)
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            after = os.fstat(fd)
+            if self._stat_identity(before) != self._stat_identity(after):
+                raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE)
+            return b"".join(chunks)
+        finally:
+            os.close(fd)
+
+    @staticmethod
+    def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_nlink,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+
+    @staticmethod
+    def _assert_safe_regular(value: os.stat_result, limit: int) -> None:
+        if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1:
+            raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE)
+        if value.st_size < 0 or value.st_size > limit:
+            raise TrustedIoError(TrustedIoErrorCode.LIMIT_EXCEEDED)
+
+    def _replace_at(self, directory_fd: int, target: str, content: bytes, limit: int | None = None) -> None:
+        effective_limit = self._limits.max_file_bytes if limit is None else limit
+        if len(content) > effective_limit:
+            raise TrustedIoError(TrustedIoErrorCode.LIMIT_EXCEEDED)
+        try:
+            existing = os.stat(target, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE) from exc
+        else:
+            self._assert_safe_regular(existing, effective_limit)
+        temporary = f".trusted-io-{secrets.token_hex(16)}.tmp"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        fd: int | None = None
+        try:
+            fd = os.open(temporary, flags, 0o600, dir_fd=directory_fd)
+            written = 0
+            while written < len(content):
+                wrote = os.write(fd, content[written:])
+                if wrote <= 0:
+                    raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE)
+                written += wrote
+            os.fsync(fd)
+            created = os.fstat(fd)
+            self._assert_safe_regular(created, effective_limit)
+            if created.st_size != len(content):
+                raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE)
+        finally:
+            if fd is not None:
+                os.close(fd)
+        try:
+            os.replace(temporary, target, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+            os.fsync(directory_fd)
+        except OSError as exc:
+            raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE) from exc
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+
+
+class _DirectoryFd:
+    def __init__(self, path: Path, expected_identity: tuple[int, int] | None = None):
+        self._path = path
+        self._expected_identity = expected_identity
+        self.fd: int | None = None
+
+    def __enter__(self) -> int:
+        flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        try:
+            self.fd = os.open(self._path, flags)
+            value = os.fstat(self.fd)
+            if not stat.S_ISDIR(value.st_mode) or (
+                self._expected_identity is not None and (value.st_dev, value.st_ino) != self._expected_identity
+            ):
+                raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE)
+        except TrustedIoError:
+            if self.fd is not None:
+                os.close(self.fd)
+                self.fd = None
+            raise
+        except OSError as exc:
+            raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE) from exc
+        return self.fd
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+
+class _Transaction:
+    def __init__(self, owner: TrustedIo):
+        self._owner = owner
+        self._directory: _DirectoryFd | None = None
+        self._fd: int | None = None
+        self._identity: tuple[int, int] | None = None
+
+    def __enter__(self) -> "_Transaction":
+        self._directory = self._owner._state_dir_fd()
+        directory_fd = self._directory.__enter__()
+        try:
+            self._fd = os.open(
+                _LOCK_FILE,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+                dir_fd=directory_fd,
+            )
+        except FileExistsError as exc:
+            self._directory.__exit__(None, None, None)
+            raise TrustedIoError(TrustedIoErrorCode.LOCK_UNAVAILABLE) from exc
+        except OSError as exc:
+            self._directory.__exit__(None, None, None)
+            raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE) from exc
+        try:
+            os.write(self._fd, b"trusted-io-transaction/v1\n")
+            os.fsync(self._fd)
+            lock_stat = os.fstat(self._fd)
+            self._owner._assert_safe_regular(lock_stat, self._owner.limits.max_state_bytes)
+            self._identity = (lock_stat.st_dev, lock_stat.st_ino)
+            os.fsync(directory_fd)
+            return self
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        if self._directory is None:
+            return
+        directory_fd = self._directory.fd
+        try:
+            if self._fd is not None:
+                os.close(self._fd)
+                self._fd = None
+            if directory_fd is not None and self._identity is not None:
+                current = os.stat(_LOCK_FILE, dir_fd=directory_fd, follow_symlinks=False)
+                if (current.st_dev, current.st_ino) == self._identity:
+                    os.unlink(_LOCK_FILE, dir_fd=directory_fd)
+                    os.fsync(directory_fd)
+        finally:
+            self._directory.__exit__(exc_type, exc, traceback)
+            self._directory = None
+            self._identity = None
