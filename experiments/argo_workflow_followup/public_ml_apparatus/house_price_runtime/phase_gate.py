@@ -1,0 +1,508 @@
+"""A2 phase predicate and bounded adapter over hash-bound producer views.
+
+The predicate is pure. The adapter reads native usage and bridge views, then
+appends a private usage checkpoint. Neither grants scientific execution.
+"""
+from __future__ import annotations
+
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass, fields
+from decimal import Decimal, InvalidOperation
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+import uuid
+from typing import Sequence
+
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.bridge import load_bridge_from_config
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.campaign_usage import parse_session_usage
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.staging import DirectoryIdentity
+
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.trusted_io import FinalArtifactLock
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.usage_observer import UsageObservation, UsageObserver, UsageObserverConfig
+
+UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+HEX64 = re.compile(r"[0-9a-f]{64}")
+
+
+class _Invalid(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class GateDecision:
+    outcome: str
+    ready: bool
+    stop: bool
+    verified_dev_run_ids: tuple[str, ...] = ()
+    selected_final_run_id: str | None = None
+
+
+def _decision(outcome: str, dev: tuple[str, ...] = (), final: str | None = None) -> GateDecision:
+    ready = outcome in {"READY_INITIAL_CHECKPOINT", "READY_FINAL_LOCK"}
+    return GateDecision(outcome, ready, outcome != "NOT_READY", dev, final)
+
+
+def _keys(value, required, optional=()):
+    if not isinstance(value, dict) or not set(required) <= set(value) <= set(required) | set(optional):
+        raise _Invalid()
+
+
+def _uuid(value):
+    if not isinstance(value, str) or UUID.fullmatch(value) is None:
+        raise _Invalid()
+
+
+def _hash(value):
+    if not isinstance(value, str) or HEX64.fullmatch(value) is None:
+        raise _Invalid()
+
+
+def _integer(value, minimum, maximum):
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise _Invalid()
+
+
+def _result(envelope):
+    _keys(envelope, ("ok", "result"))
+    if envelope["ok"] is not True:
+        raise _Invalid()
+    return envelope["result"]
+
+
+def _public_view(envelope):
+    public = _result(envelope)
+    _keys(public, ("phase", "dev_attempts", "final_attempts", "remaining_dev_opportunities", "runs"))
+    if public["phase"] not in ("development", "final_selected", "final_locked"):
+        raise _Invalid()
+    _integer(public["dev_attempts"], 0, 4)
+    _integer(public["final_attempts"], 0, 1)
+    _integer(public["remaining_dev_opportunities"], 0, 3)
+    runs = public["runs"]
+    if not isinstance(runs, list) or len(runs) > 5:
+        raise _Invalid()
+    by_id = {}
+    for run in runs:
+        _keys(run, ("intent_sha256", "run_id", "experiment_id", "solution_sha256", "phase", "status"), ("artifact_sha256",))
+        _uuid(run["run_id"]); _uuid(run["experiment_id"])
+        _hash(run["intent_sha256"]); _hash(run["solution_sha256"])
+        if run["run_id"] in by_id or run["phase"] not in ("dev", "final_refit") or run["status"] not in ("QUEUED", "RUNNING", "DONE", "FAILED", "CANCELLED", "UNKNOWN"):
+            raise _Invalid()
+        if "artifact_sha256" in run:
+            _hash(run["artifact_sha256"])
+            if run["status"] != "DONE":
+                raise _Invalid()
+        by_id[run["run_id"]] = run
+    dev_count = sum(run["phase"] == "dev" for run in runs)
+    final_count = sum(run["phase"] == "final_refit" for run in runs)
+    if dev_count != public["dev_attempts"] or final_count != public["final_attempts"]:
+        raise _Invalid()
+    return public, by_id
+
+
+def _dev_view(envelope, by_id, expected_rows):
+    result = _result(envelope)
+    _keys(result, ("results",))
+    if not isinstance(result["results"], list) or len(result["results"]) > 3:
+        raise _Invalid()
+    ids = []
+    for row in result["results"]:
+        _keys(row, ("run_id", "solution_sha256", "valid", "mae", "rows"))
+        _uuid(row["run_id"]); _hash(row["solution_sha256"])
+        _integer(row["rows"], 1, 292)
+        if row["valid"] is not True or row["rows"] != expected_rows or row["run_id"] in ids:
+            raise _Invalid()
+        reference = by_id.get(row["run_id"])
+        if (reference is None or reference["phase"] != "dev" or reference["status"] != "DONE"
+                or reference["solution_sha256"] != row["solution_sha256"]):
+            raise _Invalid()
+        metric = row["mae"]
+        if isinstance(metric, str):
+            if re.fullmatch(r"(?:0|[1-9][0-9]{0,12})\.[0-9]{6}", metric) is None or Decimal(metric) > 10**12:
+                raise _Invalid()
+        elif type(metric) in (int, float):
+            if not math.isfinite(metric) or not 0 <= metric <= 10**12:
+                raise _Invalid()
+        else:
+            raise _Invalid()
+        ids.append(row["run_id"])
+    return tuple(sorted(ids))
+
+
+def _research_view(envelope):
+    value = _result(envelope)
+    _keys(value, ("path", "content", "sha256"))
+    _hash(value["sha256"])
+    if value["path"] != "research.md" or not isinstance(value["content"], str):
+        raise _Invalid()
+    content = value["content"]
+    if not content.strip() or "\0" in content:
+        raise _Invalid()
+    data = content.encode("utf-8")
+    if len(data) > 131072 or hashlib.sha256(data).hexdigest() != value["sha256"]:
+        raise _Invalid()
+
+
+def _usage_outcome(usage):
+    if not isinstance(usage, UsageObservation):
+        raise _Invalid()
+    _integer(usage.observed_bytes, 0, 8388608)
+    if usage.state == "WAITING_FIRST_USAGE":
+        if usage.stop_reason is not None or usage.complete or usage.current_tokens is not None or usage.total_tokens is not None:
+            raise _Invalid()
+        return "NOT_READY"
+    if usage.state == "USAGE_UNKNOWN" or usage.stop_reason == "CAMPAIGN_USAGE_UNKNOWN":
+        return "STOP_USAGE_UNKNOWN"
+    if not usage.complete:
+        return "STOP_USAGE_UNKNOWN"
+    _integer(usage.current_tokens, 0, 10**9)
+    _integer(usage.total_tokens, usage.current_tokens, 10**9)
+    _uuid(usage.session_id); _hash(usage.session_sha256)
+    if usage.state == "BUDGET_EXHAUSTED" or usage.stop_reason == "CAMPAIGN_TOKEN_TRIGGER" or usage.total_tokens >= 120000:
+        return "STOP_BUDGET"
+    if usage.state != "WITHIN_BUDGET" or usage.stop_reason is not None:
+        raise _Invalid()
+    return None
+
+
+def decide_phase(context, public_response, dev_response, research_response, usage,
+                 final_lock=None, expected_rows=292) -> GateDecision:
+    try:
+        if not isinstance(context, str) or context not in {"initial", "continuation"}:
+            raise _Invalid()
+        _integer(expected_rows, 1, 292)
+        usage_outcome = _usage_outcome(usage)
+        if usage_outcome is not None:
+            return _decision(usage_outcome)
+        public, by_id = _public_view(public_response)
+        dev_ids = _dev_view(dev_response, by_id, expected_rows)
+        if public["remaining_dev_opportunities"] > max(0, 3-len(dev_ids)):
+            raise _Invalid()
+        _research_view(research_response)
+        refs = tuple(by_id.values())
+        if any(row["status"] == "UNKNOWN" for row in refs):
+            raise _Invalid()
+        finals = tuple(row for row in refs if row["phase"] == "final_refit")
+        if context == "initial":
+            if public["phase"] != "development" or finals or final_lock is not None or len(dev_ids) > 2:
+                raise _Invalid()
+            if any(row["status"] in {"QUEUED", "RUNNING"} for row in refs) or len(dev_ids) < 2:
+                return _decision("NOT_READY", dev_ids)
+            return _decision("READY_INITIAL_CHECKPOINT", dev_ids)
+        if any(row["status"] in {"QUEUED", "RUNNING"} for row in refs):
+            return _decision("NOT_READY", dev_ids)
+        if public["phase"] != "final_locked":
+            if final_lock is not None:
+                raise _Invalid()
+            return _decision("NOT_READY", dev_ids)
+        if len(finals) != 1 or finals[0]["status"] != "DONE" or not isinstance(final_lock, FinalArtifactLock):
+            raise _Invalid()
+        for field in fields(final_lock):
+            (_uuid if field.name == "run_id" else _hash)(getattr(final_lock, field.name))
+        final = finals[0]
+        if (final_lock.run_id != final["run_id"] or final_lock.code_sha256 != final["solution_sha256"]
+                or final_lock.artifact_sha256 != final.get("artifact_sha256") or len(dev_ids) < 2
+                or final_lock.code_sha256 not in {by_id[run_id]["solution_sha256"] for run_id in dev_ids}):
+            raise _Invalid()
+        return _decision("READY_FINAL_LOCK", dev_ids, final["run_id"])
+    except (_Invalid, ValueError, TypeError, KeyError, AttributeError, UnicodeError, InvalidOperation, OverflowError):
+        return _decision("STOP_PROTOCOL_INVALID")
+
+
+class GateConfigError(ValueError):
+    def __init__(self):
+        super().__init__("GATE_CONFIG_INVALID")
+
+
+def _gate_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise GateConfigError()
+        result[key] = value
+    return result
+
+
+def _gate_constant(value):
+    raise GateConfigError()
+
+
+def _gate_json(data: bytes):
+    try:
+        return json.loads(data.decode("utf-8"), object_pairs_hook=_gate_json_object,
+                          parse_constant=_gate_constant)
+    except (ValueError, UnicodeError, RecursionError):
+        raise GateConfigError() from None
+
+
+def _gate_identity(info):
+    return info.st_dev, info.st_ino, info.st_mode, info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def _gate_read(path: Path, cap: int, expected_sha256: str | None = None,
+               expected_bytes: int | None = None, mtime_ns_max: int | None = None) -> bytes:
+    if not isinstance(path, Path) or not path.is_absolute() or ".." in path.parts:
+        raise GateConfigError()
+    directories = []
+    try:
+        parent = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        directories.append(parent)
+        for part in path.parts[1:-1]:
+            parent = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            directories.append(parent)
+        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        with os.fdopen(descriptor, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or not 0 < before.st_size <= cap
+                    or expected_bytes is not None and before.st_size != expected_bytes
+                    or mtime_ns_max is not None and before.st_mtime_ns > mtime_ns_max):
+                raise GateConfigError()
+            data = stream.read(cap + 1)
+            after = os.fstat(stream.fileno())
+            current = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+            if (_gate_identity(before) != _gate_identity(after) or _gate_identity(after) != _gate_identity(current)
+                    or len(data) != before.st_size
+                    or expected_sha256 is not None and hashlib.sha256(data).hexdigest() != expected_sha256):
+                raise GateConfigError()
+            return data
+    except (OSError, ValueError, RuntimeError):
+        raise GateConfigError() from None
+    finally:
+        for descriptor in reversed(directories):
+            os.close(descriptor)
+
+
+def _gate_file_binding(value, cap):
+    _keys(value, ("path", "sha256", "bytes", "mtime_ns_max"))
+    _hash(value["sha256"])
+    _integer(value["bytes"], 1, cap)
+    _integer(value["mtime_ns_max"], 0, 2**63-1)
+    if not isinstance(value["path"], str):
+        raise GateConfigError()
+    path = Path(value["path"])
+    return path, _gate_read(path, cap, value["sha256"], value["bytes"], value["mtime_ns_max"])
+
+
+def _gate_directory(value):
+    _keys(value, ("path", "device", "inode"))
+    if not isinstance(value["path"], str):
+        raise GateConfigError()
+    _integer(value["device"], 0, 2**64-1)
+    _integer(value["inode"], 1, 2**64-1)
+    path = Path(value["path"])
+    if not path.is_absolute() or ".." in path.parts or path.resolve(strict=True) != path:
+        raise GateConfigError()
+    info = path.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700
+            or (info.st_dev, info.st_ino) != (value["device"], value["inode"])):
+        raise GateConfigError()
+    return DirectoryIdentity(path, info.st_dev, info.st_ino)
+
+
+def _assert_outcome_directory(descriptor: int, identity: DirectoryIdentity) -> None:
+    held=os.fstat(descriptor)
+    named=identity.path.lstat()
+    for info in (held,named):
+        if (not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode)!=0o700 or
+                (info.st_dev,info.st_ino)!=(identity.device,identity.inode)):
+            raise GateConfigError()
+
+
+def _gate_write_all(descriptor: int, data: bytes) -> None:
+    written=0
+    while written<len(data):
+        count=os.write(descriptor,data[written:])
+        if count<=0:raise GateConfigError()
+        written+=count
+    os.fsync(descriptor)
+
+
+@contextmanager
+def _gate_operation(identity: DirectoryIdentity):
+    descriptor=os.open(identity.path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    lock=None
+    lock_identity=None
+    try:
+        _assert_outcome_directory(descriptor,identity)
+        lock=os.open(".gate-evaluation.lock",os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=descriptor)
+        _gate_write_all(lock,b"gate-evaluation/v1\n")
+        lock_identity=_gate_identity(os.fstat(lock))
+        os.fsync(descriptor)
+        yield descriptor
+    finally:
+        try:
+            if lock_identity is not None:
+                _assert_outcome_directory(descriptor,identity)
+                current=os.stat(".gate-evaluation.lock",dir_fd=descriptor,follow_symlinks=False)
+                if _gate_identity(current)!=lock_identity or _gate_identity(os.fstat(lock))!=lock_identity:
+                    raise GateConfigError()
+                os.unlink(".gate-evaluation.lock",dir_fd=descriptor)
+                os.fsync(descriptor)
+        finally:
+            if lock is not None:os.close(lock)
+            os.close(descriptor)
+
+
+def _read_gate_history(descriptor: int, config_sha256: str, observer_config: UsageObserverConfig):
+    names=[]
+    total=0
+    with os.scandir(descriptor) as entries:
+        for entry in entries:
+            if entry.name==".gate-evaluation.lock":continue
+            if re.fullmatch(r"[0-9]{4}-[0-9a-f]{32}\.json",entry.name) is None:
+                raise GateConfigError()
+            info=entry.stat(follow_symlinks=False)
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or stat.S_IMODE(info.st_mode)!=0o600 or
+                    not 0<info.st_size<=16384):
+                raise GateConfigError()
+            names.append(entry.name);total+=info.st_size
+            if len(names)>40 or total>1048576:raise GateConfigError()
+    previous=None
+    checkpoint=None
+    last_observation=None
+    for sequence,name in enumerate(sorted(names),1):
+        if name[:4]!=f"{sequence:04d}":raise GateConfigError()
+        file_fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=descriptor)
+        with os.fdopen(file_fd,"rb") as stream:
+            before=os.fstat(stream.fileno())
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink!=1 or stat.S_IMODE(before.st_mode)!=0o600 or
+                    not 0<before.st_size<=16384):raise GateConfigError()
+            data=stream.read(16385)
+            after=os.fstat(stream.fileno());named=os.stat(name,dir_fd=descriptor,follow_symlinks=False)
+            if (_gate_identity(before)!=_gate_identity(after) or _gate_identity(after)!=_gate_identity(named) or
+                    len(data)!=before.st_size):raise GateConfigError()
+        value=_gate_json(data)
+        _keys(value,("schema_version","context","config_sha256","bridge_config_sha256","decision","usage",
+                     "view_sha256","final_lock_sha256","sequence","previous_outcome_sha256","usage_checkpoint"))
+        if (value["schema_version"]!="argo-house-price-a2-phase-gate-outcome/v2" or
+                value["config_sha256"]!=config_sha256 or type(value["sequence"]) is not int or
+                value["sequence"]!=sequence or value["previous_outcome_sha256"]!=previous):
+            raise GateConfigError()
+        checkpoint=value["usage_checkpoint"]
+        restored=UsageObserver(observer_config,checkpoint=checkpoint).export_checkpoint()
+        if restored!=checkpoint or restored["observation"] is None or restored["observation"]!=value["usage"]:
+            raise GateConfigError()
+        observation=restored["observation"]
+        if last_observation is not None:
+            if last_observation["stop_reason"] is not None and observation!=last_observation:raise GateConfigError()
+            if last_observation["session_id"] is not None and observation["session_id"]!=last_observation["session_id"]:
+                raise GateConfigError()
+            if last_observation["total_tokens"] is not None and (observation["total_tokens"] is None or
+                    observation["total_tokens"]<last_observation["total_tokens"]):raise GateConfigError()
+            if observation["observed_bytes"]<last_observation["observed_bytes"]:raise GateConfigError()
+        last_observation=observation
+        previous=hashlib.sha256(data).hexdigest()
+    return checkpoint,len(names),previous,total
+
+
+def _publish_gate_outcome(descriptor: int, payload: bytes, sequence: int, existing_bytes: int) -> None:
+    if not 0<len(payload)<=16384 or not 1<=sequence<=40 or existing_bytes+len(payload)>1048576:
+        raise GateConfigError()
+    name=f"{sequence:04d}-{uuid.uuid4().hex}.json"
+    output=os.open(name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=descriptor)
+    try:
+        _gate_write_all(output,payload)
+    finally:
+        os.close(output)
+    os.fsync(descriptor)
+
+
+def _evaluate_gate(path: Path, expected_sha256: str) -> dict[str, object]:
+    _hash(expected_sha256)
+    config_bytes = _gate_read(path, 65536, expected_sha256)
+    config = _gate_json(config_bytes)
+    _keys(config, ("schema_version", "context", "bridge_config", "session_directory", "cwd", "provider",
+                   "model", "budget", "prior_session", "prior_session_id", "prior_cwd",
+                   "final_lock_path", "gate_outcome_directory", "expected_rows"))
+    if (config["schema_version"] != "argo-house-price-a2-phase-gate-deployment/v1"
+            or not isinstance(config["context"], str) or config["context"] not in {"initial", "continuation"}
+            or config["provider"] != "openai-codex" or config["model"] != "gpt-5.6-sol"
+            or type(config["budget"]) is not int or config["budget"] != 120000):
+        raise GateConfigError()
+    _integer(config["expected_rows"], 1, 292)
+    if not isinstance(config["cwd"], str) or not Path(config["cwd"]).is_absolute():
+        raise GateConfigError()
+    session_directory = _gate_directory(config["session_directory"])
+    outcome_directory = _gate_directory(config["gate_outcome_directory"])
+    if outcome_directory.path == session_directory.path or session_directory.path in outcome_directory.path.parents:
+        raise GateConfigError()
+    bridge_path, _ = _gate_file_binding(config["bridge_config"], 65536)
+    bridge = load_bridge_from_config(bridge_path, config["bridge_config"]["sha256"])
+    if (not isinstance(config["final_lock_path"], str)
+            or Path(config["final_lock_path"]) != bridge.config.state_root.path / "final-artifact-lock.json"):
+        raise GateConfigError()
+    prior = ()
+    if config["context"] == "initial":
+        if any(config[key] is not None for key in ("prior_session", "prior_session_id", "prior_cwd")):
+            raise GateConfigError()
+    else:
+        _uuid(config["prior_session_id"])
+        prior_path, prior_data = _gate_file_binding(config["prior_session"], 8388608)
+        if prior_path.name != config["prior_session_id"] + ".jsonl" or not isinstance(config["prior_cwd"], str):
+            raise GateConfigError()
+        prior = (parse_session_usage(prior_data, config["prior_session_id"], config["prior_cwd"],
+                                     config["provider"], config["model"]),)
+    observer_config=UsageObserverConfig(session_directory,config["cwd"],config["provider"],
+                                        config["model"],config["budget"],prior)
+    with _gate_operation(outcome_directory) as outcome_fd:
+        checkpoint,count,previous,total=_read_gate_history(outcome_fd,expected_sha256,observer_config)
+        observer = UsageObserver(observer_config,checkpoint=checkpoint)
+        usage = observer.observe()
+        public = bridge.handle({"action":"read_public_result", "arguments":{}})
+        dev = bridge.handle({"action":"read_dev_result", "arguments":{}})
+        research = bridge.handle({"action":"read_solution", "arguments":{"path":"research.md"}})
+        final_lock = None
+        lock_hash = None
+        if (isinstance(public, dict) and public.get("ok") is True
+                and isinstance(public.get("result"), dict) and public["result"].get("phase") == "final_locked"):
+            lock_bytes = _gate_read(Path(config["final_lock_path"]), 16384)
+            lock_record = _gate_json(lock_bytes)
+            _keys(lock_record, tuple(field.name for field in fields(FinalArtifactLock)))
+            final_lock = FinalArtifactLock(**lock_record)
+            stored_lock = bridge.config.trusted_io.final_artifact_lock()
+            canonical = json.dumps(asdict(stored_lock), sort_keys=True, separators=(",",":"), ensure_ascii=True).encode()
+            if final_lock != stored_lock or lock_bytes != canonical:
+                raise GateConfigError()
+            lock_hash = hashlib.sha256(lock_bytes).hexdigest()
+        decision = decide_phase(config["context"], public, dev, research, usage, final_lock, config["expected_rows"])
+        views = {"public":public, "dev":dev, "research":research}
+        hashes = {key:hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",",":"), ensure_ascii=True,
+                                              allow_nan=False).encode()).hexdigest() for key,value in views.items()}
+        outcome = {"schema_version":"argo-house-price-a2-phase-gate-outcome/v2", "context":config["context"],
+                   "config_sha256":expected_sha256, "bridge_config_sha256":config["bridge_config"]["sha256"],
+                   "decision":asdict(decision), "usage":asdict(usage), "view_sha256":hashes, "final_lock_sha256":lock_hash,
+                   "sequence":count+1,"previous_outcome_sha256":previous,"usage_checkpoint":observer.export_checkpoint()}
+        payload = json.dumps(outcome, sort_keys=True, separators=(",",":"), ensure_ascii=True, allow_nan=False).encode()
+        _assert_outcome_directory(outcome_fd,outcome_directory)
+        _publish_gate_outcome(outcome_fd,payload,count+1,total)
+        return _gate_json(payload)
+
+
+def evaluate_gate_config(path: Path, expected_sha256: str) -> dict[str, object]:
+    try:
+        return _evaluate_gate(path, expected_sha256)
+    except Exception:
+        raise GateConfigError() from None
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    values = list(sys.argv[1:] if argv is None else argv)
+    try:
+        if len(values) != 4 or values[0] != "--config" or values[2] != "--config-sha256":
+            raise GateConfigError()
+        result = evaluate_gate_config(Path(values[1]), values[3])
+        decision = result["decision"]
+    except Exception:
+        print("STOP_PROTOCOL_INVALID")
+        return 0
+    print(decision["outcome"])
+    return 1 if decision["outcome"] == "NOT_READY" else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,231 @@
+"""Fixed run-entry synthetic integration. No Docker, model or real data."""
+from __future__ import annotations
+
+import hashlib
+import io
+import os
+from contextlib import redirect_stdout
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from dataclasses import asdict
+from unittest.mock import patch
+
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.container_runner import RunResult, RunStatus
+from experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.run_entry import EntryError, execute_entry, REQUIRED_RUNTIME_PATHS, main as entry_main
+
+RUN="191407a0-84ce-47e6-afa4-298d034b8aa3"
+EXP="cbfc2315-b262-4608-806a-65f0080de6e5"
+PROJECT="a0c1bc7e-cd76-4df3-b140-8e03af22d271"
+REPO=Path(__file__).resolve().parents[4]
+
+def sha(data):return hashlib.sha256(data).hexdigest()
+
+
+class EntryTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(prefix="hp-entry-test-")
+        self.root=Path(self.tmp.name).resolve()
+        self.localruns=self.root/"local-runs";self.snapshot=self.localruns/RUN/"repo"
+        self.snapshot.mkdir(parents=True)
+        self.output=self.root/"output";self.output.mkdir(mode=0o700)
+        self.inputs=self.root/"inputs";self.inputs.mkdir(mode=0o700)
+        self.solution=b"def fit_predict(train, features): return [1] * len(features)\n"
+        (self.snapshot/"house-price-solution.py").write_bytes(self.solution)
+        hashes={}
+        for rel in REQUIRED_RUNTIME_PATHS:
+            dest=self.snapshot/rel;dest.parent.mkdir(parents=True,exist_ok=True)
+            content=(REPO/rel).read_bytes();dest.write_bytes(content);hashes[rel]=sha(content)
+        self.config={"schema_version":"argo-house-price-execution/v1","phase":"dev",
+            "project_id":PROJECT,"experiment_id":EXP,"closure_sha256":"c"*64,
+            "solution_sha256":sha(self.solution),"intent_sha256":"d"*64,
+            "task_sha256":"e"*64,"environment_sha256":"f"*64,"protocol_sha256":"1"*64,
+            "local_runs_root":str(self.localruns),"output_root":str(self.output),"runtime_hashes":hashes,
+            "inputs":{"train":self.binding("train.csv",b"Id,x,SalePrice\n003,2,10\n004,3,20\n"),
+                      "features":self.binding("features.csv",b"Id,x\n001,2\n002,3\n"),
+                      "ids":self.binding("ids.json",b'["001","002"]'),
+                      "targets":self.binding("targets.csv",b"Id,SalePrice\n001,10\n002,20\n")},
+            "rows":2,"limits":{"wall_seconds":1200,"cpus":2,"memory_bytes":4294967296,
+                "pids_limit":64,"nofile":256,"tmpfs_bytes":268435456,
+                "max_input_bytes":1048576,"max_output_bytes":1048576,"log_quarantine_bytes":1048576}}
+        self.calls=[]
+
+    def tearDown(self):self.tmp.cleanup()
+
+    def binding(self,name,data):
+        path=self.inputs/name;path.write_bytes(data)
+        return {"path":str(path),"sha256":sha(data),"bytes":len(data),"mtime_ns_max":path.stat().st_mtime_ns}
+
+    def write_config(self):
+        data=json.dumps(self.config,sort_keys=True,separators=(",",":")).encode()
+        (self.snapshot/"house-price-execution.json").write_bytes(data)
+        return sha(data)
+
+    def fake_runner(self,config):
+        self.calls.append(config)
+        self.assertEqual(config.run_id,RUN)
+        self.assertEqual(config.solution_path.read_bytes(),self.solution)
+        self.assertEqual(config.train_path.stat().st_mode&0o777,0o444)
+        self.assertEqual(config.features_path.stat().st_mode&0o777,0o444)
+        self.assertNotIn("targets.csv",str(config))
+        output=config.output_parent/RUN
+        output.mkdir()
+        pred=output/"predictions.csv"
+        pred.write_bytes(b"Id,SalePrice\n001,10.25\n002,19.75\n")
+        return RunResult(RunStatus.SUCCESS,RUN,pred,sha(pred.read_bytes()),2)
+
+    def invoke(self,runner=None):
+        self.write_config()
+        with patch("experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.run_entry.run_fixed_solution",runner or self.fake_runner):
+            return execute_entry(self.snapshot)
+
+    def test_dev_receipt_from_actual_fixed_inputs_no_native_commit_selfhash(self):
+        receipt=self.invoke()
+        self.assertEqual(receipt["status"],"SUCCESS")
+        self.assertEqual(receipt["metric"],{"numerator":"1","denominator":"4","mae_decimal":"0.250000"})
+        self.assertEqual(receipt["run_id"],RUN)
+        self.assertNotIn("native_commit",receipt)
+        self.assertEqual(len(self.calls),1)
+        saved=(self.output/RUN/"runner-receipt.json").read_bytes()
+        self.assertEqual(json.loads(saved),receipt)
+        def scalar_strings(value):
+            if isinstance(value,dict):
+                return [item for child in value.values() for item in scalar_strings(child)]
+            if isinstance(value,list):
+                return [item for child in value for item in scalar_strings(child)]
+            return [value] if isinstance(value,str) else []
+        self.assertNotIn("001",scalar_strings(receipt))
+        self.assertNotIn("002",scalar_strings(receipt))
+        self.assertTrue({"Id","SalePrice","targets","features","prediction_values"}.isdisjoint(receipt))
+        with self.assertRaises(EntryError):self.invoke()
+
+    def test_final_has_no_targets_or_metric_and_wrong_phase_config_fails(self):
+        self.config["phase"]="final_refit"
+        with self.assertRaises(EntryError):self.invoke()
+        self.assertEqual(self.calls,[])
+        self.config["inputs"].pop("targets")
+        receipt=self.invoke()
+        self.assertEqual(receipt["status"],"SUCCESS");self.assertIsNone(receipt["metric"])
+
+    def test_bad_config_paths_identity_runtime_caps_and_cwd_fail_before_runner(self):
+        original=json.loads(json.dumps(self.config))
+        variants=[("phase",[]),("rows",True),("solution_sha256","0"*64),("unknown","sh")]
+        for key,value in variants:
+            self.config=json.loads(json.dumps(original));self.config[key]=value
+            with self.subTest(key=key),self.assertRaises(EntryError):self.invoke()
+            self.assertEqual(self.calls,[])
+        self.config=json.loads(json.dumps(original));self.config["limits"]["memory_bytes"]=0
+        with self.assertRaises(EntryError):self.invoke()
+        self.config=json.loads(json.dumps(original));self.config["inputs"]["train"]["sha256"]="0"*64
+        with self.assertRaises(EntryError):self.invoke()
+        self.config=json.loads(json.dumps(original));self.config["runtime_hashes"][REQUIRED_RUNTIME_PATHS[0]]="0"*64
+        with self.assertRaises(EntryError):self.invoke()
+        self.config=original;self.write_config()
+        with self.assertRaises(EntryError):execute_entry(self.root)
+        link=self.root/"link";link.symlink_to(self.snapshot,target_is_directory=True)
+        with self.assertRaises(EntryError):execute_entry(link)
+        self.assertEqual(self.calls,[])
+
+    def test_final_nonfinite_direct_artifact_is_rejected_by_host_even_if_runner_says_success(self):
+        self.config["phase"]="final_refit";self.config["inputs"].pop("targets")
+        def forged(config):
+            result=self.fake_runner(config)
+            result.predictions_path.write_bytes(b"Id,SalePrice\n001,NaN\n002,20\n")
+            return RunResult(RunStatus.SUCCESS,RUN,result.predictions_path,sha(result.predictions_path.read_bytes()),2)
+        with self.assertRaises(EntryError):self.invoke(forged)
+
+    def test_success_requires_runner_hash_and_exact_integer_count(self):
+        def forged(config):
+            result=self.fake_runner(config)
+            return RunResult(RunStatus.SUCCESS,RUN,result.predictions_path,None,2)
+        with self.assertRaises(EntryError):self.invoke(forged)
+
+    def test_boolean_row_count_fails_closed(self):
+        def bad_count(config):
+            result=self.fake_runner(config)
+            return RunResult(RunStatus.SUCCESS,RUN,result.predictions_path,result.predictions_sha256,True)
+        with self.assertRaises(EntryError):self.invoke(bad_count)
+
+    def test_runtime_hash_guard_detects_snapshot_module_change_before_any_runner_call(self):
+        self.write_config()
+        path=self.snapshot/REQUIRED_RUNTIME_PATHS[1]
+        original=path.read_bytes()
+        path.write_bytes(original+b"\n# changed\n")
+        with patch("experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.run_entry.run_fixed_solution",self.fake_runner):
+            with self.assertRaises(EntryError):execute_entry(self.snapshot)
+        self.assertEqual(self.calls,[])
+
+    def test_runner_failure_is_safe_and_has_no_score(self):
+        def failure(config):return RunResult(RunStatus.TIMEOUT,RUN,stdout_bytes=12)
+        receipt=self.invoke(failure)
+        self.assertEqual(receipt["status"],"TIMEOUT");self.assertIsNone(receipt["metric"])
+        self.assertIsNone(receipt["predictions"])
+        self.assertEqual(receipt["stdout_bytes"],12)
+
+    def test_malformed_csv_and_resolution_loop_emit_one_safe_protocol_record(self):
+        cases=["csv", "loop"]
+        for case in cases:
+            with self.subTest(case=case):
+                if case=="csv":
+                    self.config["inputs"]["features"]=self.binding("bad.csv",b'Id,x\n001,"unterminated\n')
+                else:
+                    self.config["inputs"]["features"]=self.binding("features.csv",b"Id,x\n001,2\n002,3\n")
+                    link=self.root/"loop";link.symlink_to(link)
+                    self.config["local_runs_root"]=str(link)
+                self.write_config()
+                output=io.StringIO()
+                with patch("experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.run_entry.Path.cwd",return_value=self.snapshot), redirect_stdout(output):
+                    code=entry_main()
+                self.assertEqual(code,1)
+                self.assertEqual(output.getvalue().count("ARGO_HP_RESULT "),1)
+                self.assertNotIn(str(self.root),output.getvalue())
+        self.assertEqual(self.calls,[])
+
+    def test_finite_out_of_public_range_score_publishes_scorer_error(self):
+        def large(config):
+            result=self.fake_runner(config)
+            result.predictions_path.write_bytes(b"Id,SalePrice\n001,1e32\n002,1e32\n")
+            return RunResult(RunStatus.SUCCESS,RUN,result.predictions_path,sha(result.predictions_path.read_bytes()),2)
+        receipt=self.invoke(large)
+        self.assertEqual(receipt["status"],"SCORER_ERROR")
+        for key in ["metric","rows","predictions"]:self.assertIsNone(receipt[key])
+        self.assertEqual(json.loads((self.output/RUN/"runner-receipt.json").read_bytes()),receipt)
+
+    def test_log_counts_have_fixed_aggregate_and_truncation_consistency(self):
+        cap=self.config["limits"]["log_quarantine_bytes"]
+        cases=[(10**100,False,RunStatus.TIMEOUT),(cap+2049,True,RunStatus.LOG_LIMIT_EXCEEDED),
+               (cap+1,False,RunStatus.TIMEOUT),(12,True,RunStatus.TIMEOUT),
+               (12,False,RunStatus.LOG_LIMIT_EXCEEDED)]
+        for index,(count,truncated,status) in enumerate(cases):
+            with self.subTest(index=index), tempfile.TemporaryDirectory(dir=self.root) as temp:
+                self.config["output_root"]=str(Path(temp))
+                def invalid(config):return RunResult(status,RUN,stdout_bytes=count,logs_truncated=truncated)
+                with self.assertRaises(EntryError):self.invoke(invalid)
+                self.assertFalse((Path(temp)/RUN/"runner-receipt.json").exists())
+
+    def test_run_directory_relationship_uses_relative_descriptor_opens(self):
+        original_open=os.open
+        seen=[]
+        def observing_open(path,flags,*args,**kwargs):
+            if kwargs.get("dir_fd") is not None and str(path) in [RUN,"repo"]:
+                seen.append(str(path))
+            return original_open(path,flags,*args,**kwargs)
+        with patch("experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.run_entry.os.open",side_effect=observing_open):
+            self.invoke()
+        self.assertIn(RUN,seen);self.assertIn("repo",seen)
+
+    def test_descriptor_relationship_rejects_a_different_repo_inode(self):
+        other=self.root/"other-repo";other.mkdir()
+        original_open=os.open
+        def wrong_repo_open(path,flags,*args,**kwargs):
+            if str(path)=="repo" and kwargs.get("dir_fd") is not None and flags & os.O_DIRECTORY:
+                return original_open(other,flags)
+            return original_open(path,flags,*args,**kwargs)
+        self.write_config()
+        with patch("experiments.argo_workflow_followup.public_ml_apparatus.house_price_runtime.run_entry.os.open",side_effect=wrong_repo_open):
+            with self.assertRaises(EntryError):execute_entry(self.snapshot)
+        self.assertEqual(self.calls,[])
+        self.assertFalse((self.output/(".inputs-"+RUN)).exists())
+
+if __name__=="__main__":unittest.main(verbosity=2)
