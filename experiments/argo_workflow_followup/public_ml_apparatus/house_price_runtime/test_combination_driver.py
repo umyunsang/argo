@@ -68,6 +68,9 @@ class CaseDriverTest(unittest.TestCase):
         tmp=artifact/"tmp";tmp.mkdir(mode=0o700)
         control=root/"control";control.mkdir(mode=0o700)
         frontend=root/"frontend";frontend.mkdir(mode=0o700)
+        gate_outcomes=root/"gate-outcomes";gate_outcomes.mkdir(mode=0o700)
+        latest_gate=gate_outcomes/"0001-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json";latest_gate.write_bytes(b"{\"synthetic\":true}")
+        self.latest_gate=bind(latest_gate)
         normal=control/"normal-process-config.json";normal.write_bytes(b"{}")
         synthetic=control/"synthetic-process-config.json";synthetic.write_bytes(b"{}")
         gate=frontend/"gate.json";gate.write_bytes(b"{}")
@@ -78,7 +81,8 @@ class CaseDriverTest(unittest.TestCase):
         self.session_dir=session
         return SimpleNamespace(normal_process=bind(normal),synthetic_process=bind(synthetic),process_config=self.process,
             gate_config=bind(gate),synthetic_frontend=bind(faux),frontend_tree=tree(frontend),
-            session_directory=identity(session),cwd=str(root/"public"),artifact_root=artifact)
+            session_directory=identity(session),gate_outcome_directory=identity(gate_outcomes),
+            cwd=str(root/"public"),artifact_root=artifact)
     def observe(self):
         path=self.session_dir/(SID+".jsonl")
         if not path.exists():return UsageObservation("WAITING_FIRST_USAGE",None,False,None,None,None,None,0)
@@ -91,15 +95,27 @@ class CaseDriverTest(unittest.TestCase):
         metadata.write_bytes(b"{}");metadata.chmod(0o600)
         self.assertIsNone(campaign_guard())
         return self.receipt
+    def accepted_assessment(self):
+        return CombinationAssessment(
+            "PASS", "VERIFIED_SYNTHETIC_COMBINATION", 100, "a"*64,
+            self.latest_gate.sha256, self.latest_gate,
+        )
     def invoke(self,assessment=None,fixture_error=False,source_effect=None,assessment_effect=None):
-        assessed=assessment or CombinationAssessment("PASS","VERIFIED_SYNTHETIC_COMBINATION",100,"a"*64,"b"*64)
         observer=SimpleNamespace(observe=self.observe)
+        self.assessment_expectations=[]
+        def evaluate(expectation):
+            self.assessment_expectations.append(expectation)
+            if assessment_effect is not None:
+                return assessment_effect(expectation)
+            if assessment is not None:
+                return assessment
+            return self.accepted_assessment()
         with patch.object(driver,"_verify_sources",side_effect=source_effect), \
                 patch.object(driver,"prepare_fixture",side_effect=OSError("private fixture error") if fixture_error else self.prepare), \
                 patch.object(driver,"_prepare_environment",side_effect=self.environment), \
                 patch.object(driver,"UsageObserver",return_value=observer), \
                 patch.object(driver,"run_controller",side_effect=self.process_call) as run, \
-                patch.object(driver,"assess_combination",return_value=assessed,side_effect=assessment_effect) as assess, \
+                patch.object(driver,"assess_combination",side_effect=evaluate) as assess, \
                 patch.object(driver.threading,"Timer") as timer:
             result=run_case(self.config)
         self.run_count=run.call_count;self.assess_count=assess.call_count;self.timer=timer
@@ -131,11 +147,20 @@ class CaseDriverTest(unittest.TestCase):
         result=self.invoke(CombinationAssessment("NOT_ADMITTED","GATE_INVALID",None,None,None))
         self.assertEqual(result.reason,"ASSESSMENT_REJECTED");self.assertEqual(result.process_attempts,1)
         self.assertEqual(self.closed,1);self.assertEqual(self.assess_count,1)
+        value=json.loads(result.receipt.path.read_bytes())
+        self.assertIsNotNone(value["case_admission"])
+        self.assertIsNotNone(value["expectation"])
+        self.assertIsNone(value["latest_gate"])
+        self.assertIsNone(value["assessment"]["native_gate_binding"])
     def test_fixture_error_preserves_admission_without_process_or_exception_payload(self):
         result=self.invoke(fixture_error=True)
         self.assertEqual(result.status,"NOT_ADMITTED");self.assertEqual(self.run_count,0)
         self.assertTrue((self.config.case_root/"case-admission.json").exists())
         self.assertNotIn("private fixture error",result.receipt.path.read_text())
+        value=json.loads(result.receipt.path.read_bytes())
+        self.assertIsNotNone(value["case_admission"])
+        self.assertIsNone(value["expectation"])
+        self.assertIsNone(value["latest_gate"])
     def test_bad_source_fails_before_case_creation(self):
         with patch.object(driver,"_verify_sources",side_effect=ValueError("private source")),patch.object(driver,"prepare_fixture") as fixture:
             result=run_case(self.config)
@@ -198,7 +223,7 @@ class CaseDriverTest(unittest.TestCase):
     def test_metadata_deleted_after_assessment_cannot_be_verified(self):
         def delete_metadata(expectation):
             expectation.metadata.path.unlink()
-            return CombinationAssessment("PASS","VERIFIED_SYNTHETIC_COMBINATION",100,"a"*64,"b"*64)
+            return self.accepted_assessment()
         result=self.invoke(assessment_effect=delete_metadata)
         self.assertEqual(result.status,"NOT_ADMITTED")
         self.assertEqual(self.run_count,1)
@@ -265,6 +290,88 @@ class CaseDriverTest(unittest.TestCase):
         self.assertTrue(metadata_checked["seen"])
         self.assertEqual(result.status,"NOT_ADMITTED")
         self.assertEqual(json.loads(result.receipt.path.read_bytes())["status"],"NOT_ADMITTED")
+
+    def test_assessment_record_serializes_valid_gate_binding_independently(self):
+        gate=FileBinding(Path("/tmp/a2-driver-gate.json"),"a"*64,17,23)
+        assessment=CombinationAssessment("NOT_ADMITTED","OUTPUT_LIMIT",278,"b"*64,gate.sha256,gate)
+        self.assertEqual(driver._assessment_record(assessment),{
+            "status":"NOT_ADMITTED","reason":"OUTPUT_LIMIT","campaign_tokens":278,
+            "session_sha256":"b"*64,"native_gate_sha256":"a"*64,
+            "native_gate_binding":{"path":"/tmp/a2-driver-gate.json","sha256":"a"*64,
+                "bytes":17,"mtime_ns_max":23},
+        })
+
+    def test_assessment_record_serializes_paired_null_gate_independently(self):
+        assessment=CombinationAssessment("NOT_ADMITTED","GATE_INVALID",None,None,None,None)
+        self.assertEqual(driver._assessment_record(assessment),{
+            "status":"NOT_ADMITTED","reason":"GATE_INVALID","campaign_tokens":None,
+            "session_sha256":None,"native_gate_sha256":None,"native_gate_binding":None,
+        })
+
+    def test_assessment_record_rejects_digest_without_original_binding(self):
+        assessment=CombinationAssessment("NOT_ADMITTED","OUTPUT_LIMIT",278,"b"*64,"a"*64,None)
+        with self.assertRaises(driver.CaseError):driver._assessment_record(assessment)
+
+    def test_assessment_record_rejects_malformed_original_binding(self):
+        malformed=FileBinding(Path("relative-gate.json"),"a"*64,-1,-1)
+        assessment=CombinationAssessment("NOT_ADMITTED","OUTPUT_LIMIT",278,"b"*64,malformed.sha256,malformed)
+        with self.assertRaises(driver.CaseError):driver._assessment_record(assessment)
+
+    def test_v3_receipt_retains_original_admission_expectation_and_latest_gate(self):
+        result=self.invoke()
+        self.assertEqual(result.status,"VERIFIED_SYNTHETIC_COMBINATION")
+        value=json.loads(result.receipt.path.read_bytes())
+        self.assertEqual(value["schema_version"],"argo-house-price-a2-synthetic-combination-case/v3")
+        self.assertEqual(value["case_admission"]["path"],str(self.config.case_root/"case-admission.json"))
+        self.assertEqual(value["case_admission"]["sha256"],hashlib.sha256((self.config.case_root/"case-admission.json").read_bytes()).hexdigest())
+        self.assertEqual(value["latest_gate"],driver._binding_dict(self.latest_gate))
+        self.assertEqual(value["expectation"],driver._expectation_record(self.assessment_expectations[0]))
+        self.assertEqual(value["assessment"]["native_gate_binding"],driver._binding_dict(self.latest_gate))
+
+    def test_admission_mutation_after_first_assessment_rejects_original_binding(self):
+        original_prepare=self.prepare
+        def mutating_prepare(base):
+            fixture=original_prepare(base)
+            original_close=fixture.close
+            def close():
+                answer=original_close()
+                (self.config.case_root/"case-admission.json").write_bytes(b"changed admission")
+                return answer
+            fixture.close=close
+            return fixture
+        self.prepare=mutating_prepare
+        result=self.invoke()
+        self.assertEqual((result.status,result.stage,result.reason),("NOT_ADMITTED","ACCEPTANCE","STAGE_FAILED"))
+        self.assertEqual(self.assess_count,1)
+
+    def test_latest_gate_mutation_after_first_assessment_rejects_original_binding(self):
+        original_prepare=self.prepare
+        def mutating_prepare(base):
+            fixture=original_prepare(base)
+            original_close=fixture.close
+            def close():
+                answer=original_close()
+                self.latest_gate.path.write_bytes(b"changed gate")
+                return answer
+            fixture.close=close
+            return fixture
+        self.prepare=mutating_prepare
+        result=self.invoke()
+        self.assertEqual((result.status,result.stage,result.reason),("NOT_ADMITTED","ACCEPTANCE","STAGE_FAILED"))
+        self.assertEqual(self.assess_count,1)
+
+    def test_final_late_failure_still_returns_null_binding_and_preserves_receipt(self):
+        original=driver._reopen_final_references
+        def fail_after_publication(*args,**kwargs):
+            original(*args,**kwargs)
+            if (self.config.case_root/"evidence"/"case-receipt.json").exists():
+                raise driver.CaseError()
+        with patch.object(driver,"_reopen_final_references",side_effect=fail_after_publication):
+            result=self.invoke()
+        self.assertEqual((result.status,result.reason),("NOT_ADMITTED","STAGE_FAILED"))
+        self.assertIsNone(result.receipt)
+        retained=json.loads((self.config.case_root/"evidence"/"case-receipt.json").read_bytes())
+        self.assertEqual(retained["status"],"VERIFIED_SYNTHETIC_COMBINATION")
 
     def test_case_config_v2_rejects_missing_policy_and_roundtrips_exact_roles(self):
         path=self.root/"config.json"

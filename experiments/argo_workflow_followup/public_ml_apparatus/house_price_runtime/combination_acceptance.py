@@ -112,6 +112,7 @@ class CombinationAssessment:
     campaign_tokens: int | None
     session_sha256: str | None
     native_gate_sha256: str | None
+    native_gate_binding: FileBinding | None = None
 
 
 class _Reject(ValueError):
@@ -679,6 +680,9 @@ def _gate(
         latest_binding, latest, checkpoint = _latest_gate(
             outcome_directory, expectation.gate_config.sha256, observer,
         )
+        _binding_shape(latest_binding, 16384)
+        if latest_binding.path.parent != outcome_directory.path:
+            raise _Reject("GATE_INVALID")
     except Exception:
         raise _Reject("GATE_INVALID") from None
     expected_usage = UsageObservation(
@@ -877,6 +881,7 @@ def assess_combination(expectation: CombinationExpectation) -> CombinationAssess
     campaign_tokens: int | None = None
     session_sha256: str | None = None
     native_gate_sha256: str | None = None
+    native_gate_binding: FileBinding | None = None
     stage = "CONFIG_INVALID"
     try:
         trees = _validate_expectation(expectation)
@@ -898,23 +903,23 @@ def assess_combination(expectation: CombinationExpectation) -> CombinationAssess
         stage = "SOURCE_MISMATCH"
         research = _research(expectation)
         stage = "GATE_INVALID"
-        latest = _gate(expectation, gate, session_directory, usage, public, research)
-        native_gate_sha256 = latest.sha256
+        native_gate_binding = _gate(expectation, gate, session_directory, usage, public, research)
+        native_gate_sha256 = native_gate_binding.sha256
         stage = "METADATA_INVALID"
         _metadata(expectation, synthetic)
         stage = "OUTPUT_LIMIT"
         _artifact_census(synthetic)
         return CombinationAssessment(
             "PASS", "VERIFIED_SYNTHETIC_COMBINATION",
-            campaign_tokens, session_sha256, native_gate_sha256,
+            campaign_tokens, session_sha256, native_gate_sha256, native_gate_binding,
         )
     except _Reject as error:
         return CombinationAssessment(
             "NOT_ADMITTED", error.reason,
-            campaign_tokens, session_sha256, native_gate_sha256,
+            campaign_tokens, session_sha256, native_gate_sha256, native_gate_binding,
         )
     except Exception:
         return CombinationAssessment(
             "NOT_ADMITTED", stage if stage in REASONS else "CONFIG_INVALID",
-            campaign_tokens, session_sha256, native_gate_sha256,
+            campaign_tokens, session_sha256, native_gate_sha256, native_gate_binding,
         )

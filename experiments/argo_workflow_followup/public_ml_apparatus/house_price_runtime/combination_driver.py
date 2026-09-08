@@ -54,6 +54,8 @@ EXTENSION_SHA256="8e2ca3351e601b5d4733000dc9c704f0327fdc941851fadbc0d3f59357d2d3
 PROCESS_SHA256="135a3e28291ea8e7db3b85cdd4fda05124113baaeb0d1a1335a905bc5bdd3f33"
 EXEC_SHA256="c8c19b2d87bb155f8886ba0a696aa962a1fa9d55feb17e1f01ba65bc95054840"
 CONFIG_SCHEMA="argo-house-price-a2-combination-case-config/v2"
+CASE_RECEIPT_SCHEMA="argo-house-price-a2-synthetic-combination-case/v3"
+EXPECTATION_SCHEMA="argo-house-price-a2-combination-expectation/v1"
 TREE_LIMITS=ClosureLimits(160,8388608,1048576,8,4096)
 PRIME_LIMITS=ClosureLimits(30000,268435456,67108864,32,4096)
 HEX64=re.compile(r"[0-9a-f]{64}")
@@ -107,12 +109,55 @@ class _PreparedEnvironment:
     synthetic_frontend: FileBinding
     frontend_tree: SourceTree
     session_directory: DirectoryIdentity
+    gate_outcome_directory: DirectoryIdentity
     cwd: str
     artifact_root: Path
 
 
 class CaseError(ValueError):
     def __init__(self):super().__init__("COMBINATION_CASE_INVALID")
+
+
+def _tree_dict(value: SourceTree) -> dict[str, object]:
+    if type(value) is not SourceTree:raise CaseError()
+    return asdict(value)
+
+
+def _expectation_record(value: CombinationExpectation | None):
+    if value is None:return None
+    if type(value) is not CombinationExpectation:raise CaseError()
+    bindings=(value.normal_process_config,value.synthetic_process_config,value.process_receipt,
+              value.gate_config,value.metadata,value.current_session,value.synthetic_frontend)
+    trees=value.state_trees+(value.namespace_tree,value.frontend_tree,value.installed_prime_tree)
+    if (any(type(binding) is not FileBinding for binding in bindings) or
+            type(value.state_trees) is not tuple or len(value.state_trees)!=3 or
+            any(type(tree) is not SourceTree for tree in trees) or
+            type(value.verified_dev_run_ids) is not tuple or len(value.verified_dev_run_ids)!=2):raise CaseError()
+    return {"schema_version":EXPECTATION_SCHEMA,"controller_context_id":value.controller_context_id,
+        "normal_process_config":_binding_dict(value.normal_process_config),
+        "synthetic_process_config":_binding_dict(value.synthetic_process_config),
+        "process_receipt":_binding_dict(value.process_receipt),"gate_config":_binding_dict(value.gate_config),
+        "metadata":_binding_dict(value.metadata),"current_session":_binding_dict(value.current_session),
+        "current_session_id":value.current_session_id,"synthetic_frontend":_binding_dict(value.synthetic_frontend),
+        "verified_dev_run_ids":list(value.verified_dev_run_ids),"research_sha256":value.research_sha256,
+        "state_trees":[_tree_dict(tree) for tree in value.state_trees],
+        "namespace_tree":_tree_dict(value.namespace_tree),"frontend_tree":_tree_dict(value.frontend_tree),
+        "installed_prime_tree":_tree_dict(value.installed_prime_tree),
+        "elapsed_limit_seconds":value.elapsed_limit_seconds}
+
+
+def _assessment_record(value: CombinationAssessment | None):
+    if value is None:return None
+    if type(value) is not CombinationAssessment:raise CaseError()
+    gate=value.native_gate_binding;digest=value.native_gate_sha256
+    if (gate is None)!=(digest is None):raise CaseError()
+    if gate is not None and (type(gate) is not FileBinding or not isinstance(gate.path,Path) or
+            not gate.path.is_absolute() or ".." in gate.path.parts or type(gate.sha256) is not str or
+            HEX64.fullmatch(gate.sha256) is None or gate.sha256!=digest or type(gate.bytes) is not int or
+            not 0<=gate.bytes<=16384 or type(gate.mtime_ns_max) is not int or gate.mtime_ns_max<0):raise CaseError()
+    return {"status":value.status,"reason":value.reason,"campaign_tokens":value.campaign_tokens,
+        "session_sha256":value.session_sha256,"native_gate_sha256":value.native_gate_sha256,
+        "native_gate_binding":_binding_dict(gate)}
 
 
 def _canonical(value: object) -> bytes:
@@ -311,12 +356,12 @@ def _prepare_environment(config: CombinationCaseConfig, fixture: CombinationFixt
     synthetic_binding=_publish(_directory(paths["control"]),"synthetic-process-config.json",config_to_dict(synthetic),CONTROL_FILES,131072)
     verify_tree(frontend,frontend_tree,TREE_LIMITS)
     return _PreparedEnvironment(normal,synthetic_binding,synthetic,gate_binding,faux,frontend_tree,
-                                _directory(session),str(paths["public"]),artifact)
+                                _directory(session),_directory(paths["gate-outcomes"]),str(paths["public"]),artifact)
 
 
 def _capture_final_directories(prepared: _PreparedEnvironment, fixture: CombinationFixture,
-                               evidence: DirectoryIdentity) -> tuple[DirectoryIdentity,...]:
-    identities=(evidence,prepared.session_directory,
+                               case_root: DirectoryIdentity, evidence: DirectoryIdentity) -> tuple[DirectoryIdentity,...]:
+    identities=(case_root,evidence,prepared.session_directory,prepared.gate_outcome_directory,
         DirectoryIdentity(prepared.artifact_root,prepared.process_config.artifact_root_identity.device,
                           prepared.process_config.artifact_root_identity.inode),
         DirectoryIdentity(Path(prepared.frontend_tree.root),prepared.frontend_tree.root_device,
@@ -330,13 +375,15 @@ def _capture_final_directories(prepared: _PreparedEnvironment, fixture: Combinat
 
 
 def _reopen_final_references(expectation: CombinationExpectation, fixture: CombinationFixture,
-                              directories: tuple[DirectoryIdentity,...], *, sync_metadata: bool=False) -> None:
+                              directories: tuple[DirectoryIdentity,...], case_admission: FileBinding,
+                              latest_gate: FileBinding, *, sync_metadata: bool=False) -> None:
     held=[]
     try:
         for identity in directories:
             descriptor=os.open(identity.path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
             held.append((descriptor,identity));_assert_directory(descriptor,identity)
-        for binding,cap in ((expectation.normal_process_config,65536),(expectation.synthetic_process_config,65536),
+        for binding,cap in ((case_admission,65536),(latest_gate,16384),
+                            (expectation.normal_process_config,65536),(expectation.synthetic_process_config,65536),
                             (expectation.process_receipt,1048576),(expectation.gate_config,65536),
                             (fixture.bridge_config,65536),(expectation.synthetic_frontend,1048576),
                             (expectation.metadata,4096),(expectation.current_session,8388608)):
@@ -368,14 +415,15 @@ def _reopen_final_references(expectation: CombinationExpectation, fixture: Combi
 
 def _revalidate_final(config: CombinationCaseConfig, expectation: CombinationExpectation,
                       fixture: CombinationFixture, directories: tuple[DirectoryIdentity,...],
+                      case_admission: FileBinding, latest_gate: FileBinding,
                       original: CombinationAssessment) -> None:
     _verify_protected_roots(config.case_root,config.protected_roots)
-    _reopen_final_references(expectation,fixture,directories,sync_metadata=True)
+    _reopen_final_references(expectation,fixture,directories,case_admission,latest_gate,sync_metadata=True)
     _verify_sources(config)
     repeated=assess_combination(expectation)
     if (type(repeated) is not CombinationAssessment or repeated!=original or repeated.status!="PASS" or
             repeated.reason!="VERIFIED_SYNTHETIC_COMBINATION"):raise CaseError()
-    _reopen_final_references(expectation,fixture,directories)
+    _reopen_final_references(expectation,fixture,directories,case_admission,latest_gate)
     _verify_protected_roots(config.case_root,config.protected_roots)
 
 
@@ -408,11 +456,12 @@ def run_case(config: CombinationCaseConfig) -> CombinationCaseResult:
             return CombinationCaseResult("NOT_STARTED","SOURCE","STAGE_FAILED",None,0,None)
     except Exception:return CombinationCaseResult("NOT_STARTED","SOURCE","STAGE_FAILED",None,0,None)
     root=None;evidence=None;fixture=None;prepared=None;process_binding=None;metadata=None;current=None;session_id=None
-    assessment=None;close_result=None;final_binding=None;fixture_owned=False;expectation=None;reference_directories=()
+    admission=None;latest_gate=None;assessment=None;close_result=None;final_binding=None
+    fixture_owned=False;expectation=None;reference_directories=()
     try:
         stage="ADMISSION";reason="STAGE_FAILED";status="NOT_ADMITTED"
         config.case_root.mkdir(mode=0o700);root=_directory(config.case_root)
-        _publish(root,"case-admission.json",{"schema_version":"argo-house-price-a2-synthetic-case-admission/v1",
+        admission=_publish(root,"case-admission.json",{"schema_version":"argo-house-price-a2-synthetic-case-admission/v1",
             "case_id":"A2-Faux-C1","synthetic_only":True,"actual_P0":False,"config":_config_record(config)},
             {"case-admission.json":65536},65536)
         evidence_path=config.case_root/"evidence";evidence_path.mkdir(mode=0o700);evidence=_directory(evidence_path)
@@ -421,7 +470,7 @@ def run_case(config: CombinationCaseConfig) -> CombinationCaseResult:
         _census_case(root)
         if _elapsed_since(started)>=160:raise CaseError()
         stage="DEPLOYMENT";prepared=_prepare_environment(config,fixture,started_ns)
-        reference_directories=_capture_final_directories(prepared,fixture,evidence)
+        reference_directories=_capture_final_directories(prepared,fixture,root,evidence)
         _census_case(root)
         if _elapsed_since(started)>=160:raise CaseError()
         observer=UsageObserver(UsageObserverConfig(prepared.session_directory,prepared.cwd,"openai-codex","gpt-5.6-sol",120000,()))
@@ -447,9 +496,14 @@ def run_case(config: CombinationCaseConfig) -> CombinationCaseResult:
             fixture.research_sha256,(fixture.source_tree,fixture.trusted_state_tree,fixture.state_tree),config.namespace_tree,
             prepared.frontend_tree,config.installed_prime_tree,20)
         assessment=assess_combination(expectation)
+        if type(assessment) is CombinationAssessment:latest_gate=assessment.native_gate_binding
         if type(assessment) is not CombinationAssessment or assessment.status!="PASS" or assessment.reason!="VERIFIED_SYNTHETIC_COMBINATION":
             reason="ASSESSMENT_REJECTED"
-        else:status="VERIFIED_SYNTHETIC_COMBINATION";stage="COMPLETE";reason="VERIFIED"
+        else:
+            if (type(admission) is not FileBinding or type(latest_gate) is not FileBinding or
+                    latest_gate.sha256!=assessment.native_gate_sha256):raise CaseError()
+            _reopen_final_references(expectation,fixture,reference_directories,admission,latest_gate)
+            status="VERIFIED_SYNTHETIC_COMBINATION";stage="COMPLETE";reason="VERIFIED"
     except CombinationFixtureError as error:
         close_result=error.close_result
         fixture_owned=error.base is not None or error.close_result is not None
@@ -463,8 +517,9 @@ def run_case(config: CombinationCaseConfig) -> CombinationCaseResult:
             status="NOT_ADMITTED";stage="CLEANUP";reason="CLEANUP_UNCONFIRMED"
         if status=="VERIFIED_SYNTHETIC_COMBINATION":
             try:
-                if expectation is None or fixture is None or not reference_directories:raise CaseError()
-                _revalidate_final(config,expectation,fixture,reference_directories,assessment)
+                if (expectation is None or fixture is None or not reference_directories or
+                        type(admission) is not FileBinding or type(latest_gate) is not FileBinding):raise CaseError()
+                _revalidate_final(config,expectation,fixture,reference_directories,admission,latest_gate,assessment)
             except Exception:
                 status="NOT_ADMITTED";stage="ACCEPTANCE";reason="STAGE_FAILED"
         if evidence is not None:
@@ -475,19 +530,21 @@ def run_case(config: CombinationCaseConfig) -> CombinationCaseResult:
                 if not math.isfinite(elapsed) or elapsed<0:raise CaseError()
                 if elapsed>=180:
                     status="NOT_ADMITTED";reason="STAGE_FAILED"
-                payload={"schema_version":"argo-house-price-a2-synthetic-combination-case/v2","case_id":"A2-Faux-C1",
+                payload={"schema_version":CASE_RECEIPT_SCHEMA,"case_id":"A2-Faux-C1",
                     "synthetic_only":True,"production_entry_executed":False,"actual_P0":False,"status":status,"stage":stage,
                     "reason":reason,"context_id":context,"process_attempts":attempts,"source_bindings":_config_record(config),
+                    "case_admission":_binding_dict(admission),"expectation":_expectation_record(expectation),
+                    "latest_gate":_binding_dict(latest_gate),
                     "normal_process_config":_binding_dict(prepared.normal_process) if prepared else None,
                     "synthetic_process_config":_binding_dict(prepared.synthetic_process) if prepared else None,
                     "process_receipt":_binding_dict(process_binding),"gate_config":_binding_dict(prepared.gate_config) if prepared else None,
                     "metadata":_binding_dict(metadata),"current_session":_binding_dict(current),"current_session_id":session_id,
-                    "assessment":asdict(assessment) if type(assessment) is CombinationAssessment else None,
+                    "assessment":_assessment_record(assessment),
                     "elapsed_seconds":elapsed,"cleanup_confirmed":_close_is_confirmed(close_result),
                     "fixture_close_result":asdict(close_result) if type(close_result) is FixtureCloseResult else None,"limitations":list(LIMITATIONS)}
                 final_binding=_publish(evidence,"case-receipt.json",payload,EVIDENCE_FILES,1114112)
                 if status=="VERIFIED_SYNTHETIC_COMBINATION":
-                    _reopen_final_references(expectation,fixture,reference_directories)
+                    _reopen_final_references(expectation,fixture,reference_directories,admission,latest_gate)
                     _verify_protected_roots(config.case_root,config.protected_roots)
                     if _elapsed_since(started)>=180:raise CaseError()
             except Exception:

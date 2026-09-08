@@ -466,6 +466,7 @@ class CombinationAcceptanceTests(unittest.TestCase):
         self.assertEqual(result.campaign_tokens, 278)
         self.assertEqual(result.session_sha256, self.session_binding.sha256)
         self.assertEqual(result.native_gate_sha256, self.latest_binding.sha256)
+        self.assertEqual(result.native_gate_binding, self.latest_binding)
         self.assertEqual(self.verify_calls, 6)
 
     def test_task_prompt_asset_change_and_foreign_gate_location_reject(self) -> None:
@@ -531,6 +532,7 @@ class CombinationAcceptanceTests(unittest.TestCase):
             result = assess_combination(self.expectation)
         self.assertEqual(result.reason, "GATE_INVALID")
         self.assertIsNone(result.native_gate_sha256)
+        self.assertIsNone(result.native_gate_binding)
 
     def test_false_process_exit_rejects(self) -> None:
         expectation = replace(self.expectation, process_receipt=self.write_process_receipt(False))
@@ -577,10 +579,13 @@ class CombinationAcceptanceTests(unittest.TestCase):
                 self.assertEqual(result.campaign_tokens, 278)
                 self.assertEqual(result.session_sha256, self.session_binding.sha256)
                 self.assertEqual(result.native_gate_sha256, self.latest_binding.sha256)
+                self.assertEqual(result.native_gate_binding, self.latest_binding)
 
     def test_output_aggregate_cap_rejects(self) -> None:
         (self.artifact / "aggregate.bin").write_bytes(b"x" * 1_048_000)
-        self.assertEqual(self.assess().reason, "OUTPUT_LIMIT")
+        result = self.assess()
+        self.assertEqual(result.reason, "OUTPUT_LIMIT")
+        self.assertEqual(result.native_gate_binding, self.latest_binding)
 
     def test_output_file_count_cap_rejects(self) -> None:
         for index in range(130):
