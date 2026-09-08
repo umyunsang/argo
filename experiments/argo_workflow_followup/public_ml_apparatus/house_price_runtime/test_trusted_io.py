@@ -12,6 +12,8 @@ import unittest
 from unittest import mock
 import uuid
 
+from source_closure import ClosureLimits, capture_tree
+
 from trusted_io import (
     AdmissionState,
     DevResultReceipt,
@@ -361,12 +363,24 @@ class TrustedIoTest(unittest.TestCase):
         for process in (select, write):
             process.join(15)
             self.assertEqual(process.exitcode, 0)
-        self.assertFalse(any(kind == "select-ok" for kind, _ in results) and any(kind == "write-ok" for kind, _ in results))
-        if any(kind == "select-ok" for kind, _ in results):
+        selected = [row for row in results if row[0].startswith("select-")]
+        written = [row for row in results if row[0].startswith("write-")]
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(len(written), 1)
+        self.assertIn(selected[0], (("select-ok", ""), ("select-error", TrustedIoErrorCode.LOCK_UNAVAILABLE.value)))
+        self.assertIn(written[0], (("write-ok", ""), ("write-error", TrustedIoErrorCode.LOCK_UNAVAILABLE.value),
+                                  ("write-error", TrustedIoErrorCode.FINALIZED.value)))
+        self.assertTrue(selected[0][0] == "select-ok" or written[0][0] == "write-ok")
+        if selected[0][0] == "select-ok":
             self.assertEqual(self.io.final_selection().code_sha256, snapshot.solution_sha256)
-            self.assertEqual(self.io.read_solution(SolutionName.SOLUTION).sha256, snapshot.solution_sha256)
+            self.assertEqual((self.state / "final-solution.py").read_bytes(), snapshot.solution_bytes)
+            self.assert_code(TrustedIoErrorCode.FINALIZED,
+                             lambda: self.io.write_solution(SolutionName.SOLUTION, "post-selection write\n"))
         else:
             self.assert_code(TrustedIoErrorCode.SELECTION_NOT_FOUND, self.io.final_selection)
+            self.assertFalse((self.state / "final-solution.py").exists())
+        expected_active = b"print('raced write')\n" if written[0][0] == "write-ok" else snapshot.solution_bytes
+        self.assertEqual((self.source / "solution.py").read_bytes(), expected_active)
 
     def test_t09_final_refit_is_one_fence_across_processes_and_restart(self) -> None:
         snapshot = self.io.snapshot()
@@ -671,6 +685,352 @@ class TrustedIoTest(unittest.TestCase):
         self.assertEqual(list((self.state / "snapshots").iterdir()), [])
         self.assertFalse((self.state / "state.json").exists())
 
+
+
+    def observation_tree(self):
+        return capture_tree(self.state.resolve(), ClosureLimits(256, 8388608, 2097152, 8, 1024))
+
+    def observation_getters(self, snapshot):
+        return (
+            (lambda: self.io.admission(snapshot), TrustedIoErrorCode.ADMISSION_NOT_FOUND),
+            (self.io.final_selection, TrustedIoErrorCode.SELECTION_NOT_FOUND),
+            (self.io.final_refit_admission, TrustedIoErrorCode.FINAL_REFIT_NOT_FOUND),
+            (self.io.final_artifact_lock, TrustedIoErrorCode.SELECTION_NOT_FOUND),
+        )
+
+    def test_read_snapshot_missing_getters_preserve_full_tree(self):
+        snapshot = self.io.snapshot()
+        for call, code in self.observation_getters(snapshot):
+            with self.subTest(code=code):
+                before = self.observation_tree()
+                self.assert_code(code, call)
+                self.assertEqual(self.observation_tree(), before)
+
+    def test_read_snapshot_populated_getters_preserve_typed_state_and_tree(self):
+        snapshot = self.io.snapshot()
+        pending = self.io.admit_intent(snapshot)
+        before = self.observation_tree()
+        self.assertEqual(self.io.admission(snapshot), pending)
+        self.assertEqual(self.observation_tree(), before)
+        run_id = str(uuid.uuid4())
+        admitted = self.io.bind_admission(snapshot, run_id)
+        permitted = self.permitted_receipt(snapshot)
+        selected = self.io.select_final_method(snapshot.closure_sha256, snapshot.solution_sha256,
+                                               [permitted], self.selection_binding(snapshot))
+        refit = self.io.admit_final_refit(_final_identity(permitted.receipt_sha256))
+        before = self.observation_tree()
+        self.assertEqual(self.io.final_refit_admission(), refit)
+        self.assertEqual(self.observation_tree(), before)
+        bound_refit = self.io.bind_final_refit(run_id)
+        locked = self.io.lock_final_artifact(FinalArtifactBinding(
+            run_id, _digest("artifact"), _digest("task"), _digest("environment"), _digest("protocol")))
+        calls = (lambda: self.io.admission(snapshot), self.io.final_selection,
+                 self.io.final_refit_admission, self.io.final_artifact_lock)
+        for call, expected in zip(calls, (admitted, selected, bound_refit, locked)):
+            before = self.observation_tree()
+            self.assertEqual(call(), expected)
+            self.assertEqual(self.observation_tree(), before)
+
+    def test_read_snapshot_never_writes_or_fsyncs_even_when_value_missing(self):
+        snapshot = self.io.snapshot()
+        original_open = os.open
+        def read_only(path, flags, *args, **kwargs):
+            self.assertFalse(flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND))
+            return original_open(path, flags, *args, **kwargs)
+        with mock.patch("trusted_io.os.open", side_effect=read_only), \
+             mock.patch("trusted_io.os.write", side_effect=AssertionError("write")), \
+             mock.patch("trusted_io.os.fsync", side_effect=AssertionError("fsync")), \
+             mock.patch("trusted_io.os.unlink", side_effect=AssertionError("unlink")):
+            for call, code in self.observation_getters(snapshot):
+                self.assert_code(code, call)
+
+    def test_read_snapshot_any_preexisting_lock_entry_is_preserved(self):
+        snapshot = self.io.snapshot()
+        lock = self.state / ".trusted-io.transaction.lock"
+        target = self.source.parent / "lock-target"
+        target.write_bytes(b"untouched")
+        for kind in ("regular", "symlink", "fifo", "directory"):
+            with self.subTest(kind=kind):
+                if kind == "regular": lock.write_bytes(b"stale-writer")
+                elif kind == "symlink": lock.symlink_to(target)
+                elif kind == "fifo": os.mkfifo(lock)
+                else: lock.mkdir()
+                before = lock.lstat()
+                parent = self.state.stat()
+                for call, _ in self.observation_getters(snapshot):
+                    self.assert_code(TrustedIoErrorCode.LOCK_UNAVAILABLE, call)
+                after = lock.lstat()
+                self.assertEqual((after.st_dev, after.st_ino, after.st_mode, after.st_mtime_ns),
+                                 (before.st_dev, before.st_ino, before.st_mode, before.st_mtime_ns))
+                self.assertEqual(self.state.stat().st_mtime_ns, parent.st_mtime_ns)
+                self.assertEqual(target.read_bytes(), b"untouched")
+                if kind == "directory": lock.rmdir()
+                else: lock.unlink()
+
+    def test_read_snapshot_same_bytes_named_state_replacement_is_conflict(self):
+        snapshot = self.io.snapshot()
+        self.io.admit_intent(snapshot)
+        state = self.state / "state.json"
+        original = state.read_bytes()
+        original_inode = state.stat().st_ino
+        original_read = os.read
+        changed = False
+        def replace_during_read(fd, amount):
+            nonlocal changed
+            data = original_read(fd, amount)
+            if not changed and os.fstat(fd).st_ino == original_inode:
+                changed = True
+                replacement = self.state / "replacement.json"
+                replacement.write_bytes(original)
+                os.replace(replacement, state)
+            return data
+        with mock.patch("trusted_io.os.read", side_effect=replace_during_read):
+            self.assert_code(TrustedIoErrorCode.SNAPSHOT_CHANGED, lambda: self.io.admission(snapshot))
+        self.assertTrue(changed)
+        self.assertEqual(state.read_bytes(), original)
+
+    def test_read_snapshot_state_root_replacement_is_conflict(self):
+        snapshot = self.io.snapshot()
+        self.io.admit_intent(snapshot)
+        state = self.state / "state.json"
+        original_inode = state.stat().st_ino
+        original_read = os.read
+        changed = False
+        def replace_root(fd, amount):
+            nonlocal changed
+            data = original_read(fd, amount)
+            if not changed and os.fstat(fd).st_ino == original_inode:
+                changed = True
+                self.state.rename(self.state.parent / "moved-state")
+                self.state.mkdir()
+            return data
+        with mock.patch("trusted_io.os.read", side_effect=replace_root):
+            self.assert_code(TrustedIoErrorCode.SNAPSHOT_CHANGED, lambda: self.io.admission(snapshot))
+        self.assertTrue(changed)
+
+    def test_read_snapshot_writer_lock_appearing_during_read_is_conflict(self):
+        snapshot = self.io.snapshot()
+        self.io.admit_intent(snapshot)
+        state_inode = (self.state / "state.json").stat().st_ino
+        lock = self.state / ".trusted-io.transaction.lock"
+        original_read = os.read
+        changed = False
+        def add_writer_lock(fd, amount):
+            nonlocal changed
+            data = original_read(fd, amount)
+            if not changed and os.fstat(fd).st_ino == state_inode:
+                changed = True
+                replacement = self.state / "writer-lock-temp"
+                replacement.write_bytes(b"concurrent-writer")
+                os.replace(replacement, lock)
+            return data
+        with mock.patch("trusted_io.os.read", side_effect=add_writer_lock):
+            self.assert_code(TrustedIoErrorCode.SNAPSHOT_CHANGED, lambda: self.io.admission(snapshot))
+        self.assertTrue(changed)
+        self.assertEqual(lock.read_bytes(), b"concurrent-writer")
+
+    def test_read_snapshot_corrupt_oversized_and_unsafe_state_do_not_mutate_root(self):
+        target = self.source.parent / "state-target"
+        target.write_bytes(b"{}")
+        variants = (("corrupt", TrustedIoErrorCode.STATE_CORRUPT),
+                    ("oversized", TrustedIoErrorCode.LIMIT_EXCEEDED),
+                    ("symlink", TrustedIoErrorCode.UNSAFE_FILE),
+                    ("hardlink", TrustedIoErrorCode.UNSAFE_FILE),
+                    ("fifo", TrustedIoErrorCode.UNSAFE_FILE),
+                    ("directory", TrustedIoErrorCode.UNSAFE_FILE))
+        for kind, code in variants:
+            with self.subTest(kind=kind):
+                root = self.source.parent / ("unsafe-state-" + kind)
+                local = TrustedIo(self.source, root, _limits())
+                state = root / "state.json"
+                if kind == "corrupt": state.write_bytes(b"not-json")
+                elif kind == "oversized": state.write_bytes(b"x" * 16385)
+                elif kind == "symlink": state.symlink_to(target)
+                elif kind == "hardlink": os.link(target, state)
+                elif kind == "fifo": os.mkfifo(state)
+                else: state.mkdir()
+                before = root.stat()
+                self.assert_code(code, local.final_selection)
+                after = root.stat()
+                self.assertEqual((after.st_ino, after.st_mtime_ns, after.st_ctime_ns),
+                                 (before.st_ino, before.st_mtime_ns, before.st_ctime_ns))
+                self.assertFalse((root / ".trusted-io.transaction.lock").exists())
+
+
+    def test_read_snapshot_canonical_empty_state_preserves_all_getters(self):
+        state = {"version": 3, "admissions": {}, "final_selection": None,
+                 "final_refit_admission": None, "final_lock": None}
+        (self.state / "state.json").write_text(json.dumps(state))
+        snapshot = self.io.snapshot()
+        for call, code in self.observation_getters(snapshot):
+            before = self.observation_tree()
+            self.assert_code(code, call)
+            self.assertEqual(self.observation_tree(), before)
+
+    def test_read_snapshot_in_place_same_size_mutation_is_conflict(self):
+        snapshot = self.io.snapshot()
+        self.io.admit_intent(snapshot)
+        path = self.state / "state.json"
+        original = path.read_bytes()
+        expected_inode = path.stat().st_ino
+        original_read = os.read
+        changed = False
+        def mutate(fd, amount):
+            nonlocal changed
+            value = original_read(fd, amount)
+            if not changed and os.fstat(fd).st_ino == expected_inode:
+                changed = True
+                path.write_bytes(b"x" * len(original))
+            return value
+        with mock.patch("trusted_io.os.read", side_effect=mutate):
+            self.assert_code(TrustedIoErrorCode.SNAPSHOT_CHANGED, lambda: self.io.admission(snapshot))
+        self.assertTrue(changed)
+        self.assertEqual(path.read_bytes(), b"x" * len(original))
+
+    def test_read_snapshot_transient_writer_lock_invalidates_interval(self):
+        snapshot = self.io.snapshot()
+        self.io.admit_intent(snapshot)
+        state_inode = (self.state / "state.json").stat().st_ino
+        original_read = os.read
+        changed = False
+        def transient_lock(fd, amount):
+            nonlocal changed
+            value = original_read(fd, amount)
+            if not changed and os.fstat(fd).st_ino == state_inode:
+                changed = True
+                lock = self.state / ".trusted-io.transaction.lock"
+                lock.write_bytes(b"concurrent writer")
+                lock.unlink()
+            return value
+        with mock.patch("trusted_io.os.read", side_effect=transient_lock):
+            self.assert_code(TrustedIoErrorCode.SNAPSHOT_CHANGED, lambda: self.io.admission(snapshot))
+        self.assertTrue(changed)
+        self.assertFalse((self.state / ".trusted-io.transaction.lock").exists())
+
+    def test_read_snapshot_short_positive_reads_and_premature_eof(self):
+        snapshot = self.io.snapshot()
+        pending = self.io.admit_intent(snapshot)
+        original_read = os.read
+        before = self.observation_tree()
+        with mock.patch("trusted_io.os.read", side_effect=lambda fd, size: original_read(fd, min(size, 3))):
+            self.assertEqual(self.io.admission(snapshot), pending)
+        self.assertEqual(self.observation_tree(), before)
+        with mock.patch("trusted_io.os.read", return_value=b""):
+            self.assert_code(TrustedIoErrorCode.SNAPSHOT_CHANGED, lambda: self.io.admission(snapshot))
+        self.assertEqual(self.observation_tree(), before)
+
+    def test_read_snapshot_initial_root_replacement_rejected_without_writes(self):
+        snapshot = self.io.snapshot()
+        self.io.admit_intent(snapshot)
+        old = self.state.parent / "old-anchored-state"
+        self.state.rename(old)
+        self.state.mkdir()
+        (self.state / "state.json").write_bytes((old / "state.json").read_bytes())
+        before = capture_tree(self.state.resolve(), ClosureLimits(256, 8388608, 2097152, 8, 1024))
+        for call, _ in self.observation_getters(snapshot):
+            self.assert_code(TrustedIoErrorCode.UNSAFE_FILE, call)
+        self.assertEqual(capture_tree(self.state.resolve(), ClosureLimits(256, 8388608, 2097152, 8, 1024)), before)
+
+    def test_read_snapshot_state_deletion_during_read_is_conflict(self):
+        snapshot = self.io.snapshot()
+        self.io.admit_intent(snapshot)
+        path = self.state / "state.json"
+        expected_inode = path.stat().st_ino
+        original_read = os.read
+        changed = False
+        def remove_after_read(fd, amount):
+            nonlocal changed
+            value = original_read(fd, amount)
+            if not changed and os.fstat(fd).st_ino == expected_inode:
+                changed = True
+                path.unlink()
+            return value
+        with mock.patch("trusted_io.os.read", side_effect=remove_after_read):
+            self.assert_code(TrustedIoErrorCode.SNAPSHOT_CHANGED, lambda: self.io.admission(snapshot))
+        self.assertTrue(changed)
+        self.assertFalse(path.exists())
+
+    def test_read_snapshot_absent_state_appearing_after_capture_is_conflict(self):
+        snapshot = self.io.snapshot()
+        path = self.state / "state.json"
+        original_stat = os.stat
+        changed = False
+        def create_after_absence(name, *args, **kwargs):
+            nonlocal changed
+            try:
+                return original_stat(name, *args, **kwargs)
+            except FileNotFoundError:
+                if name == "state.json" and kwargs.get("dir_fd") is not None and not changed:
+                    changed = True
+                    path.write_text(json.dumps({"version": 3, "admissions": {}, "final_selection": None,
+                        "final_refit_admission": None, "final_lock": None}))
+                raise
+        with mock.patch("trusted_io.os.stat", side_effect=create_after_absence):
+            self.assert_code(TrustedIoErrorCode.SNAPSHOT_CHANGED, lambda: self.io.admission(snapshot))
+        self.assertTrue(changed)
+        self.assertTrue(path.exists())
+
+    def test_read_snapshot_shared_decoder_preserves_transaction_semantics(self):
+        snapshot = self.io.snapshot()
+        self.io.admit_intent(snapshot)
+        path = self.state / "state.json"
+        valid_admission = path.read_bytes()
+        selection = self.io.select_final_method(snapshot.closure_sha256, snapshot.solution_sha256,
+            [self.permitted_receipt(snapshot)], self.selection_binding(snapshot))
+        self.io.admit_final_refit(_final_identity(selection.selection_receipt_sha256))
+        self.io.bind_final_refit(str(uuid.uuid4()))
+        valid_refit = path.read_bytes()
+        for data in (valid_admission, valid_refit):
+            path.write_bytes(data)
+            with self.io._transaction():
+                transactional = self.io._read_state()
+            before = self.observation_tree()
+            self.assertEqual(self.io._read_state_snapshot(), transactional)
+            self.assertEqual(self.observation_tree(), before)
+        malformed = (b"bad-json", b"\xff", b"{}", json.dumps({"version": 2}).encode(),
+                     valid_admission.replace(b'"final_lock":null', b'"final_lock":{}'))
+        for data in malformed:
+            with self.subTest(data=data[:40]):
+                path.write_bytes(data)
+                with self.io._transaction():
+                    self.assert_code(TrustedIoErrorCode.STATE_CORRUPT, self.io._read_state)
+                before = self.observation_tree()
+                self.assert_code(TrustedIoErrorCode.STATE_CORRUPT, self.io.final_selection)
+                self.assertEqual(self.observation_tree(), before)
+
+
+    def test_t14_deterministic_writer_order_preserves_historical_selection(self):
+        for order in ("write_then_select", "select_then_write", "writer_lock_overlap"):
+            with self.subTest(order=order):
+                source = self.source.parent / (order + "-source")
+                state = self.state.parent / (order + "-state")
+                _write_fixture(source)
+                writer = TrustedIo(source, state, _limits())
+                observer = TrustedIo(source, state, _limits())
+                snapshot = writer.snapshot()
+                writer.admit_intent(snapshot)
+                receipt = self.permitted_receipt(snapshot)
+                def select():
+                    return observer.select_final_method(snapshot.closure_sha256, snapshot.solution_sha256,
+                        [receipt], _selection_binding(receipt.receipt_sha256))
+                if order == "write_then_select":
+                    writer.write_solution(SolutionName.SOLUTION, "print('later active candidate')\n")
+                    selected = select()
+                    self.assertNotEqual(writer.read_solution(SolutionName.SOLUTION).sha256, selected.code_sha256)
+                elif order == "select_then_write":
+                    selected = select()
+                    self.assert_code(TrustedIoErrorCode.FINALIZED,
+                        lambda: writer.write_solution(SolutionName.SOLUTION, "forbidden later write\n"))
+                else:
+                    with writer._transaction():
+                        self.assert_code(TrustedIoErrorCode.LOCK_UNAVAILABLE, select)
+                        self.assert_code(TrustedIoErrorCode.LOCK_UNAVAILABLE,
+                            lambda: observer.write_solution(SolutionName.SOLUTION, "overlap\n"))
+                    self.assert_code(TrustedIoErrorCode.SELECTION_NOT_FOUND, observer.final_selection)
+                    self.assertEqual(writer.snapshot(), snapshot)
+                    continue
+                self.assertEqual(selected.code_sha256, snapshot.solution_sha256)
+                self.assertEqual((state / "final-solution.py").read_bytes(), snapshot.solution_bytes)
 
 
 if __name__ == "__main__":

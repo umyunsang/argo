@@ -346,12 +346,11 @@ class TrustedIo:
 
     def admission(self, snapshot: Snapshot) -> Admission:
         self._validate_snapshot_shape(snapshot)
-        with self._transaction():
-            state = self._read_state()
-            record = state["admissions"].get(snapshot.closure_sha256)
-            if record is None:
-                raise TrustedIoError(TrustedIoErrorCode.ADMISSION_NOT_FOUND)
-            return self._admission_from_record(snapshot.closure_sha256, record)
+        state = self._read_state_snapshot()
+        record = state["admissions"].get(snapshot.closure_sha256)
+        if record is None:
+            raise TrustedIoError(TrustedIoErrorCode.ADMISSION_NOT_FOUND)
+        return self._admission_from_record(snapshot.closure_sha256, record)
 
     def bind_admission(self, snapshot: Snapshot, run_id: str) -> Admission:
         """Bind only an externally observed run id; callers decide reconciliation policy."""
@@ -416,11 +415,10 @@ class TrustedIo:
             return self._selection_from_record(state["final_selection"])
 
     def final_selection(self) -> FinalSelection:
-        with self._transaction():
-            selection = self._read_state()["final_selection"]
-            if selection is None:
-                raise TrustedIoError(TrustedIoErrorCode.SELECTION_NOT_FOUND)
-            return self._selection_from_record(selection)
+        selection = self._read_state_snapshot()["final_selection"]
+        if selection is None:
+            raise TrustedIoError(TrustedIoErrorCode.SELECTION_NOT_FOUND)
+        return self._selection_from_record(selection)
 
     def admit_final_refit(self, identity: FinalRefitIdentity) -> FinalRefitAdmission:
         """Create the one campaign-wide final-refit fence before the root launches ORX.
@@ -461,11 +459,10 @@ class TrustedIo:
             return FinalRefitAdmission(execution_identity, AdmissionState.PENDING, None)
 
     def final_refit_admission(self) -> FinalRefitAdmission:
-        with self._transaction():
-            record = self._read_state()["final_refit_admission"]
-            if record is None:
-                raise TrustedIoError(TrustedIoErrorCode.FINAL_REFIT_NOT_FOUND)
-            return self._final_refit_from_record(record)
+        record = self._read_state_snapshot()["final_refit_admission"]
+        if record is None:
+            raise TrustedIoError(TrustedIoErrorCode.FINAL_REFIT_NOT_FOUND)
+        return self._final_refit_from_record(record)
 
     def bind_final_refit(self, run_id: str) -> FinalRefitAdmission:
         """Bind an externally observed ORX run id after trusted reconciliation."""
@@ -529,11 +526,10 @@ class TrustedIo:
             return self._lock_from_record(lock)
 
     def final_artifact_lock(self) -> FinalArtifactLock:
-        with self._transaction():
-            record = self._read_state()["final_lock"]
-            if record is None:
-                raise TrustedIoError(TrustedIoErrorCode.SELECTION_NOT_FOUND)
-            return self._lock_from_record(record)
+        record = self._read_state_snapshot()["final_lock"]
+        if record is None:
+            raise TrustedIoError(TrustedIoErrorCode.SELECTION_NOT_FOUND)
+        return self._lock_from_record(record)
 
     def _snapshot_from_fd(self, directory_fd: int) -> Snapshot:
         remaining = self._limits.max_closure_bytes
@@ -995,6 +991,80 @@ class TrustedIo:
                 if exc.code != TrustedIoErrorCode.NOT_FOUND:
                     raise
                 return self._empty_state()
+        return self._decode_state(raw)
+
+    def _snapshot_lock_absent(self, directory_fd: int, code: TrustedIoErrorCode) -> None:
+        try:
+            os.stat(_LOCK_FILE, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        raise TrustedIoError(code)
+
+    def _snapshot_state_stat(self, directory_fd: int) -> os.stat_result | None:
+        try:
+            return os.stat(_STATE_FILE, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+
+    def _assert_snapshot_stable(
+        self, directory_fd: int, root_before: os.stat_result,
+        state_before: os.stat_result | None,
+    ) -> None:
+        self._snapshot_lock_absent(directory_fd, TrustedIoErrorCode.SNAPSHOT_CHANGED)
+        current = self._snapshot_state_stat(directory_fd)
+        if ((current is None) != (state_before is None) or
+                current is not None and self._stat_identity(current) != self._stat_identity(state_before)):
+            raise TrustedIoError(TrustedIoErrorCode.SNAPSHOT_CHANGED)
+        try:
+            named_root = os.stat(self._state_root, follow_symlinks=False)
+        except FileNotFoundError as exc:
+            raise TrustedIoError(TrustedIoErrorCode.SNAPSHOT_CHANGED) from exc
+        for info in (os.fstat(directory_fd), named_root):
+            if (self._stat_identity(info) != self._stat_identity(root_before) or
+                    info.st_uid != root_before.st_uid):
+                raise TrustedIoError(TrustedIoErrorCode.SNAPSHOT_CHANGED)
+
+    def _read_state_snapshot(self) -> dict[str, object]:
+        """Read one quiescent committed state without mutating its evidence tree."""
+        try:
+            with self._state_dir_fd() as directory_fd:
+                root_before = os.fstat(directory_fd)
+                self._snapshot_lock_absent(directory_fd, TrustedIoErrorCode.LOCK_UNAVAILABLE)
+                state_before = self._snapshot_state_stat(directory_fd)
+                raw: bytes | None = None
+                if state_before is not None:
+                    self._assert_safe_regular(state_before, self._limits.max_state_bytes)
+                    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+                    try:
+                        descriptor = os.open(_STATE_FILE, flags, dir_fd=directory_fd)
+                    except FileNotFoundError as exc:
+                        raise TrustedIoError(TrustedIoErrorCode.SNAPSHOT_CHANGED) from exc
+                    try:
+                        opened = os.fstat(descriptor)
+                        if self._stat_identity(opened) != self._stat_identity(state_before):
+                            raise TrustedIoError(TrustedIoErrorCode.SNAPSHOT_CHANGED)
+                        chunks: list[bytes] = []
+                        remaining = opened.st_size
+                        while remaining:
+                            chunk = os.read(descriptor, min(65536, remaining))
+                            if not chunk:
+                                raise TrustedIoError(TrustedIoErrorCode.SNAPSHOT_CHANGED)
+                            chunks.append(chunk)
+                            remaining -= len(chunk)
+                        if os.read(descriptor, 1) or self._stat_identity(os.fstat(descriptor)) != self._stat_identity(opened):
+                            raise TrustedIoError(TrustedIoErrorCode.SNAPSHOT_CHANGED)
+                        raw = b"".join(chunks)
+                    finally:
+                        os.close(descriptor)
+                self._assert_snapshot_stable(directory_fd, root_before, state_before)
+                try:
+                    return self._empty_state() if raw is None else self._decode_state(raw)
+                finally:
+                    self._assert_snapshot_stable(directory_fd, root_before, state_before)
+        except OSError as exc:
+            raise TrustedIoError(TrustedIoErrorCode.UNSAFE_FILE) from exc
+
+    def _decode_state(self, raw: bytes) -> dict[str, object]:
         try:
             decoded = json.loads(raw.decode("ascii"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
