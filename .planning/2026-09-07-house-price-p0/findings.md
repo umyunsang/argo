@@ -1,0 +1,1 @@
+HousePrice selected; source metricMAE, rawtrain prefix/suffix task not official Kaggle test. Existing Kaggle two-candidate metadata check is sufficient access receipt, no reauthentication. Full terms/data rights unavailable from prior publicSPA pages; root will inspect official read-only API surface.

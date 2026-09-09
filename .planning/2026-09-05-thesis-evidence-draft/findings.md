@@ -1,0 +1,16 @@
+# Findings
+
+- Local clock verified September 5, 2026 KST. Memory is navigation only; current evidence supersedes old fixed GCF/task-count instructions.
+- Prior progress report found a 611-line five-chapter QMD with stale T3 efficacy and implementation claims, contradictory McNemar/Wilcoxon analysis, and old export receipts. Study 0 instrument/runtime-policy PASS is not integrated task-runner certification or ARGO efficacy.
+- No nested AGENTS.md found under paper or docs/argo; manuscript and Word paths are initially clean. Native construction pause remains.
+- User now explicitly requests direct thesis drafting, but only completed research, with future evidence-driven updates. No authority to invent new results or begin native implementation.
+- Prime acknowledged exclusive manuscript/edit apparatus ownership at 05:39:56 KST and confirmed no concurrent edit conflict.
+- Source manuscript backed up before edits; SHA256 4bb75d4eb3b400f1f7e435343eb76afd98ff56900d86c4c6d69bc5d6bbf152ac. Old argument wrongly turns instrumentation into the entire research objective and extrapolates one-task T3 repeats into efficacy; both must be corrected.
+- Graduation plan PDF (September 4) confirms autonomous research design, evidence-based choices, comparative inference, cross-agent context graph and iterative execution as the goal. Its schedule statement that preliminary experiments are complete does not validate their efficacy estimates.
+- Live Stage 0 closure at 05:13:55 KST: 16 scorer fixtures × 6 checks = 96 evaluations, 0 integrated certified tasks, 0 admitted efficacy results. Domain distribution 5 bioinformatics, 5 computational chemistry, 2 geographical information science, 4 psychology/cognitive science. Positive fixtures use known-correct outputs; no agent task-solving success is measured.
+- Separate runtime-isolation probes and six scorer-receipt mutation checks pass within stated scope. This is neither a universal guarantee nor 96 full agent runs. No model calls in these checks only, not in the entire project's history.
+- Quarto 1.10.18 includes Typst 0.15.1 and local CJK fonts. Prefer no executable QMD cells and dated PDF exports so rendering never starts research/model jobs.
+- web.run calls began returning empty bodies. Use verified primary publisher URLs and retained full PDFs through direct HTTP or Exa; record read scopes and do not call a search snippet a full-paper read.
+- Final source selection: 13 actually published papers with selected full-text section locators, not an exhaustive systematic review or a universal SOTA claim. POWER/High Five/PREP superiority and Churchill attribution were not established; source-grounded scholarly structure and bounded wording were selected instead.
+- Final figures are editable monochrome SVG/PDF at 160 mm and approximately 9–10 pt labels. Proposed architecture and graph contract remain distinct from the separate completed fixture/policy checks. IEEE principles are applied to a thesis layout, not asserted as submission compliance.
+- Final PDF is 15 pages after semantic title wrapping and a shortened table header. All pages were visually inspected; archive rebuild reproduces each page's text/size. Secondary final consistency review is partial; root static integrity tests and earlier specialist reviews retain separate, explicit scopes.

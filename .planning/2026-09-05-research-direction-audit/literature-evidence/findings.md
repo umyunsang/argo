@@ -1,0 +1,10 @@
+# Literature lane findings
+
+- Direct support: agent brief and migration state hold native construction; this user request additionally forbids experiments and canonical edits.
+- Memory classification: old factorial details are contradicted by the user's latest direction and current ROOT; use only as archived navigation, never active requirements.
+- Final bounded set: AI Scientist-v2's Nature 2026 article, Arbor, AIRA2, Graph-Native Cognitive Memory, Selective Forgetting, POPPER, and ScienceAgentBench. No further broad discovery.
+- ResearchAgent identity verified on ACL Anthology: NAACL 2025 Long Papers, DOI 10.18653/v1/2025.naacl-long.342. Selected sections still to inspect.
+- Current ROOT and integrated design directly support one contrast: TYPED_POLICY minus RESULT_TREE_POLICY; source bytes, opportunity, model and budget fixed. Old factorial counts are archived. The C planning manifest had no approval at read time; root subsequently reported separate user approval and a started C64. This lane did not inspect or alter the run. C remains a dependency-resolution microbenchmark.
+- Corrected primary identities: Arbor is Jin et al., Toward Generalist Autonomous Research via Hypothesis-Tree Refinement, 2606.11926v1; Graph-Native is Young Bin Park's Formal Belief Revision Semantics paper, 2603.17244v1; Selective Forgetting is Rusu/Khanzadeh/Alalfi, 2608.28978v1. Nonmatching discovery renderings are excluded from evidence.
+- Selected PDF sections now support substantive claims for Arbor, AIRA2, Graph-Native and Selective Forgetting; selected publisher Methods support AI Scientist-v2. Exact scopes/URLs are in ../literature-review.md. POPPER technical sections and ScienceAgentBench appendices remain unverified; no FULL_PAPER_READ designation.
+- Three verdicts: preserve a semantically strong tree null; keep only one optional version-aware log/vector diagnostic with full resource accounting; separate microbenchmark success from subsequently approved scientific-workflow transfer. Each names an alternative and falsifier in the report.

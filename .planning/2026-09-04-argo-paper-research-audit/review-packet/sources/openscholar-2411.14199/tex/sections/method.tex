@@ -1,0 +1,122 @@
+\label{sec:model}
+
+\model (detailed in \Fref{fig:overview_method_deatils}) is a new retrieval-augmented LM designed to ensure reliable, high-quality responses to a range of information-seeking queries about scientific literature. 
+
+\paragraph{Task formulation. }
+Given a scientific query $x$, the task is to identify relevant papers, synthesize their findings, and generate a response $y$ that effectively addresses the query. This response should be accompanied by a set of citations, $\mathbf{C} = {c_1, c_2, \ldots, c_K}$, wherein each citation $c_i$ corresponds to an existing scientific paper. Each $c_i$ in $\mathbf{C}$ corresponds to specific passages from scientific literature, and should be provided as an in-line citation, linked to the relevant spans of text in $y$, following standard practice in scientific writing.
+These citations allow researchers to trace the output back to the original literature, ensuring transparency and verifiability. 
+
+\paragraph{Overview of \model.}
+To ensure the retrieval of relevant papers and generate high-quality outputs, \data consists of three key components: a datastore $\mathbf{D}$, a retriever $\mathcal{R}$, and a generator LM $\mathcal{G}$. 
+In standard retrieval-augmented inference pipelines, the process begins with $\mathcal{R}$, which retrieves a set of passages $\mathbf{P} = \{p_1, p_2, \ldots, p_N\}$ from $\mathbf{D}$---a large-scale corpus of previously published scientific papers—based on semantic relevance to the input query $x$. These passages serve as context for the next step. 
+The generator LM $\mathcal{G}$ then takes both the retrieved passages $\mathbf{P}$ and the input query $x$ to produce the  output $y$ along with corresponding citations $\mathbf{C}$. Formally, this process can be represented as: 
+\begin{equation*}
+    y, \mathbf{C} = \mathcal{G}(x, \mathcal{R}(x, \mathbf{D})), 
+\end{equation*}
+where each $c_i$ in $\mathbf{C}$ corresponds to a specific passage from $\mathbf{P}$. 
+In \model (Figure~\ref{fig:overview}), we leverage a suite of specialized components designed for scientific domains: the \model-\textsc{DataStore} $\mathbf{D}$, a \model-\textsc{Retriever}/-\textsc{Reranker}, and an LM, enabling flexible use of either off-the-shelf LMs (e.g., GPT4o) or our newly trained \model-LM. We develop self-feedback retrieval-augmented inference to improve reliability and citation accuracy. 
+
+ \model-\textsc{DataStore} (OSDS) is a database of 45 million scientific papers, for which we build embeddings. 
+We train \model-\textsc{Retriever} and \model-\textsc{Reranker} on scientific data, which passes the top $N$ passages to the generator $\mathcal{G}$ (Section~\ref{subsec:retrieval}). 
+Subsequently, we use iterative self-feedback inference with retrieval: the LM first generates an initial draft $y_0$ with $\mathcal{G}$, then iteratively enhances its output through retrieval-augmented self-feedback (\Sref{subsec:inference_algorithm}).  
+We use this pipeline to generate high-quality training data (\Sref{subsec:self_reflective_training}), enabling the training of specialized LMs that produce higher-quality output and more accurate citations. 
+
+\begin{figure*}[t!]
+    \centering
+    \includegraphics[width=\textwidth]{figs/scilit_method_details.pdf}
+    \caption{{\bf Detailed overview of \model inference (top) and training (bottom)}. 
+    % \pw{inference}
+    At inference time, given an input $x$, \model first uses a retriever to identify relevant papers from a specialized datastore (\model-Datastore), and then uses a reranker to refine and identify the top $N$ retrieved documents. The retrieved output is then passed to the LM, which generates both an (1) initial response $y_0$ and (2) self-feedback $f_1$. By incorporating its own feedback, the LM iteratively refines its output a pre-defined number of times.
+    Subsequently, an LM (1) generates initial response $y_0$, (2) generates self-feedback on the initial output, and (3) incorporate feedback ($f_i$) to generates an updated response $y_1$. 
+    The LM repeats the process until all feedback is incorporated. 
+    To train a smaller yet competitive 8B LM, we generate high-quality training data using this inference-time pipeline followed by data filtering and mixing. 
+    }
+    \label{fig:overview_method_deatils}
+\end{figure*}
+
+\subsection{\model Retrieval Pipeline}
+\label{subsec:retrieval}
+
+\Fref{fig:overview_method_deatils} (top left) shows our retrieval pipeline, consisting of a datastore $\mathbf{D}$, a bi-encoder retriever  $\theta_\text{bi}$, and a cross-encoder reranker $\theta_\text{cross}$. 
+We first select initial candidate paragraphs using $\mathbf{D}$ and $\theta_\text{bi}$, as well as external APIs, and then refine and identify the top $N$ relevant paragraphs using $\theta_\text{cross}$.
+
+\paragraph{Collect scientific papers to construct datastore.} 
+ While prior work often uses a small subset of papers, such as arXiv papers from 2023-2024~\citep{zheng2024openresearcher}, it is important to have a diverse set of papers to improve the quality and coverage of model generation~\citep{shao2024scaling}. 
+To this end, we use peS2o~\citep{soldaini2024dolma} as our retrieval source, which consists of open-access academic papers from S2ORC~\citep{lo-etal-2020-s2orc}. We  built our datastore using peS2o v3,\footnote{\url{https://huggingface.co/datasets/allenai/peS2o/tree/main/data/v3}.} which includes 45 million papers up until October 2024.\footnote{
+For evaluations, we use peS2o v2 for evaluation, which consists of papers up to January 2023, as our main benchmarks and models were constructed before the v3 curation. }
+ Following prior work~\citep{shao2024scaling}, we split the main text of each paper into discrete, 250-word text blocks (as determined by white space) and concatenate the paper title to each block to formulate passages in $\mathbf{D}$.
+Our datastore consists of 234 million passages. 
+To our knowledge, this is the largest open-sourced datastore for scientific literature. 
+
+
+\paragraph{Retrieve initial paragraphs.} 
+We retrieve passages from three sources: (1) the peS2o datastore using our trained retriever, (2) publicly available abstract from papers returned via the Semantic Scholar API~\citep{Kinney2023TheSS} based on search keywords, and (3) publicly available texts from papers retrieved through a web search engine using the original query $x$. 
+For (1), we first generate embeddings of each passage in $\mathbf{D}$ using the passage bi-encoder $\theta_\text{bi}$, which processes text chunks (e.g., queries or passages) into dense vectors~\citep{karpukhin2020dense} offline. 
+Off-the-shelf retrieval models often struggle in out-of-domain scenarios~\citep{thakur2021beir}. 
+To overcome this limitations, we develop $\theta_\text{bi}$ by continually pre-training Contriever~\citep{izacard2021towards} on the peS2o datastore in an unsupervised fashion to improve domain-specific retrieval performance (see Appendix ~\ref{app_sec:bi_encoder_training} for details). 
+During inference, we encode the query using $\theta_\text{bi}$ and retrieve the top 100 passages through a nearest neighbor search~\citep{karpukhin2020dense}. 
+For (2), we first generate keywords from the query $x$ using a generator LM. These keywords are then used to retrieve the top 10 papers for each, as ranked by citation count, via the Semantic Scholar Search API. 
+This approach addresses a limitation of the Semantic Scholar API, which cannot effectively handle long, question-like search queries. 
+For (3), we obtain the top 10 search results using the You.com retrieval API,\footnote{\url{https://api.you.com/}} restricting the search to academic platforms such as ArXiv and PubMed. If the papers are open-access, we extract and add their full texts to the candidate pool; otherwise, we include only their abstracts. 
+
+\paragraph{Rerank and finalize top $N$ paragraphs.} 
+After the initial stage, we have gathered over 100, or even a thousand of relevant passages per query. However, passages retrieved by the bi-encoder may include unhelpful context due to deep interactions between a query and passages, as they are encoded separately ~\citep{asai-etal-2023-task}. 
+Feeding a large number of documents that might including irrelevant content to LLMs can cause efficiency and performance issues, even with state-of-the-art models~\citep{liu2023lost,xu2023recomp}. 
+To overcome these challenges, we use a cross-encoder reranker~\citep{nogueira2019passage,bge_embedding}, denoted as $\theta_\text{cross}$. For each candidate paragraph, the cross-encoder reranker jointly encodes and computes the relevance score between the input query and each of the passages. We then use the relevance score to rank the passages accordingly. 
+To train $\theta_\text{cross}$ for scientific domains, we fine-tune a BGE-reranker~\citep{bge_embedding} using synthetic data generated by Llama 3 70B Instruct. Specifically, we randomly generate queries based on abstracts from peS2o and retrieve the top 10 passages. Llama 3 70B Instruct then assigns relevance scores from 1 to 5 for these passages, where we consider scores of 4 or 5 as positive, and scores of 1 or 2 as negative. Passages with a score of 3 are discarded. 
+More details of $\theta_\text{cross}$ training are in Appendix \ref{app_sec:raranker_training}. 
+During reranking and finalization of top $N$ passages, we also implement additional meta-filtering, which includes: (1) limiting the number of passages per paper to three passages, and (2) incorporating normalized citation counts into relevance scores predicted by the cross-encoder. 
+
+\subsection{Inference: Iterative Generation with Retrieval-augmented Self-Feedback}
+\label{subsec:inference_algorithm}
+
+In standard retrieval-augmented generation (RAG; ~\citealt{lewis2020retrieval,ram2023context}), a generator LM takes in the original input $x$ and top $N$ retrieved passages $\mathbf{P}$ and generates the output $y_0$. Although effective for tasks such as question answering~\citep{mallen2022not}, this one-step generation can lead to unsupported claims~\citep{liu2023evaluating} or incomplete output due to missing information~\citep{asai2024selfrag,jiang2023active}.  
+To address these challenges, in \model, we introduce an iterative generation approach with self-feedback, which involves three steps: (1) {\bf initial response and feedback generation} to output the initial draft $y_0$ and a set of feedback on $y_0$; (2) {\bf iterative refinement with additional retrieval} to improve $y_0$ using the feedback, and (3) {\bf citation verification}. Full details are in the Appendix. 
+
+\paragraph{Initial response and feedback generation.}
+Given the input $x$ and retrieved passages $\mathbf{P}$, the generator LM first produces an initial response $y_0$  with citation markers tied to the corresponding passages in $\mathbf{P}$.
+% , and uses $y_0$ as a starting point for further refinement. 
+After generating $y_0$, the LM generates a set of feedback on $y_0$, $\mathbf{F} = {f_1, f_2, \ldots, f_T}$, that is aimed at improving the initial response, wherein each feedback $f_t$ is a natural language sentence that describes potential improvements. 
+Although the model can generate an arbitrary number of feedback ($T$), we set a maximum limit of three feedback sentences for efficient inference. 
+Unlike prior work that relies on a predefined set of feedback signals~\citep{asai2024selfrag}, our approach allows the LM to generate flexible natural language feedback on various aspects of the response, such as organization, completeness, or additional needed information. If the feedback sequence identifies missing content (e.g., ``The answer only includes empirical results on QA tasks. Add results from other task types.''), the LM also generates a retrieval query for additional retrieval using the pipeline in Section~\ref{subsec:retrieval}. 
+
+\paragraph{Iterative refinement.} 
+We then iterate over the feedback $\mathbf{F}$ to incrementally refine the output. 
+If $f_k$ indicates that further retrieval is needed, the query $q_k$ is used to retrieve additional passages, which are appended to $\mathbf{P}$ before producing $y_k$.\footnote{Although we could iteratively regenerate the output each time feedback is provided, doing so introduces additional latency. Empirically, we found that feedback is often diverse, addressing different aspects of generation. As a result, sequentially incorporating feedback from the initial output remains effective.} 
+The LM uses the previous output $y_{k-1}$, the retrieved passages $\mathbf{P}$, and newly retrieved passages if any, to generate an updated output $y_k$. 
+This process is repeated until all feedback has been addressed, resulting in a final output $y_T$ by timestep $T$. 
+
+
+\paragraph{Citation verification. }
+Finally, we instruct the generator LM to verify the citations in $y_t$. 
+Specifically, the generator ensures that all citation-worthy statements—scientific claims requiring justification—are adequately supported by references from the retrieved passages. 
+If any claims lack proper citations, the LM performs a post hoc insertion to ensure that citation-worthy statements are supported by passages. In our pipeline, we do not remove sentences that lack citation-worthy statements. 
+
+
+\subsection{Training: High-quality Synthetic Data Generation with Inference Pipeline}
+\label{subsec:self_reflective_training}
+
+Building powerful LMs that can effectively synthesize scientific literature is challenging due to the lack of training data for this problem. While there are some resources to train scientific LMs~\citep{wadden2024sciriff}, most tasks do not require open-retrieval settings and are single-paper tasks. As a result, most prior work in this area~\citep{skarlinski2024language} rely on proprietary LMs, which poses challenges for reproducibility and inference costs.  
+
+We leverage our inference-time pipeline to synthetically generate high-quality training data through self-feedback, so that the resulting model can get better at generating higher-quality output without going through the self-feedback process (Figure~\ref{fig:overview_method_deatils} bottom). 
+
+\paragraph{Question and response generations.}
+Our data generation process involves three steps: first, selecting the top-cited papers from $\mathbf{D}$; second, generating information-seeking queries based on their abstracts; and third, using the \model inference-time pipeline to produce high-quality responses. 
+We generate data using LLama 3.1 70B~\citep{dubey2024llama}. 
+Specifically, we begin by sampling 1 million paper abstracts from the peS2o dataset and the retrieve papers' meta information such as publication year or citations. 
+We then randomly select 10,000 papers that published later than 2017, and then prompt an LM to generate literature review questions or information-seeking queries based on each abstract, that may require multiple papers to answer. 
+Next, we employ our \model pipeline to produce the final output $y_T$, along with intermediate generations such as feedback $\mathbf{F}$ and initial outputs. 
+
+\paragraph{Data filtering.}
+Despite its effectiveness and scalability, synthetic data may also contain issues such as hallucinations, repetitive writing, or limited instruction-following~\citep{li-etal-2024-superfiltering}. 
+To address this, we introduce a two-step data filtering process: pairwise-filtering and rubric-filtering, leveraging the same LM used for data generation. 
+In pair-wise filtering, we compare the quality of model outputs $y_T$ (output at the final step) and $y_0$ (initial output), and retain the output that is judged to be higher quality. 
+We find that $y_0$ is preferred over $y_T$ around 20\% of the time, due to over-editing or increased redundancy after multiple iteration steps. 
+We then evaluate the quality of the chosen response on a five-point scale across two aspects: {\bf organization} and {\bf factual precision and citation accuracy}. A valid model output must achieve a score of 4.5 or higher in both categories, and we discard instances whose outputs do not meet this requirement. More details are provided in the Appendix. 
+
+\paragraph{Data mixing and training.}
+From this synthetic pipeline, we generate three types of training data: answer generation $(x \rightarrow y)$, feedback generation $(y_0 \rightarrow \mathbf{F})$, and feedback incorporation $(y_{t-1}, f_t \rightarrow y_{t})$. We found that incorporating both final and intermediate outputs during training helps smaller LMs learn to generate more effective feedback. 
+We further blend this synthetic training data with existing general-domain instruction-tuning data \citep{ivison2023camels} and scientific instruction-tuning data~\citep{wadden2024sciriff}, ensuring that 50\% of the training data comes from scientific domains, while the remaining 50\% is sourced from general-domain data. 
+We also generate synthetic fact verification and boolean QA data based on sampled abstract data from peS2o. For this, we sort the papers based on citation count and select the top 100,000 papers. 
+More details of data mixing and training are available at Appendix \ref{app_sec:training_details}. 
+After data mixing, we train generator LMs on our large-scale synthetic training data. We train Llama 3.1 8B Instruct on the generated training data. 

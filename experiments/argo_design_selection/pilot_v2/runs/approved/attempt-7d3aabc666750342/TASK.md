@@ -1,0 +1,1 @@
+Read index.json and allocation.json. One verification slot has already prefetched the allocated record; you may open one additional record. Decide whether the active settled constraint is valid or withdrawn. Use only read_index, read_allocation, read_record, and write_decision. Output the fixed decision schema.

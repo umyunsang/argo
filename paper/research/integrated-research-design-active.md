@@ -1,4 +1,16 @@
-# 통합 장기 자율연구 설계 — Sol 5인과 Fable 5.1 검토 반영 revision
+# 현재 실행 안내 — 2026-09-09 프로젝트 연구
+
+현행 규약은 [검증된 결론까지 이어지는 프로젝트 연구](project-research-20260909/README.md)다. 사용자는 세 분야 실제 연구, 독립 두 팀·새 세션 블라인드 검수, AAA 이후 동결·독립 평가, 자율 모델 선택, 총30만 원과 프로젝트8시간·8 CPU-core-hours를 승인했다. 기존20개 표형·고정 모델 설계는 보존한다. [초기 측정 보고](project-research-20260909/first-report.md)는 개발 실행과 비교 캠페인·최종 판정을 구분한다. Native 건설 중지는 그대로다.
+
+# 2026-09-08~09 이전 설계 안내 — 보존 기록
+
+사용자의 최신 지시로 아래 B/C/G 중심 설계는 주 연구 방향에서 제외하고 보존한다. 현재 연구는 **고정된 외부 프론티어 모델들의 장기 자율연구를 돕는 하네스·방법론**이다. Prime Agent·Harness-of-Harness·Scroll·HarnessDev·RecEvolve가 주된 연구 계열이며, 지속 실행·문맥·연구 loop와 별도 평가된 하네스 개선을 함께 다룬다. 경험 재사용/모델 이식성은 하위 실험 후보로 보존한다.
+
+[현재 연구 방향과 연결 설계](five-anchor-harness-20260908/README.md) · [현재 정렬 기록](five-anchor-harness-20260908/decision-record.json). 아래의 과거 실험 규약·승인 기록은 원래 범위에 보존되며 새 실험의 실행 권위나 필수 선행 조건으로 전환하지 않는다. 원본 바이트는 각 설계 디렉터리의 `predecessor/`에도 보존했다.
+
+2026-09-09 현행 구체 설계: [v2, 실험 명세와 네 독립 리뷰](study-design-20260909/README.md). v1 지적을 root가 반영했으며 bounded ML 효용·모델 이식·continuity 진단을 구분한다. 실제 성능·SOTA·native 재개는 미검증이다. 작은 효과의 평균 우위 확증 정밀도는 제한되어 있다.
+
+# 이전 통합 장기 자율연구 설계 — 보존 기록
 
 상태: **HOUSE_PRICE_P0_START_APPROVED · EXACT_RUNTIME_PROTOCOL_NOT_FROZEN · NOT_LAUNCHED**
 갱신: 2026-09-07

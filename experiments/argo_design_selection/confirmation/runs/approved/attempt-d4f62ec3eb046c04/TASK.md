@@ -1,0 +1,1 @@
+Use the four research tools. Verify the active constraint under a total budget of two records (one allocated, one remaining). Return constraint_status valid/withdrawn/unverified, constraint_disposition apply/do_not_apply/undetermined, needs_more_verification, records_inspected, and reason.

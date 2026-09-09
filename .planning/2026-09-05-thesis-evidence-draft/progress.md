@@ -1,0 +1,14 @@
+# Progress
+
+- Loaded planning-with-files, deep-research, and article-writing guidance; inspected scoped instructions and clean manuscript status.
+- Starting four independent primary-source research lanes while root reads the existing manuscript and paper pipeline.
+- Read the full existing manuscript and institutional Typst rules; backed up QMD and obtained Prime acknowledgement. Added separate figure production lane following the user's latest request. Read graduation plan and exact current scorer/closure/isolation receipts.
+- Research lanes are retaining primary bytes and section locators. Root is preparing the evidence snapshot and five-chapter argument; old exports remain unchanged.
+- Rewrote the five-chapter QMD with current Stage 0 evidence only; integrated published-method comparison, three vector figures, seven tables, proposed estimand, failure handling and fairness boundaries. Bibliography assembly and evidence apparatus are in progress.
+- Visually reviewed all three standalone figure previews; requested semantic corrections for vendor names, independence wording, and retraction-as-recheck. Separate scholarly writing review is underway.
+- Integrated all five research/figure lanes and the eight scholarly writing corrections; closed those agents. Revised captions, table rules and English IEEE bibliography; two successful 16-page renders inspected.
+- Froze 13 published sources, 7 receipts, 12 claim records, a 46-node/44-edge local editorial graph and rederived 96 scorer checks. Added reader entrypoint and future update contract. A bounded final consistency reviewer checks the current manuscript while root completes typography and export QA.
+- Final typography yields 15 A4 pages. Inspected all 15 in contact sheets and detailed graph/measurement/table pages; no clipping or separated captions observed. All PDF fonts are embedded. Editable ZIP was extracted and rebuilt, with identical per-page text and sizes on this machine.
+- Closed final secondary consistency lane as partial after timeout/steer; no full independent audit PASS claimed. Its four-file observations are retained, and root automated source/citation/graph checks are separately recorded. All subagents are now closed. Packaging and Prime path handoff remain.
+- Delivered dated PDF, QMD/bibliography/style/CSL/SVG source bundle, local evidence/claims graph, QA report and update contract. Artifact manifest hashes rechecked; tracked QMD diff passes whitespace check. Existing artifacts and unrelated dirty changes remain untouched.
+- `prime-agent send 01a05f13-5001-77c8-8530-d92634405424 --message ...` returned exit 0 and `Sent to argo-paper-root`. Exact message and transport receipt are retained under evidence/handoff. This verifies sending only, not reading, canonical integration or new research execution. No new experiments or runtime changes requested.

@@ -1,5 +1,20 @@
 # 연구 방향과 목적 — ROOT active entrypoint
 
+상태: **PROJECT_RESEARCH_EXECUTION · DEVELOPMENT_MEASUREMENTS · COMPARATIVE_COMPLETION_PENDING**
+갱신: 2026-09-09, 사용자 자율연구 실행 계획 반영.
+
+현행 실행 권위는 [프로젝트 연구 프로그램](project-research-20260909/README.md)이다. 실제 Wine·DuckDB·이방성 확산의 개발 기준선과 가설 시험을 ORX로 기록하며, [첫 결과 보고](project-research-20260909/first-report.md)에 실행·한계를 구분한다. 기존 고정 모델·20개 표형 과제 설계는 보존 자료다. 첫 주 B/P12개·후속 B/H/P최대18개 캠페인은 개발 측정과 별도로 집계한다. Native 건설 중지는 유지한다.
+
+현재 목적은 **외부에서 계속 발전하는 프론티어 모델이 자율연구를 잘하게 만드는 하네스·방법론**이다. 프론티어 LLM의 가중치 개발·학습은 범위 밖이다. 사용자가 기존 설계를 흥미·직관성 부족으로 재설계하도록 요청했으므로 B/C/G 중심 비교는 현재 주제가 아니다.
+
+사용자가 주된 연구 계열로 지정한 Prime Agent·Harness-of-Harness·Scroll·HarnessDev·RecEvolve를 중심에 둔다. 주 질문은 같은 프론티어 모델에 어떤 지속 실행·문맥·연구 운영 구조를 제공해야 긴 연구에서도 실제 성과를 계속 만들 수 있는가다. [현재 방향과 연결 설계](five-anchor-harness-20260908/README.md)와 [정렬 기록](five-anchor-harness-20260908/decision-record.json)을 먼저 읽는다. 연구 결과물 개선과 하네스 자체 개선의 루프를 구분한다. 경험 전이·graph 관리·모델 교체는 하위 실험 후보이며 이전 경험 전이 파일럿을 전체 연구로 강제하지 않는다.
+
+논문→검증된 설계의 ARGO 프로토타입 연결은 유지한다. 기존 원문·리뷰·실험 준비와 House Price P0의 승인·규약은 그대로 보존하며 새 실험으로 재사용하지 않는다. 새 방향을 정하는 데 이전 P0의 실행 완료를 필수 선행 조건으로 두지 않는다. 새 원고·native construction 재개·실제 실행 성공을 선언하지 않는다.
+
+앞선 2026-09-09 구체화와 네 독립 리뷰 통합은 [보존된 연구 설계 v2](study-design-20260909/README.md)에 있다. 당시 actual scientific runs는0이었다. 현재 실행은 위 프로젝트 연구 프로그램의 별도 규약·예산·근거를 따른다. 새 일반 gate나 B/C/G 검토를 반복해서 늘리지 않는다. 기존 `next-experiment-manifest`와 graph projection은 이전 연구의 기록이며 이번 방향의 실행 권위가 아니다.
+
+## 아래는 2026-09-07 이전 방향의 보존 기록이며 현재 연구 방향이 아니다
+
 상태: **HOUSE_PRICE_P0_START_APPROVED · DATA_ENV_SCORER_PREPARED · RUNTIME_BOUNDARY_AND_RUNNER_PENDING**
 갱신: 2026-09-07
 

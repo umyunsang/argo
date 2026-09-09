@@ -1,0 +1,7 @@
+# Four independent critical reviews
+
+Read packet-v1-manifest.json and packet-v1/AGENTS.md, brief and objective. Evaluate design-v1.md with protocol-v1.json/task-roster.json and retained five primary papers. This is prospective design, not executed evidence. Exactly4 requested domains; fresh session with no chat-history fork. Shared filesystem is not OS isolation. Do not read or contact peers or inherit prior verdicts. Generic system memory guidance can be visible; do not rely on old design conclusions and disclose retrieval exposure.
+
+Write only your assigned review.md/review.json. Produce verdict and0–6 substantive findings (no quota), each with ID, severity, exact evidence path+SHA+line range, why it can falsify/undermine the claim, minimum practical correction, and remaining uncertainty. Include sound points, read-scope manifest, what was not checked. A fixable proposal gap is not an observed runtime defect. Prefer cheap falsification checks over expanding a general gate framework. Paper snippets alone do not verify detailed method claims.
+
+No source/protocol edits, native changes, model/training/scoring calls, data labels, credentials, installation, commit or external posting. Primary-source web reads allowed when necessary; only domain lane owns missing-literature lookup, bounded4 queries. Do not start an ORX discovery loop; root owns broad retrieval. No nested delegation. Submit and stop. Root will synthesize and revise v2, preserving your raw report and v1 hashes.

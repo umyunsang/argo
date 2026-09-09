@@ -1,0 +1,11 @@
+# Shared review contract
+
+User requests independent specialist review of the current research design leading through a graduation thesis to an ARGO prototype. Root supplies an identical frozen packet. No chat history or other reviewers' reports are supplied. Current design is prospective, not an efficacy claim.
+
+Read `packet/AGENTS.md`, `packet/docs/argo/agent-brief.md`, `packet/docs/argo/research-to-prototype-objective.md`. Primary review targets are the two 20260908 research README/decision files. Historical active summaries can be stale; exact task-bound current protocol and operational disposition in `packet/metadata/` plus latest task receipts control execution status. Review the prospective study contract for remaining design issues. Old passing review markers are claims to scrutinize, not verdicts to inherit.
+
+Write only your assigned `review.md`, `review.json` in your own output directory. Do not read or contact other reviewers, modify inputs/source/config, read credentials or datasets, launch models/experiments, install tools, or delegate. Network reading of directly necessary primary sources is allowed, but prefer retained sources; retain exact URL/read scope and do not run a broad search loop. Read full target documents. For source-paper details distinguish full extracted read from selected-section inspection; do not claim a fresh full read from an old receipt.
+
+Output: verdict; 0–5 substantive findings (no forced quota); what is sound; findings with id/domain/severity/evidence path+SHA+line range, classification directly_supported/contradicts_premise/near_match_only/insufficient, why it matters, smallest correction, inexpensive falsification check, and uncertainty. Separate a proposal not yet implemented from an actual defect; report exact current missing specification if it prevents future valid comparison, without calling current P0 invalid for a feature it does not claim. No new universal gate framework. Include read manifest and what was not checked. Externally reported results are not local performance.
+
+Record review independence as fresh model context+separate output ownership, not independent model errors, independent ground truth or OS sandboxing. Do not edit the original manuscript, frozen P0 or runtime even when recommending fixes.

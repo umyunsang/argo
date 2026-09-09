@@ -1,0 +1,1 @@
+Known existing original-source directories: paper/sources/tex/2410.07095 and 2504.01848; prior status labels are not current campaign certification. MLAgentBench and Agent Laboratory originals still need source resolution. Apparatus scope approved but no P0 run authorized.

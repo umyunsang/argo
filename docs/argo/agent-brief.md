@@ -4,7 +4,13 @@
 
 ARGO is the descendant built by migrating the Prime Agent fork. The migration itself is product construction. Do not create a parallel wrapper and do not describe Prime Agent as a plugin inside a completed ARGO system.
 
+The research endpoint is an experimentally selected design that leads through the graduation thesis to the NAIS hackathon prototype. Read `research-to-prototype-objective.md`: benchmarking the roles and connections of the runtime, retrieval, experiment lifecycle, context graph, and research loops is part of the research objective. A paper artifact alone does not complete it. This objective does not lift the construction pause below.
+
+The active research subject is the harness and methodology that lets externally improving frontier models sustain autonomous research. Frontier-model weights remain fixed. The user explicitly selected Prime Agent, Harness-of-Harness, Scroll, HarnessDev and RecEvolve as the main research lineage: persistent execution, programmatic context, project/research orchestration and separately evaluated harness improvement. Experience transfer and graph management are subordinate mechanism candidates, not the whole study; do not resume the superseded B/C/G-centred topic by default. The current direction is `paper/research/five-anchor-harness-20260908/README.md`. The concrete study and four independent reviews are in `paper/research/study-design-20260909/README.md`: bounded ML package evaluation, frozen-model transfer and a separate continuity diagnostic. v2 is a revised design, not execution evidence; small-effect precision and exact novelty remain limited.
+
 ## Inherited native substrate
+
+The current execution amendment is `paper/research/project-research-20260909/README.md`, authorized by the user's project-research implementation plan. It supersedes the fixed-model twenty-tabular-task programme prospectively and preserves its artifacts. Three-domain development measurements are distinct from the twelve first-week B/P campaigns, later frozen B/H/P comparisons, AAA, and PI completion. The shared additional budget is KRW300000; unknown usage is not zero. See the current first report for live execution limits. Native construction remains paused.
 
 - daemon supervisor and resident session workers;
 - persistent IPython REPL and programmatic context management;
@@ -38,7 +44,9 @@ Every autonomous scientific choice follows `research-decision-contract.md`. Buil
 
 ## Thesis attribution
 
-The paper studies ARGO as a coherent harness design, but every component is tagged `INHERITED`, `RE_DERIVED`, `MODIFIED`, `ORIGINAL_ARGO`, or `EXTERNAL_ORACLE`. Read `thesis-contribution-ledger.md`. Never relabel inherited Prime Agent work as an original ARGO invention.
+The graduation thesis reports a literature-grounded harness design and only the methodological checks supported by its stated evidence cutoff. ARGO and NAIS are internal downstream plans, not paper subjects, experimental results, or thesis contributions. Exclude their names, product or hackathon roadmaps, implementation-tool branding, and internal operational state from publication content, including figure text and metadata. Renaming an internal plan does not make it publishable. Follow `paper/manuscript/AGENTS.md` for the manuscript boundary; preserve exact, verified scholarly bibliography identities.
+
+Internal component provenance still uses `INHERITED`, `RE_DERIVED`, `MODIFIED`, `ORIGINAL_ARGO`, or `EXTERNAL_ORACLE`; read `thesis-contribution-ledger.md` for that internal audit. These tags do not authorize claims in the paper. Never relabel inherited work as an original thesis contribution.
 
 ## Paper pipeline
 

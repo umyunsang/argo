@@ -1,0 +1,5 @@
+# Findings
+
+Fable 5.1 review completed at f2e203058; report hashes verified and 13 inputs read from committed archive. F1-F14 adjudicated. Accepted apparatus tier, R1/R2 evidence boundary, P0/P1/P2 with phase authorities, blocking and operational arm table. Rejected automatic post-assignment INFRA_VOID block deletion as default; qualified no-event zero-effect assumption, hash-only concealment, usage-log causal mechanism claims, two-start variance precision, fixed C-G/one repair and cheapest-unmeasured default. Stale ORX entry remains historical only. No empirical blocker is closed by revised prose.
+
+Root integration commit fb4e597e14a11956d832d99ff38f130de742323e has 19 owned documentation/data files. Clean clone navigation, relation vocabulary and full graph integrity PASS:845 nodes/1416 edges/646 projection paths. No source/test/native code changes, tests/npm not rerun. Protected working brief/QMD unchanged; their committed/working distinction preserved. Scientific execution/writing/native gates remain closed.

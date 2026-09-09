@@ -1,0 +1,238 @@
+\subsection{Overview of \mname}
+\mname is an agentic framework to systematically validate a hypothesis by actively designing and executing a sequence of \emph{falsification experiments}. This perspective is inspired by Karl Popper's philosophy of falsification~\cite{popper2005logic}: rather than trying to directly prove a hypothesis of interest, one can attempt to \emph{refute} its logical implications through experiments. 
+
+Suppose we want to investigate whether gene $X$ is related to disease $Y$. Directly establishing such a relationship may be difficult; however, we can test one of its implications: if $X$ truly has no relationship to $Y$, we might expect no significant difference in $X$'s expression levels when comparing cell types implicated in $Y$ versus unrelated cell types. Hence, a potential falsification experiment is to measure expression for $X$, collect the relevant samples, and apply a statistical test (\textit{e.g.} a $t$-test) for the null hypothesis that there is no difference in mean expression. In this sense, each experimental design leverages a logical implication of the main hypothesis to gather evidence. One can design multiple experiments like this to refute the primary hypothesis. 
+
+
+\mname implements an iterative, LLM-driven framework for systematic falsification. At each round $i$, an \emph{experiment design agent} proposes a falsification test for a sub-hypothesis $h_i^0$ (e.g., ``no difference in expression''), based on the main hypothesis and available resources. An \emph{experiment execution agent} then carries out the test - either by analyzing existing data, conducting lab measurements, or running simulations - and reports a p-value $p_i$. A \emph{sequential error control} step converts $p_i$ into an e-value $e_i$ (detailed in Section~\ref{sec:validity}), ensuring statistically valid accumulation of evidence. This process repeats over multiple iterations, collecting e-values until either (i) the aggregated evidence surpasses a predefined threshold, leading to a rejection of the null hypothesis $H_0$, or (ii) a maximum number of iterations is reached. Each experiment may involve real-world data collection or simulations. The only restriction is that it produces a valid p-value suitable for e-value computation under the specified null sub-hypothesis. Next, we formalize the theoretical underpinnings of this sequential approach and provide descriptions of the \mname framework.
+
+
+
+
+
+
+
+
+
+
+
+\subsection{Validity of Type-I Error Control in \mname}\label{sec:validity}
+
+This part lays out the general conditions needed for valid Type-I error control in \mname.
+
+\begin{assumption}[Implication]
+\label{assump:hypo}
+   If $H_0$ is true, then the null sub-hypothesis $h_i^0$ is true for all $i\geq 1$. 
+\end{assumption}
+\vspace{-1mm}
+Assumption~\ref{assump:hypo} requires that the null sub-hypothesis $h_i^0$ describes a range of data generating processes that are contained in those described by $H_0$.  
+As we are to detail in Section~\ref{sec:instantiation}, we leverage the reasoning capabilities of LLMs, as well as additional checks to overcome the intrinsic randomness in LLM agents to approximately fulfill this condition. 
+
+
+Recall that an e-value $e_i\in \mathbb{R}$ is computed based on the collected data in each iteration. 
+Following~\citet{vovk2021values}, an e-value is a non-negative random variable whose expectation is below $1$ under the null hypothesis and such that if it were to take a large value, it would indicate strong evidence for refuting the null. E-values are our key instruments for Type-I error control. Compared with the classical concept of p-values, their advantages  include (i) flexible combination of evidence\footnote{Traditional methods like Fisher's combined test~\cite{fisher1970statistical} or Brown's method~\cite{brown1975400} rely on strong assumptions such as independent p-values or accurate modeling. They also cannot ensure Type-I error control with optional stopping (Assumption~\ref{assump:stopping}).} and (ii) adaptive stopping of the validation process~\citep{grunwald2020safe}. Let $\mathcal{D}$ be the data, \mname could potentially interact with (including yet-to-collect ones). To achieve these benefits, in \mname we require the e-values to be \emph{sequentially} valid. 
+
+
+\begin{assumption}[Sequential information]
+The training process of the agents is independent of $\mathcal{D}$. Let $\mathcal{D}_{i-1}:=\{ {D}_{s}\}_{s\leq i-1}$ be the datasets used by the agents before iteration $i$. The e-values obey $\mathbb{E}[e_i \given \mathcal{D}_{i-1}]\leq 1$ under $h_i^0$.
+\label{assump:evalue}
+\end{assumption}
+
+\vspace{-1.5em}
+
+Assumption~\ref{assump:evalue} requires that the e-value at each iteration is valid conditional on prior information. 
+As we shall see in Section~\ref{sec:instantiation},  \mname achieves this by carefully controlling the information used at each iteration. In specific, suppose at iteration $i$, the agents determine a sub-hypothesis $h_i^0$ and a test function $f_i(\cdot)$, and then compute $e_i = f_i(D_{i})$ based on a collected dataset $D_i$ (\textit{e.g.}~through transforming a p-value). Then, 
+Assumption~\ref{assump:evalue} holds if (1) the selection of $h_i^0$, and $f_i(\cdot)$ only relies on $\mathcal{D}_{i-1}$ and metadata without involving the samples in the unused, yet-to-be-chosen datasets, and (2) $\mathbb{E}[f(D)]\leq 1$ for any fixed value  of $h$ (resp.~$f$) that $f_i$ (resp.~$h_i^0$) may take and any dataset $D$ whose distribution obeys $h$. If $D_i$ is a dataset from a static database, then condition (1) means the decision of using $D_i$ does not involve the data in it; if $D_i$ is actively collected, then (1) is natural as the data must be collected after the design stage.
+
+  
+The last assumption concerns the stopping rule of the validation process. It ensures that the aggregated evidence at the terminal iteration supports rigorous validation outputs.
+
+\begin{assumption}[Optional stopping]
+The random variable $\tau\in \mathbb{N}^+$ denoting the termination iteration is a stopping time with respect to the filtration $\mathcal{F}_i = \sigma(\mathcal{D}_i)$. That is, for every $i$, the event $\{\tau=i\}$ is measurable with respect to $\mathcal{F}_i$.
+\label{assump:stopping}
+\end{assumption}
+
+Assumption~\ref{assump:stopping} holds if the decision to stop or continue at iteration $i$ only depends on $\mathcal{D}_i$. In \mname, we determine termination through the aggregated evidence $E_i:=\prod_{s=1}^i e_s$. 
+
+These assumptions ensure the aggregated evidence $\{E_i\}$ is a super-martingale (also called e-process~\citep{shafer2019language,grunwald2020safe}), and thus the $E_i$ at the terminal step can be used to produce the validation output with error control.
+Theorem~\ref{thm:valid} is a standard result following~\cite{grunwald2020safe}, proved in Appendix~\ref{app:proof} for completeness.
+
+
+
+\begin{theorem}\label{thm:valid}
+Define the aggregated evidence at the termination iteration as $E:= \prod_{s=1}^{\tau} e_s$. 
+Under Assumptions~\ref{assump:hypo},~\ref{assump:evalue} and~\ref{assump:stopping}, $E$ is a valid e-value, i.e., $\mathbb{E}[E]\leq 1$ under $H_0$. In addition, 
+define the validation status as $\hat{y}=\ind\{E\geq 1/\alpha\}$. Then, $\mathbb{P}(\hat{y}=1)\leq \alpha$ under $H_0$, 
+where the probability $\mathbb{P}$ is over the randomness in the agents and the collected data.
+\end{theorem}
+ 
+\subsection{Agentic hypothesis validation framework}
+We now introduce each component of \mname in a general form. Although the particular implementation we showcase later uses a static database, \mname can be deployed in \emph{any} environment capable of producing valid p-values - whether that involves laboratory experiments, real-time data collection, or computational simulations. The essence is to iteratively design and execute \emph{falsification experiments} on sub-hypotheses derived from a main hypothesis $H$. Below, we describe how our agents accomplish this while maintaining the assumptions needed for Type-I error control.
+
+\vspace{-0.5em}
+
+\xhdr{Experiment design agent}
+Given the main hypothesis $H$ and history of previously tested sub-hypotheses (and their outcomes), the \emph{design agent} proposes a new falsification experiment intended to refute $H_0$. Concretely, it specifies:
+\vspace{-10pt} 
+\begin{itemize}
+ \setlength{\itemsep}{0pt}
+    \setlength{\parskip}{0pt}
+    \setlength{\parsep}{0pt}
+    \setlength{\topsep}{0pt}  %
+    \setlength{\partopsep}{0pt} %
+\item A \emph{sub-hypothesis} capturing a concrete implication of the main hypothesis.
+\item The \emph{null} $h_i^0$ and \emph{alternative} $h_i^1$ to be tested.
+\item Details of how to conduct the experiment in a given domain. This may involve recommending the collection of new laboratory samples, setting up a targeted simulation, or identifying a suitable dataset (if available).
+\end{itemize}
+\vspace{-10pt} 
+
+The design agent is assumed to have domain expertise or access to domain knowledge, allowing it to propose experiments that are both \emph{relevant} for falsifying $H_0$ and \emph{feasible} to implement. For instance, it might propose measuring gene-expression levels, or running a randomized simulation study, or analyzing an existing database - whatever is best to challenge the null sub-hypothesis. Critically, the design agent must ensure that the proposed experiment can, in principle, yield a valid p-value under $h_i^0$. We will later show how this agent's operations are automated in practice in Section~\ref{sec:instantiation}.
+
+
+\vspace{-0.5em}
+\xhdr{Experiment execution agent}
+Once an experiment is designed, it is handed off to the \emph{execution agent}, which is responsible for carrying it out. In a laboratory setting, this agent might interface with robotic lab equipment or prompt human technicians to conduct the specified protocol. In a simulation, it would set up and run the relevant computational model. In a data analytics context, it would query and analyze the dataset. Regardless of the experimental modality, the only restriction is that it outputs a valid p-value under  $h_i^0$ (Assumption~\ref{assump:evalue}). If an experiment fails - because the protocol cannot be completed or the data are insufficient - it is simply recorded as a failed attempt, and the procedure moves on. In Section~\ref{sec:instantiation}, we show how this agent is instantiated using a code-generation framework that automatically executes data queries and statistical analyses.
+
+
+\vspace{-0.5em}
+\xhdr{Sequential aggregation of statistics for error control}
+After obtaining the new p-value $p_i$, we aggregate existing falsification tests to collectively measure evidence for the main hypothesis while maintaining Type-I error control. As described in the proposed sequential testing framework in Section~\ref{sec:validity}, the main technical tools we use are e-values~\citep{vovk2021values}, which are amenable to combination of evidence and adaptive decisions to continue or not (safe testing)~\citep{grunwald2020safe}. Many e-value constructions (\textit{e.g.} likelihood ratios) require modeling assumptions, which are unsuitable given the flexibility given to our agent.
+Thus, we use the general ``p-to-e calibrator''~\citep{vovk2021values} to construct 
+\begin{equation}\label{eq:pe_calib}
+    e_i = \kappa \times p_i^{\kappa-1},\quad \kappa \in (0,1).
+\end{equation}
+It is straightforward to check that $\mathbb{E}[e_i\given \mathcal{D}_{i-1}]\leq 1$ if each $p_i$ is a conditionally valid p-value, i.e., $\mathbb{P}(p_i \leq t\given \mathcal{D}_{i-1}) \leq t$ for any $t\in [0,1]$. 
+We then compute the aggregated evidence $E_i = \prod_{s=1}^{i} e_s$. If  $E_i\geq 1/\alpha$, then $H_0$ is rejected and $H$ is verified (obeying Assumption~\ref{assump:stopping}). If not, we proceed to the next iteration until a budget is reached.  Theorem~\ref{thm:valid} ensures the Type-I error control of this procedure. 
+
+
+
+\begin{table}[!t]
+     \centering
+     \captionsetup{font=small}
+     \caption{\textbf{Experiment design example.} Designs for the hypothesis ``Gene ZAP70 regulates the production of Interleukin-2''.
+     }
+     \vspace{-2mm}
+     \adjustbox{width=0.5\textwidth}{
+     \begin{tabular}{c|p{0.5\textwidth}|l|c}
+     \toprule
+     Round & Falsification experiment description generated from \mname \emph{experiment design agent} &  P-value & Cum. e-value \\ \midrule
+     1 & "Test if ZAP70 has significant physical protein-protein interactions with IL-2 pathway components using affinity capture Mass Spectrometry data"  & 1.0 & 0.5\redmark\\ \hline
+     2 & "Test if ZAP70 expression levels correlate with IL-2 pathway genes across tissues using GTEx tissue expression data" & 8.8e-3 & 2.67\redmark\\ \hline
+     3 & "Test if genetic variants affecting ZAP70 expression (eQTLs) are also associated with changes in IL-2 pathway activity in immune cells using UKBB eQTL data" & - & - \\ \hline
+     4 & "Test if rare missense variants in ZAP70 are significantly associated with immune phenotypes related to IL-2 function using GeneBASS missense variant data" & 4.7e-04 & 30.78\greencheck \\ 
+     \bottomrule
+     \end{tabular}
+     }
+     \label{tab:example}
+\end{table}
+
+\begin{table}[!t]
+    \centering
+    \captionsetup{font=small}
+     \caption{\textbf{Experiment execution example.} Execution steps for the experiment ``Test if variants in the MAK16 locus region show over-representation of immune-trait GWAS associations.'' We provide a summarized pseudo-code here for illustration purposes. 
+     }
+     \vspace{-2mm}
+     \adjustbox{width=0.5\textwidth}{
+    \begin{tabular}{c|p{0.6\textwidth}}
+    \toprule
+    Step & Execution steps description from \mname \textit{experiment execution agent} \\ \midrule
+     1   & Define a helper function to check if a trait is immune-related \\ \hline
+     2   & Find the MAK16 gene in df\_gene\_info \\\hline
+     3   & Determine gene region bounds on chromosome (±100 kb) \\\hline
+     4   & Subset df\_variant\_table for variants in this region \\\hline
+     5   & Merge with GWAS catalog \\\hline
+     6   & Filter merged results for (a) p-value ≤ 5e-8 (b) immune-related traits using helper function in 1 \\\hline
+     7  & Perform 500 permutations by randomly selecting a chromosome and a matching-length region, gathering variants, merging with the GWAS catalog, filtering for immune-related traits with p-value ≤ 5e-8, and recording the immune-hit count for each permutation.\\\hline
+     8 & Compute the empirical p-value \\ \bottomrule
+    \end{tabular}
+    }
+     \vspace{-2mm}
+    \label{tab:example_exec}
+\end{table}
+
+
+\begin{table*}[!ht]
+\captionsetup{font=small}
+    \centering
+    \caption{\textbf{Type-I error/power across baselines, variations, ablations, and \mname.} A method is considered to achieve Type I-error control if the pre-defined threshold falls within 1 standard deviation of the method's result. For methods that fail to meet this criterion, the power metric is grayed out, as it becomes invalid. Mean and standard deviation for all metrics are calculated from 5 independent runs. %
+    }
+    \vspace{-2mm}
+    \adjustbox{width=0.85\textwidth}{
+    \begin{tabular}{l|ccc|ccc}
+    \toprule
+     \multirow{2}{*}{Method}& \multicolumn{3}{c|}{Type I Error ($\alpha$ = 0.1)} & \multicolumn{3}{c}{Power}  \\\cmidrule{2-7}
+     & \small DiscoveryBench & \small TargetVal-IL2 & \small TargetVal-IFNG & \small DiscoveryBench &\small  TargetVal-IL2 &\small TargetVal-IFNG \\ \midrule
+    CodeGen & 0.145\std{0.031}\redmark  & 0.020\std{0.014}\greencheck & 0.004\std{0.009}\greencheck & \textcolor{gray}{0.378\std{0.066}} & 0.140\std{0.022} &  0.040\std{0.042} \\
+    CodeGen (o1) & 0.248\std{0.015}\redmark  & 0.013\std{0.012}\greencheck & 0.000\std{0.000}\greencheck & \textcolor{gray}{0.419\std{0.028}} & 0.250\std{0.100} &  0.183\std{0.076} \\
+    ReAct & 0.078\std{0.061}\greencheck & 0.000\std{0.000}\greencheck & 0.000\std{0.000}\greencheck & 0.383\std{0.017} & 0.010\std{0.022} & 0.020\std{0.045} \\
+    Self-Refine & 0.117\std{0.028}\redmark  & 0.100\std{0.069} \greencheck& 0.067\std{0.064}\greencheck & \textcolor{gray}{0.476\std{0.066}} & 0.183\std{0.029} & 0.067\std{0.064}\\\midrule
+    Fisher Combined Test
+        & 0.311\std{0.040}\redmark & 0.264\std{0.083}\redmark & 0.173\std{0.023}\redmark &
+         \textcolor{gray}{0.741\std{0.058}} & \textcolor{gray}{0.800\std{0.071}} &\textcolor{gray}{0.650\std{0.050}} \\
+    LLM-Likelihood ratio
+        & 0.152\std{0.031}\redmark & 0.016\std{0.014}\greencheck & 0.180\std{0.028}\redmark 
+        & \textcolor{gray}{0.428\std{0.034}} & 0.185\std{0.074} & \textcolor{gray}{0.357\std{0.132}} \\
+    \midrule
+    \mname-NoReleCheck 
+        & 0.134\std{0.021}\redmark & 0.340\std{0.139}\redmark & 0.300\std{0.113}\redmark
+        & 0.610\std{0.042} & \textcolor{gray}{0.897\std{0.004}} & \textcolor{gray}{0.717\std{0.126}} \\
+    \mname-CodeGen
+        & 0.140\std{0.022}\redmark & 0.105\std{0.017}\greencheck & 0.090\std{0.045}\greencheck
+        & \textcolor{gray}{0.544\std{0.032}} & 0.526\std{0.133} & 0.450\std{0.079}\\
+    \midrule
+    \mname (Ours) & 0.103\std{0.020}\greencheck & 0.082\std{0.046} \greencheck & 0.085\std{0.028} \greencheck & \textbf{0.638*\std{0.066}} & \textbf{0.580*\std{0.125}} &  \textbf{0.591*\std{0.069}} \\
+    \bottomrule
+    \end{tabular}
+    }
+    \label{tab:main_result}
+\end{table*}
+
+\vspace{-0.5em}
+
+\section{Instantiation of \mname}
+\label{sec:instantiation}
+
+Thus far, we have described \mname\ as a general, agentic framework capable of executing any type of experiment - laboratory procedures, simulations, or data analyses - to test sub-hypotheses under a unifying Popperian falsification paradigm. In this section, we focus on our current \emph{instantiation}, where experiments are drawn from a static corpus of massive hypothesis-free datasets ($\mathcal{D}$) rather than real-world or real-time data acquisition. We emphasize that this is only one possible deployment of \mname, chosen here for ease of implementation and reproducibility.
+
+\vspace{-0.5em}
+\xhdr{Domains and hypotheses}
+Our demonstration uses two collections. The first, \emph{Target Validation (TargetVal)}, addresses genotype-phenotype hypotheses in biology; it aggregates 22 tables (totaling $\sim$ 85 million records) from sources such as GTEx~\cite{gtex2020gtex}, GWAS Catalog~\cite{macarthur2017new}, and BioGrid~\cite{oughtred2019biogrid}. Hypotheses in TargetVal follow the template ``Gene A regulates Phenotype B," and we assess them using two sub-tasks: Interleukin-2 (TargetVal-IL2) and Interferon-gamma (TargetVal-IFNG). Ground-truth hypotheses (treated as ``positive" references) were approximated based on genome-wide CRISPR screen data~\cite{schmidt2022crispr}. The second, \emph{DiscoveryBench}~\cite{majumder2024discoverybench}, spans six domains (sociology, biology, humanities, economics, engineering, and meta-science), yielding 86 non-null hypotheses (after deduplication) that are grounded in peer-reviewed research. Each hypothesis is paired with a set of relevant dataset. In all cases, \mname is provided only with the high-level \emph{schema} (row and column names, any available short text descriptions) of each dataset and the main hypothesis $H$. It must then propose and implement sub-hypothesis falsification experiments by querying and analyzing the raw data.
+
+\vspace{-0.5em}
+\xhdr{Instantiation of the experiment design agent}
+\label{subsec:design-agent}
+At iteration $i$, the \textit{Design Agent}  $A_{\mathrm{design}}$  receives the main hypothesis  $H$, previously proposed falsification sub-hypotheses  $\{h_1, \ldots, h_{i-1}\}$, their corresponding p-values  $\{p_1, \ldots, p_{i-1}\}$, and the metadata from the database $\mathcal{D}$, and then intelligently designs a new falsification experiment with sub-hypothesis  $h_i$. To ensure robustness, $A_{\mathrm{design}}$  operates under metadata-only access, meaning it sees only the \emph{schema} of each table but has no access to raw data or summary statistics, thereby satisfying Assumption~\ref{assump:evalue}. In the experiment proposal step, the agent generates a concise rationale, along with a null hypothesis  $h_i^0$ and an alternative hypothesis $h_i^1$. To enhance quality, we incorporate Self-Refinement~\cite{madaan2024self}, employing a chain-of-thought approach that prompts the LLM to iteratively improve its proposal based on three key criteria: novelty (avoiding redundant sub-hypotheses), implementability (ensuring feasibility given metadata), and logical relevance (confirming that $H$ implies $h_i$). A real-world example is illustrated in Table~\ref{tab:example}. This demonstrates the agent's ability to systematically design rigorous and biologically meaningful experiments, highlighting its effectiveness in guiding the falsification process. A detailed analysis of the proposed experiments is available at Section~\ref{sec:analysis}.
+
+\vspace{-0.5em}
+\xhdr{Relevance checker}
+\label{subsec:relevance-checker}
+Even with self-refinement, the \emph{Design Agent} may produce experiments that are tangential to the main hypothesis $H$. To enforce  Assumption~\ref{assump:hypo}, we introduce a \emph{relevance checker}, an LLM-based function $R(h) \in [0,1]$ that estimates how strongly the proposed null sub-hypothesis $h$ is implied by $H_0$. If $R(h) < r_0$ (a pre-defined threshold), we discard that experiment and prompt $A_{\mathrm{design}}$ to propose a new one. This pruning mitigates the risk that an \emph{irrelevant} null might be ``falsified,'' incorrectly supporting the hypothesis (thus inflating the Type-I error).
+
+\vspace{-0.5em}
+\xhdr{Instantiation of the experiment execution agent}
+\label{subsec:execution-agent}
+Once a proposed experiment passes the relevance check, the \emph{Execution Agent} $A_{\mathrm{exec}}$ carries it out by querying and analyzing the raw data in $\mathcal{D}$ to output a p-value. 
+To give the agent flexibility, we provide a coding environment where it can write and run Python scripts using essential libraries including \texttt{pandas}, \texttt{statsmodels}, and \texttt{scipy}. 
+Concretely, we employ ReAct~\cite{yao2023react} where the agent incrementally executes the experiment via a cycle of actions (executing code), observations (inspecting code output), and reasoning based on the observed output. 
+In practice, $A_{\mathrm{exec}}$ typically inspects and retrieves the dataset, performs preprocessing, fixes errors, runs appropriate statistical tests, fits models, and finally summarizes or visualizes the findings. Without explicit prompting, it selects suitable tests (e.g., $t$-test, chi-squared, Mann-Whitney $U$-test) based on the data distribution. Table~\ref{tab:example_exec} shows an example, and Section~\ref{sec:analysis} analyzes the execution steps in detail.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

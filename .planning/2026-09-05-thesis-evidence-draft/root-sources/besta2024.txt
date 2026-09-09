@@ -1,0 +1,777 @@
+                                      The Thirty-Eighth AAAI Conference on Artificial Intelligence (AAAI-24)
+
+
+
+
+   Graph of Thoughts: Solving Elaborate Problems with Large Language Models
+                  Maciej Besta* 1 , Nils Blach* 1 , Ales Kubicek1 , Robert Gerstenberger1 ,
+               Michał Podstawski2 , Lukas Gianinazzi1 , Joanna Gajda3 , Tomasz Lehmann3 ,
+                        Hubert Niewiadomski3 , Piotr Nyczyk3 , Torsten Hoefler1
+                                                                1
+                                                            ETH Zurich
+                                                   2
+                                                Warsaw University of Technology
+                                                              3
+                                                                Cledar
+                                   bestam@inf.ethz.ch, nils.blach@inf.ethz.ch, htor@inf.ethz.ch
+
+                           Abstract                                          of reasoning within the prompt (intermediate “thoughts”),
+  We introduce Graph of Thoughts (GoT): a framework that
+                                                                             besides the task input/output. CoT was shown to signif-
+  advances prompting capabilities in large language models                   icantly improve the capability of LLMs to solve prob-
+  (LLMs) beyond those offered by paradigms such as Chain-of-                 lems without resorting to any model updates. One major
+  Thought or Tree of Thoughts (ToT). The key idea and primary                improvement over CoT, Self-Consistency with CoT (CoT-
+  advantage of GoT is the ability to model the information gen-              SC) (Wang et al. 2023b), is a scheme where multiple CoTs
+  erated by an LLM as an arbitrary graph, where units of infor-              are generated, and then the best one is selected as the out-
+  mation (“LLM thoughts”) are vertices, and edges correspond                 come. More recently, CoT and CoT-SC were extended with
+  to dependencies between these vertices. This approach en-                  Tree of Thoughts (ToT) (Long 2023; Yao et al. 2023a; Xie
+  ables combining arbitrary LLM thoughts into synergistic out-               et al. 2023), which models the LLM reasoning process with
+  comes, distilling the essence of whole networks of thoughts,               a tree. This facilitates using different paths of thoughts, and
+  or enhancing thoughts using feedback loops. We illustrate
+  that GoT offers advantages over state of the art on different
+                                                                             offers novel capabilities such as backtracking from non-
+  tasks, for example increasing the quality of sorting by 62%                promising outcomes. Unfortunately, the ToT approaches still
+  over ToT, while simultaneously reducing costs by >31%.                     fundamentally limit the reasoning abilities within a prompt
+  We ensure that GoT is extensible with new thought transfor-                by imposing the rigid tree structure on the thought process.
+  mations and thus can be used to spearhead new prompting                       In this work, we argue that fundamentally more power-
+  schemes. This work brings the LLM reasoning closer to hu-                  ful prompting can be achieved by enabling LLM thoughts to
+  man thinking or brain mechanisms such as recurrence, both                  form an arbitrary graph structure. This is motivated by nu-
+  of which form complex networks.                                            merous phenomena such as human reasoning, brain struc-
+                                                                             ture, or algorithmic execution. When working on a novel
+                    1    Introduction                                        idea, a human would not only follow a chain of thoughts
+Large language models (LLMs) are taking over the world of                    (as in CoT) or try different separate ones (as in ToT), but
+AI. Recent years saw a rapid development of models primar-                   would actually form a more complex network of thoughts.
+ily based on the decoder-only Transformer variant (Vaswani                   For example, one could explore a certain chain of reason-
+et al. 2017), such as GPT (Radford et al. 2018, 2019; Bubeck                 ing, backtrack and start a new one, then realize that a certain
+et al. 2023; Brown et al. 2020), PaLM (Chowdhery et al.                      idea from the previous chain could be combined with the
+2022), or LLaMA (Touvron et al. 2023b).                                      currently explored one, and merge them both into a new so-
+   Prompt engineering is a resource-efficient approach for                   lution, taking advantage of their strengths and eliminating
+solving different LLM tasks. In brief, one includes the task                 their weaknesses. Similarly, brains form complex networks,
+description within the input sent to an LLM. If this descrip-                with graph-like patterns such as recurrence (Friston 2008).
+tion is appropriately formulated, the LLM solves the task                    Executing algorithms also expose networked patterns, often
+using its autoregressive token-based mechanism for gener-                    represented by Directed Acyclic Graphs. The correspond-
+ating text. Such prompts may contain example tasks with                      ing graph-enabled transformations bring a promise of more
+solutions (few-shot prompting, also referred to as in-context                powerful prompting when applied to LLM thoughts, but they
+learning (ICL)), or even no example tasks at all (zero-shot                  are not naturally expressible with CoT or ToT.
+prompting). In recent years it was shown that this mecha-                       We observe that these (and many other) thought trans-
+nism can be used to solve a broad set of tasks that involve                  formations can be naturally enabled when modeling the
+mathematical, commonsense, or symbolic reasoning.                            reasoning process of an LLM as a graph. For this, we
+   Chain-of-Thought (CoT) (Wei et al. 2022) is an approach                   propose Graph of Thoughts (GoT)1 , an approach that en-
+for prompting, in which one includes the intermediate steps                  hances LLMs’ capabilities through networked reasoning
+                                                                             (contribution #1). In GoT, an LLM thought is modeled
+    * These authors contributed equally.                                     as a vertex, while an edge is a dependency between such
+Copyright © 2024, Association for the Advancement of Artificial
+                                                                                 1
+Intelligence (www.aaai.org). All rights reserved.                                    Extended Technical Report: https://arxiv.org/abs/2308.09687
+
+
+
+
+                                                                     17682
+                                        The Thirty-Eighth AAAI Conference on Artificial Intelligence (AAAI-24)
+
+
+thoughts. Using GoT, one can aggregate arbitrary thoughts                             Scheme                     Sc?   Mc?    Tr?    Ag?
+by constructing vertices that have more than one incom-
+ing edge. Overall, the graph abstraction harnessed by GoT                             CoT                             é      é      é
+seamlessly generalizes CoT and ToT to more complex                                    CoT-SC                                é      é
+thought patterns, without resorting to any model updates.                             ToT (Xie et al. 2023)                       é
+                                                                                      ToT (Long 2023)                             é
+   Yet, putting GoT to practice requires solving several de-                          ToT (Yao et al. 2023a)                      é
+sign challenges. For example, what is the best graph struc-
+ture for different tasks? How to best aggregate thoughts to                           GoT                                         
+maximize accuracy and minimize cost? To answer these and
+many other questions, we carefully design a modular archi-                      Table 1: Comparison of prompting schemes, with re-
+tecture2 for implementing GoT (contribution #2), coming                         spect to the supported transformations of thoughts. “Sc?”:
+with two design highlights. First, we enable a fine-grained                     single chain of thoughts? “Mc?”: multiple chains of
+control over individual thoughts. This enables us to fully                      thoughts? “Tr?”: tree of thoughts? “Ag?”: arbitrary graph
+control the ongoing conversation with the LLM, and apply                        of thoughts? “”: full support, “”: partial support, “é”:
+advanced thought transformations, such as combining most                        no support.
+promising thoughts from the ongoing reasoning into a new
+one. Second, we ensure that our architecture can be seam-
+lessly extended with novel thought transformations, patterns                                     2    The GoT Framework
+of reasoning (i.e., graphs of thoughts), and LLM models.                        We now detail the GoT framework. We present it in Figure 1,
+This enables rapid prototyping of novel prompting ideas us-                     and compare it to other prompting strategies.
+ing GoT, while experimenting with different models such as
+                                                                                   The conversation with the LLM consists of user mes-
+GPT-3.5, GPT-4, or Llama 2 (Touvron et al. 2023a).
+                                                                                sages (prompts) and the LLM replies (thoughts). We follow
+   We illustrate several use cases for GoT (sorting, keyword                    the established notation (Yao et al. 2023a) and we denote a
+counting for summaries, set operations, document merging)                       pre-trained language model (LM) with parameters θ as pθ .
+and we detail how to implement them using the graph-based                       Lowercase letters such as x, y, z, ... indicate LLM thoughts.
+paradigm (contribution #3). We evaluate GoT and show its                           Formally, GoT can be modeled as a tuple (G, T , E, R),
+advantages over the state of the art (contribution #4). Over-                   where G is the “LLM reasoning process” (i.e., all the LLM
+all, we observe that GoT is particularly well-suited for tasks                  thoughts within the context, with their relationships), T are
+that can be naturally decomposed into smaller subtasks that                     the potential thought transformations, E is an evaluator func-
+are solved individually and then merged for a final solution.                   tion used to obtain scores of thoughts, and R is a ranking
+Here, GoT outperforms other schemes, for example improv-                        function used to select most relevant thoughts.
+ing upon CoT and ToT by, respectively, ≈70% and ≈62%,
+in terms of the quality of sorting, while simultaneously re-                    2.1    Reasoning Process
+ducing costs by >31% over ToT.
+                                                                                We model the reasoning process as a directed graph G =
+   We qualitatively compare GoT to other prompting                              (V, E); V is a set of vertices and E ⊆ V × V is a set of
+schemes3 in Table 1. GoT is the only one to enable arbitrary                    edges. A vertex contains a solution to a problem at hand
+graph-based thought transformations within a prompt, such                       (be it an initial, intermediate, or a final one). The concrete
+as aggregation, embracing all previously proposed schemes.                      form of such a thought depends on the use case; it could
+   Finally, we propose a new metric for evaluating a prompt-                    be a paragraph (in writing tasks) or a sequence of numbers
+ing strategy, the volume of a thought (contribution #5).                        (in sorting). A directed edge (t1 , t2 ) indicates that thought
+With this metric, we aim to understand better the differences                   t2 has been constructed using t1 as “direct input”, i.e., by
+between prompting schemes. For a given thought v, the vol-                      explicitly instructing the LLM to use t1 for generating t2 .
+ume of v is the number of LLM thoughts, from which one                             We associate G with the LLM reasoning process. To ad-
+can reach v using directed edges. Intuitively, these are all                    vance this process, one applies thought transformations to
+the LLM thoughts that have had the potential to contribute                      G. An example of such a transformation is to merge best-
+to v. We show that GoT, by incorporating thought transfor-                      scoring (so far) thoughts into a new one. Another example
+mations such as aggregation, enables thoughts to have fun-                      is to loop over a thought, in order to enhance it. Note that
+damentally larger volumes than other schemes.                                   these transformations strictly extend the set of transforma-
+                                                                                tions available in the CoT, CoT-SC, or ToT.
+   2
+     Website & Code: https://github.com/spcl/graph-of-thoughts                  2.2    Transformations of Thoughts
+   3
+     Note that we do not include a recent scheme called Graph-of-
+                                                                                GoT enables novel transformations of thoughts thanks to
+Thought (Yao, Li, and Zhao 2023) because it is not a prompting
+scheme. While its name suggests close connections to ToT and                    the graph-based model for reasoning. We refer to them as
+CoT, as a fine-tuning scheme, it resorts to model updates, and is               graph-enabled transformations. For example, in writing,
+thus outside the focus of this work. Similarly, the graph-of-thoughts           one could combine several input articles into one coherent
+repository (qrdlgit 2023) does not enable general graph-based rea-              summary. In sorting, one could merge several sorted subar-
+soning and harnesses instead ToT with BFS.                                      rays of numbers into a final sorted array.
+
+
+
+
+                                                                        17683
+                                                      The Thirty-Eighth AAAI Conference on Artificial Intelligence (AAAI-24)
+
+Basic Input-         Chain-of-         Multiple CoTs (CoT-SC)                  Tree of Thoughts (ToT)                                     Graph of Thoughts (GoT)
+Output (IO)          -Thought                                                                                                                                                      [This work]
+                       (CoT)
+                                                    Input                                                  Input
+      Input                                                                     Branching out
+                                                                                                                           Backtracking
+                                                                                                                           from a chain
+                                                                                                                                               Refining                    Input
+                        Input                                                   from a chain
+
+
+   Output                                                                                                                                  Backtracking
+
+
+
+Legend
+
+Thoughts:
+       Unscored
+
+         Positive
+          score                                                                                                                                     Aggregating                      Aggregating
+                                                                                                                                                      chains                          thoughts
+         Negative
+          score
+                       Output           Abandon a chain       Output            Key novelty
+                                                                                (beyond CoT-SC):
+                                                                                                           Output
+                                                                                                                                           Key novelty (beyond ToT):
+   Dependencies
+  between thoughts                      Key novelty
+                                                                                Generating several
+                                                                                new thoughts based                     Intermediate
+                                                                                                                                           Arbitrary graph-based thought           Output
+                      Key novelty:      (beyond CoT):            Selecting
+                                                                                on a given arbitrary                   thoughts are
+                                                                                                                                           transformations (aggregating
+                                        Harnessing multiple    a chain with                                                                thoughts into a new one,
+  Abandon thought     Intermediate                            the best score    thought, exploring                      also scored
+                      LLM thoughts      independent chains                      it further, and possibly                                   looping over a thought to
+                      within a chain    of thoughts                             backtracking from it                                       refine it)
+  Backtrack
+
+
+                                   Figure 1: Comparison of Graph of Thoughts (GoT) to other prompting strategies.
+
+
+   Formally, each such transformation can be modeled as                                                     use the state of the whole reasoning process (G) in E for
+T (G, pθ ) where G = (V, E) is the graph reflecting the                                                     maximum generality, because – for example – in some eval-
+current state of the reasoning, and pθ is the used LLM. T                                                   uation scenarios, scores may be relative to other thoughts.
+modifies G usually by adding new vertices and their incom-                                                     GoT can also rank thoughts. We model this with a func-
+ing edges. We have G0 = T (G, pθ ) = (V 0 , E 0 ), where                                                    tion R(G, pθ , h) where h specifies the number of highest-
+V 0 = (V ∪ V + ) \ V − and E 0 = (E ∪ E + ) \ E − . V +                                                     ranking thoughts in G to be returned by R. While the spe-
+and E + are new vertices and edges inserted into G to model                                                 cific form of R depends on the use case, we most often use a
+the new thoughts and their dependencies, respectively. To                                                   simple yet effective strategy where h thoughts with the high-
+maximize the expressiveness of GoT – we also enable the                                                     est scores are returned, i.e., v1 , ..., vh = R(G, pθ , h).
+user to explicitly remove thoughts, by specifying the corre-                                                   Specific forms of E and R depend on the use case. We
+sponding vertices and edges to be removed (V − and E − , re-                                                discuss the details in Section 4. For example, the score (or
+spectively). This enables seamless incorporation of schemes                                                 rank) for sorting corresponds to the count of elements cor-
+where, in order to save space within the context, one can re-                                               rectly sorted (or incorrectly, when using the error as a score).
+move parts of reasoning that do not promise improvements.
+   First, with GoT, one can aggregate arbitrary thoughts                                                           3      System Architecture & Extensibility
+into new ones, to combine and reinforce the advantages of                                                   The GoT architecture consists of a set of interacting mod-
+these thoughts, while eliminating their disadvantages. In the                                               ules, see Figure 2 (the blue part). These modules are the
+basic form, in which only one new vertex is created, V + =                                                  Prompter (prepares the messages for the LLM), the Parser
+{v + } and E + = {(v1 , v + ), ..., (vk , v + )}, where v1 , ..., vk                                        (extracts information from LLM thoughts), the Scoring
+are the merged k thoughts. More generally, this enables ag-                                                 module (verifies and scores the LLM thoughts), and the
+gregating reasoning paths, i.e., longer chains of thoughts,                                                 Controller (coordinates the entire reasoning process, and de-
+beyond just individual thoughts. With the graph model, it is                                                cides on how to progress it). The Controller contains two fur-
+simply achieved by adding outgoing edges from the vertices                                                  ther important elements: the Graph of Operations (GoO) and
+v1 , ..., vk , modeling final thoughts in several chains, into a                                            the Graph Reasoning State (GRS). GoO is a static structure
+single thought v + combining these chains.                                                                  that specifies the graph decomposition of a given task, i.e.,
+   Another thought transformation is the refining of a cur-                                                 it prescribes transformations to be applied to LLM thoughts,
+rent thought v by modifying its content: V + = {} and                                                       together with their order & dependencies. GRS is a dynamic
+E + = {(v, v)}. This loop in the graph indicates an iterated                                                structure that maintains the state of the ongoing LLM rea-
+thought with the same connections as the original thought.                                                  soning process (the history of its thoughts and their states).
+   Finally, one can generate one or more new thoughts                                                          Prompter The Prompter prepares the prompts to be sent
+based on an existing single thought v. This class embraces                                                  to the LLM. This module is responsible for the specifics of
+analogous reasoning steps from earlier schemes, such as ToT                                                 encoding the graph structure within the prompt. The GoT
+or CoT-SC. Formally, we have V + = {v1+ , ..., vk+ } and                                                    architecture enables the user to implement use case specific
+E + = {(v, v1+ ), ..., (v, vk+ )}.                                                                          graph encodings by providing full access to the graph struc-
+                                                                                                            ture.
+2.3      Scoring & Ranking Thoughts                                                                            Parser The Parser extracts information from LLM
+Thoughts are scored to understand whether the current solu-                                                 thoughts. For each such thought, the Parser constructs the
+tion is good enough. A score is modeled as a general func-                                                  thought state, which contains this extracted information. The
+tion E(v, G, pθ ), where v is a thought to be evaluated. We                                                 thought state is then used to update the GRS accordingly.
+
+
+
+
+                                                                                                  17684
+                                                      The Thirty-Eighth AAAI Conference on Artificial Intelligence (AAAI-24)
+
+Legend                                                                          Architecture overview
+ Gray block External entity             Prompt          Thought       Score             Goal: Initiate, coordinate, manage,
+              Module of the                                                              and progress the GoT execution                           Controller
+ Blue block GoT framework               Operation          Dependency                                                                                                   Graph of
+                                                                                                                                                     Goal: Specify
+                               Thought state + its           Thought state                                                                           LLM thought       Operations
+    Thought state             associated operations         + thought's score                                                                       transformations
+                                                                                    User
+API for Controller                                                                       Goal: Build a prompt
+                                                                                                                                                   Graph Reasoning State
+                                                                                         to be sent to the LLM
+➡ //LLM params: model used, temperature, max tokens, api key, org, ...
+➡ //LLM cost features: prompt token cost, response token cost, ...
+➡ //Instances of Prompter + Parser + Graph of Operations,                                                        Prompter
+➡ //Any additional input parameters (e.g., numbers to be sorted).
+                                                                                    LLM
+Available operations when building the GoO (extensible)                                                            Parser
+➡ Generate, Aggregate, Score, ... //see Prompter API
+➡ KeepBest(N) //preserves N best scoring thoughts                                      Goal: Extract
+                                                                                                                                                    Goal: Maintain
+➡ Repeat(k) //Repeat a given operation k times, generating k thoughts.               information from
+                                                                                                                    Goal: Assess the               the ongoing LLM
+  //For example, this enables "Aggregate" to generate multiple outcomes                LLM thought                                                 reasoning process
+                                                                                                                     quality of the
+  //of the combination operation. Each such thought is maintained                                                   LLM's solution
+ //within the Graph Reasoning State and scored individually.
+
+ API for Prompter (extensible)                                                   Human                           Scoring &                         Ranking          Goal: Indicate the
+                                                                                                                 validation                                        top-scoring thoughts
+                                                                                 or LLM
+ ➡ Generate(t,k) //generate a prompt for k new thoughts, using thought t
+ ➡ ValidateAndImprove(t) //generate a prompt to enhance thought t,
+ ➡ Aggregate(t1,...,tk) //generate a prompt to combine thoughts t1, ..., tk
+ ➡ Score(t) //score thought t                                                   Specifying the structure of the Graph of Operations (GoO)
+ ➡ Validate(t) //generate a prompt to validate the correctness of thought t      Graph of Operations enables seamless specification of not only
+                                                                                   GoT, but also existing schemes such as CoT, CoT-SC, ToT
+
+ API for Parser (extensible)
+ ParseGenerate, ParseImprove, ParseScore,
+ ParseAggregate, ParseValidate, ...
+ //Each of the above routines is responsible for parsing an LLM thought
+ //to a corresponding Prompter routine (e.g., ParseScore parses Score).
+
+
+
+Figure 2: The system architecture of GoT, and the APIs of respective modules. The user can straightforwardly extend the design
+towards new prompting schemes, experiment with novel thought transformations, and plug in different LLMs. The blue part of
+the figure contains the architecture overview, and the green part lists the API.
+
+
+   Scoring & Validation Here, we verify whether a given                                           schemes. The APIs are outlines in the green part of Figure 2,
+LLM thought satisfies potential correctness conditions, and                                       and detailed in the documentation.
+then we assign it a score. Depending on how the score is
+derived, the module may consult the LLM. Moreover, de-                                                                         4       Example Use Cases
+pending on the use case, the score may also be assigned by
+a human. Finally, use cases such as sorting use simple local                                      Due to space constraints, we detail one use case (sorting).
+scoring functions.                                                                                We focus on its decomposition and Graph of Operations,
+   Controller The Controller implements a specific strategy                                       which are central for implementing and executing any work-
+for selecting thoughts from its GRS structure. It also selects                                    load within GoT. We consider sorting numbers 0–9 with du-
+what transformations should be applied to which thoughts,                                         plicates. The considered LLMs are unable to sort a sequence
+and then passes this information to the Prompter. It also                                         of such numbers correctly beyond a certain length consis-
+decides whether the whole process should be finalized, or                                         tently because duplicate counts do not match.
+whether the next round of interaction with the LLM should                                            In GoT, we employ merge-based sorting: First, one de-
+be initiated. In our current design, this is dictated by the ex-                                  composes the input sequence of numbers into subarrays.
+ecution plan specified in the GoO.                                                                Then, one sorts these subarrays individually, and then re-
+   GoO & GRS The user constructs a GoO instance, which                                            spectively merges them into a final solution. Figure 3 illus-
+prescribes the execution plan of thought operations. The                                          trates this use case together with its graph decomposition.
+GoO is a static structure that is constructed once, before the                                    Here, an LLM thought is a sequence of sorted numbers.
+execution starts. Each operation object knows its predeces-                                          Moreover, we also consider set operations, focusing on
+sor and successor operations. Then, during the execution, an                                      set intersection. They have numerous applications (partic-
+instance of the GRS maintains the continually updated in-                                         ularly set intersection) in problems ranging from genome
+formation about the LLM reasoning process. This includes                                          or document comparisons to pattern matching (Besta et al.
+which operation has been executed so far, the states of all                                       2020, 2021a). Set intersection of two sets is implemented
+the generated LLM thoughts, their validity and scores, and                                        similarly as the sorting. The second input set is split into
+any other relevant information.                                                                   subsets and the intersection of those subsets with the first in-
+   The above elements offer extensible APIs, enabling                                             put set is determined with the help of the LLM. Afterwards
+straightforward implementations of different prompting                                            the resulting intersection sets are aggregated for the final re-
+
+
+
+
+                                                                                      17685
+                                                     The Thirty-Eighth AAAI Conference on Artificial Intelligence (AAAI-24)
+
+
+Graph of Operations (GoO) for sorting 64 numbers                                                    sults. For the evaluation we use different set sizes of 32, 64
+Details of the highlighted    Note that this is an example graph decomposition. The                 and 128 elements and we vary the number of elements found
+part of GoO are below          structure of connections can be arbitrarily modified.                in both sets to be between 25% and 75%.
+                             G                                                                         Keyword counting finds the frequency of keywords in a
+                                                                              A                     given category (countries in our example implementation)
+      S              S                S              S                                              within the input text. GoT splits the input text into multiple
+                                                                            Score
+   Score          Score          Score            Score                                             passages, counts the keywords in each passage and aggre-
+                                                                              K                     gates the subresults. The number of passages is configurable
+      K              K                K              K
+                                                                              G                     and can also be left to the LLM, making it possible to treat
+              A                              A
+                                                                                                    each sentence as a separate passage. Here, to score a thought,
+                                                                            Score
+            Score                         Score                                                     we first – for each keyword – derive the absolute difference
+                                                                              K                     between the computed count and the correct one. We then
+              K                              K
+                                                                       Legend                       sum all these differences to get the final score.
+              G                              G                                                         Finally, we also provide document merging. Here, the
+                                                                        G Generate
+            Score                         Score                         S Sort                      goal is to generate a new Non-Disclosure Agreement (NDA)
+                                                                        K KeepBest                  document based on several input ones that partially over-
+              K                              K
+                                                                        A Aggregate                 lap in terms of their contents. The goal is to ensure minimal
+                                                                                                    amount of duplication, while maximizing information reten-
+Details of the highlighted part of the GoO from above                                               tion. Document merging is broadly applicable in, e.g., legal
+       Input
+                                                                     The first Generate
+                                                                   splits the 64-element
+                                                                                                    procedures, where multiple sources of information have to
+                                          Generate(k) k = 1
+       64 numbers                         Splitting into four      input array into four            be combined into a single document or article. To score a
+                                                                    16-element chunks.
+       1 4 6 2 4 ... 9 8 7 5 4            16-element chunks                                         solution, we query the LLM for two values (3 times for each
+                                                                                                    value, and take the average). The first value corresponds to
+                                                                                                    the solution redundancy (10 indicates no redundancy, 0 im-
+                                                                                                    plies at least half the information is redundant), the second
+ Partial                 Partial                  Partial               Partial
+ 16 numbers              16 numbers               16 numbers            16 numbers
+                                                                                                    value stands for information retention (10 indicates all infor-
+  1 4 ... 4 3             8 2 ... 1 3             1 1 ... 4 2           1 9 ... 5 4                 mation is retained, 0 says that none is retained). We compute
+ Generate(k)             Generate(k)              Generate(k)           Generate(k)                 the harmonic mean of these values.
+ Sort   k=3              Sort  k=3                Sort  k=3             Sort   k=3
+                                                                                                            5    The Latency-Volume Tradeoff
+    .....                                           .....                   .....                   We now show that GoT improves upon previous prompting
+  Partial                Partial              Partial            Sorting is implemented
+                                                                  within the Generate               schemes in terms of the tradeoff between latency (number of
+  16 numbers             16 numbers           16 numbers          operation. Here, k=3
+  1 2 ... 4 8            1 2 ... 7 8             1 1 ... 5 7     means that, for each 16            hops in the graph of thoughts to reach a given final thought)
+                                                                   element chunk, we                and volume. We define volume – for a given thought t – as
+  Score        Assess how well each sequence is sorted           generate three different
+                                                                        sortings.                   the number of preceding LLM thoughts that could have im-
+                                                                                                    pacted t. Formally, the volume of t is the number of thoughts
+                                                                                                    from which there exists a path to t in the graph of thoughts.
+  Partial                Partial              Partial
+  16 numbers             16 numbers           16 numbers                                            We assume that outputting a single thought costs O(1) time
+  1 2 ... 4 8            1 2 ... 7 8           1 1 ... 5 7                                          and fix the total cost to Θ(n) for each prompting scheme.
+    100%                 78%                      86%                                                  The structure of the schemes is as follows. CoT-SC con-
+                    KeepBest(N)
+                                                               Here, N=1 means that we              sists of k independent chains originating from a single start-
+                    Keep the best N = 1                          maintain a single best             ing thought. ToT is a complete k-ary tree. Finally, in GoT, a
+     .....          scored thoughts                             sorting outcome out of
+                                                                 the three input ones.              complete k-ary tree is joined at its leaves with a “mirrored”
+                                                     .....                  .....                   k-ary tree of the same size but with its edges reversed.
+  Partial                Partial                                                                       The analysis is detailed in Table 2. CoT offers a large vol-
+  16 numbers             16 numbers                                                                 ume of up to N , but at the cost of a high latency of N . CoT-
+  1 3 ... 4 6            1 2 ... 4 8                Partial           Partial
+                                                    32 numbers        32 numbers
+    97%                   100%
+                                                    1 1 ... 6 8       1 1 ... 8 9
+          Aggregate(k)                                                  100%
+          Merge 32 elements
+                                                      97%                                                        Scheme       Latency    Volume
+                        k = 10                           Aggregate(k)
+                                                         Merge 64 elements                                       CoT          N          N
+                                                                        k = 10                                   CoT-SC       N/k        N/k
+                                                                                                                 ToT          logk N     O(logk N )
+ Here, k=10 means that we try 10 different
+ aggregations of the two input 16-element subarrays.            .....                                            GoT          logk N     N
+Figure 3: An example graph decomposition of the sorting
+use case in GoT. All used operations (Generate, Aggregate,                                          Table 2: Comparison of prompting schemes, with respect
+Score, KeepBest) are described in Figure 2.                                                         to their fundamental tradeoff between latency and volume.
+                                                                                                    GoT offers the best tradeoff.
+
+
+
+
+                                                                                            17686
+                                                                                                  The Thirty-Eighth AAAI Conference on Artificial Intelligence (AAAI-24)
+
+                                                          32 elements                64 elements                128 elements                                                                                                        32 elements Solved correctly 64 elements                            128 elements
+                                                                              64                         128
+                                                                    GoT:                      GoT:                         GoT:                                                                                                    7 6 31 29 43              0 0 0 0 4                              0    0 0 0 0
+
+
+
+
+#incorrectly sorted elements; thelowerthebetter
+                                              16                   Figure     60  clipped   Figure 3 4.8 120       clipped Fig. 3 16                                                                                                                     32
+                                                                          1.6                                                                                                                                                                        1.8                                       88                        11
+
+
+
+
+                                                                                                                                                                                  #incorrect elements; the lower the better
+                                                                      3                              4.5 112                      15                                                                                                                                                     4.8
+
+
+
+
+                                                                                                                                   Total Cost ($); the lower the better
+                                                                              56
+
+
+
+
+                                                                                                                                                                                                                                                                                                                             Total Cost ($); the lower the better
+                                                                                            L=7                                                                                                                               18
+                                              14                                                     4.2                          14                                                                                                                                                           80                        10
+                                                             L=2
+                                                                          1.4 52
+                                                                                            k=10         104
+                                                                                                     3.9 96        L=4            13                                                                                                                 1.6 28                          4.2
+                                                             k=20 L=3         48                                   k=20                                                                                                       16                                                         72                              9
+                                              12                   k=10                              3.6 88                       12                                                                                                    L=2                                     L=7
+                                                                          1.2 44   L=4                                                                                                                                                  k=20             1.4 24                 k=10 3.6 64
+                                                                                                     3.3                          11                                                                                          14                                         L=4                                             8
+                                                                              40   k=20                   80                                                                                                                                                             k=20
+                                              10                                                     3.0                     L/k 10                                                                                                                      1.2 20                                56         L=4            7
+                                                                          1.0 36                          72                =10 9                                                                                             12                                                         3.0
+                                                                                                     2.7                                                                                                                                     L=3                                                          k=25
+                                                  8                           32                     2.4 64                       8                                                                                           10             k=10        1.0
+                                                                                                                                                                                                                                                               16
+                                                                                                                                                                                                                                                                                               48                L=9 6
+                                                                          0.8 28                                                                                                                                                                                                                                 k=10
+                                                                                                     2.1 56                       7                                                                                                                                                      2.4
+                                                                                                                                                                                                                                                                                               40                     5
+                                                                              24                          48                                                                                                                  8                          0.8
+                                                  6                       0.6 20                     1.8                          6                                                                                                                            12
+                                                                                                     1.5 40                       5                                                                                                                                                      1.8 32                          4
+                                                                                                                                                                                                                              6                          0.6
+                                                  4                           16                     1.2  32                      4                                                                                                                                                            24                        3
+                                                                          0.4                                                                                                                                                                                  8                         1.2
+                                                                              12                     0.9 24                       3                                                                                           4                          0.4
+                                                  2                            8                     0.6  16                      2                                                                                                                                                            16                        2
+                                                                          0.2
+                                                                               4                     0.3   8                      1                                                                                           2                          0.2 4                           0.6
+                                                                                                                                                                                                                                                                                               8                         1
+                                                  0                       0.0 0                      0.0   0                      0
+                                                      IO CoT ToT ToT2GoT         IO CoT ToT ToT2GoT          IO CoT ToT ToT2GoT                                                                                               0                          0.0 0                           0.0 0                           0
+                                                                                                                                                                                                                                   IO CoT ToT ToT2 GoT              IO CoT ToT ToT2GoT              IO CoT ToT ToT2GoT
+
+Figure 4: Accuracy and cost in sorting tasks with ChatGPT-                                                                                                                        Figure 5: Accuracy and cost in set intersection tasks with
+3.5. L and k indicate the structure of ToT (see Section 2.2).                                                                                                                     ChatGPT-3.5. L and k indicate the structure of ToT (see Sec-
+                                                                                                                                                                                  tions 2.2 and 5).
+SC reduces the latency by a factor of k (which corresponds
+to its branching factor), but it simultaneously decreases the
+volume by k as well. ToT offers a latency of logk N but                                                                                                                           see Section 4 for the description of specific use cases. Over-
+also has low volume. GoT is the only scheme to come with                                                                                                                          all, GoT improves the quality of outcomes over all the con-
+both a low latency of logk N and a high volume N . This                                                                                                                           sidered baselines and it reduces inference costs compared to
+is enabled by the fact that GoT harnesses aggregations of                                                                                                                         ToT.
+thoughts, making it possible to reach the final thought from                                                                                                                         GoT vs. ToT GoT improves upon ToT and ToT2 by a
+any other intermediate thought in the graph decomposition.                                                                                                                        large margin over all the considered problem instances. ToT
+                                                                                                                                                                                  usually comes with somewhat higher quality than ToT2, but
+                                                                             6     Evaluation                                                                                     simultaneously much higher costs. GoT’s costs are always
+We show the advantages of GoT over the state of the art. We                                                                                                                       lower than ToT, and comparable (in some cases lower, in
+focus on comparing GoT to ToT, as it was shown to consis-                                                                                                                         others higher) to ToT2. For example, it reduces median er-
+tently outperform other schemes. Still, for a broad compari-                                                                                                                      ror by ≈62%, thereby achieving a higher quality of sorting,
+son, we also experiment with IO, CoT, and CoT-SC. As our                                                                                                                          for P = 128 in comparison to ToT while ensuring >31%
+analysis results in a large evaluation space, we present rep-                                                                                                                     cost reductions. These advantages are due to GoT’s ability to
+resentative results and omit data that does not bring relevant                                                                                                                    decompose complex tasks into simpler subtasks, solve these
+insights (e.g., CoT-SC).                                                                                                                                                          subtasks independently, and then incrementally merge these
+                                                                                                                                                                                  outcomes into the final result.
+6.1                                                    Evaluation Methodology                                                                                                         GoT vs. IO and CoT GoT consistently delivers much
+We use 100 input samples for each task and comparison                                                                                                                             higher quality of outcomes than IO/CoT. For example, for
+baseline. We set the temperature to 1.0 and use a 4k con-                                                                                                                         sorting (P = 64), GoT’s median error is ≈65% and ≈83%
+text size unless stated otherwise. For each experiment, we                                                                                                                        lower than, respectively, CoT and IO. Yet, the costs of GoT
+fix the numbers of thoughts in respective schemes to achieve                                                                                                                      – and ToT – are much higher than in IO and CoT. This is
+similar costs in each experiment.                                                                                                                                                 mostly due to our configuration of CoT, where we do not ar-
+   Parameters We experiment extensively with the branch-                                                                                                                          tificially inflate the lengths of the chains of reasoning if this
+ing factor k and the number of levels L to ensure that we                                                                                                                         does not improve the outcomes. The higher costs of GoT and
+compare GoT to cost-effective and advantageous configu-                                                                                                                           ToT are driven by k new thoughts built for each Generate
+rations. We plot two variants of ToT: one with higher k                                                                                                                           operation; these multiple thoughts are one of the reasons for
+and lower depth (ToT), the other with lower k but higher L                                                                                                                        GoT’s superiority in quality.
+(ToT2). We usually aim to achieve a sweet spot in the trade-                                                                                                                         Increasing Complexity of Tackled Problems Most im-
+off between sparser generation rounds (lower k) vs. more                                                                                                                          portantly, the advantages of GoT in the quality increase for
+rounds (larger L). Usually more responses per round is more                                                                                                                       all the baselines with the growing size of the problem P . For
+expensive (e.g., 80 vs. 60 total responses for Figure 6 but $6                                                                                                                    example, in sorting, while for P = 32 GoT only negligibly
+vs. $3 costs). We also try different problem sizes P (e.g., in                                                                                                                    improves upon ToT2, its median error count becomes lower
+sorting, P states how many numbers are to be sorted).                                                                                                                             by ≈61% for P = 64 and ≈69% for P = 128. The quar-
+   Used LLMs Due to budget restrictions, we focus on GPT-                                                                                                                         tiles also become respectively better. The results for other
+3.5. We also experimented with Llama 2, but it was usually                                                                                                                        schemes also follow the intuition; for example, IO becomes
+worse than GPT-3.5 and also much slower to run, making it                                                                                                                         consistently worse with the increasing P , which is expected
+infeasible to obtain enough samples.                                                                                                                                              as a single thought is unlikely to solve a large problem in-
+                                                                                                                                                                                  stance. Overall, this analysis illustrates that GoT is indeed
+6.2                                                    Analysis of GoT’s Advantages                                                                                               well-suited for elaborate problem cases, as the execution
+The results of analysis are in Figure 4 (sorting), 5 (set inter-                                                                                                                  schedules usually become more complex with the growing
+section), and 6 (keyword counting and document merging);                                                                                                                          problem sizes.
+
+
+
+
+                                                                                                                                                                          17687
+                                                                                                                                         The Thirty-Eighth AAAI Conference on Artificial Intelligence (AAAI-24)
+
+                                                    Keyword Counting                                                                        Document Merging
+
+
+
+
+Number of errors; the lower the better                                                 Score (out of 10); the higher the better
+                                              0    0    1   0    8    7    25                                                         Aggregation of fully merged NDAs                                                      GoT so that it can serve as the execution engine for these
+
+
+
+
+                                                                                                                                                                             Total Cost ($); the lower the better
+                                         35
+                                                       4 passages     Each
+                                                       separately   sentence
+                                                                              8
+                                                                                                                                  8                                      15
+                                                                                                                                                                                                                            schemes.
+                                         30 Solved                 separately
+                                                                              7
+                                            correctly L=4
+                                                               8 passages
+                                                                                                                                                                                                                               Self-Reflection & Self-Evaluation Self-reflection and
+                                         25           k=20      separately    6                                                                                          12
+                                                                                                                                  6                                                                                         self-evaluation were introduced recently (Shinn et al. 2023;
+                                         20                                        5
+                                                             L=6                                                                                                         9                                                  Paul et al. 2023; Madaan et al. 2023; Xie et al. 2023; Zhu
+                                                             k=10                  4
+                                         15                                                                                       4                                                                                         et al. 2023). In GoT, we partially rely on self-evaluation
+                                                                                   3                                                          L=3     Aggregation of     6
+                                         10                                                                                                  k=10    partially merged                                                       when expanding the graph of thoughts within a prompt.
+                                                                                   2                                              2                          NDAs
+                                                                                                                                                                         3                                                     LLMs & Planning There are many works on how to plan
+                                          5                                        1
+
+                                          0                                        0                                              0                                      0                                                  complex tasks with LLMs (Huang et al. 2022a,b; Zhang
+                                              IO   CoT   ToT ToT2 GoT4 GoT8 GoTx                                                       IO    CoT    ToT   GoT   GoT2
+                                                                                                                                                                                                                            et al. 2023; Yao et al. 2023b; Yang et al. 2023; Wang et al.
+Figure 6: Number of errors and cost in keyword counting                                                                                                                                                                     2023c). GoT could be seen as a generic framework that
+and score in document merging with ChatGPT-3.5. L and k                                                                                                                                                                     could potentially be used to enhance such schemes, by offer-
+indicate the structure of ToT (see Sections 2.2 and 5). Num-                                                                                                                                                                ing a paradigm for generating complex graph-based plans.
+ber of samples for document merging: 50; context size for                                                                                                                                                                      Graphs & Graph Computing Graphs have become an
+document merging: 16k tokens.                                                                                                                                                                                               immensely popular and important part of the general com-
+                                                                                                                                                                                                                            puting landscape (Lumsdaine et al. 2007; Malewicz et al.
+                                                                                                                                                                                                                            2010; Gregor and Lumsdaine 2005a,b; Sakr et al. 2021). Re-
+6.3                                           Discussion on Task Decomposition                                                                                                                                              cently, there has been a growing interest in domains such as
+When splitting a task into subtasks and then solving these                                                                                                                                                                  graph databases (Robinson et al. 2015; Besta et al. 2022b,
+subtasks, the size of responses and the input (in tokens) are                                                                                                                                                               2023b,d,c), graph pattern matching (Fan et al. 2010; Cheng
+reduced proportionally to the degree of the task decomposi-                                                                                                                                                                 et al. 2008; Teixeira et al. 2015; Besta et al. 2021a,b, 2022d),
+tion. However, the “static” part of the prompt (i.e., few-shot                                                                                                                                                              graph streaming (Feng, Meng, and Ammar 2015; Dhulipala,
+examples) may become a significant overhead (see GoT4 to                                                                                                                                                                    Blelloch, and Shun 2019; Besta et al. 2023a), and graph
+GoT8 in Figure 6). Here, we observe that these few-shot ex-                                                                                                                                                                 machine learning as well as graph neural networks (Hamil-
+amples can usually also be reduced in size (e.g., the passages                                                                                                                                                              ton, Ying, and Leskovec 2017; Wu et al. 2021; Zhou et al.
+used to demonstrate keyword counting can also be made                                                                                                                                                                       2020; Zhang, Cui, and Zhu 2022; Chami et al. 2020; Bron-
+smaller and still be indicative of the actual input size), thus                                                                                                                                                             stein et al. 2017; Besta et al. 2022a,c; Gianinazzi et al. 2021;
+actively working towards decreasing the cost (e.g., see the                                                                                                                                                                 Scarselli et al. 2008). In this work, we harness the graph ab-
+difference between GoT8 and GoTx in Figure 6).                                                                                                                                                                              straction as a key mechanism that enhances prompting capa-
+   The overall goal when conducting graph decomposition is                                                                                                                                                                  bilities in LLMs.
+to break down a task to the point, where the LLM can solve
+it correctly for the majority of time using a single prompt                                                                                                                                                                                      8    Conclusion
+(or with a few additional improvement steps). This signifi-
+cantly lowers the number of improvement/refinement steps                                                                                                                                                                    Prompt engineering is one of the central new domains of
+needed during the later stages of the graph exploration. Fur-                                                                                                                                                               the large language model (LLM) research. It enables using
+thermore, as indicated by our results, combining or concate-                                                                                                                                                                LLMs efficiently, without any model updates. However, de-
+nating subresults is usually an easier task than solving large                                                                                                                                                              signing effective prompts is a challenging task.
+task instances from scratch. Hence, the LLM is often suc-                                                                                                                                                                      In this work, we propose Graph of Thoughts (GoT), a new
+cessful when aggregating the final solution.                                                                                                                                                                                paradigm that enables the LLM to solve different tasks effec-
+                                                                                                                                                                                                                            tively without any model updates. The key idea is to model
+                                                                    7    Related Work                                                                                                                                       the LLM reasoning as an arbitrary graph, where thoughts
+We summarize relations between GoT and related work.                                                                                                                                                                        are vertices and dependencies between thoughts are edges.
+   Prompting Paradigms & Approaches We detail differ-                                                                                                                                                                       This enables novel transformations of thoughts, such as ag-
+ent prompting paradigms in Section 1 and Table 1. There are                                                                                                                                                                 gregation. Human’s task solving is often non-linear, and it
+numerous other works related to prompting, including Plan-                                                                                                                                                                  involves combining intermediate solutions into final ones,
+and-Solve (Wang et al. 2023a), a scheme by Fu et al. (Fu                                                                                                                                                                    or changing the flow of reasoning upon discovering new in-
+et al. 2022), the self-taught reasoner (Zelikman et al. 2022),                                                                                                                                                              sights. GoT reflects this with its graph structure.
+a scheme by Shum et al. (Shum, Diao, and Zhang 2023), au-                                                                                                                                                                      GoT outperforms other prompting schemes, for example
+tomatic prompt generation (Shin et al. 2020; Li and Liang                                                                                                                                                                   ensuring 62% increase in the quality of sorting over ToT,
+2021; Lester, Al-Rfou, and Constant 2021), concurrent ex-                                                                                                                                                                   while simultaneously reducing costs by >31%. We also pro-
+pansion of brief answers in the form of bullet points (Ning                                                                                                                                                                 pose a novel metric for a prompting scheme, the volume of
+et al. 2023), or selecting the best prompt out of a candidate                                                                                                                                                               a thought, to indicate the scope of information that a given
+set (Zhou et al. 2022). Most of these schemes could be ex-                                                                                                                                                                  LLM output could carry with it, where GoT also excels. This
+pressed by the GoT abstraction.                                                                                                                                                                                             provides a step towards more principled prompt engineering.
+   Prompt Chaining In prompt chaining, one cascades dif-                                                                                                                                                                       The graph abstraction has been the foundation of several
+ferent LLMs (Creswell, Shanahan, and Higgins 2022; Nye                                                                                                                                                                      successful designs in computing and AI over last decades,
+et al. 2021; Wu, Terry, and Cai 2022; Dohan et al. 2022;                                                                                                                                                                    for example AlphaFold for protein predictions. Our work
+Qiao et al. 2023; Wu et al. 2022). One could easily extend                                                                                                                                                                  harnesses it within the realm of prompt engineering.
+
+
+
+
+                                                                                                                                                                                                                    17688
+                                       The Thirty-Eighth AAAI Conference on Artificial Intelligence (AAAI-24)
+
+
+                   Acknowledgements                                           Brown, T.; Mann, B.; Ryder, N.; Subbiah, M.; Kaplan, J. D.;
+                                                                              Dhariwal, P.; et al. 2020. Language Models are Few-Shot Learn-
+We thank Hussein Harake, Colin McMurtrie, Mark Klein,
+                                                                              ers. In Advances in Neural Information Processing Systems
+Angelo Mangili, and the whole CSCS team granting access                       (NeurIPS ’20), volume 33, 1877–1901. Curran Associates.
+to the Ault and Daint machines, and for their excellent tech-
+nical support. We thank Timo Schneider for help with infras-                  Bubeck, S.; et al. 2023. Sparks of Artificial General Intelligence:
+                                                                              Early experiments with GPT-4. arXiv:2303.12712.
+tructure at SPCL. This project received funding from the Eu-
+ropean Research Council (Project PSAP, No. 101002047),                        Chami, I.; et al. 2020. Machine Learning on Graphs: A Model and
+and the European High-Performance Computing Joint Un-                         Comprehensive Taxonomy. arXiv:2005.03675.
+dertaking (JU) under grant agreement No. 955513 (MAEL-                        Cheng, J.; Yu, J. X.; Ding, B.; Philip, S. Y.; and Wang, H. 2008.
+STROM). This project was supported by the ETH Future                          Fast Graph Pattern Matching. In 24th International Conference on
+Computing Laboratory (EFCL), financed by a donation from                      Data Engineering, ICDE ’08, 913–922. IEEE.
+Huawei Technologies. This project received funding from                       Chowdhery, A.; et al. 2022. PaLM: Scaling Language Modeling
+the European Union’s HE research and innovation pro-                          with Pathways. arXiv:2204.02311.
+gramme under the grant agreement No. 101070141 (Project                       Creswell, A.; Shanahan, M.; and Higgins, I. 2022. Selection-
+GLACIATION).                                                                  Inference: Exploiting Large Language Models for Interpretable
+                                                                              Logical Reasoning. arXiv:2205.09712.
+                         References                                           Dhulipala, L.; Blelloch, G. E.; and Shun, J. 2019. Low-Latency
+                                                                              Graph Streaming Using Compressed Purely-Functional Trees. In
+Besta, M.; Fischer, M.; Kalavri, V.; Kapralov, M.; and Hoefler,
+                                                                              40th ACM SIGPLAN Conference on Programming Language De-
+T. 2023a. Practice of Streaming Processing of Dynamic Graphs:
+                                                                              sign and Implementation, PLDI ’19, 918–934.
+Concepts, Models, and Systems. IEEE Transactions on Parallel
+and Distributed Systems, 34(6): 1860–1876.                                    Dohan, D.; Xu, W.; Lewkowycz, A.; Austin, J.; Bieber, D.; et al.
+                                                                              2022. Language Model Cascades. In Beyond Bayes: Paths To-
+Besta, M.; Gerstenberger, R.; Blach, N.; Fischer, M.; and Hoefler,
+                                                                              wards Universal Reasoning Systems, Workshop at ICML ’22.
+T. 2023b. GDI: A Graph Database Interface Standard. https://
+github.com/spcl/GDI-RMA. Accessed: 2023-09-05.                                Fan, W.; Li, J.; Ma, S.; Tang, N.; Wu, Y.; and Wu, Y. 2010. Graph
+                                                                              Pattern Matching: From Intractable to Polynomial Time. Proc.
+Besta, M.; Gerstenberger, R.; Peter, E.; et al. 2023c. Demystifying
+                                                                              VLDB Endow., 3(1–2): 264–275.
+Graph Databases: Analysis and Taxonomy of Data Organization,
+System Designs, and Graph Queries. ACM Comput. Surv., 56(2).                  Feng, G.; Meng, X.; and Ammar, K. 2015. DISTINGER: A dis-
+                                                                              tributed graph data structure for massive dynamic graph process-
+Besta, M.; Grob, R.; Miglioli, C.; et al. 2022a. Motif Prediction
+                                                                              ing. In Proccedings of the IEEE International Conference on Big
+with Graph Neural Networks. In 28th ACM SIGKDD Conference
+                                                                              Data, Big Data ’15, 1814–1822.
+on Knowledge Discovery and Data Mining, KDD ’22, 35–45.
+                                                                              Friston, K. 2008. Hierarchical Models in the Brain. PLOS Com-
+Besta, M.; Iff, P.; Scheidl, F.; Osawa, K.; Dryden, N.; Podstawski,
+                                                                              putational Biology, 4(11): 1–24.
+M.; Chen, T.; and Hoefler, T. 2022b. Neural Graph Databases. In
+First Learning on Graphs Conference, volume 198 of Proceedings                Fu, Y.; et al. 2022. Complexity-Based Prompting for Multi-Step
+of Machine Learning Research, 31:1–31:38. PMLR.                               Reasoning. arXiv:2210.00720.
+Besta, M.; Kanakagiri, R.; Kwaśniewski, G.; et al. 2021a. SISA:              Gianinazzi, L.; Fries, M.; Dryden, N.; et al. 2021. Learning Com-
+Set-Centric Instruction Set Architecture for Graph Mining on                  binatorial Node Labeling Algorithms. arXiv:2106.03594.
+Processing-in-Memory Systems. In 54th Annual IEEE/ACM Inter-                  Gregor, D.; and Lumsdaine, A. 2005a. Lifting Sequential Graph
+national Symposium on Microarchitecture, MICRO ’21, 282–297.                  Algorithms for Distributed-Memory Parallel Computation. SIG-
+Besta, M.; et al. 2020. Communication-Efficient Jaccard Similar-              PLAN Not., 40(10): 423–437.
+ity for High-Performance Distributed Genome Comparisons. In                   Gregor, D.; and Lumsdaine, A. 2005b. The Parallel BGL:
+IEEE International Parallel and Distributed Processing Sympo-                 A generic library for distributed graph computations. Parallel
+sium, IPDPS ’20, 1122–1132.                                                   Object-Oriented Scientific Computing (POOSC).
+Besta, M.; et al. 2021b. GraphMineSuite: Enabling High-                       Hamilton, W. L.; Ying, R.; and Leskovec, J. 2017. Representation
+Performance and Programmable Graph Mining Algorithms with                     Learning on Graphs: Methods and Applications. Bulletin of the
+Set Algebra. Proc. VLDB Endow., 14(11): 1922–1935.                            Technical Committee on Data Engineering, 40(3): 52–74.
+Besta, M.; et al. 2022c. Parallel and Distributed Graph Neural Net-           Huang, W.; Abbeel, P.; Pathak, D.; and Mordatch, I. 2022a.
+works: An In-Depth Concurrency Analysis. arXiv:2205.09702.                    Language Models as Zero-Shot Planners: Extracting Actionable
+Besta, M.; et al. 2022d. ProbGraph: High-Performance and High-                Knowledge for Embodied Agents. In 39th International Confer-
+Accuracy Graph Mining with Probabilistic Set Representations. In              ence on Machine Learning, volume 162 of Proceedings of Ma-
+International Conference on High Performance Computing, Net-                  chine Learning Research, 9118–9147. PMLR.
+working, Storage and Analysis, SC ’22. IEEE.                                  Huang, W.; Xia, F.; Xiao, T.; Chan, H.; Liang, J.; et al. 2022b. In-
+Besta, M.; et al. 2023d. The Graph Database Interface: Scaling                ner Monologue: Embodied Reasoning through Planning with Lan-
+Online Transactional and Analytical Graph Workloads to Hun-                   guage Models. arXiv:2207.05608.
+dreds of Thousands of Cores. In International Conference for                  Lester, B.; Al-Rfou, R.; and Constant, N. 2021. The Power of
+High Performance Computing, Networking, Storage and Analysis,                 Scale for Parameter-Efficient Prompt Tuning. In Conference on
+SC ’23. ACM.                                                                  Empirical Methods in Natural Language Processing, EMNLP ’21,
+Bronstein, M. M.; Bruna, J.; LeCun, Y.; Szlam, A.; and Van-                   3045–3059. Association for Computational Linguistics.
+dergheynst, P. 2017. Geometric Deep Learning: Going beyond                    Li, X. L.; and Liang, P. 2021. Prefix-Tuning: Optimizing Contin-
+Euclidean data. IEEE Signal Processing Magazine, 34(4): 18–42.                uous Prompts for Generation. arXiv:2101.00190.
+
+
+
+
+                                                                      17689
+                                        The Thirty-Eighth AAAI Conference on Artificial Intelligence (AAAI-24)
+
+
+Long, J. 2023. Large Language Model Guided Tree-of-Thought.                    61st Annual Meeting of the Association for Computational Lin-
+arXiv:2305.08291.                                                              guistics, ACL ’23, 2609–2634. Association for Computational
+Lumsdaine, A.; Gregor, D.; Hendrickson, B.; and Berry, J. 2007.                Linguistics.
+Challenges in Parallel Graph Processing. Parallel Processing Let-              Wang, X.; et al. 2023b. Self-Consistency Improves Chain of
+ters, 17(1): 5–20.                                                             Thought Reasoning in Language Models. In Eleventh Interna-
+Madaan, A.; et al. 2023. Self-Refine: Iterative Refinement with                tional Conference on Learning Representations, ICLR ’23.
+Self-Feedback. arXiv:2303.17651.                                               Wang, Z.; et al. 2023c. Describe, Explain, Plan and Select: Interac-
+Malewicz, G.; Austern, M. H.; Bik, A. J.; et al. 2010. Pregel: A               tive Planning with Large Language Models Enables Open-World
+System for Large-Scale Graph Processing. In International Con-                 Multi-Task Agents. In Advances in Neural Information Processing
+ference on Management of Data, SIGMOD ’10, 135–146. ACM.                       Systems (NeurIPS ’23), volume 36. Curran Associates.
+                                                                               Wei, J.; et al. 2022. Chain-of-Thought Prompting Elicits Reason-
+Ning, X.; et al. 2023. Skeleton-of-Thought: Large Language Mod-
+                                                                               ing in Large Language Models. arXiv:2201.11903.
+els Can Do Parallel Decoding. arXiv:2307.15337.
+                                                                               Wu, T.; Jiang, E.; Donsbach, A.; Gray, J.; Molina, A.; Terry, M.;
+Nye, M.; Andreassen, A. J.; Gur-Ari, G.; Michalewski, H.; Austin,
+                                                                               and Cai, C. J. 2022. PromptChainer: Chaining Large Language
+J.; Bieber, D.; et al. 2021. Show Your Work: Scratchpads for Inter-
+                                                                               Model Prompts through Visual Programming. In Extended Ab-
+mediate Computation with Language Models. arXiv:2112.00114.
+                                                                               stracts of the Conference on Human Factors in Computing Sys-
+Paul, D.; et al. 2023. REFINER: Reasoning Feedback on Interme-                 tems, CHI EA ’22. ACM.
+diate Representations. arXiv:2304.01904.                                       Wu, T.; Terry, M.; and Cai, C. J. 2022. AI Chains: Transparent and
+Qiao, S.; Ou, Y.; Zhang, N.; Chen, X.; Yao, Y.; et al. 2023. Reason-           Controllable Human-AI Interaction by Chaining Large Language
+ing with Language Model Prompting: A Survey. In 61st Annual                    Model Prompts. In Conference on Human Factors in Computing
+Meeting of the Association for Computational Linguistics, ACL                  Systems, CHI ’22. ACM.
+’23, 5368–5393. Association for Computational Linguistics.                     Wu, Z.; Pan, S.; Chen, F.; Long, G.; Zhang, C.; and Yu, P. S.
+qrdlgit. 2023. graph-of-thoughts Repository. https://github.com/               2021. A Comprehensive Survey on Graph Neural Networks. IEEE
+qrdlgit/graph-of-thoughts. Accessed: 2023-10-11.                               Transactions on Neural Networks and Learning Systems, 32(1): 4–
+Radford, A.; et al. 2018. Improving Language Understanding by                  24.
+Generative Pre-Training. https://openai.com/research/language-                 Xie, Y.; et al. 2023. Self-Evaluation Guided Beam Search for Rea-
+unsupervised. Accessed: 2023-09-06.                                            soning. In Advances in Neural Information Processing Systems
+Radford, A.; et al. 2019. Language Models are Unsupervised                     (NeurIPS ’23), volume 36. Curran Associates.
+Multitask Learners. https://openai.com/research/better-language-               Yang, S.; Nachum, O.; Du, Y.; Wei, J.; Abbeel, P.; and Schuur-
+models. Accessed: 2023-09-06.                                                  mans, D. 2023. Foundation Models for Decision Making: Prob-
+Robinson, I.; et al. 2015. Graph Databases: New Opportunities                  lems, Methods, and Opportunities. arXiv:2303.04129.
+for Connected Data. O’Reilly Media, 2nd edition.                               Yao, S.; Yu, D.; Zhao, J.; Shafran, I.; Griffiths, T. L.; Cao, Y.; and
+Sakr, S.; Bonifati, A.; Voigt, H.; Iosup, A.; Ammar, K.; Angles,               Narasimhan, K. R. 2023a. Tree of Thoughts: Deliberate Problem
+R.; et al. 2021. The Future is Big Graphs: A Community View on                 Solving with Large Language Models. In Advances in Neural In-
+Graph Processing Systems. Commun. ACM, 64(9): 62–71.                           formation Processing Systems (NeurIPS ’23), volume 36. Curran
+                                                                               Associates.
+Scarselli, F.; Gori, M.; Tsoi, A. C.; Hagenbuchner, M.; and Mon-
+                                                                               Yao, S.; Zhao, J.; Yu, D.; Du, N.; et al. 2023b. ReAct: Synergizing
+fardini, G. 2008. The Graph Neural Network Model. IEEE Trans-
+                                                                               Reasoning and Acting in Language Models. In Eleventh Interna-
+actions on Neural Networks, 20(1): 61–80.
+                                                                               tional Conference on Learning Representations, ICLR ’23.
+Shin, T.; Razeghi, Y.; Logan IV, R. L.; Wallace, E.; and Singh, S.             Yao, Y.; Li, Z.; and Zhao, H. 2023. Beyond Chain-of-Thought, Ef-
+2020. AutoPrompt: Eliciting Knowledge from Language Models                     fective Graph-of-Thought Reasoning in Large Language Models.
+with Automatically Generated Prompts. arXiv:2010.15980.                        arXiv:2305.16582.
+Shinn, N.; et al. 2023. Reflexion: Language Agents with Verbal                 Zelikman, E.; et al. 2022. STaR: Bootstrapping Reasoning With
+Reinforcement Learning. arXiv:2303.11366.                                      Reasoning. In Advances in Neural Information Processing Sys-
+Shum, K.; Diao, S.; and Zhang, T. 2023. Automatic Prompt                       tems (NeurIPS ’22), volume 35, 15476–15488. Curran Associates.
+Augmentation and Selection with Chain-of-Thought from Labeled                  Zhang, S.; Chen, Z.; Shen, Y.; Ding, M.; et al. 2023. Planning
+Data. arXiv:2302.12822.                                                        with Large Language Models for Code Generation. In Eleventh
+Teixeira, C. H. C.; et al. 2015. Arabesque: A System for Dis-                  International Conference on Learning Representations, ICLR ’23.
+tributed Graph Mining. In 25th Symposium on Operating Systems                  Zhang, Z.; Cui, P.; and Zhu, W. 2022. Deep Learning on Graphs: A
+Principles, SOSP ’15, 425–440. ACM.                                            Survey. IEEE Transactions on Knowledge and Data Engineering,
+Touvron, H.; et al. 2023a. Llama 2: Open Foundation and Fine-                  34(1): 249–270.
+Tuned Chat Models. arXiv:2307.09288.                                           Zhou, J.; Cui, G.; Hu, S.; et al. 2020. Graph neural networks: A
+Touvron, H.; et al. 2023b. LLaMA: Open and Efficient Foundation                review of methods and applications. AI Open, 1: 57–81.
+Language Models. arXiv:2302.13971.                                             Zhou, Y.; et al. 2022. Large Language Models Are Human-Level
+Vaswani, A.; Shazeer, N.; Parmar, N.; Uszkoreit, J.; et al. 2017.              Prompt Engineers. arXiv:2211.01910.
+Attention is All you Need. In Advances in Neural Information                   Zhu, X.; Wang, J.; Zhang, L.; Zhang, Y.; Huang, Y.; Gan, R.;
+Processing Systems (NIPS ’17), volume 30. Curran Associates.                   Zhang, J.; and Yang, Y. 2023. Solving Math Word Problems via
+Wang, L.; Xu, W.; Lan, Y.; Hu, Z.; Lan, Y.; Lee, R. K.-W.; and                 Cooperative Reasoning induced Language Models. In 61st An-
+Lim, E.-P. 2023a. Plan-and-Solve Prompting: Improving Zero-                    nual Meeting of the Association for Computational Linguistics,
+Shot Chain-of-Thought Reasoning by Large Language Models. In                   ACL ’23, 4471–4485. Association for Computational Linguistics.
+
+
+
+
+                                                                       17690
+
