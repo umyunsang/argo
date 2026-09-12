@@ -7,8 +7,11 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AuthStorage, createAgentSession, DefaultResourceLoader, ModelRegistry, SessionManager, SettingsManager } from "/opt/homebrew/lib/node_modules/prime-agent/dist/index.js";
 import type { AgentSession, ToolDefinition } from "/opt/homebrew/lib/node_modules/prime-agent/dist/index.js";
+import { FileAuthStorageBackend } from "/opt/homebrew/lib/node_modules/prime-agent/dist/index.js";
 import type { AuthCredential } from "/opt/homebrew/lib/node_modules/prime-agent/dist/core/auth-storage.js";
 import { getModels, streamSimple } from "/opt/homebrew/lib/node_modules/prime-agent/node_modules/@earendil-works/pi-ai/dist/index.js";
+import { getOAuthProvider } from "/opt/homebrew/lib/node_modules/prime-agent/node_modules/@earendil-works/pi-ai/dist/utils/oauth/index.js";
+import type { OAuthCredentials } from "/opt/homebrew/lib/node_modules/prime-agent/node_modules/@earendil-works/pi-ai/dist/utils/oauth/types.js";
 import type { Api, AssistantMessage, Model } from "/opt/homebrew/lib/node_modules/prime-agent/node_modules/@earendil-works/pi-ai/dist/types.js";
 import type { StreamFn } from "/opt/homebrew/lib/node_modules/prime-agent/node_modules/@earendil-works/pi-agent-core/dist/types.js";
 import { AssistantMessageEventStream } from "/opt/homebrew/lib/node_modules/prime-agent/node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js";
@@ -215,7 +218,7 @@ interface NetworkCapture {
   beforeSend?: (body: unknown) => Promise<void>;
   fetchOverride?: typeof globalThis.fetch;
   raw?: Json; rawUsageFrame?: string; responseId?: string; returnedModel?: string; resolvedProvider?: string;
-  responseSha256?: string; complete?: boolean;
+  responseSha256?: string; complete?: boolean; httpStatus?: number; errorBody?: string;
 }
 
 export function observeRouterResponse(response: Response, capture: NetworkCapture): Response {
@@ -312,7 +315,11 @@ function installNetworkGuard(): void {
     if (scope.beforeSend) await scope.beforeSend(JSON.parse(await request.clone().text()));
     scope.sent = true;
     const response = await (scope.fetchOverride ?? nativeFetch)(new Request(request, { redirect: "error" }));
-    if (!response.ok) scope.abort.abort();
+    scope.httpStatus = response.status;
+    if (!response.ok) {
+      scope.errorBody = await response.clone().text().then((body) => body.slice(0, 400)).catch(() => undefined);
+      scope.abort.abort();
+    }
     return scope.endpoint.startsWith("https://openrouter.ai/") ? observeRouterResponse(response, scope) : response;
   };
   globalThis.fetch = capturedFetch;
@@ -405,6 +412,7 @@ export function createRequestGuard(choice: ModelChoice, bridge: HostBridge, opti
           else output.push(event);
         }
         if (final && final.stopReason === "error" && journalEntry) journalEntry.provider_error = String(final.errorMessage ?? "").slice(0, 600);
+        if (journalEntry && capture.httpStatus !== undefined) { journalEntry.http_status = capture.httpStatus; if (capture.errorBody) journalEntry.provider_error_body = capture.errorBody; }
         const usage = final?.usage;
         const observed = Boolean(usage && Number.isSafeInteger(usage.totalTokens) && usage.totalTokens > 0 && [usage.input, usage.output, usage.cacheRead, usage.cacheWrite].every((value) => Number.isSafeInteger(value) && value >= 0) && usage.input + usage.output + usage.cacheRead + usage.cacheWrite === usage.totalTokens);
         if (!journalEntry || !reserved) throw new Error("NO_ADMITTED_PROVIDER_REQUEST");
@@ -449,6 +457,32 @@ interface PendingAction { request_id: string; action: "run_experiment" | "choose
 interface ControllerState { schema: string; campaign_id: string; team_id: string; session_id: string; model_id: string; session_file?: string; pending?: PendingAction; last_host_result?: Json; status: string; turns: number; }
 export interface ControllerFixtures { bridge?: HostBridge; stream?: StreamFn; auth?: AuthStorage; kernelBarrier?: () => Promise<Json>; }
 
+/** Refresh a stored OAuth credential under the shared auth.json lock when it would expire before the session deadline. */
+interface CredentialRenewal { refreshed: boolean; expires?: number; error?: string; }
+
+/** Provider OAuth tokens last under eight hours, so an eight-hour session cannot demand one token for its whole life; each turn needs this much validity. */
+export const CREDENTIAL_TURN_HORIZON_SECONDS = 3600;
+
+export function credentialHorizonEpoch(deadlineEpoch: number, now = Date.now() / 1000): number {
+  return Math.min(deadlineEpoch, now + CREDENTIAL_TURN_HORIZON_SECONDS);
+}
+
+export async function ensureCredentialOutlivesDeadline(authPath: string, provider: string, deadlineEpoch: number): Promise<CredentialRenewal> {
+  const backend = new FileAuthStorageBackend(authPath);
+  return backend.withLockAsync<CredentialRenewal>(async (current) => {
+    const data: unknown = JSON.parse(current ?? "{}");
+    const credential = object(data) ? data[provider] : undefined;
+    if (!object(credential) || credential.type !== "oauth") return { result: { refreshed: false } };
+    const expires = Number(credential.expires);
+    if (Number.isFinite(expires) && expires > credentialHorizonEpoch(deadlineEpoch) * 1000) return { result: { refreshed: false, expires } };
+    const oauth = getOAuthProvider(provider as Parameters<typeof getOAuthProvider>[0]);
+    if (!oauth) return { result: { refreshed: false, expires } };
+    const renewed = await oauth.refreshToken(credential as unknown as OAuthCredentials);
+    const merged = { ...(data as Json), [provider]: { type: "oauth", ...renewed } };
+    return { result: { refreshed: true, expires: renewed.expires }, next: JSON.stringify(merged, null, 2) };
+  });
+}
+
 function result(value: Json) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: value };
 }
@@ -491,7 +525,7 @@ export async function runCampaign(configPath: string, fixtures: ControllerFixtur
         if (clear.status !== "CLEAR") { state.status = "KERNEL_RECONCILIATION_REQUIRED"; save(); break; }
         const answer = await bridge(pending.action, { ...pending.arguments, request_id: pending.request_id });
         state.last_host_result = answer;
-        const accepted = !answer.error && (pending.action === "run_experiment" ? ["OBSERVED", "SUCCEEDED", "EXECUTED_UNVALIDATED", "FAILED", "CANCELLED"].includes(String(answer.status)) : pending.action === "choose_model" ? answer.status === "MODEL_CHANGE_REQUESTED" : answer.status === "CANDIDATE_SUBMITTED");
+        const accepted = !answer.error && (pending.action === "run_experiment" ? ["OBSERVED", "SUCCEEDED", "EXECUTED_UNVALIDATED", "FAILED", "CANCELLED", "DEFERRED"].includes(String(answer.status)) : pending.action === "choose_model" ? answer.status === "MODEL_CHANGE_REQUESTED" : answer.status === "CANDIDATE_SUBMITTED");
         if (accepted) state.pending = undefined;
         state.status = !accepted ? "HOST_ACTION_REQUIRES_RECONCILIATION" : pending.action === "run_experiment" ? "RESEARCH_OBSERVED" : pending.action === "choose_model" ? "MODEL_CHANGE_REQUESTED" : "CONCLUSION_SUBMITTED";
         log({ event: "host_action_result", action: pending.action, request_id: pending.request_id, result: answer });
@@ -500,11 +534,15 @@ export async function runCampaign(configPath: string, fixtures: ControllerFixtur
       }
       const publicState = await bridge("read_state", {});
       if (publicState.halted === true || publicState.status === "UNKNOWN" || publicState.error) { state.status = "HOST_RECONCILIATION_REQUIRED"; save(); break; }
+      if (!fixtures.auth) {
+        const renewal: CredentialRenewal = await ensureCredentialOutlivesDeadline(config.auth_path, choice.provider, config.deadline_epoch).catch((error: unknown) => ({ refreshed: false, error: error instanceof Error ? error.message.slice(0, 200) : "refresh failed" }));
+        if (renewal.refreshed) log({ event: "oauth_credential_refreshed", provider: choice.provider, expires: renewal.expires });
+      }
       const auth = fixtures.auth ?? (() => {
         const value: unknown = JSON.parse(readFileSync(config.auth_path, "utf8"));
         const credential = object(value) ? value[choice.provider] : undefined;
         if (!object(credential) || !["oauth", "api_key"].includes(String(credential.type))) throw new Error("MODEL_AUTH_MISSING");
-        if (credential.type === "oauth" && (typeof credential.expires !== "number" || credential.expires <= config.deadline_epoch * 1000)) throw new Error("MODEL_AUTH_EXPIRES_BEFORE_DEADLINE");
+        if (credential.type === "oauth" && (typeof credential.expires !== "number" || credential.expires <= credentialHorizonEpoch(config.deadline_epoch) * 1000)) throw new Error("MODEL_AUTH_EXPIRES_BEFORE_DEADLINE");
         return AuthStorage.inMemory({ [choice.provider]: credential as unknown as AuthCredential }, { usePrimeCliConfig: false });
       })();
       const settings = SettingsManager.inMemory({ retry: { enabled: false, provider: { maxRetries: 0, timeoutMs: 600000 } }, autoRefine: { enabled: false }, compaction: { enabled: false }, idleEvictionMinutes: "off", packages: [], extensions: [], skills: [], prompts: [], mcpServers: {} });

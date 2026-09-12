@@ -324,11 +324,11 @@ def safe_anthropic_snapshot(body: dict[str, object], status: int, response_sha25
             if isinstance(used, bool) or not isinstance(used, (int, float)) or not math.isfinite(used) or not 0 <= used <= 100:
                 raise BillingError(f"{name} utilization missing or invalid")
             resets = window.get("resets_at")
-            if not isinstance(resets, str) or not resets:
+            if used > 0 and (not isinstance(resets, str) or not resets):
                 raise BillingError(f"{name} reset time missing")
             if window.get("locked_reason") is not None:
                 raise BillingError(f"{name} locked: {window.get('locked_reason')}")
-            windows[name] = {"utilization": float(used), "resets_at": resets}
+            windows[name] = {"utilization": float(used), "resets_at": resets if isinstance(resets, str) else None}
         extra = body.get("extra_usage")
         if not isinstance(extra, dict) or type(extra.get("is_enabled")) is not bool:
             raise BillingError("extra-usage state missing")

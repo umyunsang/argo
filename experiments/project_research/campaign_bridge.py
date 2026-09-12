@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import subprocess
 import sys
 import time
 import uuid
@@ -14,6 +15,7 @@ from pathlib import Path
 from .contracts import canonical, utc_now, write_new
 from .dispatch import FIXED_COMMAND, ROOT, dispatch
 from .orx_adapter import OrxAdapter, RunReference
+from .runner import DOCKER
 from .model_billing import (anthropic_included_allocation, anthropic_subscription_snapshot,
                             codex_subscription_snapshot, included_subscription_allocation)
 
@@ -27,6 +29,14 @@ def subscription_route(provider: str):
         return anthropic_subscription_snapshot, anthropic_included_allocation
     return codex_subscription_snapshot, included_subscription_allocation
 from .state import AdmissionError, Store
+
+
+def original_reservation(receipt: dict) -> dict:
+    """Each UNKNOWN settlement wraps the previous receipt; the admission-time reservation is the innermost one."""
+    node = receipt
+    while isinstance(node.get("reservation"), dict) and "before" not in node:
+        node = node["reservation"]
+    return node
 
 
 def config(path: Path) -> dict:
@@ -118,7 +128,7 @@ def execute(cfg: dict, action: str, args: dict) -> dict:
         settled = []
         for charge in store.snapshot()["charges"]:
             receipt = json.loads(charge["receipt"]) if charge["receipt"] else {}
-            reservation = receipt.get("reservation", receipt)
+            reservation = original_reservation(receipt)
             if charge["state"] != "UNKNOWN" or reservation.get("billing_mode") != "subscription" or reservation.get("provider") not in SUBSCRIPTION_PROVIDERS:
                 continue
             snapshot, allocate = subscription_route(reservation["provider"])
@@ -128,6 +138,24 @@ def execute(cfg: dict, action: str, args: dict) -> dict:
                 store.settle_charge(charge["id"], 0, {"reservation": reservation, "previous_settlement": receipt, "reconciliation": entitlement, "scope": "post-hoc entitlement; tokens unobserved"})
                 settled.append(charge["id"])
         store.event({**event, "event": "subscription_reconciliation", "settled": settled})
+        return {"status": "RECONCILED", "settled": settled}
+    if action == "reconcile_compute":
+        # A kernel lease left UNKNOWN by a watchdog that reached its deadline while the container was already
+        # gone is bounded by its reservation: the container cannot have run longer than the lease window.
+        settled = []
+        for lease in store.snapshot()["compute"]:
+            if lease["state"] != "UNKNOWN" or lease["project"] != project or not lease["id"].startswith("kernel-"):
+                continue
+            receipt = json.loads(lease["receipt"]) if lease["receipt"] else {}
+            if receipt.get("terminal") is not True or receipt.get("container_absent") is not True:
+                continue
+            container = lease["id"].replace("kernel-", "project-research-kernel-")
+            if subprocess.run([DOCKER, "ps", "-aq", "--filter", f"name=^{container}$"], capture_output=True, text=True, timeout=15).stdout.strip():
+                continue
+            store.settle_compute(lease["id"], float(lease["reserved"]), {**receipt, "reconciliation": "wall-bounded by reservation; container verified absent",
+                                                                      "usage_basis": "reserved_upper_bound"})
+            settled.append(lease["id"])
+        store.event({**event, "event": "compute_reconciliation", "settled": settled})
         return {"status": "RECONCILED", "settled": settled}
     if action == "choose_model":
         allowed = {m["id"] for m in cfg["model_pool"] if m.get("status") == "QUALIFIED"}
@@ -177,6 +205,16 @@ def execute(cfg: dict, action: str, args: dict) -> dict:
                     return {"status": "FAILED", "run_id": ref.run_id, "reason": "missing structured result"}
                 store.event({**event, "event": "hypothesis_observation", "run_id": ref.run_id, "experiment_id": ref.experiment_id,
                              "receipt_sha256": hashlib.sha256(raw).hexdigest(), "result_status": result.get("status"), "hypothesis": args["hypothesis"]})
+                if result.get("status") == "BLOCKED" and result.get("scope") == "INFRASTRUCTURE_FAILURE":
+                    # The runner refused to measure (for example a competing science container). The refusal is
+                    # preserved under this decision; the team may resubmit the same source as a new decision.
+                    retired = intent_file.with_name(intent_file.stem + f".deferred-{ref.run_id[:8]}.json")
+                    intent_file.replace(retired)
+                    store.event({**event, "event": "experiment_deferred_by_infrastructure", "run_id": ref.run_id,
+                                 "experiment_id": ref.experiment_id, "reason": result.get("reason"), "retired_intent": str(retired)})
+                    return {"status": "DEFERRED", "run_id": ref.run_id, "experiment_id": ref.experiment_id,
+                            "receipt_sha256": hashlib.sha256(raw).hexdigest(), "reason": result.get("reason"),
+                            "retry": "The measurement host refused this run before your code executed; call run_experiment again (unchanged source is fine). The refused run stays on record."}
                 # The team receives its own run's outputs; the receipt file itself stays host-side.
                 output_dir = Path(result["output_path"]) if isinstance(result.get("output_path"), str) else None
                 artifacts = {}

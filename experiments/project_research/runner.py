@@ -90,7 +90,13 @@ def execute(snapshot: Path) -> dict:
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", spec["image"]):
         raise ValueError("immutable image required")
     worker = safe_tree(Path(spec["worker_root"]))
-    if worker != PRIVATE_ROOT / "worker" or spec["domain"] not in ("wine", "duckdb", "diffusion"):
+    eval_staging_dir = PRIVATE_ROOT / "evaluator" / "staging"
+    is_evaluator = (
+        spec.get("evaluator_execution") is True
+        and eval_staging_dir.is_dir()
+        and worker.is_relative_to(safe_tree(eval_staging_dir))
+    )
+    if (worker != PRIVATE_ROOT / "worker" and not is_evaluator) or spec["domain"] not in ("wine", "duckdb", "diffusion"):
         raise ValueError("public input boundary")
     if spec.get("mode", "development") not in ("development", "candidate"):
         raise ValueError("invalid execution mode")

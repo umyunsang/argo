@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sqlite3
 import subprocess
 import time
 import uuid
@@ -21,7 +22,14 @@ ROLES = {
 }
 
 
-def prepare(campaign_id: str, *, qualifications: Path | None = None) -> dict:
+def domain_task(domain: str) -> str:
+    """Domain paragraph appended to every session task; one committed file per domain."""
+    if domain not in ("wine", "duckdb", "diffusion"):
+        raise ValueError("unknown campaign domain")
+    return (SOURCE / "prompts" / f"task-{domain}.md").read_text(encoding="utf-8")
+
+
+def prepare(campaign_id: str, *, qualifications: Path | None = None, model_id: str | None = None) -> dict:
     programme = json.loads((ROOT / "control/programme.json").read_text())
     campaign = next((c for c in programme["campaigns"] if c["id"] == campaign_id), None)
     if campaign is None:
@@ -36,16 +44,26 @@ def prepare(campaign_id: str, *, qualifications: Path | None = None) -> dict:
         if qualified.get("pool_digest") != digest(pool):
             raise ValueError("qualification must refer to the frozen common pool")
         by_id = {m["id"]: m for m in qualified["members"]}
-        if set(by_id) - {m["id"] for m in choices}:
-            raise ValueError("new model requires next comparison batch")
-        choices = [{**m, **by_id.get(m["id"], {})} for m in choices]
-    selected = next((m for m in choices if m.get("status") == "QUALIFIED"), choices[0])
+        providers = {m["provider"] for m in choices}
+        extras = [by_id[i] for i in by_id if i not in {m["id"] for m in choices}]
+        # A same-provider alternative recorded in the qualification (e.g. sonnet beside opus) keeps the frozen
+        # provider set; a new provider still waits for the next comparison batch.
+        if any(m.get("provider") not in providers for m in extras):
+            raise ValueError("new model provider requires next comparison batch")
+        choices = [{**m, **by_id.get(m["id"], {})} for m in choices] + extras
+    if model_id is not None:
+        selected = next((m for m in choices if m["id"] == model_id), None)
+        if selected is None or selected.get("status") != "QUALIFIED":
+            raise ValueError("requested starting model is not a qualified pool member")
+    else:
+        selected = next((m for m in choices if m.get("status") == "QUALIFIED"), choices[0])
     image = json.loads((ROOT / "control/environment.json").read_text())["image"]
     present = subprocess.run(["/opt/homebrew/bin/docker", "image", "inspect", image, "--format", "{{.Id}}"], capture_output=True, text=True, timeout=30)
     if present.returncode != 0 or present.stdout.strip() != image:
         raise ValueError(f"pinned research image {image} is absent from the local daemon; rebuild and re-pin before preparing sessions")
     project_id = json.loads((ROOT / "control/orx-project.json").read_text())["project"]["id"]
     contract = json.loads((ROOT / "control/contracts" / f"{campaign_id}.json").read_text())
+    domain_text = domain_task(campaign["domain"])
     configs = []
     teams = ("team-1", "team-2") if campaign["condition"] == "P" else ("free",) if campaign["condition"] == "B" else ("fixed-roles",)
     roles = tuple(ROLES) if campaign["condition"] in ("P", "H") else ("free",)
@@ -57,8 +75,7 @@ def prepare(campaign_id: str, *, qualifications: Path | None = None) -> dict:
             for path in (workspace, artifacts, private):
                 path.mkdir(parents=True, exist_ok=False, mode=0o700)
             task = f"Mission: {contract['mission']}\nDomain: {campaign['domain']}\n{ROLES.get(role, 'Freely organize the entire research project, including delegation and independent verification.')}\n"
-            task += "Write candidate code in this workspace. Experimental Python runs with /workspace/wine as public wine data and /output as output directory. Use run_experiment to freeze source and invoke ORX. Output result JSON to /output/result.json. No direct host or hidden-data access is provided. Read the private controller's returned scientific receipts before making claims.\n"
-            task += "Shared data schema: Wine CSV columns row_id,color,group_id,11 physicochemical features,quality; train.csv/dev.csv only. Other domains use pinned DuckDB/PyAMG libraries in the science container. Choose your question and method; provided baseline recipes do not limit hypothesis space.\n"
+            task += domain_text
             write_new(workspace / "ResearchContract.json", contract)
             (private / "task.md").write_text(task)
             cfg = {"campaign_id": campaign_id, "project_id": project_id, "team_id": team, "role": role,
@@ -82,12 +99,49 @@ def prepare(campaign_id: str, *, qualifications: Path | None = None) -> dict:
     return result
 
 
+def rearm(campaign_id: str) -> dict:
+    """Re-issue session deadlines for a prepared campaign whose project clock has not started.
+
+    Session deadlines are set at preparation; if launch slips past them the project wall
+    (which only starts on the first host action) is untouched, so the deadlines can be
+    reissued without changing budgets. Refuses once the project clock has started.
+    """
+    store = Store(ROOT / "control/state.sqlite")
+    with sqlite3.connect(ROOT / "control/state.sqlite") as db:
+        row = db.execute("SELECT started, wall FROM projects WHERE id=?", (campaign_id,)).fetchone()
+    if row is None:
+        raise ValueError("unknown campaign")
+    if row[0] is not None:
+        raise ValueError("project clock already started; the wall is nonresetting")
+    control = ROOT / "control/campaigns" / campaign_id
+    updated = []
+    for config in sorted(control.glob("*/*/config.json")):
+        cfg = json.loads(config.read_text())
+        if (control / cfg["team_id"] / cfg["role"] / "controller-state.json").exists():
+            raise ValueError("a session already ran; rearm only applies before any controller turn")
+        previous = cfg["deadline_epoch"]
+        cfg["deadline_epoch"] = time.time() + row[1]
+        cfg.setdefault("deadline_history", []).append({"previous": previous, "reissued_at": utc_now(), "reason": "prepared session deadline elapsed before launch; project clock unstarted"})
+        tmp = config.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")
+        tmp.chmod(0o600)
+        tmp.replace(config)
+        updated.append(str(config))
+    store.event({"event": "campaign_sessions_rearmed", "project_id": campaign_id, "sessions": len(updated), "wall_seconds": row[1]})
+    return {"campaign_id": campaign_id, "rearmed": updated}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("campaign_id")
     parser.add_argument("--qualifications", type=Path)
+    parser.add_argument("--model", help="starting model id; must be QUALIFIED in the pool")
+    parser.add_argument("--rearm", action="store_true", help="reissue session deadlines for an unstarted prepared campaign")
     args = parser.parse_args()
-    print(json.dumps(prepare(args.campaign_id, qualifications=args.qualifications), indent=2))
+    if args.rearm:
+        print(json.dumps(rearm(args.campaign_id), indent=2))
+        return
+    print(json.dumps(prepare(args.campaign_id, qualifications=args.qualifications, model_id=args.model), indent=2))
 
 
 if __name__ == "__main__":

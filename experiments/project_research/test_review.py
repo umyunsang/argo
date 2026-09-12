@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from review import (
+from experiments.project_research.review import (
     CandidateSpec,
     DIMENSIONS,
     ReviewError,
@@ -165,7 +165,7 @@ class ReviewControlsTests(unittest.TestCase):
         self.assertTrue({item["candidate_id"] for item in first_packet["candidates"]}.isdisjoint({item["candidate_id"] for item in second_packet["candidates"]}))
 
     def test_candidate_order_uses_randomization(self) -> None:
-        with patch("review.secrets.SystemRandom") as random_class:
+        with patch("experiments.project_research.review.secrets.SystemRandom") as random_class:
             random_class.return_value.shuffle.side_effect = lambda items: items.reverse()
             self.build()
             random_class.return_value.shuffle.assert_called_once()

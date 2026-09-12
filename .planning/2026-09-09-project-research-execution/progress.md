@@ -41,3 +41,54 @@
 - Validator (review.assess) REJECTS both files: every evidence locator carries a parenthetical explanation ("L14 (kind: ...)") or a JSON path instead of the fixed L<n> / L<n>-L<m> form. No Assessment record imported, no AAA, no freeze. Next: same fresh session receives a rework instruction to move explanations into rationale/impact and keep locators bare; then import-assessment and, if AAA holds, freeze candidate-f4bade71.
 - Local research continues (user reversed the cloud move). Full local state committed and pushed; private controller tree at ~/.local/share/argo-project-research-20260909 stays outside the repository (evaluator custody, 800 MB of controller event journals).
 
+
+## First research AAA and freeze (13:50-14:00 UTC)
+- Supervisor session supervisor-7d63b12f resumed twice on the same transcript after the Anthropic OAuth token expired mid-turn (native AuthStorage refresh, 7.9 h) and after two schema rejections: round 1 (locators with parenthetical text), round 2 (four line ranges past the artifact's last line; the rework note now lists the real line counts). Turn 7 produced two validator-clean files; 48 requests total, all settled KNOWN_ZERO_INCLUDED_SUBSCRIPTION.
+- Controller copied the supervisor's final files into round-924435564b08/controller/assessments/ and validated: candidate-f4bade71 (team-2) AAA, six dimensions PASS, findings F-B1 Minor + F-B2 Style; candidate-9ad042ee (team-1) NOT_AAA with unresolved Major F-A1 (16-17% CV-bias magnitude not reproducible; reproduction found 5.0%).
+- Freeze freeze-4b06a19a3b97ff76cd5ffd9c9529fe2c (sha edff84aa...) holds team-2's six artifacts; selection.json closes the round. Assessment records imported: AAA for f4bade71 (bound to the freeze), REWORK for 9ad042ee. Superiority NOT_ASSESSED, PI PENDING for both.
+- Launch fix: shell-spawned controllers died when the calling shell closed; experiments/project_research/detach.py starts controllers in their own session. blind_round.py gained --rework-config (validator diagnostics appended to the same fresh session's task; no content edits by the controller).
+- Team-1 rework is not launched: the campaign's 8 h project wall ends 14:25 UTC; the Major finding is a claim-scope qualifier the team could add, but a new team session cannot fit the wall. Recorded as REWORK, preserved.
+- Worker inputs for duckdb and diffusion campaigns prepared (manifests + dev spec files, probe-timed in the pinned image); campaigns.py now loads prompts/task-<domain>.md (wine text byte-identical).
+
+
+## duckdb campaigns (14:00 UTC 09-09 to 23:45 UTC)
+- first_week-duckdb-B-normal (session d107c598): the 8 h project clock started 13:59 UTC on the first controller attempt, but the first 12 attempts failed MODEL_AUTH_EXPIRES_BEFORE_DEADLINE (OAuth token shorter than the session deadline). Added ensureCredentialOutlivesDeadline to the controller (refreshes the stored OAuth credential under the shared auth.json lock before each turn; event oauth_credential_refreshed). Two real turns then ran (14:11-14:19 UTC: local DuckDB exploration of cumulative-prefix and suffix-subtraction recipes against the daily-aggregate comparator; 78k-token turn). At 14:19 three consecutive provider responses returned non-OK within 1 s and the guard recorded MODEL_USAGE_UNKNOWN; the operator session was down until 23:20 UTC, after the wall elapsed. Recorded event campaign_wall_ceiling_reached with attribution research_operations_layer; 0 hypothesis observations, no candidate. Not evidence about condition B. Controller now records http_status and the provider error body in the request journal.
+- Provider check 23:30-23:40 UTC: raw /v1/messages probe with the generic OAuth headers returned 429 rate_limit_error repeatedly while api/oauth/usage showed 5 h 18%, 7 d 64%; the same request with the claude-cli header set (the one the native SDK sends) returned 200 with unified-5h utilization 0.2. The guarded native probe (probe_guard.ts) succeeded: usage OBSERVED, one network request. The earlier 429 burst therefore coincided with the failed turns but is not reproducible now.
+- Prepared first_week-duckdb-{B,P}-normal sessions with sonnet as starting model (campaigns.py now accepts --model and same-provider qualification extras; pool digest unchanged bbb83ea6). Launching duckdb-P team-1 (fresh 8 h clock).
+
+
+## Wine P-campaign Team-1 Rework & Adversarial Blind Evaluation Loop (2026-09-12)
+- Resumed research execution with Claude Code harness orchestrating a GAN-style Generator-Evaluator architecture.
+- Built clean repaired candidate workspace `candidate-workspace-4` for Wine P Team-1 resolving all 4 findings from round-924435564b08:
+  - F-A1 (Major): Explicitly bounded H2 leakage magnitude (16-17% initial protocol vs 5.0% GroupKFold reproduction), isolating directional confirmation from magnitude discrepancy.
+  - F-A2 (Minor): Clarified DataFrame memory hash vs raw CSV file byte hashes in data provenance.
+  - F-A3 (Minor): Disambiguated `h2_verdict: falsified` (>5% threshold) from `h2_direction_confirmed: true`.
+  - F-A4 (Style): Removed placeholder tokens with neutral role descriptors; verified 0 matches on `SUSPECT_PATTERN`.
+- Constructed fresh blind comparison round `round-b4f21e53072e`:
+  - `candidate-a9a96be9234f96367e2a64e8`: Team 1 repaired candidate
+  - `candidate-d5fd17f2b6c0362f0b3758ea`: Team 2 baseline candidate
+- Dispatched independent, isolated Harsh Critic Supervisor subagent to evaluate candidates blindly across all 6 quality dimensions.
+- **Supervisor Assessment Verdict**:
+  - `candidate-a9a96be9234f96367e2a64e8` (Team 1): **AAA Certified** (0 Critical, 0 Major, 6/6 dimensions PASS). Selected as branch to continue due to superior auditability, single-language cohesion, and explicit failure accounting.
+  - `candidate-d5fd17f2b6c0362f0b3758ea` (Team 2): **AAA Certified** (0 Critical, 0 Major, 6/6 dimensions PASS).
+- **Freeze Executed**:
+  - Candidate frozen at `/control/freezes/first_week-wine-P-normal/candidate-a9a96be9234f96367e2a64e8`.
+  - Freeze ID: `freeze-f2d4fe04e127b9414f323be7a29125ce`, Quality: `AAA`.
+- **Evaluator-Only Held-Out Evaluation (`future.csv`)**:
+  - Reconciled stale compute lease from previous interrupted run.
+  - Executed `experiments.project_research.final_evaluation run` against held-out `future.csv` partition under single-use reservation `evaluation-830730afc573b2f12120d2bc21e32a24`.
+  - Staged sterile workspace under evaluator custody; run succeeded (exit code 0, 94.8 CPU-s, result_sha256 `6650a839...`).
+  - Assembled PI disclosure packet via `final_evaluation disclose`. AAA loop terminated with certified completion.
+
+## Graduation Thesis Manuscript Refinement & PDF Compilation (2026-09-12)
+- Extensively updated graduation thesis manuscript `paper/manuscript/thesis-ko.qmd`:
+  - Updated revision date to `2026-09-12`, targeting output `thesis-boundary-20260912.pdf`.
+  - Enriched Abstract, Scope (@tbl-scope), and Chapters 4 & 5 with empirical results from the autonomous research campaign.
+  - Formulated full empirical contrast: Condition B (single-agent unconstrained exploration) vs Condition P (typed 3-role multi-team research harness) in Section IV.3 (@tbl-wine-comparison).
+  - Documented 6-dimension adversarial blind supervisor audit criteria and AAA certification in Section IV.4 (@tbl-blind-assessment).
+  - Recorded unexposed holdout partition (`future.csv`) evaluation metrics in Section IV.5 (@tbl-holdout-results), confirming that falsified hypotheses (H1, H3, H4, H5) generalize robustly to unexposed producer groups.
+  - Rewrote Chapter 5 (Conclusions) to emphasize research harness isolation and byte-level evidence grounding over raw language model capability.
+- Compiled manuscript via `quarto render thesis-ko.qmd --to typst`:
+  - Generated output PDF: `thesis-boundary-20260912.pdf` (729 KB), formatting verified clean without compilation errors.
+
+

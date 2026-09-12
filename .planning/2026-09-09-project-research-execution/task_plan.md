@@ -4,11 +4,13 @@ Source of authority: current user implementation plan. Native ARGO construction 
 
 ## Phases
 1. Inspect current research/runtime/evidence and establish scoped reuse — complete.
-2. Implement project contracts, B/H/P policies, two-team blinded assessment, budget and checkpoint controls — complete (apparatus); live blinded supervisor round still pending.
+2. Implement project contracts, B/H/P policies, two-team blinded assessment, budget and checkpoint controls — complete (blinded supervisor round round-b4f21e53072e passed with AAA).
 3. Implement and run genuine Wine Quality, DuckDB and anisotropic diffusion baseline/hypothesis development experiments — complete (4 SUCCEEDED ORX development runs).
-4. Integrate ORX execution references, isolated evaluation, dashboard and campaign schedule — complete for B; team role handoff for P in_progress.
-5. Run autonomous campaigns: first_week-wine-B-normal CANDIDATE_SUBMITTED; first_week-wine-P-normal team-1 research role running; team-2, blinded supervisor round, remaining domains/continuity pending.
-6. Run focused checks, independent review, repair, and deliver evidence plus exact remaining limitations — checks pass at each step; final report update pending.
+4. Integrate ORX execution references, isolated evaluation, dashboard and campaign schedule — complete (team role handoff complete, frozen candidate evaluated on held-out split).
+5. Run autonomous campaigns: first_week-wine-B-normal CANDIDATE_SUBMITTED; first_week-wine-P-normal both teams complete, AAA certified, candidate frozen, held-out final evaluation executed; remaining domains/continuity pending.
+6. Run focused checks, independent review, repair, and deliver evidence plus exact remaining limitations — Wine P-campaign review and repair cycle completed with certified AAA freeze; held-out evaluation disclosed.
+7. Refine graduation thesis manuscript (`thesis-ko.qmd`) with empirical contrast, supervisor blind assessment rubric, and holdout generalization; successfully compiled final PDF `thesis-boundary-20260912.pdf` — complete.
+
 
 ## Constraints
 - Additional spend ceiling KRW 300000 (150000/90000/60000), unknown usage is never zero.

@@ -110,8 +110,13 @@ def run_role(campaign_id: str, team: str, role: str, *, max_resumes: int = 6) ->
             continue
         if status.startswith("MODEL_") or status.startswith("PRIOR_MODEL"):
             # Charge/usage reconciliation; the bridge settles from a fresh trusted view, then we resume.
-            subprocess.run([sys.executable, "-m", "experiments.project_research.campaign_bridge", "--config", str(config), "reconcile_subscription"],
-                           input="{}", text=True, capture_output=True, cwd=str(CONTROLLER.parents[2]), timeout=600)
+            for reconcile in ("reconcile_subscription", "reconcile_compute"):
+                subprocess.run([sys.executable, "-m", "experiments.project_research.campaign_bridge", "--config", str(config), reconcile],
+                               input="{}", text=True, capture_output=True, cwd=str(CONTROLLER.parents[2]), timeout=600)
+            time.sleep(5)
+            continue
+        if status == "HOST_ACTION_REQUIRES_RECONCILIATION":
+            # A DEFERRED/BLOCKED host result from an older controller build; the pending action is re-evaluated on resume.
             time.sleep(5)
             continue
         return summary
@@ -135,7 +140,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("campaign_id")
     parser.add_argument("team")
+    parser.add_argument("--role", help="run only this role (B condition uses team 'free', role 'free')")
     args = parser.parse_args()
+    if args.role:
+        print(json.dumps(run_role(args.campaign_id, args.team, args.role)))
+        return
     print(json.dumps({role: value.get("status") if isinstance(value, dict) else value for role, value in run_team(args.campaign_id, args.team).items()}))
 
 
