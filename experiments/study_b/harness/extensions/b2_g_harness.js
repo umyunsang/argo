@@ -60,62 +60,7 @@ export default function(pi) {
     logEvent("tool_execution_allowed", { tool: event.toolName, input: event.input });
   });
 
-  // --- G: Typed Context Graph Tools ---
-  pi.registerTool({
-    name: "graph_add",
-    label: "Add Context Graph Node",
-    description: "Add a typed research node (gap, hypothesis, decision, experiment, claim, receipt) to the persistent context graph.",
-    parameters: {
-      type: "object",
-      properties: {
-        kind: { 
-          type: "string", 
-          enum: ["gap", "hypothesis", "decision", "experiment", "claim", "receipt"],
-          description: "Kind of research node"
-        },
-        id: { type: "string", description: "Unique identifier, e.g. hyp:l2_regularization" },
-        statement: { type: "string", description: "Clear factual or theoretical statement" },
-        data: { type: "object", description: "Optional metadata object" }
-      },
-      required: ["kind", "id", "statement"]
-    },
-    async execute(id, params) {
-      const allowedKinds = ["gap", "hypothesis", "decision", "experiment", "claim", "receipt"];
-      if (!allowedKinds.includes(params.kind)) {
-        return { content: [{ type: "text", text: `Error: Invalid kind ${params.kind}. Allowed: ${allowedKinds.join(", ")}` }], isError: true };
-      }
-      state.graph.nodes[params.id] = {
-        kind: params.kind,
-        id: params.id,
-        statement: params.statement,
-        data: params.data || {},
-        created_at: new Date().toISOString()
-      };
-      fs.writeFileSync(graphPath, JSON.stringify(state.graph, null, 2), 'utf8');
-      logEvent("graph_add", { id: params.id, kind: params.kind });
-      return { content: [{ type: "text", text: `Successfully registered node [${params.kind}:${params.id}] in context_graph.json` }] };
-    }
-  });
-
-  pi.registerTool({
-    name: "graph_query",
-    label: "Query Context Graph",
-    description: "Query existing nodes and edges in the persistent context graph.",
-    parameters: {
-      type: "object",
-      properties: {
-        kind: { type: "string", description: "Filter by kind (optional)" }
-      }
-    },
-    async execute(id, params) {
-      logEvent("graph_query", { filter: params.kind });
-      let nodes = Object.values(state.graph.nodes);
-      if (params.kind) {
-        nodes = nodes.filter(n => n.kind === params.kind);
-      }
-      return { content: [{ type: "text", text: JSON.stringify({ count: nodes.length, nodes }, null, 2) }] };
-    }
-  });
+  // --- G: Typed Context Graph Tools REMOVED in B2-G ---
 
   // --- P: Decision Protocol Tools ---
   pi.registerTool({
